@@ -1,0 +1,14 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+coverage/
+.agents/
+.DS_Store
+Thumbs.db
+*.key
+.agylity.key
+*.db
+*.db-wal
+*.db-shm
