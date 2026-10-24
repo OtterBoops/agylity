@@ -129,7 +129,7 @@ describe('Tier 2: Boundary & Corner Cases — Configuration & Persistence', () =
   it('TB-CFG-10: handles precedence when environment variable is empty string (falls back to default)', () => {
     const { dir, cleanup } = makeTempDir('tb_empty_env_');
     const env = {
-      REMOTE_WOL_MAC: '',
+      NOTIFICATION_WEBHOOK_URL: '',
       DATABASE_PATH: '',
     };
     const store = new ConfigStore(path.join(dir, 'test.db'), parseRawEnv(env));

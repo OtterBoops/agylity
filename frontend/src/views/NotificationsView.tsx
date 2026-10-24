@@ -7,29 +7,47 @@ interface NotificationsViewProps {
   onSaved: () => void;
 }
 
+type ChannelId = 'discord' | 'webhook' | 'console';
+
 export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) => {
   const resolved = config.resolved || {};
-  const currentChannel =
-    (resolved.notificationChannel as 'discord' | 'webhook' | 'console') || 'discord';
 
-  const [activeChannel, setActiveChannel] = useState<'discord' | 'webhook' | 'console'>(
-    currentChannel
-  );
+  const getInitialChannels = (): Set<ChannelId> => {
+    if (Array.isArray(resolved.notificationChannels) && resolved.notificationChannels.length > 0) {
+      return new Set(
+        resolved.notificationChannels.filter(
+          (c): c is ChannelId => c === 'discord' || c === 'webhook' || c === 'console'
+        )
+      );
+    }
+    if (resolved.notificationChannel && resolved.notificationChannel !== 'none') {
+      const ch = String(resolved.notificationChannel) as ChannelId;
+      if (ch === 'discord' || ch === 'webhook' || ch === 'console') {
+        return new Set([ch]);
+      }
+    }
+    return new Set<ChannelId>();
+  };
+
+  const [selectedChannels, setSelectedChannels] = useState<Set<ChannelId>>(getInitialChannels);
+
   const [discordToken, setDiscordToken] = useState('');
   const [discordChannelId, setDiscordChannelId] = useState('');
   const [discordClientId, setDiscordClientId] = useState('');
   const [discordGuildId, setDiscordGuildId] = useState('');
+  const [showDiscordToken, setShowDiscordToken] = useState(false);
+
   const [webhookUrl, setWebhookUrl] = useState('');
-  const [showToken, setShowToken] = useState(false);
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [showWebhookSecret, setShowWebhookSecret] = useState(false);
 
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [isTesting, setIsTesting] = useState(false);
+  const [testingChannel, setTestingChannel] = useState<string | null>(null);
 
   useEffect(() => {
-    if (resolved.notificationChannel) {
-      setActiveChannel(resolved.notificationChannel as any);
-    }
+    setSelectedChannels(getInitialChannels());
+
     if (resolved.discordNotificationChannelId && !discordChannelId) {
       setDiscordChannelId(String(resolved.discordNotificationChannelId));
     }
@@ -44,31 +62,52 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     }
   }, [resolved]);
 
+  const toggleChannel = (channel: ChannelId) => {
+    setSelectedChannels((prev) => {
+      const next = new Set(prev);
+      if (next.has(channel)) {
+        next.delete(channel);
+      } else {
+        next.add(channel);
+      }
+      return next;
+    });
+  };
+
   const handleSave = async (e: Event) => {
     e.preventDefault();
     setIsSaving(true);
     setToast(null);
 
+    const channelsArray = Array.from(selectedChannels);
     const payload: Record<string, unknown> = {
-      notificationChannel: activeChannel,
+      notificationChannels: channelsArray,
+      notificationChannel: channelsArray[0] || 'none',
     };
 
-    if (activeChannel === 'discord') {
+    if (selectedChannels.has('discord')) {
       if (discordToken.trim()) payload.discordToken = discordToken.trim();
       if (discordChannelId.trim()) payload.discordNotificationChannelId = discordChannelId.trim();
       if (discordClientId.trim()) payload.discordClientId = discordClientId.trim();
       if (discordGuildId.trim()) payload.discordGuildId = discordGuildId.trim();
-    } else if (activeChannel === 'webhook') {
-      payload.notificationWebhookUrl = webhookUrl.trim();
+    }
+
+    if (selectedChannels.has('webhook')) {
+      if (webhookUrl.trim()) payload.notificationWebhookUrl = webhookUrl.trim();
+      if (webhookSecret.trim()) payload.webhookSecret = webhookSecret.trim();
     }
 
     updateConfig(payload)
       .then(() => {
         setToast({
           type: 'success',
-          message: 'Notification settings saved to SQLite (encrypted at rest)!',
+          message:
+            channelsArray.length > 0
+              ? `Notification channels (${channelsArray.join(', ')}) saved to SQLite!`
+              : 'Silent sentry mode enabled (all channels disabled).',
         });
         setDiscordToken('');
+        setWebhookSecret('');
         onSaved();
       })
       .catch((err) =>
@@ -77,27 +116,31 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       .finally(() => setIsSaving(false));
   };
 
-  const handleSendTest = () => {
-    setIsTesting(true);
+  const handleSendTest = (channel?: ChannelId) => {
+    setTestingChannel(channel || 'all');
     setToast(null);
 
-    testNotification()
+    testNotification(channel)
       .then((data) =>
         setToast({
           type: 'success',
-          message: data.message || 'Test notification sent successfully!',
+          message: data.message || 'Test notification dispatched successfully!',
         })
       )
       .catch((err) =>
-        setToast({ type: 'error', message: err.message || 'Test notification delivery failed' })
+        setToast({
+          type: 'error',
+          message: err.message || 'Test notification delivery failed.',
+        })
       )
-      .finally(() => setIsTesting(false));
+      .finally(() => setTestingChannel(null));
   };
 
   const isDiscordTokenSet = Boolean(
     config.secretsMeta?.discordToken?.isSet ?? Boolean(resolved.discordToken)
   );
   const isDiscordConfigured = Boolean(isDiscordTokenSet && resolved.discordNotificationChannelId);
+
   const isWebhookConfigured = Boolean(
     config.secretsMeta?.notificationWebhookUrl?.isSet ?? Boolean(resolved.notificationWebhookUrl)
   );
@@ -106,105 +149,145 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     <div class="flex flex-col gap-6">
       {/* Channel Selector Header */}
       <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
-        <div class="mb-4 flex items-start justify-between">
+        <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 class="text-xl font-semibold text-pine-text">Notification Channels</h2>
+            <h2 class="text-xl font-semibold text-pine-text">Multi-Channel Notifications</h2>
             <p class="mt-0.5 text-xs text-pine-subtle">
-              Select where Agylity delivers rolling quota milestone warnings and remote task
-              dispatch updates.
+              Configure simultaneous notification delivery across multiple destinations. Default is
+              silent sentry mode (none).
             </p>
           </div>
-          <span
-            class={`rounded border px-2.5 py-1 text-[11px] font-bold tracking-wider uppercase ${
-              activeChannel === 'discord'
-                ? isDiscordConfigured
-                  ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-                  : 'border-pine-gold bg-pine-gold/20 text-pine-gold'
-                : activeChannel === 'webhook'
-                  ? isWebhookConfigured
-                    ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-                    : 'border-pine-gold bg-pine-gold/20 text-pine-gold'
-                  : 'border-pine-highlight bg-pine-overlay text-pine-subtle'
-            }`}
-          >
-            {activeChannel === 'discord'
-              ? isDiscordConfigured
-                ? 'Discord Active'
-                : 'Discord Incomplete'
-              : activeChannel === 'webhook'
-                ? isWebhookConfigured
-                  ? 'Webhook Active'
-                  : 'Webhook Incomplete'
-                : 'Console Only'}
-          </span>
+          <div class="flex flex-wrap items-center gap-2">
+            {selectedChannels.size === 0 ? (
+              <span class="rounded border border-pine-highlight bg-pine-overlay px-2.5 py-1 text-[11px] font-bold tracking-wider text-pine-subtle uppercase">
+                Silent Sentry (None)
+              </span>
+            ) : (
+              Array.from(selectedChannels).map((ch) => (
+                <span
+                  key={ch}
+                  class={`rounded border px-2.5 py-1 text-[11px] font-bold tracking-wider uppercase ${
+                    ch === 'discord'
+                      ? isDiscordConfigured
+                        ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
+                        : 'border-pine-gold bg-pine-gold/20 text-pine-gold'
+                      : ch === 'webhook'
+                        ? isWebhookConfigured
+                          ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
+                          : 'border-pine-gold bg-pine-gold/20 text-pine-gold'
+                        : 'border-pine-pine bg-pine-pine/20 text-pine-foam'
+                  }`}
+                >
+                  {ch === 'discord'
+                    ? isDiscordConfigured
+                      ? 'Discord Active'
+                      : 'Discord Incomplete'
+                    : ch === 'webhook'
+                      ? isWebhookConfigured
+                        ? 'Webhook Active'
+                        : 'Webhook Incomplete'
+                      : 'Console Active'}
+                </span>
+              ))
+            )}
+          </div>
         </div>
 
-        {/* Channel Selection Radio Cards */}
+        {/* Multi-Channel Toggle Cards */}
         <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+          {/* Discord Card */}
           <button
             type="button"
-            onClick={() => setActiveChannel('discord')}
+            onClick={() => toggleChannel('discord')}
             class={`flex cursor-pointer flex-col rounded-lg border p-4 text-left transition-all ${
-              activeChannel === 'discord'
+              selectedChannels.has('discord')
                 ? 'border-pine-iris bg-pine-iris/15 text-pine-text shadow-sm'
                 : 'border-pine-highlight/60 bg-pine-overlay/40 text-pine-subtle hover:border-pine-highlight hover:text-pine-text'
             }`}
           >
-            <div class="mb-1 flex items-center gap-2 text-sm font-semibold">
-              <span>💬</span> Discord Bot
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-sm font-semibold text-pine-text">💬 Discord Bot</span>
+              <span
+                class={`size-2 rounded-full ${
+                  selectedChannels.has('discord') ? 'bg-pine-foam' : 'bg-pine-muted/40'
+                }`}
+              />
             </div>
-            <p class="text-xs text-pine-muted">
+            <p class="text-xs/relaxed text-pine-muted">
               Sends rich embeds to a Discord channel with slash commands (/quota) and interactive
               dispatch modals.
             </p>
           </button>
 
+          {/* Webhook Card */}
           <button
             type="button"
-            onClick={() => setActiveChannel('webhook')}
+            onClick={() => toggleChannel('webhook')}
             class={`flex cursor-pointer flex-col rounded-lg border p-4 text-left transition-all ${
-              activeChannel === 'webhook'
+              selectedChannels.has('webhook')
                 ? 'border-pine-iris bg-pine-iris/15 text-pine-text shadow-sm'
                 : 'border-pine-highlight/60 bg-pine-overlay/40 text-pine-subtle hover:border-pine-highlight hover:text-pine-text'
             }`}
           >
-            <div class="mb-1 flex items-center gap-2 text-sm font-semibold">
-              <span>🔗</span> Webhook
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-sm font-semibold text-pine-text">🔗 Generic Webhook</span>
+              <span
+                class={`size-2 rounded-full ${
+                  selectedChannels.has('webhook') ? 'bg-pine-foam' : 'bg-pine-muted/40'
+                }`}
+              />
             </div>
-            <p class="text-xs text-pine-muted">
-              Dispatches JSON payloads on quota milestones to custom endpoints (Slack, n8n, Home
-              Assistant).
+            <p class="text-xs/relaxed text-pine-muted">
+              Dispatches JSON payloads with optional HMAC-SHA256 signatures to custom HTTP endpoints
+              (Slack, n8n, Home Assistant).
             </p>
           </button>
 
+          {/* Console Card */}
           <button
             type="button"
-            onClick={() => setActiveChannel('console')}
+            onClick={() => toggleChannel('console')}
             class={`flex cursor-pointer flex-col rounded-lg border p-4 text-left transition-all ${
-              activeChannel === 'console'
+              selectedChannels.has('console')
                 ? 'border-pine-iris bg-pine-iris/15 text-pine-text shadow-sm'
                 : 'border-pine-highlight/60 bg-pine-overlay/40 text-pine-subtle hover:border-pine-highlight hover:text-pine-text'
             }`}
           >
-            <div class="mb-1 flex items-center gap-2 text-sm font-semibold">
-              <span>💻</span> Local Console
+            <div class="mb-1 flex items-center justify-between">
+              <span class="text-sm font-semibold text-pine-text">💻 Local Console</span>
+              <span
+                class={`size-2 rounded-full ${
+                  selectedChannels.has('console') ? 'bg-pine-foam' : 'bg-pine-muted/40'
+                }`}
+              />
             </div>
-            <p class="text-xs text-pine-muted">
-              Prints formatted ASCII milestone boxes to stdout with zero network dependencies or
-              external bots.
+            <p class="text-xs/relaxed text-pine-muted">
+              Prints formatted ASCII milestone boxes directly to stdout and into the Live Logs view
+              with zero network dependencies.
             </p>
           </button>
         </div>
       </div>
 
-      {/* Channel-Specific Configuration Form */}
+      {/* Configuration Form */}
       <form
         onSubmit={handleSave}
-        class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm"
+        class="flex flex-col gap-6 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm"
       >
-        {activeChannel === 'discord' && (
-          <div class="flex flex-col gap-4">
-            <h3 class="text-base font-semibold text-pine-text">Discord Bot Credentials</h3>
+        {/* Discord Form */}
+        {selectedChannels.has('discord') && (
+          <div class="flex flex-col gap-4 border-b border-pine-highlight/60 pb-6">
+            <div class="flex items-center justify-between">
+              <h3 class="text-base font-semibold text-pine-text">Discord Bot Credentials</h3>
+              <button
+                type="button"
+                onClick={() => handleSendTest('discord')}
+                disabled={testingChannel !== null}
+                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-semibold text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
+              >
+                {testingChannel === 'discord' ? 'Testing...' : '🔔 Test Discord Ping'}
+              </button>
+            </div>
 
             <div class="flex flex-col gap-1.5">
               <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
@@ -220,7 +303,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
               </label>
               <div class="flex gap-2">
                 <input
-                  type={showToken ? 'text' : 'password'}
+                  type={showDiscordToken ? 'text' : 'password'}
                   class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                   placeholder={
                     isDiscordTokenSet
@@ -233,9 +316,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                 <button
                   type="button"
                   class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-xs font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
-                  onClick={() => setShowToken(!showToken)}
+                  onClick={() => setShowDiscordToken(!showDiscordToken)}
                 >
-                  {showToken ? 'Hide' : 'Show'}
+                  {showDiscordToken ? 'Hide' : 'Show'}
                 </button>
               </div>
             </div>
@@ -288,15 +371,32 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           </div>
         )}
 
-        {activeChannel === 'webhook' && (
-          <div class="flex flex-col gap-4">
-            <h3 class="text-base font-semibold text-pine-text">Webhook Endpoint</h3>
+        {/* Webhook Form */}
+        {selectedChannels.has('webhook') && (
+          <div class="flex flex-col gap-4 border-b border-pine-highlight/60 pb-6">
+            <div class="flex items-center justify-between">
+              <h3 class="text-base font-semibold text-pine-text">Webhook Endpoint & Security</h3>
+              <button
+                type="button"
+                onClick={() => handleSendTest('webhook')}
+                disabled={testingChannel !== null}
+                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-semibold text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
+              >
+                {testingChannel === 'webhook' ? 'Testing...' : '🔗 Test Webhook Ping'}
+              </button>
+            </div>
+
             <div class="flex flex-col gap-1.5">
               <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
                 <span class="flex items-center gap-1.5">
                   Target Webhook URL
                   <span class="text-[10px] text-pine-foam">🔒 Encrypted at rest (AES-256-GCM)</span>
                 </span>
+                {isWebhookConfigured && (
+                  <span class="text-[10px] font-semibold tracking-wider text-pine-foam uppercase">
+                    Configured
+                  </span>
+                )}
               </label>
               <input
                 type="text"
@@ -304,37 +404,78 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                 placeholder={
                   isWebhookConfigured
                     ? '•••••••••••••••••••• (Encrypted in SQLite — enter new URL to update)'
-                    : 'https://your-server.com/api/webhook'
+                    : 'https://your-server.com/api/agylity-alert'
                 }
                 value={webhookUrl}
                 onInput={(e) => setWebhookUrl((e.target as HTMLInputElement).value)}
               />
               <span class="text-[11px] text-pine-muted">
-                Receives POST JSON requests with quota alerts and lifecycle events.
+                Receives HTTP POST requests with JSON quota milestone payloads.
+              </span>
+            </div>
+
+            <div class="flex flex-col gap-1.5">
+              <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+                <span class="flex items-center gap-1.5">
+                  HMAC Secret Key (Optional)
+                  <span class="text-[10px] text-pine-foam">🔒 Encrypted at rest (AES-256-GCM)</span>
+                </span>
+              </label>
+              <div class="flex gap-2">
+                <input
+                  type={showWebhookSecret ? 'text' : 'password'}
+                  class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                  placeholder="Optional secret for x-agylity-signature header"
+                  value={webhookSecret}
+                  onInput={(e) => setWebhookSecret((e.target as HTMLInputElement).value)}
+                />
+                <button
+                  type="button"
+                  class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-xs font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
+                  onClick={() => setShowWebhookSecret(!showWebhookSecret)}
+                >
+                  {showWebhookSecret ? 'Hide' : 'Show'}
+                </button>
+              </div>
+              <span class="text-[11px] text-pine-muted">
+                When specified, Agylity signs each payload with HMAC-SHA256 in the
+                x-agylity-signature header.
               </span>
             </div>
           </div>
         )}
 
-        {activeChannel === 'console' && (
+        {/* Console Note */}
+        {selectedChannels.has('console') && (
           <div class="rounded-lg border border-pine-highlight/40 bg-pine-overlay/40 p-4">
-            <h3 class="mb-1 text-sm font-semibold text-pine-text">Console Output Active</h3>
-            <p class="text-xs text-pine-muted">
+            <div class="flex items-center justify-between">
+              <h3 class="mb-1 text-sm font-semibold text-pine-text">Console Output</h3>
+              <button
+                type="button"
+                onClick={() => handleSendTest('console')}
+                disabled={testingChannel !== null}
+                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1 text-xs font-semibold text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
+              >
+                {testingChannel === 'console' ? 'Testing...' : '💻 Test Console Output'}
+              </button>
+            </div>
+            <p class="text-xs/relaxed text-pine-muted">
               Milestone warnings are rendered directly to the host process console and streamed into
-              the Live Logs view. No external bot tokens or credentials are required.
+              the Live Logs view. No external credentials required.
             </p>
           </div>
         )}
 
-        {/* Action Buttons: Save & Test Notification */}
-        <div class="flex flex-wrap items-center justify-between gap-3 border-t border-pine-highlight pt-4">
+        {/* Action Buttons: Save & Test All */}
+        <div class="flex flex-wrap items-center justify-between gap-3 pt-2">
           <button
             type="button"
-            onClick={handleSendTest}
-            disabled={isTesting}
+            onClick={() => handleSendTest()}
+            disabled={testingChannel !== null || selectedChannels.size === 0}
             class="flex cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-xs font-semibold text-pine-text transition-colors hover:bg-pine-highlight/50 disabled:opacity-50"
           >
-            <span>🔔</span> {isTesting ? 'Sending Test...' : 'Send Test Notification'}
+            <span>🔔</span>{' '}
+            {testingChannel === 'all' ? 'Broadcasting...' : 'Test All Active Channels'}
           </button>
 
           <button

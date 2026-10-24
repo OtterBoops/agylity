@@ -289,7 +289,7 @@ describe('Adversarial Stress Test: Milestone 1 (Storage & Config)', () => {
 
       // Verify ConfigStore resolveConfig remains unaffected
       const resolved = store.resolveConfig();
-      assert.equal(resolved.notificationChannel, 'discord');
+      assert.equal(resolved.notificationChannel, 'none');
       assert.equal((resolved as any).polluted, undefined);
 
       store.close();

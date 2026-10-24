@@ -124,7 +124,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ## 5. Swarm & Task Poller Architecture (Roadmap)
 
-Legacy direct SSH push and Wake-on-LAN have been scrapped in favor of a **Pull-Based Worker Swarm**:
+Remote task dispatch is architected around a modern **Pull-Based Worker Swarm**:
 
 ```
 Coordinator (Homelab / Cloud)

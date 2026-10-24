@@ -138,7 +138,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **339 / 339 tests passing across 90 suites** (0 failures, 0 skipped, 100% deterministic).
+Verification status: **353 / 353 tests passing across 94 suites** (0 failures, 0 skipped, 100% deterministic).
 
 ---
 

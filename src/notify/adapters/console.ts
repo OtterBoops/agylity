@@ -92,6 +92,15 @@ export class ConsoleNotifier implements Notifier {
     }
   }
 
+  async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
+    console.log('[ConsoleNotifier] Test notification ping verified.');
+    return {
+      success: true,
+      message: 'Test notification printed to local console.',
+      channel: this.channelName,
+    };
+  }
+
   async shutdown(): Promise<void> {
     this.initialized = false;
   }
@@ -127,10 +136,4 @@ export class ConsoleNotifier implements Notifier {
   }
 }
 
-export class WebhookNotifier extends ConsoleNotifier {
-  override readonly channelName: string = 'webhook';
-
-  constructor(config: Partial<ResolvedConfig> = {}, options: NotifierOptions = {}) {
-    super(config, options);
-  }
-}
+export { WebhookNotifier } from './webhook.js';

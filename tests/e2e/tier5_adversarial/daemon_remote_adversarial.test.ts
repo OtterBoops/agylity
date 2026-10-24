@@ -605,7 +605,7 @@ describe('Tier 5 Adversarial Hardening — Track A: Core Daemon & Alerting Engin
       }
     });
 
-    it('T5-DMN-4: full autonomous end-to-end integration: quota alert -> dispatch request -> WoL -> SSH completion', async () => {
+    it('T5-DMN-4: full autonomous end-to-end integration: quota alert -> dispatch request -> worker completion', async () => {
       const { dir, cleanup } = makeTempDir('daemon_e2e_');
       try {
         const dbPath = path.join(dir, 'test.db');

@@ -187,7 +187,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
               When enabled, worker machines or homelab containers connect upstream to Agylity via
               secure WebSockets. When a model quota is nearing reset, tasks can be assigned
               dynamically to any connected worker node on an isolated git branch without requiring
-              inbound SSH ports or Wake-on-LAN broadcasts across network boundaries.
+              inbound network firewall exceptions or manual broadcast packets across boundaries.
             </p>
           </div>
         </div>

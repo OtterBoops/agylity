@@ -177,7 +177,7 @@ export const createMockUdpListener = async (
 };
 
 /**
- * Validates whether a buffer is a compliant 102-byte WoL Magic Packet.
+ * Validates whether a buffer is a compliant magic packet frame.
  */
 export const isValidMagicPacket = (buf: Buffer, expectedMac: string): boolean => {
   if (buf.length !== 102) return false;

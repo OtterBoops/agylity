@@ -75,14 +75,35 @@ export const MacAddressSchema = z
   );
 
 // Notification channels
-export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook']);
+export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);
 export type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
+
+export const NotificationChannelsSchema = z.preprocess((val) => {
+  if (Array.isArray(val)) {
+    return val
+      .map((v) => String(v).trim().toLowerCase())
+      .filter((v) => ['discord', 'webhook', 'console', 'none'].includes(v));
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (!trimmed || trimmed.toLowerCase() === 'none') return [];
+    return trimmed
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter((s) => ['discord', 'webhook', 'console'].includes(s));
+  }
+  return [];
+}, z.array(NotificationChannelEnum).default([]));
 
 // Raw Environment Schema for process.env ingestion
 export const RawEnvSchema = z.object({
-  /* Notification Channel */
+  /* Notification Channels */
+  NOTIFICATION_CHANNELS: z.string().optional(),
   NOTIFICATION_CHANNEL: NotificationChannelEnum.optional(),
   NOTIFICATION_WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
+  WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
+  WEBHOOK_SECRET: z.string().optional(),
+  WEBHOOK_CUSTOM_HEADERS: z.string().optional(),
   DISCORD_TOKEN: z.string().optional(),
   DISCORD_CLIENT_ID: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
@@ -118,7 +139,10 @@ export type RawEnv = z.infer<typeof RawEnvSchema>;
 // Full Typed Application Configuration Contract
 export interface AppConfig {
   notificationChannel: NotificationChannelType;
+  notificationChannels: NotificationChannelType[];
   notificationWebhookUrl?: string;
+  webhookSecret?: string;
+  webhookCustomHeaders?: Record<string, string>;
   discordToken?: string;
   discordClientId?: string;
   discordGuildId?: string;
@@ -147,8 +171,11 @@ export type ResolvedConfig = AppConfig;
 
 // Built-in Defaults (Level 3 Fallback)
 export const BUILTIN_DEFAULTS: AppConfig = {
-  notificationChannel: 'discord',
+  notificationChannel: 'none',
+  notificationChannels: [],
   notificationWebhookUrl: undefined,
+  webhookSecret: undefined,
+  webhookCustomHeaders: undefined,
   discordToken: undefined,
   discordClientId: undefined,
   discordGuildId: undefined,
@@ -177,9 +204,29 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   const parsed = RawEnvSchema.parse(env);
   const result: Partial<AppConfig> = {};
 
-  if (parsed.NOTIFICATION_CHANNEL) result.notificationChannel = parsed.NOTIFICATION_CHANNEL;
-  if (parsed.NOTIFICATION_WEBHOOK_URL)
-    result.notificationWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL;
+  if (parsed.NOTIFICATION_CHANNELS) {
+    result.notificationChannels = NotificationChannelsSchema.parse(parsed.NOTIFICATION_CHANNELS);
+    result.notificationChannel = result.notificationChannels[0] ?? 'none';
+  } else if (parsed.NOTIFICATION_CHANNEL) {
+    result.notificationChannel = parsed.NOTIFICATION_CHANNEL;
+    result.notificationChannels =
+      parsed.NOTIFICATION_CHANNEL !== 'none' ? [parsed.NOTIFICATION_CHANNEL] : [];
+  }
+
+  if (parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL) {
+    result.notificationWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL;
+  }
+  if (parsed.WEBHOOK_SECRET) {
+    result.webhookSecret = parsed.WEBHOOK_SECRET;
+  }
+  if (parsed.WEBHOOK_CUSTOM_HEADERS) {
+    try {
+      result.webhookCustomHeaders = JSON.parse(parsed.WEBHOOK_CUSTOM_HEADERS);
+    } catch {
+      // Ignore invalid JSON in custom headers
+    }
+  }
+
   if (parsed.DISCORD_TOKEN) result.discordToken = parsed.DISCORD_TOKEN;
   if (parsed.DISCORD_CLIENT_ID) result.discordClientId = parsed.DISCORD_CLIENT_ID;
   if (parsed.DISCORD_GUILD_ID) result.discordGuildId = parsed.DISCORD_GUILD_ID;

@@ -8,9 +8,11 @@ export const SECRET_KEYS = new Set([
   'discordToken',
   'antigravityCsrfToken',
   'notificationWebhookUrl',
+  'webhookSecret',
   'DISCORD_TOKEN',
   'ANTIGRAVITY_CSRF_TOKEN',
   'NOTIFICATION_WEBHOOK_URL',
+  'WEBHOOK_SECRET',
 ]);
 
 export const isSecretKey = (key: string): boolean => {

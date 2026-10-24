@@ -171,7 +171,7 @@ describe('Tier 1: Feature Coverage — Config & Persistence (F2, F3, F4)', () =>
         store.get('quotaCheckIntervalSeconds'),
         BUILTIN_DEFAULTS.quotaCheckIntervalSeconds
       );
-      assert.equal(store.get('notificationChannel'), 'discord');
+      assert.equal(store.get('notificationChannel'), 'none');
       assert.equal(store.get('antigravityLsPort'), 60643);
 
       store.close();

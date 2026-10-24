@@ -11,8 +11,12 @@ export interface IConfigStore {
 }
 
 const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
+  NOTIFICATION_CHANNELS: 'notificationChannels',
   NOTIFICATION_CHANNEL: 'notificationChannel',
   NOTIFICATION_WEBHOOK_URL: 'notificationWebhookUrl',
+  WEBHOOK_URL: 'notificationWebhookUrl',
+  WEBHOOK_SECRET: 'webhookSecret',
+  WEBHOOK_CUSTOM_HEADERS: 'webhookCustomHeaders',
   DISCORD_TOKEN: 'discordToken',
   DISCORD_CLIENT_ID: 'discordClientId',
   DISCORD_GUILD_ID: 'discordGuildId',
@@ -74,6 +78,23 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     for (const key of Object.keys(this.defaults) as Array<keyof AppConfig>) {
       (resolved as Record<string, unknown>)[key] =
         overrides[key] ?? this.envConfig[key] ?? this.defaults[key];
+    }
+
+    // Synchronize notificationChannels and notificationChannel
+    if (overrides.notificationChannels !== undefined) {
+      resolved.notificationChannels = overrides.notificationChannels;
+      resolved.notificationChannel = resolved.notificationChannels[0] ?? 'none';
+    } else if (overrides.notificationChannel !== undefined) {
+      resolved.notificationChannel = overrides.notificationChannel;
+      resolved.notificationChannels =
+        overrides.notificationChannel !== 'none' ? [overrides.notificationChannel] : [];
+    } else if (this.envConfig.notificationChannels !== undefined) {
+      resolved.notificationChannels = this.envConfig.notificationChannels;
+      resolved.notificationChannel = resolved.notificationChannels[0] ?? 'none';
+    } else if (this.envConfig.notificationChannel !== undefined) {
+      resolved.notificationChannel = this.envConfig.notificationChannel;
+      resolved.notificationChannels =
+        this.envConfig.notificationChannel !== 'none' ? [this.envConfig.notificationChannel] : [];
     }
 
     return resolved as ResolvedConfig;

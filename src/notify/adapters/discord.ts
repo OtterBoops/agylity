@@ -513,6 +513,59 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
+  async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
+    const channelId = this.config.discordNotificationChannelId;
+    if (!channelId) {
+      return {
+        success: false,
+        message:
+          'No Discord notification channel configured (discordNotificationChannelId is unset).',
+        channel: this.channelName,
+      };
+    }
+
+    try {
+      if (!this.initialized || !this.client) {
+        await this.initialize();
+      }
+
+      const channel = await this.client?.channels?.fetch(channelId);
+      if (
+        !channel ||
+        !(
+          'isTextBased' in channel &&
+          typeof channel.isTextBased === 'function' &&
+          channel.isTextBased()
+        )
+      ) {
+        return {
+          success: false,
+          message: `Discord channel ${channelId} could not be resolved or is not text-based.`,
+          channel: this.channelName,
+        };
+      }
+
+      if ('send' in channel && typeof (channel as any).send === 'function') {
+        await (channel as any).send({
+          content:
+            '🔔 **Agylity Notification Test** — Discord gateway connection verified successfully.',
+        });
+      }
+
+      return {
+        success: true,
+        message: `Discord test message sent to channel ${channelId}`,
+        channel: this.channelName,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: `Discord test failed: ${err.message}`,
+        channel: this.channelName,
+      };
+    }
+  }
+
   async shutdown(): Promise<void> {
     this.initialized = false;
     this.activeInteractions.clear();

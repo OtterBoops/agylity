@@ -145,14 +145,14 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const update1 = {
         status: 'waking' as const,
         repositoryName: 'agylity',
-        message: 'Broadcasting WoL magic packet',
+        message: 'Waking worker node',
       };
       assert.ok(DispatchStatusUpdateSchema.parse(update1));
 
       const update2 = {
         step: 'waking',
-        message: 'Broadcasting WoL',
-        details: { mac: '00:11:22:33:44:55' },
+        message: 'Waking worker',
+        details: { target: 'worker-node-1' },
       };
       assert.ok(DispatchStatusUpdateSchema.parse(update2));
     });
@@ -783,7 +783,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         status: 'waking',
         repositoryName: 'agylity',
         branchName: 'antigravity/continuation-1',
-        message: 'Broadcasting WoL magic packet',
+        message: 'Waking worker node',
       };
       const status2: DispatchStatusUpdate = {
         status: 'completed',
@@ -816,43 +816,46 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         });
       });
 
-      await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-      const port = (server.address() as { port: number }).port;
-      const webhookUrl = `http://127.0.0.1:${port}/hook`;
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const webhookUrl = `http://127.0.0.1:${port}/hook`;
 
-      process.env.WEBHOOK_SECRET = 'super-secret-key-123';
+        process.env.WEBHOOK_SECRET = 'super-secret-key-123';
 
-      const notifier = new WebhookNotifier({
-        notificationWebhookUrl: webhookUrl,
-      });
-      await notifier.initialize();
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: webhookUrl,
+        });
+        await notifier.initialize();
 
-      const alert: QuotaAlert = {
-        pool: {
-          poolId: 'gemini-argon',
-          family: 'gemini-argon',
-          displayName: 'Gemini 4 Argon',
-          remainingFraction: 0.17,
-          resetTime: '2026-10-26T09:17:32Z',
-          hoursUntilReset: 164.2,
-          models: ['Gemini 4 Argon'],
-        },
-        milestoneHours: 12,
-        remainingPercentage: 17,
-        triggeredAt: '2026-10-19T13:15:00.000Z',
-      };
+        const alert: QuotaAlert = {
+          pool: {
+            poolId: 'gemini-argon',
+            family: 'gemini-argon',
+            displayName: 'Gemini 4 Argon',
+            remainingFraction: 0.17,
+            resetTime: '2026-10-26T09:17:32Z',
+            hoursUntilReset: 164.2,
+            models: ['Gemini 4 Argon'],
+          },
+          milestoneHours: 12,
+          remainingPercentage: 17,
+          triggeredAt: '2026-10-19T13:15:00.000Z',
+        };
 
-      await notifier.notifyQuotaAlert(alert);
+        await notifier.notifyQuotaAlert(alert);
 
-      assert.equal(receivedBody?.event, 'quota_alert');
-      assert.equal(receivedBody?.poolId, 'gemini-argon');
-      assert.equal(receivedBody?.milestone, 12);
-      assert.ok(receivedHeaders['x-agylity-signature']);
-      assert.ok((receivedHeaders['x-agylity-signature'] as string).startsWith('sha256='));
+        assert.equal(receivedBody?.event, 'quota_alert');
+        assert.equal(receivedBody?.poolId, 'gemini-argon');
+        assert.equal(receivedBody?.milestone, 12);
+        assert.ok(receivedHeaders['x-agylity-signature']);
+        assert.ok((receivedHeaders['x-agylity-signature'] as string).startsWith('sha256='));
 
-      delete process.env.WEBHOOK_SECRET;
-      await notifier.shutdown();
-      await new Promise<void>((r) => server.close(() => r()));
+        delete process.env.WEBHOOK_SECRET;
+        await notifier.shutdown();
+      } finally {
+        await new Promise<void>((r) => server.close(() => r()));
+      }
     });
 
     it('safely handles webhook network failures without throwing unhandled rejections', async () => {
@@ -908,11 +911,11 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.notifyDispatchStatus({
         status: 'waking',
         repositoryName: 'repo-1',
-        message: 'Broadcasting WoL Magic Packet to 00:11:22:33:44:55...',
+        message: 'Waking worker node at 00:11:22:33:44:55...',
       });
 
       assert.deepEqual(interaction.state.editedData, {
-        content: 'Broadcasting WoL Magic Packet to 00:11:22:33:44:55...',
+        content: 'Waking worker node at 00:11:22:33:44:55...',
       });
 
       await notifier.notifyDispatchStatus({

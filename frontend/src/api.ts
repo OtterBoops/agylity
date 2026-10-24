@@ -65,8 +65,12 @@ export const triggerDispatch = (payload: {
 }): Promise<{ success: boolean; branchName?: string }> =>
   api.post('dispatch', { json: payload }).json<{ success: boolean; branchName?: string }>();
 
-export const testNotification = (): Promise<{ ok: boolean; message: string }> =>
-  api.post('notify/test').json<{ ok: boolean; message: string }>();
+export const testNotification = (
+  channel?: string
+): Promise<{ success: boolean; message: string; channel?: string }> =>
+  api
+    .post('notify/test', { json: channel ? { channel } : {} })
+    .json<{ success: boolean; message: string; channel?: string }>();
 
 export const getDispatches = (limit = 50): Promise<DispatchRecord[]> =>
   api.get(`dispatches?limit=${limit}`).json<DispatchRecord[]>();

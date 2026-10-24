@@ -88,6 +88,12 @@ export interface Notifier {
   notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void>;
   updateConfig?(newConfig: Partial<ResolvedConfig>): Promise<void>;
   shutdown(): Promise<void>;
+  testNotification?(targetChannel?: string): Promise<{
+    success: boolean;
+    message: string;
+    channel?: string;
+    results?: Record<string, { success: boolean; message: string }>;
+  }>;
 }
 
 export interface NotifierOptions {

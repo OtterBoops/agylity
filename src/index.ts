@@ -58,7 +58,7 @@ export interface AgylityDaemonOptions {
  * 2. Antigravity Language Server Connect-RPC client with agy CLI fallback
  * 3. Quota Sentry milestone evaluator and deduplication state engine
  * 4. Pluggable notification adapters (Discord with slash commands & modal prompt, Console)
- * 5. Task orchestrator (node:dgram WoL 102B with pluggable worker executor)
+ * 5. Task orchestrator with pluggable worker executor
  * 6. Decoupled Web UI (zero-overhead dynamic import on demand)
  * 7. Graceful teardown on SIGINT/SIGTERM
  */

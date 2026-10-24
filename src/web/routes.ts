@@ -325,7 +325,26 @@ export const handleRequest = async (
 
     try {
       const resolved = options.configStore.resolveConfig();
-      const channel = resolved.notificationChannel ?? 'discord';
+      let targetChannel: string | undefined;
+
+      const body = await readBody(req);
+      if (body.trim()) {
+        try {
+          const parsed = JSON.parse(body);
+          if (parsed.channel && typeof parsed.channel === 'string') {
+            targetChannel = parsed.channel.trim().toLowerCase();
+          }
+        } catch {
+          // ignore malformed body
+        }
+      }
+
+      const channel =
+        targetChannel ??
+        (resolved.notificationChannels && resolved.notificationChannels.length > 0
+          ? resolved.notificationChannels.join(', ')
+          : (resolved.notificationChannel ?? 'none'));
+
       const sampleAlert = {
         pool: {
           poolId: 'test-pool',
@@ -341,23 +360,38 @@ export const handleRequest = async (
         triggeredAt: new Date().toISOString(),
       };
 
-      if (options.notifier) {
-        await options.notifier.notifyQuotaAlert(sampleAlert);
-      } else {
-        const { createNotifier } = await import('../notify/factory.js');
-        const ephemeralNotifier = await createNotifier(resolved, {});
-        try {
-          await ephemeralNotifier.initialize();
-          await ephemeralNotifier.notifyQuotaAlert(sampleAlert);
-        } finally {
-          await ephemeralNotifier.shutdown();
+      let resultMessage = `Test notification sent via ${channel}!`;
+      let isSuccess = true;
+
+      const activeNotifier =
+        options.notifier ??
+        (await (async () => {
+          const { createNotifier } = await import('../notify/factory.js');
+          return createNotifier(targetChannel ?? resolved, {});
+        })());
+
+      try {
+        if (!options.notifier) {
+          await activeNotifier.initialize();
+        }
+
+        if (activeNotifier.testNotification) {
+          const testRes = await activeNotifier.testNotification(targetChannel);
+          isSuccess = testRes.success;
+          resultMessage = testRes.message;
+        } else {
+          await activeNotifier.notifyQuotaAlert(sampleAlert);
+        }
+      } finally {
+        if (!options.notifier) {
+          await activeNotifier.shutdown();
         }
       }
 
-      return sendJson(res, 200, {
-        success: true,
+      return sendJson(res, isSuccess ? 200 : 400, {
+        success: isSuccess,
         channel,
-        message: `Test notification sent via ${channel}!`,
+        message: resultMessage,
       });
     } catch (err: any) {
       return sendJson(res, 500, {

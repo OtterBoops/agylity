@@ -267,8 +267,8 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
     it('stress test: delayed workstation wake (5,000ms delay) succeeds because deferReply executed in <20ms', async () => {
       const interaction = createStrictDiscordInteraction({
-        taskPrompt: 'Execute long continuation after WoL wake',
-        customId: 'modal_dispatch:repo-wol',
+        taskPrompt: 'Execute long continuation after worker wake',
+        customId: 'modal_dispatch:repo-target',
       });
 
       let wakeStartedAt = 0;
@@ -276,17 +276,17 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-wol', name: 'Workstation Target', path: '/opt/target' }],
+          repositories: [{ id: 'repo-target', name: 'Workstation Target', path: '/opt/target' }],
         },
         {
           onDispatchRequested: async (req: DispatchRequest): Promise<DispatchResult> => {
             wakeStartedAt = Date.now();
-            // Simulate 5000ms slow workstation WoL wake + SSH port 22 polling
+            // Simulate 5000ms slow workstation wake
             await new Promise((r) => setTimeout(r, 5000));
             wakeEndedAt = Date.now();
             return {
               success: true,
-              branchName: 'antigravity/continuation-wol-5s',
+              branchName: 'antigravity/continuation-target-5s',
               durationMs: wakeEndedAt - wakeStartedAt,
             };
           },
@@ -309,7 +309,8 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       // 3. editReply must have succeeded with continuation branch without throwing 10062
       assert.deepEqual(interaction.state.latestEdit, {
-        content: '✅ Antigravity continuation complete on branch `antigravity/continuation-wol-5s`',
+        content:
+          '✅ Antigravity continuation complete on branch `antigravity/continuation-target-5s`',
       });
     });
 
@@ -329,13 +330,13 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
             await notifier.notifyDispatchStatus({
               status: 'waking',
               repositoryName: 'repo-heavy',
-              message: 'Broadcasting WoL magic packet to worker...',
+              message: 'Notifying worker node...',
             });
 
             await notifier.notifyDispatchStatus({
-              status: 'ssh_polling',
+              status: 'worker_connecting' as any,
               repositoryName: 'repo-heavy',
-              message: 'Polling SSH port 22 (worker booting)...',
+              message: 'Connecting to worker node (booting)...',
             });
 
             await notifier.notifyDispatchStatus({
@@ -362,8 +363,8 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
       // Verify progression of edit history
       const history = interaction.state.editHistory;
       assert.ok(history.length >= 4, `Expected at least 4 edit updates, got ${history.length}`);
-      assert.deepEqual(history[0], { content: 'Broadcasting WoL magic packet to worker...' });
-      assert.deepEqual(history[1], { content: 'Polling SSH port 22 (worker booting)...' });
+      assert.deepEqual(history[0], { content: 'Notifying worker node...' });
+      assert.deepEqual(history[1], { content: 'Connecting to worker node (booting)...' });
       assert.deepEqual(history[2], {
         content: 'Worker awake. Running git clean & agy continuation...',
       });
@@ -388,7 +389,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
             await new Promise((r) => setTimeout(r, 50));
             return {
               success: false,
-              error: 'Workstation failed to respond to SSH probe within 60s. Aborted.',
+              error: 'Worker failed to respond within 60s. Aborted.',
               durationMs: 60000,
             };
           },
@@ -399,8 +400,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       assert.equal(interaction.state.deferred, true);
       assert.deepEqual(interaction.state.latestEdit, {
-        content:
-          '❌ Zero-Clobber Guardrail: Workstation failed to respond to SSH probe within 60s. Aborted.',
+        content: '❌ Zero-Clobber Guardrail: Worker failed to respond within 60s. Aborted.',
       });
     });
 
@@ -552,7 +552,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
             runs++;
             if (failNext) {
               failNext = false;
-              throw new Error('SSH connection broken pipe');
+              throw new Error('Connection broken pipe');
             }
             return { success: true, branchName: 'recovered-branch', durationMs: 10 };
           },
@@ -570,7 +570,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
       assert.equal(runs, 1);
       assert.ok(
         interaction1.state.latestEdit?.content.includes(
-          'Task dispatch failed: SSH connection broken pipe'
+          'Task dispatch failed: Connection broken pipe'
         )
       );
 
