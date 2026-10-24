@@ -39,6 +39,7 @@ tests/
     ├── config.test.ts                       # Unit tests for schema & preprocessors
     ├── daemon.test.ts                       # Daemon lifecycle, signals, and scheduler
     ├── db.test.ts                           # SQLite storage, WAL mode, key-value overrides
+    ├── logger.test.ts                       # Universal pluggable logger, sinks, levels, namespaces
     ├── logs_history.test.ts                 # LogBuffer ring buffer and secret redaction
     ├── m1_adversarial.test.ts               # Config & persistence adversarial edge cases
     ├── m1_challenger2_edge_cases.test.ts    # Extreme environment variables & SQL boundary safety
@@ -102,7 +103,7 @@ Focused unit tests and adversarial challenger suites verifying:
 ## 4. Running the Test Suite
 
 ```bash
-# 1. Run complete deterministic test suite (374 tests across 98 suites)
+# 1. Run complete deterministic test suite (381 tests across 99 suites)
 npm test
 
 # 2. Run standalone E2E test runner (104 tests across 22 suites)

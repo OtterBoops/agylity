@@ -16,6 +16,7 @@ description: >-
   - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^3.24.0`.
   - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode.
   - Process Execution: Native `node:child_process.execFile` with array arguments.
+  - Logging: Pure TypeScript universal pluggable logger (`src/logs/logger.ts`) with child namespacing, custom sinks, fault isolation, and secret-redacting in-memory ring buffering.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
 
 ---

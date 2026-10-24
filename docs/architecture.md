@@ -135,6 +135,57 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Orchestrator**: Decoupled and optional (`orchestratorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
+6. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
+
+---
+
+## 6. Universal Pluggable Logging Architecture
+
+Agylity incorporates a lightweight, universal logging subsystem designed for production visibility without external log framework bloat:
+
+```
++-------------------------------------------------------------------------+
+|                              Logger Core                                |
+|  logger.child('sentry') / logger.child('web') / logger.child('daemon')  |
++------------------------------------+------------------------------------+
+                                     |
+                                     v (Format & LogRecord Dispatch)
+                   +-----------------+-----------------+
+                   |                                   |
+                   v (Default Console Sink)            v (Buffer Sink)
++------------------------------------+   +--------------------------------+
+|       Terminal / Docker stdout     |   |    LogBuffer (In-Memory Ring)  |
+|      (console.log/warn/error)      |   |  (Secret Redaction & Monotonic)|
++------------------------------------+   +---------------+----------------+
+                                                         |
+                                                         v
+                                         +--------------------------------+
+                                         |     Web UI Logs Dashboard      |
+                                         |       (GET /api/logs)          |
+                                         +--------------------------------+
+```
+
+### 6.1. Core Invariants
+
+1. **Zero External Logging Dependencies**:
+   - Powered purely by Node's native `node:util` `format` module, supporting format specifiers (`%s`, `%d`, `%j`), multiple arguments, and `Error` stack traces.
+2. **Pluggable Sinks & Extensibility**:
+   - Consumers can add or replace sinks via `logger.addSink(sink)`, `logger.removeSink(sink)`, and `logger.setSinks([...])`.
+   - Built-in sinks:
+     - `createConsoleSink()`: Standard output to stdout/stderr with component tagging (`[sentry]`, `[daemon]`, `[web]`).
+     - `createBufferSink(buffer)`: Feeds structured logs directly into the bounded, secret-redacting in-memory `LogBuffer`.
+     - `createMemorySink()`: Records log entries in an array for unit testing assertions.
+3. **Fault-Isolated Execution**:
+   - Sinks are executed inside individual `try ... catch` blocks. A failing or throwing sink (e.g. disk write failure or network transport crash) will never crash the daemon or prevent other sinks from logging.
+4. **Child Namespacing & Tag Cleanliness**:
+   - `logger.child('sentry')` tags entries with `[sentry]`. Nested child loggers produce colon-delimited namespaces (e.g. `[sentry:rpc]`).
+   - Prevents duplicate tagging if a log message already contains the component prefix.
+5. **Dynamic Level Configuration**:
+   - Supports `debug`, `info`, `warn`, and `error` log levels.
+   - Configurable at boot via `LOG_LEVEL` environment variable.
+   - Reactively syncs to new log levels at runtime via `configStore.on('change', ...)` without daemon restarts.
+6. **Secret Redaction**:
+   - High-entropy secrets (Discord bot tokens, CSRF tokens, webhook URLs/secrets, encryption keys) are masked before persistence in the ring buffer or exposure via `/api/logs`.
 
 ---
 
@@ -171,7 +222,7 @@ Coordinator (Homelab / Cloud)
 
 ---
 
-## 7. Repository Architecture
+## 8. Repository Architecture
 
 ```
 agylity/
@@ -190,6 +241,7 @@ agylity/
 │   └── vite.config.ts          # Bundles directly to dist/web/public
 ├── src/                        # Pure TypeScript daemon source
 │   ├── config/                 # Zod validation & SQLite store hierarchy
+│   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
 │   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto

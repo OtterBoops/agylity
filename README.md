@@ -33,6 +33,7 @@ Finishing work for the day with 80% quota headroom remaining means donating free
 - 🎨 **Decoupled Web Dashboard**: Optional dark-mode UI built with **Vite + Preact + Tailwind CSS** (Tailwind v4, Rosé Pine palette) for live gauges and config tweaks. Setting `WEB_UI_ENABLED=false` spawns zero HTTP listeners and binds zero ports.
 - 🔄 **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` $\to$ `.env` $\to$ `Defaults`). Adjust settings live in the web dashboard without taking down the container.
 - 🔐 **Encrypted at Rest**: Sensitive bot tokens and CSRF credentials receive AES-256-GCM authenticated encryption at rest in SQLite and are masked in client-facing APIs.
+- 🪵 **Universal Pluggable Logger**: Lightweight, zero-dependency logging engine with hierarchical child namespaces (`[sentry]`, `[daemon]`, `[web]`), pluggable sinks, fault isolation, secret redaction, and real-time streaming to the Web UI dashboard.
 - ⚡ **Optional Swarm Orchestrator (Roadmap)**: Operating by default in pure sentry and alerting mode (`ORCHESTRATOR_ENABLED=false`) runs zero execution sockets. The system architecture is designed around a **Pull-Based Worker Swarm** (outbound long-polling via `/api/tasks/poll`, SQLite task queue with P0/P1/P2 priorities, headless Docker vs. visible desktop routing, zero inbound firewall ports). Task dispatch is inactive while swarm worker architecture is finalized.
 - 🛡️ **Zero npm Bloat**: Powered by Node 24 native primitives (`node:http`, `node:sqlite`, `node:crypto`, `node:test`). The entire production runtime depends strictly on **3 packages** (`discord.js`, `ky`, `zod`).
 
@@ -66,7 +67,7 @@ Detailed operational guides and architectural references live in the [`docs/`](.
 - 📖 **[System Architecture & Protocols](./docs/architecture.md)** — Connect-RPC dual-bucket mechanics, IPC sniffing, encryption internals, and zero-clobber invariants.
 - ⚙️ **[Configuration Reference](./docs/configuration.md)** — Exhaustive breakdown of every `.env` setting, milestone window, and SQLite override.
 - 🚀 **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose configs, homelab GitOps, and vanilla Node 24 systemd service templates.
-- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 374 deterministic tests across 98 suites written with Node's native test runner.
+- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 381 deterministic tests across 99 suites written with Node's native test runner.
 
 ---
 
@@ -138,7 +139,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **374 / 374 tests passing across 98 suites** (0 failures, 0 skipped, 100% deterministic).
+Verification status: **381 / 381 tests passing across 99 suites** (0 failures, 0 skipped, 100% deterministic).
 
 ---
 
