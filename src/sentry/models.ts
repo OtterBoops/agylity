@@ -132,6 +132,7 @@ export type QuotaAlert = z.infer<typeof QuotaAlertSchema>;
 
 export interface QuotaClient {
   fetchQuota(force?: boolean): Promise<QuotaSnapshot[]>;
+  updateConfig?(config: Partial<Record<string, unknown>>): void;
 }
 
 // Helpers & Aggregation

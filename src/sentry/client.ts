@@ -344,6 +344,25 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return false;
   }
 
+  public updateConfig(config: {
+    antigravityEndpointUrl?: string;
+    antigravityCsrfToken?: string;
+    antigravityLsPort?: number;
+  }): void {
+    if (config.antigravityEndpointUrl !== undefined) {
+      this.endpointUrl = config.antigravityEndpointUrl;
+    }
+    if (config.antigravityCsrfToken !== undefined) {
+      this.csrfToken = config.antigravityCsrfToken;
+    }
+    if (config.antigravityLsPort !== undefined) {
+      this.port = config.antigravityLsPort;
+      this.fallbackPorts = [config.antigravityLsPort, ...this.fallbackPorts];
+    }
+    // Invalidate cached snapshots so next fetch immediately uses updated endpoint
+    this.lastFetchedAt = 0;
+  }
+
   /**
    * Tries to query Language Server Connect-RPC endpoint across configured ports.
    * Priority:

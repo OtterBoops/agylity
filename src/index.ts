@@ -87,17 +87,17 @@ export class AgylityDaemon {
     this.autoCheckOnStart = autoCheckOnStart;
     this.logBuffer = logBuffer;
 
-    // Reactively update active notifier when configuration is updated (e.g. via Web UI)
+    // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
     this.configStore.on('change', async ({ resolvedConfig }) => {
       try {
         if (typeof this.notifier.updateConfig === 'function') {
           await this.notifier.updateConfig(resolvedConfig);
         }
+        if (typeof this.quotaClient.updateConfig === 'function') {
+          this.quotaClient.updateConfig(resolvedConfig);
+        }
       } catch (err: any) {
-        console.error(
-          '[agylity] Error syncing updated configuration to notifier:',
-          err?.message ?? err
-        );
+        console.error('[agylity] Error syncing updated configuration:', err?.message ?? err);
       }
     });
   }
