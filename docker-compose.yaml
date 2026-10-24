@@ -1,0 +1,43 @@
+# ==============================================================================
+# agylity - Docker Compose Production Deployment
+# Container-native deployment on homelab, VPS, or local docker
+# ==============================================================================
+
+services:
+  agylity:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghcr.io/otterboops/agylity:latest
+    container_name: agylity
+    restart: unless-stopped
+
+    ports:
+      - '3000:3000'
+
+    volumes:
+      # Persistent Data Directory (SQLite store and sentry state)
+      - ./data:/app/data
+      # Mount host Antigravity OAuth tokens (read-only)
+      - ~/.gemini:/home/node/.gemini:ro
+      - ~/.config/antigravity:/home/node/.config/antigravity:ro
+      # Mount git identity
+      - ~/.gitconfig:/home/node/.gitconfig:ro
+
+    env_file:
+      - .env
+
+    environment:
+      - NODE_ENV=production
+      - DATA_DIR=/app/data
+      - DATABASE_PATH=/app/data/agylity.db
+      - QUOTA_STATE_FILE_PATH=/app/data/state.json
+      - WEB_UI_ENABLED=true
+      - WEB_UI_PORT=3000
+      - WEB_UI_HOST=0.0.0.0
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
