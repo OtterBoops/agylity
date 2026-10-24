@@ -3,33 +3,22 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigStore, type IConfigStore } from './config/store.js';
 import { AppDatabase } from './storage/db.js';
-import { BUILTIN_DEFAULTS, type AppConfig, type ResolvedConfig } from './config/schema.js';
-import {
-  ConnectRpcQuotaClient,
-  QuotaClient,
-  LanguageServerError,
-  type ConnectRpcQuotaClientOptions,
-} from './sentry/client.js';
-import { SentryStateManager, type SentryState } from './sentry/state.js';
-import { QuotaEvaluator, type QuotaEvaluatorOptions } from './sentry/evaluator.js';
+import { type ResolvedConfig } from './config/schema.js';
+import { ConnectRpcQuotaClient, QuotaClient, LanguageServerError } from './sentry/client.js';
+import { SentryStateManager } from './sentry/state.js';
+import { QuotaEvaluator } from './sentry/evaluator.js';
 import {
   type QuotaAlert,
   type QuotaSnapshot,
   type QuotaClient as IQuotaClient,
 } from './sentry/models.js';
 import { createNotifier } from './notify/factory.js';
-import {
-  type Notifier,
-  type DispatchRequest,
-  type DispatchResult,
-  type DispatchStatusUpdate,
-} from './notify/types.js';
+import { type Notifier } from './notify/types.js';
 import { LogBuffer, installConsoleTee } from './logs/buffer.js';
 
 // Alias exports for external consumers and test suites
 export {
   ConnectRpcQuotaClient,
-  ConnectRpcQuotaClient as LanguageServerQuotaClient,
   QuotaClient,
   LanguageServerError,
   ConfigStore,
@@ -374,7 +363,38 @@ export const main = async (): Promise<AgylityDaemon> => {
   let daemonRef: AgylityDaemon | undefined;
   const logBuffer = new LogBuffer(1000, () => {
     const c = daemonRef?.configStore.resolveConfig();
-    return [c?.discordToken, c?.antigravityCsrfToken];
+    const secrets: Array<string | undefined> = [
+      c?.discordToken,
+      c?.antigravityCsrfToken,
+      c?.webhookSecret,
+      c?.notificationWebhookUrl,
+      process.env.AGYLITY_SECRET_KEY,
+      process.env.ENCRYPTION_KEY,
+      ...(c?.webhookCustomHeaders ? Object.values(c.webhookCustomHeaders) : []),
+    ];
+
+    // Deconstruct webhook URL to capture individual secret tokens and query values
+    if (c?.notificationWebhookUrl) {
+      try {
+        const u = new URL(c.notificationWebhookUrl);
+        const segments = u.pathname.split('/').filter(Boolean);
+        if (segments.length >= 2) {
+          const lastSegment = segments[segments.length - 1];
+          if (lastSegment && lastSegment.length >= 6) {
+            secrets.push(lastSegment);
+          }
+        }
+        for (const val of u.searchParams.values()) {
+          if (val && val.length >= 6) {
+            secrets.push(val);
+          }
+        }
+      } catch {
+        // Safe fallback for unparseable URLs
+      }
+    }
+
+    return secrets.filter((s): s is string => Boolean(s) && typeof s === 'string' && s.length >= 6);
   });
   installConsoleTee(logBuffer);
 

@@ -18,20 +18,24 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('starts on ephemeral port (0) and exposes bound port and host', async () => {
       const { dir, cleanup } = makeTempDir('web_test_start_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port, host } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      assert.ok(server instanceof http.Server);
-      assert.ok(port > 0, `Expected assigned port > 0, got ${port}`);
-      assert.equal(host, '127.0.0.1');
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        assert.ok(server instanceof http.Server);
+        assert.ok(started.port > 0, `Expected assigned port > 0, got ${started.port}`);
+        assert.equal(started.host, '127.0.0.1');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('gracefully handles and rejects on port collision (EADDRINUSE)', async () => {
@@ -40,57 +44,68 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
       // Occupy an ephemeral port
       const blocker = http.createServer((_, res) => res.end('blocker'));
-      await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
-      const occupiedPort = (blocker.address() as net.AddressInfo).port;
+      try {
+        await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+        const occupiedPort = (blocker.address() as net.AddressInfo).port;
 
-      await assert.rejects(
-        async () => {
-          await startWebServer({
-            configStore: store,
-            host: '127.0.0.1',
-            port: occupiedPort,
-          });
-        },
-        (err: any) => {
-          assert.equal(err.code, 'EADDRINUSE');
-          return true;
-        }
-      );
-
-      await new Promise<void>((r) => blocker.close(() => r()));
-      store.close();
-      cleanup();
+        await assert.rejects(
+          async () => {
+            await startWebServer({
+              configStore: store,
+              host: '127.0.0.1',
+              port: occupiedPort,
+            });
+          },
+          (err: any) => {
+            assert.equal(err.code, 'EADDRINUSE');
+            return true;
+          }
+        );
+      } finally {
+        blocker.closeAllConnections?.();
+        await new Promise<void>((r) => blocker.close(() => r()));
+        store.close();
+        cleanup();
+      }
     });
 
     it('closeWebServer cleans up sockets and releases listening port', async () => {
       const { dir, cleanup } = makeTempDir('web_test_close_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let serverInstance: http.Server | undefined;
+      let client: net.Socket | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
-
-      // Keep an idle connection open
-      const client = net.createConnection({ port, host: '127.0.0.1' });
-      await new Promise<void>((r) => client.once('connect', () => r()));
-
-      await closeWebServer(server);
-
-      // Verify port is freed
-      const isReachable = await new Promise<boolean>((resolve) => {
-        const socket = net.createConnection({ port, host: '127.0.0.1', timeout: 50 }, () => {
-          socket.destroy();
-          resolve(true);
+      try {
+        const { server, port } = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
         });
-        socket.on('error', () => resolve(false));
-      });
+        serverInstance = server;
 
-      assert.equal(isReachable, false);
-      client.destroy();
-      store.close();
-      cleanup();
+        // Keep an idle connection open
+        client = net.createConnection({ port, host: '127.0.0.1' });
+        await new Promise<void>((r) => client!.once('connect', () => r()));
+
+        await closeWebServer(server);
+        serverInstance = undefined;
+
+        // Verify port is freed
+        const isReachable = await new Promise<boolean>((resolve) => {
+          const socket = net.createConnection({ port, host: '127.0.0.1', timeout: 50 }, () => {
+            socket.destroy();
+            resolve(true);
+          });
+          socket.on('error', () => resolve(false));
+        });
+
+        assert.equal(isReachable, false);
+      } finally {
+        client?.destroy();
+        if (serverInstance) await closeWebServer(serverInstance);
+        store.close();
+        cleanup();
+      }
     });
   });
 
@@ -151,6 +166,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('GET /api/quota returns live snapshots from QuotaClient', async () => {
       const { dir, cleanup } = makeTempDir('web_test_quota_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
       const mockQuotaClient: QuotaClient = {
         fetchQuota: async (): Promise<QuotaSnapshot[]> => [
@@ -166,21 +182,26 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         ],
       };
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        quotaClient: mockQuotaClient,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          quotaClient: mockQuotaClient,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const quotas = await ky.get(`http://127.0.0.1:${port}/api/quota`).json<QuotaSnapshot[]>();
-      assert.equal(quotas.length, 1);
-      assert.equal(quotas[0]?.poolId, 'claude');
-      assert.equal(quotas[0]?.remainingFraction, 0.75);
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const quotas = await ky
+          .get(`http://127.0.0.1:${started.port}/api/quota`)
+          .json<QuotaSnapshot[]>();
+        assert.equal(quotas.length, 1);
+        assert.equal(quotas[0]?.poolId, 'claude');
+        assert.equal(quotas[0]?.remainingFraction, 0.75);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('GET /api/quota synthesizes snapshots from SentryStateManager when client is omitted', async () => {
@@ -201,21 +222,28 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         },
       });
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        sentryState,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      let server: http.Server | undefined;
 
-      const quotas = await ky.get(`http://127.0.0.1:${port}/api/quota`).json<QuotaSnapshot[]>();
-      assert.equal(quotas.length, 1);
-      assert.equal(quotas[0]?.poolId, 'claude');
-      assert.equal(quotas[0]?.remainingFraction, 0.85);
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const quotas = await ky
+          .get(`http://127.0.0.1:${started.port}/api/quota`)
+          .json<QuotaSnapshot[]>();
+        assert.equal(quotas.length, 1);
+        assert.equal(quotas[0]?.poolId, 'claude');
+        assert.equal(quotas[0]?.remainingFraction, 0.85);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('GET /api/alerts returns sentry alert state from SentryStateManager', async () => {
@@ -236,21 +264,26 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         },
       });
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        sentryState,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      let server: http.Server | undefined;
 
-      const alerts = await ky.get(`http://127.0.0.1:${port}/api/alerts`).json<any>();
-      assert.equal(alerts.version, 1);
-      assert.equal(alerts.lastProbeSource, 'connect_rpc');
-      assert.deepEqual(alerts.pools['gemini-argon'].firedMilestones, ['12h']);
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const alerts = await ky.get(`http://127.0.0.1:${started.port}/api/alerts`).json<any>();
+        assert.equal(alerts.version, 1);
+        assert.equal(alerts.lastProbeSource, 'connect_rpc');
+        assert.deepEqual(alerts.pools['gemini-argon'].firedMilestones, ['12h']);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
   });
 
@@ -262,121 +295,141 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const { dir, cleanup } = makeTempDir('web_test_config_get_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
       store.setOverride('quotaAlertThresholdPercent', 35);
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const res = await ky.get(`http://127.0.0.1:${port}/api/config`).json<any>();
-      assert.equal(res.resolved.quotaAlertThresholdPercent, 35);
-      assert.equal(res.overrides.quotaAlertThresholdPercent, 35);
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const res = await ky.get(`http://127.0.0.1:${started.port}/api/config`).json<any>();
+        assert.equal(res.resolved.quotaAlertThresholdPercent, 35);
+        assert.equal(res.overrides.quotaAlertThresholdPercent, 35);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/config updates overrides in SQLite', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_post_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const postRes = await ky
-        .post(`http://127.0.0.1:${port}/api/config`, {
-          json: { quotaCheckIntervalSeconds: 600 },
-        })
-        .json<any>();
+        const postRes = await ky
+          .post(`http://127.0.0.1:${started.port}/api/config`, {
+            json: { quotaCheckIntervalSeconds: 600 },
+          })
+          .json<any>();
 
-      assert.equal(postRes.success, true);
-      assert.equal(postRes.resolved.quotaCheckIntervalSeconds, 600);
-      assert.equal(store.get('quotaCheckIntervalSeconds'), 600);
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        assert.equal(postRes.success, true);
+        assert.equal(postRes.resolved.quotaCheckIntervalSeconds, 600);
+        assert.equal(store.get('quotaCheckIntervalSeconds'), 600);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/config supports { key, value } format', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_post_kv_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const postRes = await ky
-        .post(`http://127.0.0.1:${port}/api/config`, {
-          json: { key: 'webUiPort', value: 8088 },
-        })
-        .json<any>();
+        const postRes = await ky
+          .post(`http://127.0.0.1:${started.port}/api/config`, {
+            json: { key: 'webUiPort', value: 8088 },
+          })
+          .json<any>();
 
-      assert.equal(postRes.success, true);
-      assert.equal(store.get('webUiPort'), 8088);
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        assert.equal(postRes.success, true);
+        assert.equal(store.get('webUiPort'), 8088);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/config rejects empty body with 400 Bad Request', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_empty_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await assert.rejects(
-        async () => {
-          await ky.post(`http://127.0.0.1:${port}/api/config`, {
-            headers: { 'Content-Type': 'application/json' },
-            body: '   ',
-            retry: 0,
-          });
-        },
-        (err: any) => err.response?.status === 400
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              headers: { 'Content-Type': 'application/json' },
+              body: '   ',
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 400
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/config rejects malformed JSON with 400 Bad Request', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_malformed_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await assert.rejects(
-        async () => {
-          await ky.post(`http://127.0.0.1:${port}/api/config`, {
-            headers: { 'Content-Type': 'application/json' },
-            body: '{"invalid": json syntax}',
-            retry: 0,
-          });
-        },
-        (err: any) => err.response?.status === 400
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              headers: { 'Content-Type': 'application/json' },
+              body: '{"invalid": json syntax}',
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 400
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('DELETE /api/config/:key deletes override and restores default/env', async () => {
@@ -384,22 +437,26 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
       store.setOverride('quotaAlertThresholdPercent', 45);
       assert.equal(store.get('quotaAlertThresholdPercent'), 45);
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const delRes = await ky
-        .delete(`http://127.0.0.1:${port}/api/config/quotaAlertThresholdPercent`)
-        .json<any>();
-      assert.equal(delRes.success, true);
-      assert.equal(store.get('quotaAlertThresholdPercent'), 25); // default fallback
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const delRes = await ky
+          .delete(`http://127.0.0.1:${started.port}/api/config/quotaAlertThresholdPercent`)
+          .json<any>();
+        assert.equal(delRes.success, true);
+        assert.equal(store.get('quotaAlertThresholdPercent'), 25); // default fallback
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
   });
 
@@ -410,54 +467,62 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('POST /api/dispatch reports disabled in alerting-only mode', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const res = await ky
-        .post(`http://127.0.0.1:${port}/api/dispatch`, {
-          json: {
-            repositoryName: 'agylity',
-            prompt: 'Run security audit',
-            requestedBy: 'admin',
-          },
-        })
-        .json<any>();
+        const res = await ky
+          .post(`http://127.0.0.1:${started.port}/api/dispatch`, {
+            json: {
+              repositoryName: 'agylity',
+              prompt: 'Run security audit',
+              requestedBy: 'admin',
+            },
+          })
+          .json<any>();
 
-      assert.equal(res.success, false);
-      assert.ok(res.error?.includes('disabled'));
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        assert.equal(res.success, false);
+        assert.ok(res.error?.includes('disabled'));
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/dispatch rejects missing repositoryName with 400', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_bad_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await assert.rejects(
-        async () => {
-          await ky.post(`http://127.0.0.1:${port}/api/dispatch`, {
-            json: { prompt: 'Missing repo' },
-            retry: 0,
-          });
-        },
-        (err: any) => err.response?.status === 400
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/dispatch`, {
+              json: { prompt: 'Missing repo' },
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 400
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('POST /api/dispatch blocks execution when quota headroom is below safety floor without allowOverage', async () => {
@@ -565,70 +630,78 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('returns 404 Not Found for unrecognized URLs', async () => {
       const { dir, cleanup } = makeTempDir('web_test_404_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      await assert.rejects(
-        async () => {
-          await ky.get(`http://127.0.0.1:${port}/unknown/path/here`, { retry: 0 });
-        },
-        (err: any) => err.response?.status === 404
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        await assert.rejects(
+          async () => {
+            await ky.get(`http://127.0.0.1:${started.port}/unknown/path/here`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 404
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('returns 405 Method Not Allowed for unsupported verbs on valid routes', async () => {
       const { dir, cleanup } = makeTempDir('web_test_405_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      // DELETE /api/config without key
-      await assert.rejects(
-        async () => {
-          await ky.delete(`http://127.0.0.1:${port}/api/config`, { retry: 0 });
-        },
-        (err: any) => err.response?.status === 405
-      );
+        // DELETE /api/config without key
+        await assert.rejects(
+          async () => {
+            await ky.delete(`http://127.0.0.1:${started.port}/api/config`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 405
+        );
 
-      // POST /
-      await assert.rejects(
-        async () => {
-          await ky.post(`http://127.0.0.1:${port}/`, { json: {}, retry: 0 });
-        },
-        (err: any) => err.response?.status === 405
-      );
+        // POST /
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/`, { json: {}, retry: 0 });
+          },
+          (err: any) => err.response?.status === 405
+        );
 
-      // GET /api/dispatch
-      await assert.rejects(
-        async () => {
-          await ky.get(`http://127.0.0.1:${port}/api/dispatch`, { retry: 0 });
-        },
-        (err: any) => err.response?.status === 405
-      );
+        // GET /api/dispatch
+        await assert.rejects(
+          async () => {
+            await ky.get(`http://127.0.0.1:${started.port}/api/dispatch`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 405
+        );
 
-      // DELETE /api/quota
-      await assert.rejects(
-        async () => {
-          await ky.delete(`http://127.0.0.1:${port}/api/quota`, { retry: 0 });
-        },
-        (err: any) => err.response?.status === 405
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        // DELETE /api/quota
+        await assert.rejects(
+          async () => {
+            await ky.delete(`http://127.0.0.1:${started.port}/api/quota`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 405
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
   });
 
@@ -640,29 +713,250 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const { dir, cleanup } = makeTempDir('web_test_zero_overhead_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
 
-      const resolved = store.resolveConfig();
-      assert.equal(resolved.webUiEnabled, false);
-
-      store.close();
-      cleanup();
+      try {
+        const resolved = store.resolveConfig();
+        assert.equal(resolved.webUiEnabled, false);
+      } finally {
+        store.close();
+        cleanup();
+      }
     });
 
     it('when webUiEnabled is false, zero HTTP listener is spawned', async () => {
       const { dir, cleanup } = makeTempDir('web_test_zero_listener_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
 
-      let serverStarted = false;
-      const resolved = store.resolveConfig();
+      try {
+        let serverStarted = false;
+        const resolved = store.resolveConfig();
 
-      if (resolved.webUiEnabled) {
-        await startWebServer({ configStore: store });
-        serverStarted = true;
+        if (resolved.webUiEnabled) {
+          await startWebServer({ configStore: store });
+          serverStarted = true;
+        }
+
+        assert.equal(serverStarted, false);
+      } finally {
+        store.close();
+        cleanup();
       }
+    });
+  });
 
-      assert.equal(serverStarted, false);
+  /* ==================================================================== */
+  /* 8. HTTP Body Bounding & Payload Protection                           */
+  /* ==================================================================== */
+  describe('8. HTTP Body Bounding & Payload Protection', () => {
+    it('readBody rejects when payload exceeds maxBytes limit', async () => {
+      const { Readable } = await import('node:stream');
+      const { readBody, PayloadTooLargeError } = await import('../../src/web/routes.js');
 
-      store.close();
-      cleanup();
+      const stream = Readable.from([
+        Buffer.from('a'.repeat(300)),
+        Buffer.from('b'.repeat(300)),
+      ]) as http.IncomingMessage;
+
+      await assert.rejects(
+        () => readBody(stream, 500),
+        (err: any) => {
+          assert.ok(err instanceof PayloadTooLargeError);
+          assert.equal(err.statusCode, 413);
+          return true;
+        }
+      );
+    });
+
+    it('POST /api/config rejects bodies exceeding 64 KB with HTTP 413', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_413_config_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const oversizedPayload = JSON.stringify({
+          largeData: 'x'.repeat(65 * 1024),
+        });
+
+        await assert.rejects(
+          () =>
+            ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              body: oversizedPayload,
+              headers: { 'Content-Type': 'application/json' },
+              retry: 0,
+            }),
+          (err: any) => {
+            assert.equal(err.response?.status, 413);
+            return true;
+          }
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/notify/test rejects bodies exceeding 64 KB with HTTP 413 (not 500)', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_413_notify_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const oversizedPayload = JSON.stringify({
+          channel: 'console',
+          padding: 'x'.repeat(65 * 1024),
+        });
+
+        await assert.rejects(
+          () =>
+            ky.post(`http://127.0.0.1:${started.port}/api/notify/test`, {
+              body: oversizedPayload,
+              headers: { 'Content-Type': 'application/json' },
+              retry: 0,
+            }),
+          (err: any) => {
+            assert.equal(err.response?.status, 413);
+            return true;
+          }
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/dispatch rejects bodies exceeding 64 KB with HTTP 413', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_413_dispatch_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const oversizedPayload = JSON.stringify({
+          repositoryName: 'agylity',
+          prompt: 'x'.repeat(65 * 1024),
+        });
+
+        await assert.rejects(
+          () =>
+            ky.post(`http://127.0.0.1:${started.port}/api/dispatch`, {
+              body: oversizedPayload,
+              headers: { 'Content-Type': 'application/json' },
+              retry: 0,
+            }),
+          (err: any) => {
+            assert.equal(err.response?.status, 413);
+            return true;
+          }
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('streaming chunked body exceeding 64 KB cleanly receives HTTP 413 without socket reset', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_413_streaming_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const responsePromise = new Promise<{
+          statusCode: number;
+          headers: http.IncomingHttpHeaders;
+          body: string;
+        }>((resolve, reject) => {
+          const req = http.request(
+            {
+              hostname: '127.0.0.1',
+              port: started.port,
+              path: '/api/config',
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Transfer-Encoding': 'chunked',
+              },
+            },
+            (res) => {
+              let body = '';
+              res.setEncoding('utf8');
+              res.on('data', (chunk) => {
+                body += chunk;
+              });
+              res.on('end', () => {
+                resolve({
+                  statusCode: res.statusCode ?? 0,
+                  headers: res.headers,
+                  body,
+                });
+              });
+            }
+          );
+
+          req.on('error', (err) => {
+            reject(err);
+          });
+
+          // Stream 128 KB in 16 KB chunks
+          const chunk = Buffer.alloc(16 * 1024, 'a');
+          let chunksSent = 0;
+          const totalChunks = 8;
+
+          const sendNext = () => {
+            if (req.destroyed) return;
+            while (chunksSent < totalChunks) {
+              chunksSent++;
+              const canContinue = req.write(chunk);
+              if (!canContinue && chunksSent < totalChunks) {
+                req.once('drain', sendNext);
+                return;
+              }
+            }
+            req.end();
+          };
+
+          sendNext();
+        });
+
+        const result = await responsePromise;
+        assert.equal(result.statusCode, 413);
+        assert.ok(result.headers['content-type']?.includes('application/json'));
+        const parsed = JSON.parse(result.body);
+        assert.equal(parsed.error, 'Payload Too Large');
+        assert.ok(parsed.message.includes('65536 bytes'));
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
   });
 });

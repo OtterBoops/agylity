@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { EventEmitter } from 'node:events';
 
 import { createNotifier } from '../../src/notify/factory.js';
-import { ConsoleNotifier, WebhookNotifier } from '../../src/notify/adapters/console.js';
+import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
+import { WebhookNotifier } from '../../src/notify/adapters/webhook.js';
 import {
   DiscordNotifier,
   TaskPromptSchema,

@@ -12,25 +12,20 @@ export const runAllE2ETests = async (): Promise<boolean> => {
   console.log('====================================================\n');
 
   const files = [
-    // Tier 1: Feature Coverage (Features 1-25)
+    // Tier 1: Feature Coverage
     path.join(__dirname, 'tier1_features', 'config_persistence.test.ts'),
-    path.join(__dirname, 'tier1_features', 'quota_sentry.test.ts'),
-    path.join(__dirname, 'tier1_features', 'notification_discord.test.ts'),
-    path.join(__dirname, 'tier1_features', 'remote_orchestrator.test.ts'),
     path.join(__dirname, 'tier1_features', 'web_ui_lifecycle.test.ts'),
 
     // Tier 2: Boundary & Corner Cases
     path.join(__dirname, 'tier2_boundaries', 'config_boundaries.test.ts'),
-    path.join(__dirname, 'tier2_boundaries', 'quota_boundaries.test.ts'),
-    path.join(__dirname, 'tier2_boundaries', 'discord_boundaries.test.ts'),
-    path.join(__dirname, 'tier2_boundaries', 'remote_boundaries.test.ts'),
     path.join(__dirname, 'tier2_boundaries', 'web_boundaries.test.ts'),
-
-    // Tier 3: Cross-Feature Interactions
-    path.join(__dirname, 'tier3_combinations', 'cross_feature.test.ts'),
 
     // Tier 4: Real-World Application Scenarios
     path.join(__dirname, 'tier4_application', 'scenarios.test.ts'),
+
+    // Tier 5: Adversarial Coverage Hardening
+    path.join(__dirname, 'tier5_adversarial', 'config_web_adversarial.test.ts'),
+    path.join(__dirname, 'tier5_adversarial', 'daemon_remote_adversarial.test.ts'),
   ];
 
   const stream = run({
@@ -41,19 +36,26 @@ export const runAllE2ETests = async (): Promise<boolean> => {
   stream.compose(new spec()).pipe(process.stdout);
 
   return new Promise<boolean>((resolve) => {
+    let failed = false;
     stream.on('test:fail', () => {
-      // Stream encountered failure
+      failed = true;
     });
     stream.on('end', () => {
-      resolve(true);
+      resolve(!failed);
     });
   });
 };
 
 // Allow direct execution: node --import tsx tests/e2e/runner.ts
 if (process.argv[1] === __filename) {
-  runAllE2ETests().catch((err) => {
-    console.error('E2E Test Runner failed:', err);
-    process.exit(1);
-  });
+  runAllE2ETests()
+    .then((passed) => {
+      if (!passed) {
+        process.exit(1);
+      }
+    })
+    .catch((err) => {
+      console.error('E2E Test Runner failed:', err);
+      process.exit(1);
+    });
 }

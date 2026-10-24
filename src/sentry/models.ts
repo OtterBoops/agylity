@@ -26,8 +26,6 @@ export const LanguageServerModelConfigSchema = z.object({
 });
 
 export type LanguageServerModelConfig = z.infer<typeof LanguageServerModelConfigSchema>;
-export const ClientModelConfigSchema = LanguageServerModelConfigSchema;
-export type ClientModelConfig = LanguageServerModelConfig;
 
 export const ClientModelSortSchema = z.object({
   name: z.string(),
@@ -47,8 +45,6 @@ export const LanguageServerResponseSchema = z.object({
 });
 
 export type LanguageServerResponse = z.infer<typeof LanguageServerResponseSchema>;
-export const CascadeModelConfigDataResponseSchema = LanguageServerResponseSchema;
-export type CascadeModelConfigDataResponse = LanguageServerResponse;
 
 // Quota & Sentry Types
 

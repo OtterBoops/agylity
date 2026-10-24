@@ -255,22 +255,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     ) {
       try {
         const discovered = await discoverLocalLanguageServer(this.execFileFn as any);
-        if (
-          discovered?.csrfToken ||
-          (discovered?.ports && discovered.ports.length > 0) ||
-          discovered?.port
-        ) {
-          if (discovered.csrfToken) {
-            this.csrfToken = discovered.csrfToken;
-          }
-          if (discovered.ports && discovered.ports.length > 0) {
-            this.port = Math.max(...discovered.ports);
-            this.fallbackPorts = [...discovered.ports, ...this.fallbackPorts];
-          } else if (discovered.port && discovered.port > 1) {
-            this.port = discovered.port;
-            this.fallbackPorts = [discovered.port, ...this.fallbackPorts];
-          }
-        }
+        this.applyDiscoveredCredentials(discovered);
       } catch {
         // Discovery is best-effort
       }
@@ -292,21 +277,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     if (this.enableProcessDiscovery) {
       try {
         const discovered = await discoverLocalLanguageServer(this.execFileFn as any);
-        if (
-          discovered?.csrfToken ||
-          (discovered?.ports && discovered.ports.length > 0) ||
-          discovered?.port
-        ) {
-          if (discovered.csrfToken) {
-            this.csrfToken = discovered.csrfToken;
-          }
-          if (discovered.ports && discovered.ports.length > 0) {
-            this.port = Math.max(...discovered.ports);
-            this.fallbackPorts = [...discovered.ports, ...this.fallbackPorts];
-          } else if (discovered.port && discovered.port > 1) {
-            this.port = discovered.port;
-            this.fallbackPorts = [discovered.port, ...this.fallbackPorts];
-          }
+        if (this.applyDiscoveredCredentials(discovered)) {
           const snapshots = await this.tryConnectRpc();
           if (snapshots && snapshots.length > 0) {
             this.lastKnownSnapshots = snapshots;
@@ -342,6 +313,27 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       'LANGUAGE_SERVER_UNAVAILABLE',
       rpcError
     );
+  }
+
+  private applyDiscoveredCredentials(discovered: any): boolean {
+    if (
+      discovered?.csrfToken ||
+      (discovered?.ports && discovered.ports.length > 0) ||
+      discovered?.port
+    ) {
+      if (discovered.csrfToken) {
+        this.csrfToken = discovered.csrfToken;
+      }
+      if (discovered.ports && discovered.ports.length > 0) {
+        this.port = Math.max(...discovered.ports);
+        this.fallbackPorts = [...discovered.ports, ...this.fallbackPorts];
+      } else if (discovered.port && discovered.port > 1) {
+        this.port = discovered.port;
+        this.fallbackPorts = [discovered.port, ...this.fallbackPorts];
+      }
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -521,13 +513,3 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
 // Alias class matching QuotaClient contract for direct instantiation
 export const QuotaClient = ConnectRpcQuotaClient;
-
-/**
- * Functional shorthand to fetch quota snapshots using default or provided options.
- */
-export const fetchQuota = async (
-  options?: ConnectRpcQuotaClientOptions
-): Promise<QuotaSnapshot[]> => {
-  const client = new ConnectRpcQuotaClient(options);
-  return client.fetchQuota();
-};

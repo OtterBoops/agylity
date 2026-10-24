@@ -14,23 +14,37 @@ This document details the core architectural subsystems, Connect-RPC integration
                                                 |
                                                 v (POST /RetrieveUserQuotaSummary)
 +------------------------+        +------------+------------+
-|   Discord Client       | <----> |      Quota Sentry       | <----> data/state.json
-|  (/quota, Alerts,      |        | (Evaluator & Deduplica- |
-|   Interactive Modals)  |        |  tion Engine)           |
-+------------------------+        +------------+------------+
-                                                |
-                                                v
-+------------------------+        +------------+------------+
-|  Swarm Worker Network  | <....> |   SQLite Config Store   | <----> data/agylity.db
-|  (Pull-Based Execution |        |  (AES-256-GCM Encrypted |
-|   Roadmap / To-Do)     |        |   UI Overrides > .env)  |
-+------------------------+        +------------+------------+
+|  Pluggable Notifier    | <----> |      Quota Sentry       | <----> data/state.json
+|  CompositeNotifier:    |        | (Evaluator & Deduplica- |
+|  - Discord Client      |        |  tion Engine)           |
+|  - Webhook POST        |        +------------+------------+
+|  - Console Logger      |                      |
++------------------------+                      v
+                                  +------------+------------+
+                                  |   SQLite Config Store   | <----> data/agylity.db
+                                  |  (AES-256-GCM Encrypted |
+                                  |   UI Overrides > .env)  |
+                                  +------------+------------+
                                                 |
                                                 | (Optional)
                                    +------------+------------+
                                    |  Decoupled Web Server   | (WEB_UI_ENABLED=false
                                    |  (Preact + Native HTTP) |  zero listener by default)
-                                   +-------------------------+
+                                   +------------+------------+
+                                                |
+                                                v (REST /api/tasks/poll)
+                                  +---------------------------+
+                                  |   Pull-Based Swarm Queue  | (Roadmap Architecture)
+                                  |   SQLite Task Queue       |
+                                  +-------------+-------------+
+                                                ▲
+                                                │ (Outbound HTTPS Long-Poll)
+                         +----------------------+----------------------+
+                         |                                             |
+             +-----------+------------+                   +------------+-----------+
+             | Headless Worker        |                   | Visible Worker         |
+             | (Docker on Homelab/VPS)|                   | (Workstation Terminal) |
+             +------------------------+                   +------------------------+
 ```
 
 ---
@@ -118,13 +132,46 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`24h`, `12h`, `3h`), and atomic alert state deduplication (`data/state.json`).
-3. **Pluggable Notifications (`src/notify/`)**: Universal `Notifier` interface with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
-4. **Optional Swarm Orchestrator**: Fully decoupled and optional (`orchestratorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
+3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
+4. **Optional Swarm Orchestrator**: Decoupled and optional (`orchestratorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
 
 ---
 
-## 6. Repository Architecture
+## 6. Pull-Based Worker Swarm Architecture (Roadmap)
+
+Agylity's execution roadmap codifies a **Pull-Based Worker Swarm** architecture (authoritatively specified in `skills/agylity/SKILL.md` Section 5):
+
+```
+Coordinator (Homelab / Cloud)
+  ├── SQLite Task Queue (P0 Urgent, P1 Scheduled, P2 Quota-Burn)
+  ├── Discord Bot (/dispatch modal)
+  └── REST API (/api/tasks/poll)
+        ▲
+        │ (Outbound HTTPS Long-Poll)
+        ├── Headless Worker (Docker on homelab/VPS) -> Unattended tasks
+        └── Visible Worker (Home Desktop PC)        -> Supervised tasks in active terminal
+```
+
+### 6.1. Architectural Principles & Invariants
+
+1. **Outbound Long-Polling (Inbound Firewall Invariant)**:
+   - Worker machines connect outbound via HTTPS to `/api/tasks/poll`.
+   - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on worker nodes.
+2. **Task Prioritization Matrix**:
+   - **P0 (Urgent)**: Direct user prompts dispatched interactively via Discord modal or Web UI.
+   - **P1 (Scheduled)**: Periodic maintenance jobs, automated benchmark runs, or scheduled continuation branches.
+   - **P2 (Quota-Burn)**: Opportunistic background work triggered only when the reset deadline is imminent (`< 2h`) and quota headroom is ample (`> 30%`), ensuring free quota is utilized rather than forfeited.
+3. **Target Routing**:
+   - Tasks specify `worker_mode: 'headless'` (unattended execution on Docker/Linux hosts) or `worker_mode: 'visible'` (desktop environments with terminal feedback).
+4. **Safety Floor Rule**:
+   - The coordinator blocks task dispatches whenever quota headroom is $\le \text{MIN\_DISPATCH\_HEADROOM\_PERCENT}$ (default: `10%`), preventing billable AI overages.
+5. **Alerting-First Operational Mode**:
+   - In current production releases, `ORCHESTRATOR_ENABLED=false` runs Agylity in pure sentry mode. Attempted dispatches via `/api/dispatch` cleanly return `ORCHESTRATOR_DISABLED` while worker swarm poller integration is finalized.
+
+---
+
+## 7. Repository Architecture
 
 ```
 agylity/

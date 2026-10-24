@@ -1,4 +1,5 @@
 import http from 'node:http';
+import net from 'node:net';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -133,6 +134,12 @@ export const createMockRpcServer = async (
     });
   });
 
+  const sockets = new Set<net.Socket>();
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+
   await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
   const addr = server.address() as { port: number };
 
@@ -140,10 +147,113 @@ export const createMockRpcServer = async (
     server,
     port: addr.port,
     url: `http://127.0.0.1:${addr.port}`,
-    close: () =>
-      new Promise<void>((resolve, reject) =>
-        server.close((err) => (err ? reject(err) : resolve()))
-      ),
+    close: async () => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      sockets.clear();
+
+      if (typeof server.closeAllConnections === 'function') {
+        try {
+          server.closeAllConnections();
+        } catch {
+          // ignore
+        }
+      }
+
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    },
+  };
+};
+
+export interface MockWebhookOptions {
+  statusCode?: number;
+  responseBody?: unknown;
+  onRequest?: (req: http.IncomingMessage, body: string, headers: http.IncomingHttpHeaders) => void;
+}
+
+export interface MockWebhookServer {
+  server: http.Server;
+  port: number;
+  url: string;
+  requests: Array<{ headers: http.IncomingHttpHeaders; body: any; rawBody: string }>;
+  close: () => Promise<void>;
+}
+
+/**
+ * Creates a mock HTTP webhook server tracking active connections for leak-free tests.
+ */
+export const createMockWebhookServer = async (
+  port = 0,
+  options: MockWebhookOptions = {}
+): Promise<MockWebhookServer> => {
+  const requests: MockWebhookServer['requests'] = [];
+  const sockets = new Set<net.Socket>();
+
+  const server = http.createServer((req, res) => {
+    let rawBody = '';
+    req.on('data', (chunk) => {
+      rawBody += chunk;
+    });
+
+    req.on('end', () => {
+      let parsedBody: any = null;
+      try {
+        parsedBody = JSON.parse(rawBody);
+      } catch {
+        parsedBody = rawBody;
+      }
+
+      requests.push({
+        headers: req.headers,
+        body: parsedBody,
+        rawBody,
+      });
+
+      if (options.onRequest) {
+        options.onRequest(req, rawBody, req.headers);
+      }
+
+      const status = options.statusCode ?? 200;
+      const resp = options.responseBody ?? { ok: true };
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(typeof resp === 'string' ? resp : JSON.stringify(resp));
+    });
+  });
+
+  server.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
+  const addr = server.address() as { port: number };
+
+  return {
+    server,
+    port: addr.port,
+    url: `http://127.0.0.1:${addr.port}`,
+    requests,
+    close: async () => {
+      for (const socket of sockets) {
+        socket.destroy();
+      }
+      sockets.clear();
+
+      if (typeof server.closeAllConnections === 'function') {
+        try {
+          server.closeAllConnections();
+        } catch {
+          // ignore
+        }
+      }
+
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
+    },
   };
 };
 

@@ -21,7 +21,8 @@ import {
   DispatchStatusUpdateSchema,
 } from '../../src/notify/types.js';
 import { createNotifier } from '../../src/notify/factory.js';
-import { ConsoleNotifier, WebhookNotifier } from '../../src/notify/adapters/console.js';
+import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
+import { WebhookNotifier } from '../../src/notify/adapters/webhook.js';
 import {
   DiscordNotifier,
   generateProgressBar,
@@ -854,8 +855,141 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         delete process.env.WEBHOOK_SECRET;
         await notifier.shutdown();
       } finally {
+        server.closeAllConnections?.();
         await new Promise<void>((r) => server.close(() => r()));
       }
+    });
+
+    it('testNotification masks sensitive webhook URL secrets and parameters in returned messages', async () => {
+      const server = http.createServer((req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const secretToken = 'DISCORD_SUPER_SECRET_TOKEN_XYZ12345';
+        const rawUrl = `http://127.0.0.1:${port}/api/webhooks/987654321/${secretToken}?auth=superSecretQuery`;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: rawUrl,
+        });
+        await notifier.initialize();
+
+        const result = await notifier.testNotification();
+        assert.equal(result.success, true);
+        assert.ok(!result.message.includes(secretToken), 'Message must NOT contain secretToken');
+        assert.ok(
+          !result.message.includes('superSecretQuery'),
+          'Message must NOT contain query secret'
+        );
+        assert.ok(result.message.includes('***'), 'Message must contain masked placeholder ***');
+        assert.ok(
+          result.message.includes('987654321'),
+          'Message retains non-sensitive channel/webhook id'
+        );
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('testNotification masks sensitive URL and secrets in error message on HTTP failure', async () => {
+      const server = http.createServer((req, res) => {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ message: 'Not found' }));
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const secretToken = 'SECRET_TOKEN_REDACT_TEST_12345';
+        const rawUrl = `http://127.0.0.1:${port}/api/webhooks/55555/${secretToken}`;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: rawUrl,
+        });
+        await notifier.initialize();
+
+        const result = await notifier.testNotification();
+        assert.equal(result.success, false);
+        assert.ok(result.message.includes('Webhook ping failed'));
+        assert.ok(
+          !result.message.includes(secretToken),
+          'Error message must NOT contain raw secretToken'
+        );
+        assert.ok(
+          result.message.includes('***'),
+          'Error message must contain masked placeholder ***'
+        );
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('sanitizeWebhookUrl masks Discord, Slack, query parameters, and basic auth credentials', async () => {
+      const { sanitizeWebhookUrl, sanitizeErrorMessage } =
+        await import('../../src/notify/adapters/webhook.js');
+
+      // Discord webhook
+      assert.equal(
+        sanitizeWebhookUrl('https://discord.com/api/webhooks/12345/abcdef_token_secret'),
+        'https://discord.com/api/webhooks/12345/***'
+      );
+
+      // Slack webhook
+      assert.equal(
+        sanitizeWebhookUrl('https://hooks.slack.com/services/T123/B456/token789'),
+        'https://hooks.slack.com/services/T123/B456/***'
+      );
+
+      // Query parameter masking
+      assert.equal(
+        sanitizeWebhookUrl('https://example.com/hook?token=secret123&key=val456'),
+        'https://example.com/hook?token=***&key=***'
+      );
+
+      // Basic auth masking
+      assert.equal(
+        sanitizeWebhookUrl('https://user:password@example.com/hook'),
+        'https://***:***@example.com/hook'
+      );
+
+      // Hash fragment masking / stripping
+      assert.equal(
+        sanitizeWebhookUrl('https://example.com/webhook#token=secret123'),
+        'https://example.com/webhook'
+      );
+      assert.equal(
+        sanitizeWebhookUrl(
+          'https://webhook.example.com/api/notify?token=secret123#token=secret_fragment_abc'
+        ),
+        'https://webhook.example.com/api/***?token=***'
+      );
+
+      // Generic 2-segment path masking (short token < 24 chars)
+      assert.equal(
+        sanitizeWebhookUrl('https://my-webhook.com/webhook/shortkey123'),
+        'https://my-webhook.com/webhook/***'
+      );
+      assert.equal(
+        sanitizeWebhookUrl('https://hooks.example.com/alerts/token456'),
+        'https://hooks.example.com/alerts/***'
+      );
+
+      // Error message masking
+      const raw =
+        'Request failed with status code 404: POST https://discord.com/api/webhooks/12345/abcdef_secret';
+      assert.equal(
+        sanitizeErrorMessage(raw),
+        'Request failed with status code 404: POST https://discord.com/api/webhooks/12345/***'
+      );
     });
 
     it('safely handles webhook network failures without throwing unhandled rejections', async () => {

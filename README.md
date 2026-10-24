@@ -17,7 +17,7 @@ Google Antigravity provides generous rolling quotas across frontier models (**Cl
 
 Finishing work for the day with 80% quota headroom remaining means donating free compute back to the ether. Conversely, leaving an unattended agent script executing overnight with metered flex credits enabled can trigger unexpected billable overages. 💸
 
-**Agylity** solves both problems. Running 24/7 on lightweight hardware (Raspberry Pi, homelab host, or VPS), it monitors rolling capacity and alerts configured notification channels when headroom risks expiring unused. The notification layer is modular and platform-agnostic: the default is silent sentry mode (`none`), and multiple notification channels can be configured simultaneously. It also acts as an automated emergency brake against billable AI overages.
+**Agylity** solves both problems. Running 24/7 on lightweight hardware (Raspberry Pi, homelab host, or VPS), it monitors rolling capacity and alerts configured notification channels when headroom risks expiring unused. The notification layer is modular and platform-agnostic: the default is silent sentry mode (`none`), and multiple notification channels (`discord`, `webhook`, `console`) can be configured simultaneously. It also acts as an automated emergency brake against billable AI overages.
 
 > [!NOTE]  
 > Looking for ASCII architectural diagrams, Connect-RPC protobuf schemas, or security state machines?  
@@ -29,11 +29,11 @@ Finishing work for the day with 80% quota headroom remaining means donating free
 
 - 🎯 **Dual-Bucket Quota Sentry**: Tracks both short-term 5-hour sprint throttles and authoritative weekly marathon budgets via the local Language Server RPC.
 - 🛑 **Wallet Protection Shield**: Enforces a strict safety floor (`MIN_DISPATCH_HEADROOM_PERCENT`, default: `10%`) to block accidental paid overages. Can be dialed down to `0%` on flat-tier accounts to burn quota down to the last drop.
-- 📣 **Modular Multi-Channel Alerts**: Default is silent sentry mode (`none`). Multiple channels can be active simultaneously (Discord, Webhooks, with more adapters on the roadmap) instead of locking into a single platform.
+- 📣 **Modular Multi-Channel Alerts**: Default is silent sentry mode (`none`). Multiple channels can be active simultaneously (Discord, Webhooks, Console, with more adapters on the roadmap) instead of locking into a single platform.
 - 🎨 **Decoupled Web Dashboard**: Optional dark-mode UI built with **Vite + Preact + Tailwind CSS** (Tailwind v4, Rosé Pine palette) for live gauges and config tweaks. Setting `WEB_UI_ENABLED=false` spawns zero HTTP listeners and binds zero ports.
 - 🔄 **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` $\to$ `.env` $\to$ `Defaults`). Adjust settings live in the web dashboard without taking down the container.
 - 🔐 **Encrypted at Rest**: Sensitive bot tokens and CSRF credentials receive AES-256-GCM authenticated encryption at rest in SQLite and are masked in client-facing APIs.
-- ⚡ **Optional Orchestrator**: Disabled by default (`ORCHESTRATOR_ENABLED=false`). Operating as a pure sentry and alerting daemon runs zero remote execution sockets or background dispatchers.
+- ⚡ **Optional Swarm Orchestrator (Roadmap)**: Operating by default in pure sentry and alerting mode (`ORCHESTRATOR_ENABLED=false`) runs zero execution sockets. The system architecture is designed around a **Pull-Based Worker Swarm** (outbound long-polling via `/api/tasks/poll`, SQLite task queue with P0/P1/P2 priorities, headless Docker vs. visible desktop routing, zero inbound firewall ports). Task dispatch is inactive while swarm worker architecture is finalized.
 - 🛡️ **Zero npm Bloat**: Powered by Node 24 native primitives (`node:http`, `node:sqlite`, `node:crypto`, `node:test`). The entire production runtime depends strictly on **3 packages** (`discord.js`, `ky`, `zod`).
 
 ---
@@ -66,7 +66,7 @@ Detailed operational guides and architectural references live in the [`docs/`](.
 - 📖 **[System Architecture & Protocols](./docs/architecture.md)** — Connect-RPC dual-bucket mechanics, IPC sniffing, encryption internals, and zero-clobber invariants.
 - ⚙️ **[Configuration Reference](./docs/configuration.md)** — Exhaustive breakdown of every `.env` setting, milestone window, and SQLite override.
 - 🚀 **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose configs, homelab GitOps, and vanilla Node 24 systemd service templates.
-- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 337 deterministic tests written with Node's native test runner.
+- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 374 deterministic tests across 98 suites written with Node's native test runner.
 
 ---
 
@@ -138,7 +138,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **353 / 353 tests passing across 94 suites** (0 failures, 0 skipped, 100% deterministic).
+Verification status: **374 / 374 tests passing across 98 suites** (0 failures, 0 skipped, 100% deterministic).
 
 ---
 

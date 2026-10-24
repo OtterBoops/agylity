@@ -23,7 +23,8 @@ import {
   type AppConfig,
 } from '../../../src/config/schema.js';
 import { createNotifier } from '../../../src/notify/factory.js';
-import { ConsoleNotifier, WebhookNotifier } from '../../../src/notify/adapters/console.js';
+import { ConsoleNotifier } from '../../../src/notify/adapters/console.js';
+import { WebhookNotifier } from '../../../src/notify/adapters/webhook.js';
 import {
   DiscordNotifier,
   generateProgressBar,
@@ -689,177 +690,203 @@ describe('Tier 5 Adversarial Hardening Suite: Track B (Config, Notifications & W
     it('T5-WEB-1: EADDRINUSE port collision is rejected cleanly by startWebServer', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_collision_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
-
-      // Occupy an ephemeral port
       const blocker = http.createServer((_, res) => res.end('occupied'));
-      await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
-      const port = (blocker.address() as net.AddressInfo).port;
 
-      await assert.rejects(
-        () => startWebServer({ configStore: store, host: '127.0.0.1', port }),
-        (err: any) => err.code === 'EADDRINUSE'
-      );
+      try {
+        await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+        const port = (blocker.address() as net.AddressInfo).port;
 
-      await new Promise<void>((r) => blocker.close(() => r()));
-      store.close();
-      cleanup();
+        await assert.rejects(
+          () => startWebServer({ configStore: store, host: '127.0.0.1', port }),
+          (err: any) => err.code === 'EADDRINUSE'
+        );
+      } finally {
+        blocker.closeAllConnections?.();
+        await new Promise<void>((r) => blocker.close(() => r()));
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-2: closeWebServer cleanly drains and terminates active and idle sockets', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_drain_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let serverInstance: http.Server | undefined;
+      let client: net.Socket | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
-
-      // Open a hanging client socket
-      const client = net.createConnection({ port, host: '127.0.0.1' });
-      await new Promise<void>((r) => client.once('connect', () => r()));
-
-      // Close server
-      await closeWebServer(server);
-
-      // Verify port is immediately freed and closed
-      const isAlive = await new Promise<boolean>((resolve) => {
-        const s = net.createConnection({ port, host: '127.0.0.1', timeout: 50 }, () => {
-          s.destroy();
-          resolve(true);
+      try {
+        const { server, port } = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
         });
-        s.on('error', () => resolve(false));
-      });
+        serverInstance = server;
 
-      assert.equal(isAlive, false);
-      client.destroy();
-      store.close();
-      cleanup();
+        // Open a hanging client socket
+        client = net.createConnection({ port, host: '127.0.0.1' });
+        await new Promise<void>((r) => client!.once('connect', () => r()));
+
+        // Close server
+        await closeWebServer(server);
+        serverInstance = undefined;
+
+        // Verify port is immediately freed and closed
+        const isAlive = await new Promise<boolean>((resolve) => {
+          const s = net.createConnection({ port, host: '127.0.0.1', timeout: 50 }, () => {
+            s.destroy();
+            resolve(true);
+          });
+          s.on('error', () => resolve(false));
+        });
+
+        assert.equal(isAlive, false);
+      } finally {
+        client?.destroy();
+        if (serverInstance) await closeWebServer(serverInstance);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-3: 405 Method Not Allowed guards protect every REST route from unsupported HTTP verbs', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_405_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const baseUrl = `http://127.0.0.1:${port}`;
+        const baseUrl = `http://127.0.0.1:${started.port}`;
 
-      // POST / -> 405
-      await assert.rejects(
-        () => ky.post(`${baseUrl}/`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
+        // POST / -> 405
+        await assert.rejects(
+          () => ky.post(`${baseUrl}/`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
 
-      // POST /api/quota -> 405
-      await assert.rejects(
-        () => ky.post(`${baseUrl}/api/quota`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
+        // POST /api/quota -> 405
+        await assert.rejects(
+          () => ky.post(`${baseUrl}/api/quota`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
 
-      // POST /api/alerts -> 405
-      await assert.rejects(
-        () => ky.post(`${baseUrl}/api/alerts`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
+        // POST /api/alerts -> 405
+        await assert.rejects(
+          () => ky.post(`${baseUrl}/api/alerts`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
 
-      // PUT /api/config -> 405
-      await assert.rejects(
-        () => ky.put(`${baseUrl}/api/config`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
+        // PUT /api/config -> 405
+        await assert.rejects(
+          () => ky.put(`${baseUrl}/api/config`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
 
-      // GET /api/config/:key -> 405
-      await assert.rejects(
-        () => ky.get(`${baseUrl}/api/config/anyKey`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
+        // GET /api/config/:key -> 405
+        await assert.rejects(
+          () => ky.get(`${baseUrl}/api/config/anyKey`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
 
-      // GET /api/dispatch -> 405
-      await assert.rejects(
-        () => ky.get(`${baseUrl}/api/dispatch`, { retry: 0 }),
-        (err: any) => err.response?.status === 405
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        // GET /api/dispatch -> 405
+        await assert.rejects(
+          () => ky.get(`${baseUrl}/api/dispatch`, { retry: 0 }),
+          (err: any) => err.response?.status === 405
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-4: 404 Not Found returns clean text response and ignores favicon.ico', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_404_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const baseUrl = `http://127.0.0.1:${port}`;
+        const baseUrl = `http://127.0.0.1:${started.port}`;
 
-      // Favicon returns 204 No Content
-      const favRes = await ky.get(`${baseUrl}/favicon.ico`);
-      assert.equal(favRes.status, 204);
+        // Favicon returns 204 No Content
+        const favRes = await ky.get(`${baseUrl}/favicon.ico`);
+        assert.equal(favRes.status, 204);
 
-      // Non-existent route returns 404
-      await assert.rejects(
-        () => ky.get(`${baseUrl}/non/existent/path`, { retry: 0 }),
-        (err: any) => err.response?.status === 404
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        // Non-existent route returns 404
+        await assert.rejects(
+          () => ky.get(`${baseUrl}/non/existent/path`, { retry: 0 }),
+          (err: any) => err.response?.status === 404
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-5: POST /api/config rejects empty body, malformed JSON, and non-object inputs', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_bad_json_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const url = `http://127.0.0.1:${port}/api/config`;
+        const url = `http://127.0.0.1:${started.port}/api/config`;
 
-      // Empty body
-      await assert.rejects(
-        () =>
-          ky.post(url, { headers: { 'Content-Type': 'application/json' }, body: '   ', retry: 0 }),
-        (err: any) => err.response?.status === 400
-      );
+        // Empty body
+        await assert.rejects(
+          () =>
+            ky.post(url, {
+              headers: { 'Content-Type': 'application/json' },
+              body: '   ',
+              retry: 0,
+            }),
+          (err: any) => err.response?.status === 400
+        );
 
-      // Malformed JSON
-      await assert.rejects(
-        () =>
-          ky.post(url, {
-            headers: { 'Content-Type': 'application/json' },
-            body: '{invalid-json',
-            retry: 0,
-          }),
-        (err: any) => err.response?.status === 400
-      );
+        // Malformed JSON
+        await assert.rejects(
+          () =>
+            ky.post(url, {
+              headers: { 'Content-Type': 'application/json' },
+              body: '{invalid-json',
+              retry: 0,
+            }),
+          (err: any) => err.response?.status === 400
+        );
 
-      // Non-object JSON
-      await assert.rejects(
-        () => ky.post(url, { json: 'just a string', retry: 0 }),
-        (err: any) => err.response?.status === 400
-      );
-      await assert.rejects(
-        () => ky.post(url, { json: [1, 2, 3], retry: 0 }),
-        (err: any) => err.response?.status === 400
-      );
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        // Non-object JSON
+        await assert.rejects(
+          () => ky.post(url, { json: 'just a string', retry: 0 }),
+          (err: any) => err.response?.status === 400
+        );
+        await assert.rejects(
+          () => ky.post(url, { json: [1, 2, 3], retry: 0 }),
+          (err: any) => err.response?.status === 400
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-6: DELETE /api/config/:key handles URL-encoded keys and special characters cleanly', async () => {
@@ -869,96 +896,109 @@ describe('Tier 5 Adversarial Hardening Suite: Track B (Config, Notifications & W
       store.setOverride('special key with spaces', 'value1');
       store.setOverride('quotaAlertThresholdPercent', 40);
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      let server: http.Server | undefined;
 
-      const baseUrl = `http://127.0.0.1:${port}/api/config`;
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      // Delete URL-encoded key
-      const res1 = await ky
-        .delete(`${baseUrl}/${encodeURIComponent('special key with spaces')}`)
-        .json<any>();
-      assert.equal(res1.success, true);
-      assert.equal(store.get('special key with spaces'), undefined);
+        const baseUrl = `http://127.0.0.1:${started.port}/api/config`;
 
-      // Delete camelCase key
-      const res2 = await ky.delete(`${baseUrl}/quotaAlertThresholdPercent`).json<any>();
-      assert.equal(res2.success, true);
-      assert.equal(store.get('quotaAlertThresholdPercent'), 25); // back to default
+        // Delete URL-encoded key
+        const res1 = await ky
+          .delete(`${baseUrl}/${encodeURIComponent('special key with spaces')}`)
+          .json<any>();
+        assert.equal(res1.success, true);
+        assert.equal(store.get('special key with spaces'), undefined);
 
-      // Deleting already deleted key is idempotent 200 OK
-      const res3 = await ky.delete(`${baseUrl}/non_existent_key`).json<any>();
-      assert.equal(res3.success, true);
+        // Delete camelCase key
+        const res2 = await ky.delete(`${baseUrl}/quotaAlertThresholdPercent`).json<any>();
+        assert.equal(res2.success, true);
+        assert.equal(store.get('quotaAlertThresholdPercent'), 25); // back to default
 
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        // Deleting already deleted key is idempotent 200 OK
+        const res3 = await ky.delete(`${baseUrl}/non_existent_key`).json<any>();
+        assert.equal(res3.success, true);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-7: POST /api/dispatch validates repositoryName and delegates cleanly', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_dispatch_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const url = `http://127.0.0.1:${port}/api/dispatch`;
+        const url = `http://127.0.0.1:${started.port}/api/dispatch`;
 
-      // Missing repositoryName -> 400
-      await assert.rejects(
-        () => ky.post(url, { json: { prompt: 'No repo' }, retry: 0 }),
-        (err: any) => err.response?.status === 400
-      );
+        // Missing repositoryName -> 400
+        await assert.rejects(
+          () => ky.post(url, { json: { prompt: 'No repo' }, retry: 0 }),
+          (err: any) => err.response?.status === 400
+        );
 
-      // Dispatch endpoint returns disabled status in alerting-only mode
-      const res = await ky
-        .post(url, {
-          json: {
-            repositoryName: 'agylity',
-            prompt: 'Run full audit',
-            requestedBy: 'challenger',
-          },
-        })
-        .json<any>();
+        // Dispatch endpoint returns disabled status in alerting-only mode
+        const res = await ky
+          .post(url, {
+            json: {
+              repositoryName: 'agylity',
+              prompt: 'Run full audit',
+              requestedBy: 'challenger',
+            },
+          })
+          .json<any>();
 
-      assert.equal(res.success, false);
-      assert.ok(res.error?.includes('disabled'));
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        assert.equal(res.success, false);
+        assert.ok(res.error?.includes('disabled'));
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
 
     it('T5-WEB-8: handles rapid burst of 50 concurrent requests across endpoints without leakage', async () => {
       const { dir, cleanup } = makeTempDir('adv_web_burst_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
 
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
 
-      const baseUrl = `http://127.0.0.1:${port}`;
+        const baseUrl = `http://127.0.0.1:${started.port}`;
 
-      const requests = Array.from({ length: 50 }, (_, i) => {
-        if (i % 3 === 0) return ky.get(`${baseUrl}/api/quota`).json();
-        if (i % 3 === 1) return ky.get(`${baseUrl}/api/config`).json();
-        return ky.post(`${baseUrl}/api/config`, { json: { [`burst_${i}`]: i } }).json();
-      });
+        const requests = Array.from({ length: 50 }, (_, i) => {
+          if (i % 3 === 0) return ky.get(`${baseUrl}/api/quota`).json();
+          if (i % 3 === 1) return ky.get(`${baseUrl}/api/config`).json();
+          return ky.post(`${baseUrl}/api/config`, { json: { [`burst_${i}`]: i } }).json();
+        });
 
-      const results = await Promise.all(requests);
-      assert.equal(results.length, 50);
-
-      await closeWebServer(server);
-      store.close();
-      cleanup();
+        const results = await Promise.all(requests);
+        assert.equal(results.length, 50);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
     });
   });
 

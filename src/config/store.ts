@@ -108,7 +108,9 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     const normKey = normalizeKey(key) as keyof AppConfig;
 
     // Level 1: SQLite
-    const sqliteVal = this.database.get(normKey as string) ?? this.database.get(key);
+    const sqliteVal =
+      this.database.get(normKey as string) ??
+      (normKey !== key ? this.database.get(key) : undefined);
     if (sqliteVal !== undefined && sqliteVal !== null) {
       return sqliteVal as T;
     }
