@@ -132,12 +132,20 @@ export const discoverLocalLanguageServer = async (
       });
       const csrfMatch = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i.exec(stdout);
       const portMatch = /--https_server_port(?:\s+|=)(\d+)/i.exec(stdout);
+      const portsMatch = /PORTS:([0-9,]+)/i.exec(stdout);
       const pidMatch = /^(\d+)/m.exec(stdout.trim());
       const csrfToken = csrfMatch ? csrfMatch[1] : undefined;
       const httpsPort = portMatch ? Number(portMatch[1]) : undefined;
       let port = httpsPort && httpsPort > 0 ? httpsPort + 1 : undefined;
 
-      const rawPorts: number[] = [];
+      const rawPorts: number[] =
+        portsMatch && portsMatch[1]
+          ? portsMatch[1]
+              .split(',')
+              .map(Number)
+              .filter((n) => !Number.isNaN(n) && n > 0)
+          : [];
+
       if (pidMatch && pidMatch[1]) {
         const pid = pidMatch[1];
         try {

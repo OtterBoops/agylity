@@ -113,9 +113,12 @@ describe('Challenger M2: Empirical Verification of Process Discovery & Notifier 
         const mockExecFile = async (file: string) => {
           if (file === 'powershell.exe' || file === 'pgrep') {
             return {
-              stdout: `CMD: language_server.exe --csrf_token test-discovered-token\nPORTS:${port}\n`,
+              stdout: `language_server.exe --https_server_port ${port - 1} --csrf_token test-discovered-token\nPORTS:${port}\n`,
               stderr: '',
             };
+          }
+          if (file === 'ss' || file === 'lsof') {
+            return { stdout: '', stderr: '' };
           }
           throw new Error(`Unexpected command: ${file}`);
         };
@@ -171,7 +174,7 @@ describe('Challenger M2: Empirical Verification of Process Discovery & Notifier 
         // Discovered ports list: [deadPort, livePort]
         // Note: Math.max selects the higher port as primary, and fallbackPorts preserves candidates
         const mockExecFile = async () => ({
-          stdout: `CMD: language_server.exe --csrf_token fallback-token\nPORTS:${deadPort},${livePort}\n`,
+          stdout: `language_server.exe --https_server_port ${livePort - 1} --csrf_token fallback-token\nPORTS:${deadPort},${livePort}\n`,
           stderr: '',
         });
 
@@ -222,7 +225,7 @@ describe('Challenger M2: Empirical Verification of Process Discovery & Notifier 
             return { stdout: '', stderr: '' };
           }
           return {
-            stdout: `CMD: language_server.exe --csrf_token reactive-token\nPORTS:${livePort}\n`,
+            stdout: `language_server.exe --https_server_port ${livePort - 1} --csrf_token reactive-token\nPORTS:${livePort}\n`,
             stderr: '',
           };
         };
