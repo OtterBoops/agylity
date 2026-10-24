@@ -73,7 +73,7 @@ Detailed operational guides and architectural references live in the [`docs/`](.
 
 ## Contributing & Local Development
 
-This is an independent open-source project created and maintained by a sole contributor. Pull requests and issues are welcome, though contributions do not imply an expanding developer team.
+Contributions, issues, and feature requests are welcome! If you're submitting a pull request, please ensure tests and type checks pass before opening a PR.
 
 ### Prerequisites
 
