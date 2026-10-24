@@ -101,7 +101,7 @@ Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secre
 
 ### 3.3. AI Overcharge & Credit Safety Floor
 
-Tasks are blocked from dispatch when remaining quota headroom is $\le \text{MIN\_DISPATCH\_HEADROOM\_PERCENT}$ (default: `10%`) to protect against billable AI overages or credit consumption. Pass `allowOverage: true` in the API or UI to override. Setting this to `0` is recommended for flat-tier / non-metered accounts.
+Tasks are blocked from dispatch when remaining quota headroom is $\le$ `MIN_DISPATCH_HEADROOM_PERCENT` (default: `10%`) to protect against billable AI overages or credit consumption. Pass `allowOverage: true` in the API or UI to override. Setting this to `0` is recommended for flat-tier / non-metered accounts.
 
 ### 3.4. Three-Tier Precedence Hierarchy with UI Overrides
 
@@ -165,7 +165,7 @@ Coordinator (Homelab / Cloud)
 3. **Target Routing**:
    - Tasks specify `worker_mode: 'headless'` (unattended execution on Docker/Linux hosts) or `worker_mode: 'visible'` (desktop environments with terminal feedback).
 4. **Safety Floor Rule**:
-   - The coordinator blocks task dispatches whenever quota headroom is $\le \text{MIN\_DISPATCH\_HEADROOM\_PERCENT}$ (default: `10%`), preventing billable AI overages.
+   - The coordinator blocks task dispatches whenever quota headroom is $\le$ `MIN_DISPATCH_HEADROOM_PERCENT` (default: `10%`), preventing billable AI overages.
 5. **Alerting-First Operational Mode**:
    - In current production releases, `ORCHESTRATOR_ENABLED=false` runs Agylity in pure sentry mode. Attempted dispatches via `/api/dispatch` cleanly return `ORCHESTRATOR_DISABLED` while worker swarm poller integration is finalized.
 
