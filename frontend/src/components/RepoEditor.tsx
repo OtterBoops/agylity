@@ -62,7 +62,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       <div>
         <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
         <p class="mt-0.5 text-xs text-pine-subtle">
-          Targets for Discord and dashboard dispatch. Paths are on the remote workstation.
+          Target workspaces for Discord and dashboard task dispatch. Stored in SQLite.
         </p>
       </div>
 

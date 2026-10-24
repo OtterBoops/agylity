@@ -55,8 +55,6 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 | `ORCHESTRATOR_ENABLED`            | `boolean` | `false`   | Enable/disable optional task continuation & worker orchestrator. Sentry alerts operate when false.                             |
 | **Security & Encryption**         |           |           |                                                                                                                                |
 | `AGYLITY_SECRET_KEY`              | `string`  | —         | Master 256-bit key for AES-256-GCM. Accepts 64-char hex or passphrase. If unset, auto-generates key at `data/.agylity.key`.    |
-| **Repositories**                  |           |           |                                                                                                                                |
-| `REPOSITORIES_JSON`               | `json`    | `[]`      | JSON array of repository targets for dropdowns.                                                                                |
 | **Decoupled Web Dashboard**       |           |           |                                                                                                                                |
 | `WEB_UI_ENABLED`                  | `boolean` | `false`   | Enable/disable decoupled native HTTP web dashboard.                                                                            |
 | `WEB_UI_PORT`                     | `number`  | `3000`    | Web dashboard listening port.                                                                                                  |
@@ -64,21 +62,17 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 
 ---
 
-## 3. Repositories Schema (`REPOSITORIES_JSON`)
+## 3. Repositories Management
 
-Repositories can be configured via environment variable or edited visually in the Web UI:
+Repository targets for task dispatch (Discord dropdown and Web UI modal) are managed directly in the Web Dashboard under **Settings → Repositories** and persisted in SQLite. This avoids storing complex, escaping-prone JSON arrays in `.env`.
 
-```json
-[
-  {
-    "id": "agylity",
-    "name": "Agylity",
-    "path": "/home/otter/Code/agylity",
-    "defaultBranch": "main",
-    "description": "Antigravity quota sentry & orchestrator"
-  }
-]
-```
+When configured, each repository record includes:
+
+- **ID**: Short unique identifier (e.g. `agylity`)
+- **Name**: Display label shown in menus
+- **Path**: Local workspace directory on the worker node
+- **Default Branch**: Branch for continuation tasks (default: `main`)
+- **Description**: Optional context displayed in dropdown options
 
 ---
 
