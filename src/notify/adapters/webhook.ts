@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { logger } from '../../logs/logger.js';
 
 export interface WebhookPayload {
   event: 'quota_alert' | 'dispatch_status' | 'test_ping';
@@ -244,11 +245,17 @@ export class WebhookNotifier implements Notifier {
         retry: 1,
       });
 
+      logger
+        .child('notify:webhook')
+        .info('Webhook delivered to %s (status %d)', sanitizeWebhookUrl(url), response.status);
       return { status: response.status };
     } catch (err: any) {
-      console.error(
-        `[WebhookNotifier] Webhook delivery failed: ${sanitizeErrorMessage(err?.message ?? String(err), url)}`
-      );
+      logger
+        .child('notify:webhook')
+        .error(
+          'Webhook delivery failed: %s',
+          sanitizeErrorMessage(err?.message ?? String(err), url)
+        );
       throw err;
     }
   }

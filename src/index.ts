@@ -15,6 +15,7 @@ import {
 import { createNotifier } from './notify/factory.js';
 import { type Notifier } from './notify/types.js';
 import { LogBuffer, installConsoleTee } from './logs/buffer.js';
+import { logger, createLogger, type Logger } from './logs/logger.js';
 
 // Alias exports for external consumers and test suites
 export {
@@ -25,6 +26,11 @@ export {
   AppDatabase,
   SentryStateManager,
   QuotaEvaluator,
+  LogBuffer,
+  installConsoleTee,
+  logger,
+  createLogger,
+  type Logger,
 };
 
 export interface AgylityDaemonOptions {
@@ -39,6 +45,7 @@ export interface AgylityDaemonOptions {
   statePath?: string;
   autoCheckOnStart?: boolean;
   logBuffer?: LogBuffer;
+  logger?: Logger;
 }
 
 /**
@@ -60,6 +67,7 @@ export class AgylityDaemon {
   public readonly notifier: Notifier;
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
+  public readonly logger: Logger;
 
   public isRunning = false;
   public isSentryStopped = false;
@@ -76,7 +84,8 @@ export class AgylityDaemon {
     sentryEvaluator: QuotaEvaluator,
     notifier: Notifier,
     autoCheckOnStart = true,
-    logBuffer?: LogBuffer
+    logBuffer?: LogBuffer,
+    loggerInstance?: Logger
   ) {
     this.configStore = configStore;
     this.database = configStore.getDatabase();
@@ -86,10 +95,19 @@ export class AgylityDaemon {
     this.notifier = notifier;
     this.autoCheckOnStart = autoCheckOnStart;
     this.logBuffer = logBuffer;
+    this.logger = loggerInstance ?? logger.child('daemon');
+    const initialConfig = configStore.resolveConfig();
+    if (initialConfig.logLevel) {
+      this.logger.setLevel(initialConfig.logLevel);
+    }
 
     // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
     this.configStore.on('change', async ({ resolvedConfig }) => {
       try {
+        this.logger.info('Configuration update detected, syncing active components...');
+        if (resolvedConfig.logLevel) {
+          this.logger.setLevel(resolvedConfig.logLevel);
+        }
         if (typeof this.notifier.updateConfig === 'function') {
           await this.notifier.updateConfig(resolvedConfig);
         }
@@ -97,7 +115,7 @@ export class AgylityDaemon {
           this.quotaClient.updateConfig(resolvedConfig);
         }
       } catch (err: any) {
-        console.error('[agylity] Error syncing updated configuration:', err?.message ?? err);
+        this.logger.error('Error syncing updated configuration:', err?.message ?? err);
       }
     });
   }
@@ -126,12 +144,14 @@ export class AgylityDaemon {
       });
 
     // 4. Initialize Quota Client (Connect-RPC with CLI fallback)
+    const daemonLogger = options.logger ?? logger.child('daemon');
     const quotaClient =
       options.quotaClient ??
       new ConnectRpcQuotaClient({
         endpointUrl: resolved.antigravityEndpointUrl,
         csrfToken: resolved.antigravityCsrfToken,
         port: resolved.antigravityLsPort,
+        logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {
           const state = sentryState.getState();
           const list: QuotaSnapshot[] = [];
@@ -167,7 +187,8 @@ export class AgylityDaemon {
       sentryEvaluator,
       notifier,
       autoCheckOnStart,
-      options.logBuffer
+      options.logBuffer,
+      options.logger
     );
   }
 
@@ -184,17 +205,19 @@ export class AgylityDaemon {
 
     // 1. Load persistent sentry state
     await this.sentryState.load();
+    this.logger.info('Sentry persistent state loaded.');
 
     // 2. Initialize active notification adapter
     await this.notifier.initialize();
+    this.logger.info('Active notification adapter initialized (%s).', this.notifier.channelName);
 
     // 3. Orchestrator Status
     if (!resolved.orchestratorEnabled) {
-      console.log(
-        '[agylity] Orchestrator is disabled (orchestratorEnabled=false). Operating in pure Quota Sentry mode.'
+      this.logger.info(
+        'Orchestrator is disabled (orchestratorEnabled=false). Operating in pure Quota Sentry mode.'
       );
     } else {
-      console.log('[agylity] Orchestrator is enabled (orchestratorEnabled=true).');
+      this.logger.info('Orchestrator is enabled (orchestratorEnabled=true).');
     }
 
     // 4. Conditional Web UI bootstrap (Zero-Overhead Invariant)
@@ -206,25 +229,27 @@ export class AgylityDaemon {
         sentryState: this.sentryState,
         logBuffer: this.logBuffer,
         notifier: this.notifier,
+        logger: this.logger.child('web'),
         port: resolved.webUiPort,
         host: resolved.webUiHost,
       });
       this.webServer = server;
-      console.log(`[agylity] Web UI active on http://${host}:${port}`);
+      this.logger.info('Web UI active on http://%s:%d', host, port);
     }
 
     // 4. Initial quota check on boot
     if (this.autoCheckOnStart) {
       await this.checkQuota().catch((err) => {
-        console.error('[agylity] Initial quota evaluation warning:', err?.message ?? err);
+        this.logger.warn('Initial quota evaluation warning: %s', err?.message ?? err);
       });
     }
 
     // 5. Setup recurring sentry interval
     const intervalSeconds = Math.max(10, resolved.quotaCheckIntervalSeconds ?? 900);
+    this.logger.info('Sentry recurring check scheduled every %d seconds.', intervalSeconds);
     this.timer = setInterval(() => {
       void this.checkQuota().catch((err) => {
-        console.error('[agylity] Scheduled quota evaluation warning:', err?.message ?? err);
+        this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
       });
     }, intervalSeconds * 1000);
 
@@ -239,10 +264,17 @@ export class AgylityDaemon {
    */
   public async checkQuota(): Promise<QuotaAlert[]> {
     try {
+      this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
       const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
 
       for (const alert of alerts) {
+        this.logger.info(
+          'Milestone alert triggered for %s (%d%% remaining, %sh until reset)',
+          alert.pool.displayName || alert.pool.poolId,
+          alert.remainingPercentage,
+          alert.milestoneHours
+        );
         await this.notifier.notifyQuotaAlert(alert);
       }
 
@@ -250,6 +282,7 @@ export class AgylityDaemon {
       await this.sentryState.save();
       return alerts;
     } catch (err: any) {
+      this.logger.warn('Quota probe failed; sentry marked unreachable: %s', err?.message ?? err);
       this.sentryState.updateProbe('unreachable');
       try {
         await this.sentryState.save();
@@ -272,6 +305,8 @@ export class AgylityDaemon {
       return;
     }
 
+    this.logger.info('Initiating graceful daemon shutdown...');
+
     // 1. Stop recurring sentry interval timer
     if (this.timer) {
       clearInterval(this.timer);
@@ -283,8 +318,9 @@ export class AgylityDaemon {
     if (this.notifier && !this.isNotifierShutdown) {
       try {
         await this.notifier.shutdown();
+        this.logger.info('Notification adapter shut down cleanly.');
       } catch (err) {
-        console.error('[agylity] Notification shutdown error:', err);
+        this.logger.error('Notification shutdown error:', err);
       }
       this.isNotifierShutdown = true;
     }
@@ -294,8 +330,9 @@ export class AgylityDaemon {
       try {
         const { closeWebServer } = await import('./web/server.js');
         await closeWebServer(this.webServer);
+        this.logger.info('Web server stopped cleanly.');
       } catch (err) {
-        console.error('[agylity] Web server shutdown error:', err);
+        this.logger.error('Web server shutdown error:', err);
       }
       this.webServer = undefined;
     }
@@ -304,8 +341,9 @@ export class AgylityDaemon {
     if (!this.isDbClosed) {
       try {
         this.configStore.close();
+        this.logger.info('Database connection closed cleanly.');
       } catch (err) {
-        console.error('[agylity] Database close error:', err);
+        this.logger.error('Database close error:', err);
       }
       this.isDbClosed = true;
     }
@@ -405,13 +443,13 @@ export const main = async (): Promise<AgylityDaemon> => {
   const handleSignal = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.log(`\n[agylity] Received ${signal}. Initiating graceful shutdown...`);
+    logger.info('Received %s. Initiating graceful shutdown...', signal);
     try {
       await daemon.shutdown();
-      console.log('[agylity] Graceful shutdown completed cleanly.');
+      logger.info('Graceful shutdown completed cleanly.');
       process.exit(0);
     } catch (err) {
-      console.error('[agylity] Error during shutdown:', err);
+      logger.error('Error during shutdown:', err);
       process.exit(1);
     }
   };
@@ -420,7 +458,7 @@ export const main = async (): Promise<AgylityDaemon> => {
   process.once('SIGTERM', () => void handleSignal('SIGTERM'));
 
   await daemon.start();
-  console.log('[agylity] Daemon successfully started and monitoring rolling quota.');
+  logger.info('Daemon successfully started and monitoring rolling quota.');
   return daemon;
 };
 

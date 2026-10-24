@@ -59,6 +59,8 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 | `WEB_UI_ENABLED`                  | `boolean` | `false`   | Enable/disable decoupled native HTTP web dashboard.                                                                            |
 | `WEB_UI_PORT`                     | `number`  | `3000`    | Web dashboard listening port.                                                                                                  |
 | `WEB_UI_HOST`                     | `string`  | `0.0.0.0` | Web dashboard interface bind address.                                                                                          |
+| **Logging & Sinks**               |           |           |                                                                                                                                |
+| `LOG_LEVEL`                       | `string`  | `info`    | Minimum log level (`debug`, `info`, `warn`, `error`) for terminal stdout/stderr and web UI log buffer.                         |
 
 ---
 

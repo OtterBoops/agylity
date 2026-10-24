@@ -1,6 +1,7 @@
 import http from 'node:http';
 import type net from 'node:net';
 import { handleRequest, type WebServerOptions } from './routes.js';
+import { logger } from '../logs/logger.js';
 
 export { type WebServerOptions };
 
@@ -62,6 +63,8 @@ export const startWebServer = async (
         const addr = server.address() as net.AddressInfo | string | null;
         const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
         const actualHost = typeof addr === 'object' && addr !== null ? addr.address : host;
+        const log = options.logger ?? logger.child('web');
+        log.info('Web server listening on http://%s:%d', actualHost, actualPort);
         resolve({ server, port: actualPort, host: actualHost });
       }
     };
@@ -109,6 +112,7 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
         }
         reject(err);
       } else {
+        logger.child('web').info('Web server closed cleanly.');
         resolve();
       }
     });

@@ -132,6 +132,9 @@ export const RawEnvSchema = z.object({
   WEB_UI_ENABLED: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
+
+  /* Logging */
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
 });
 
 export type RawEnv = z.infer<typeof RawEnvSchema>;
@@ -165,6 +168,8 @@ export interface AppConfig {
   webUiEnabled: boolean;
   webUiPort: number;
   webUiHost: string;
+
+  logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
 export type ResolvedConfig = AppConfig;
@@ -198,6 +203,8 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   webUiEnabled: false,
   webUiPort: 3000,
   webUiHost: '0.0.0.0',
+
+  logLevel: 'info',
 };
 
 export const parseRawEnv = (env: Record<string, string | undefined>): Partial<AppConfig> => {
@@ -264,6 +271,8 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   }
   if (parsed.WEB_UI_PORT !== undefined) result.webUiPort = parsed.WEB_UI_PORT;
   if (parsed.WEB_UI_HOST) result.webUiHost = parsed.WEB_UI_HOST;
+
+  if (parsed.LOG_LEVEL) result.logLevel = parsed.LOG_LEVEL;
 
   return result;
 };

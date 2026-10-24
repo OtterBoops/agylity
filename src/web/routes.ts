@@ -6,6 +6,7 @@ import type { ConfigStore } from '../config/store.js';
 import type { QuotaClient, QuotaSnapshot } from '../sentry/models.js';
 import type { SentryStateManager } from '../sentry/state.js';
 import type { LogBuffer, LogLevel } from '../logs/buffer.js';
+import { logger, type Logger } from '../logs/logger.js';
 import { isSecretKey, maskSecret } from '../storage/crypto.js';
 
 export interface WebServerOptions {
@@ -16,6 +17,7 @@ export interface WebServerOptions {
   sentryState?: SentryStateManager;
   logBuffer?: LogBuffer;
   notifier?: import('../notify/types.js').Notifier;
+  logger?: Logger;
 }
 
 const sanitizeConfigForClient = (config: Record<string, any>) => {
@@ -270,6 +272,7 @@ export const handleRequest = async (
   res: http.ServerResponse,
   options: WebServerOptions
 ): Promise<void> => {
+  const log = options.logger ?? logger.child('web');
   try {
     const host = req.headers.host || '127.0.0.1';
     const url = new URL(req.url ?? '/', `http://${host}`);
@@ -476,6 +479,8 @@ export const handleRequest = async (
 
         const updatedResolved = options.configStore.resolveConfig();
         const updatedOverrides = options.configStore.getAllOverrides();
+        const keys = typeof payload.key === 'string' ? [payload.key] : Object.keys(payload);
+        log.info('Configuration updated via Web API (keys: %s)', keys.join(', '));
         return sendJson(res, 200, {
           success: true,
           resolved: sanitizeConfigForClient(updatedResolved),
@@ -492,7 +497,9 @@ export const handleRequest = async (
       const key = pathname.slice('/api/config/'.length).trim();
       if (!key || method !== 'DELETE') return methodNotAllowed(res);
 
-      options.configStore.deleteOverride(decodeURIComponent(key));
+      const decodedKey = decodeURIComponent(key);
+      options.configStore.deleteOverride(decodedKey);
+      log.info('Configuration override deleted via Web API: %s', decodedKey);
       const resolved = options.configStore.resolveConfig();
       const overrides = options.configStore.getAllOverrides();
       return sendJson(res, 200, {
@@ -572,6 +579,11 @@ export const handleRequest = async (
           }
         }
 
+        log.info(
+          'Test notification executed via Web API (channel: %s, success: %s)',
+          channel,
+          isSuccess
+        );
         return sendJson(res, isSuccess ? 200 : 400, {
           success: isSuccess,
           channel,
@@ -623,6 +635,12 @@ export const handleRequest = async (
       if (pools.length > 0) {
         const maxHeadroomPct = Math.max(...pools.map((p) => (p.remainingFraction ?? 0) * 100));
         if (maxHeadroomPct < minHeadroom && !allowOverage) {
+          log.warn(
+            'Task dispatch blocked for "%s": remaining headroom (%d%%) is below safety floor (%d%%)',
+            repositoryName,
+            Math.round(maxHeadroomPct),
+            minHeadroom
+          );
           return sendJson(res, 400, {
             success: false,
             error: `Overage Protection: Remaining quota (${Math.round(maxHeadroomPct)}%) is below the safety floor (${minHeadroom}%). Dispatch locked to prevent paid AI overages or credit consumption. Pass allowOverage: true to override.`,

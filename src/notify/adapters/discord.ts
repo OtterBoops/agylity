@@ -24,6 +24,7 @@ import type {
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { logger } from '../../logs/logger.js';
 
 /**
  * Task prompt validation schema enforcing 1-4000 character boundaries.
@@ -199,7 +200,7 @@ export class DiscordNotifier implements Notifier {
         try {
           await this.handleInteraction(interaction);
         } catch (err: any) {
-          console.error(`[DiscordNotifier] Interaction handler error: ${err.message}`);
+          logger.child('notify:discord').error('Interaction handler error: %s', err.message);
         }
       });
     }
@@ -207,8 +208,9 @@ export class DiscordNotifier implements Notifier {
     if (this.config.discordToken && typeof this.client.login === 'function') {
       try {
         await this.client.login(this.config.discordToken);
+        logger.child('notify:discord').info('Discord client connected.');
       } catch (err: any) {
-        console.error(`[DiscordNotifier] Client login failed: ${err.message}`);
+        logger.child('notify:discord').error('Client login failed: %s', err.message);
       }
     }
 
@@ -226,13 +228,13 @@ export class DiscordNotifier implements Notifier {
       typeof this.client.login === 'function'
     ) {
       try {
-        console.log('[DiscordNotifier] Connecting Discord client with new token...');
+        logger.child('notify:discord').info('Connecting Discord client with new token...');
         await this.client.login(this.config.discordToken);
-        console.log(
-          '[DiscordNotifier] Discord client connected successfully via updated configuration.'
-        );
+        logger.child('notify:discord').info('Discord client connected via updated configuration.');
       } catch (err: any) {
-        console.error(`[DiscordNotifier] Client login with updated token failed: ${err.message}`);
+        logger
+          .child('notify:discord')
+          .error('Client login with updated token failed: %s', err.message);
       }
     }
   }
@@ -476,8 +478,11 @@ export class DiscordNotifier implements Notifier {
         embeds: [embed],
         components: [actionRow],
       });
+      logger
+        .child('notify:discord')
+        .info('Quota alert delivered to Discord channel %s (%s)', channelId, poolName);
     } catch (err: any) {
-      console.error(`[DiscordNotifier] Failed to notify quota alert: ${err.message}`);
+      logger.child('notify:discord').error('Failed to notify quota alert: %s', err.message);
     }
   }
 

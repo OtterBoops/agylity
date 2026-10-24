@@ -1,5 +1,6 @@
 import type { Notifier, QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
+import { logger } from '../../logs/logger.js';
 
 export class CompositeNotifier implements Notifier {
   readonly channelName: string;
@@ -36,7 +37,7 @@ export class CompositeNotifier implements Notifier {
     const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyQuotaAlert(alert)));
     for (const res of results) {
       if (res.status === 'rejected') {
-        console.error(`[CompositeNotifier] Quota alert error:`, res.reason);
+        logger.child('notify:composite').error('Quota alert delivery error:', res.reason);
       }
     }
   }
@@ -47,7 +48,7 @@ export class CompositeNotifier implements Notifier {
     );
     for (const res of results) {
       if (res.status === 'rejected') {
-        console.error(`[CompositeNotifier] Dispatch status error:`, res.reason);
+        logger.child('notify:composite').error('Dispatch status delivery error:', res.reason);
       }
     }
   }
@@ -59,10 +60,9 @@ export class CompositeNotifier implements Notifier {
           try {
             await n.updateConfig(newConfig);
           } catch (err: any) {
-            console.error(
-              `[CompositeNotifier] Failed to update config on ${n.channelName}:`,
-              err.message
-            );
+            logger
+              .child('notify:composite')
+              .error('Failed to update config on %s: %s', n.channelName, err.message);
           }
         }
       })

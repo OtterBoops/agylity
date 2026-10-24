@@ -2,6 +2,7 @@ import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ky from 'ky';
 import { z } from 'zod';
+import { logger, type Logger } from '../logs/logger.js';
 import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
@@ -62,6 +63,7 @@ export interface ConnectRpcQuotaClientOptions {
   enableCliFallback?: boolean;
   enableProcessDiscovery?: boolean;
   cachedSnapshotProvider?: () => QuotaSnapshot[];
+  logger?: Logger;
   fetchFn?: typeof fetch;
   execFileFn?: (
     file: string,
@@ -205,6 +207,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
   private fetchFn?: typeof fetch;
+  private logger: Logger;
   private execFileFn: (
     file: string,
     args: readonly string[],
@@ -212,6 +215,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   ) => Promise<{ stdout: string; stderr: string }>;
 
   constructor(options: ConnectRpcQuotaClientOptions & { minRefreshIntervalMs?: number } = {}) {
+    this.logger = options.logger ?? logger.child('sentry');
     this.endpointUrl = options.endpointUrl ?? process.env.ANTIGRAVITY_ENDPOINT_URL;
     this.host = options.host ?? '127.0.0.1';
     this.port =
@@ -300,13 +304,16 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
     // 3. Fallback to agy CLI if enabled
     if (this.enableCliFallback) {
+      this.logger.info('Attempting fallback to agy CLI models subcommand (%s)...', this.agyBinPath);
       try {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
+          this.logger.info('Retrieved %d model pools via agy CLI fallback', cliSnapshots.length);
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
         const cliError = cliErr instanceof Error ? cliErr : new Error(String(cliErr));
+        this.logger.error('CLI fallback failed: %s', cliError.message);
         throw new LanguageServerError(
           `Language Server Connect-RPC failed (${rpcError?.message ?? 'unknown'}) and CLI fallback failed (${cliError.message})`,
           'LANGUAGE_SERVER_UNAVAILABLE',
@@ -339,6 +346,11 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         this.port = discovered.port;
         this.fallbackPorts = [discovered.port, ...this.fallbackPorts];
       }
+      this.logger.info(
+        'Discovered local language_server (port: %d, csrf: %s)',
+        this.port,
+        this.csrfToken ? 'configured' : 'none'
+      );
       return true;
     }
     return false;
@@ -361,6 +373,11 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     }
     // Invalidate cached snapshots so next fetch immediately uses updated endpoint
     this.lastFetchedAt = 0;
+    this.logger.info(
+      'Updated Language Server config (endpoint: %s, port: %d)',
+      this.endpointUrl ?? 'dynamic',
+      this.port
+    );
   }
 
   /**
@@ -407,10 +424,26 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           const rawJson = await response.json();
           const parsed = RetrieveUserQuotaSummaryResponseSchema.safeParse(rawJson);
           if (parsed.success && parsed.data.response?.groups?.length > 0) {
-            return aggregateUserQuotaSummary(parsed.data);
+            const snapshots = aggregateUserQuotaSummary(parsed.data);
+            const summary = snapshots
+              .map(
+                (s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`
+              )
+              .join(', ');
+            this.logger.info(
+              'Connected to Language Server Connect-RPC (%d pools: %s)',
+              snapshots.length,
+              summary
+            );
+            return snapshots;
           }
         }
-      } catch {
+      } catch (err: unknown) {
+        this.logger.debug(
+          'RetrieveUserQuotaSummary probe failed on %s: %s',
+          base,
+          err instanceof Error ? err.message : String(err)
+        );
         // Fall through to GetCascadeModelConfigData
       }
     }
@@ -443,12 +476,25 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const rawJson = await response.json();
         const parsed = LanguageServerResponseSchema.parse(rawJson);
         const snapshots = aggregateQuotaPools(parsed.clientModelConfigs);
+        const summary = snapshots
+          .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
+          .join(', ');
+        this.logger.info(
+          'Connected to Language Server CascadeModelConfig (%d pools: %s)',
+          snapshots.length,
+          summary
+        );
         return snapshots;
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
+        this.logger.debug('CascadeModelConfig probe failed on %s: %s', base, lastError.message);
       }
     }
 
+    this.logger.warn(
+      'Connect-RPC failed across all target ports: %s',
+      lastError?.message ?? 'Endpoint unreachable'
+    );
     throw lastError || new LanguageServerError('Failed to connect to Language Server RPC');
   }
 
