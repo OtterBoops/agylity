@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'preact/hooks';
 import type { QuotaSnapshot, SentryAlertState, ConfigData } from './types';
 import { useHashRoute, type Route } from './router';
+import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme } from './theme';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { QuotaGrid } from './components/QuotaGrid';
@@ -11,20 +12,19 @@ import { SettingsView } from './views/SettingsView';
 import { getQuota, getAlerts, getConfig } from './api';
 
 const TITLES: Record<Route, [string, string]> = {
-  overview: ['Overview', 'Live quota, dispatched tasks, and sentry milestone state'],
-  logs: ['Logs', 'Live daemon output'],
-  'settings/notifications': ['Notifications', 'Where alerts and dispatch updates go'],
-  'settings/remote': [
-    'Orchestrator & Swarm',
-    'Optional task continuation, swarm worker network, and dispatch routing',
-  ],
-  'settings/repositories': ['Repositories', 'Dispatch targets'],
-  'settings/advanced': ['Advanced', 'Sentry tuning, Language Server RPC, and SQLite overrides'],
+  overview: ['Overview', ''],
+  logs: ['Logs', ''],
+  'settings/notifications': ['Notifications', ''],
+  'settings/remote': ['Orchestrator', ''],
+  'settings/repositories': ['Repositories', ''],
+  'settings/advanced': ['Advanced', ''],
 };
 
 export const App = () => {
   const [route, navigate] = useHashRoute();
-  const [theme, setTheme] = useState(() => localStorage.getItem('agylity-theme') || 'rose-pine');
+  const [theme, setTheme] = useState<ThemeChoice>(() =>
+    normalizeStoredTheme(localStorage.getItem('agylity-theme'))
+  );
   const [quota, setQuota] = useState<QuotaSnapshot[]>([]);
   const [alerts, setAlerts] = useState<SentryAlertState | null>(null);
   const [config, setConfig] = useState<ConfigData>({ resolved: {}, overrides: {} });
@@ -33,8 +33,20 @@ export const App = () => {
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
+    const apply = () => {
+      const effective = resolveEffectiveTheme(theme);
+      document.documentElement.setAttribute('data-theme', effective);
+    };
+
+    apply();
     localStorage.setItem('agylity-theme', theme);
+
+    if (theme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
+      const media = window.matchMedia('(prefers-color-scheme: light)');
+      const listener = () => apply();
+      media.addEventListener('change', listener);
+      return () => media.removeEventListener('change', listener);
+    }
   }, [theme]);
 
   const fetchAll = () =>
@@ -50,7 +62,7 @@ export const App = () => {
 
   useEffect(() => {
     fetchAll();
-    const interval = setInterval(fetchAll, 15000);
+    const interval = setInterval(fetchAll, 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -59,7 +71,7 @@ export const App = () => {
     setIsRefreshing(true);
     fetchAll().finally(() => {
       setIsRefreshing(false);
-      setRefreshCooldown(5);
+      setRefreshCooldown(2);
     });
   };
 

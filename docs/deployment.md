@@ -57,6 +57,17 @@ For homelabs managed via GitOps, Portainer, or Dockge:
    ```
 3. Deploy the stack.
 
+### 2.1. Container Image Tags & Release Channels
+
+Agylity container images published to GitHub Container Registry (`ghcr.io/otterboops/agylity`) enforce strict separation between formal releases and intermediate `main` branch commits:
+
+| Tag             | Channel            | Description                                                                                                                               |
+| --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.1.0`). Recommended for production homelabs and compose stacks.             |
+| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.1.0`, `0.1`).                                                                                              |
+| `edge` / `main` | **Development**    | Built from the tip of the `main` branch on every commit. Contains intermediate changes between formal releases without touching `latest`. |
+| `sha-<hash>`    | **Immutable**      | Commit-specific immutable image digest tag (e.g. `sha-9d62b78`).                                                                          |
+
 ---
 
 ## 3. Option C: Standalone Native Node 24 Daemon

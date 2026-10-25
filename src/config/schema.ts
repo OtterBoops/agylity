@@ -189,7 +189,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
   antigravityLsPort: 60643,
-  quotaCheckIntervalSeconds: 900, // 15 minutes
+  quotaCheckIntervalSeconds: 60, // 60 seconds (1 minute default, minimum 30s)
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
   quotaMilestoneHours: [24, 12, 3],
   quotaStateFilePath: 'data/state.json',

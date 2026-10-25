@@ -311,7 +311,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
       // 3. editReply must have succeeded with continuation branch without throwing 10062
       assert.deepEqual(interaction.state.latestEdit, {
         content:
-          '✅ Antigravity continuation complete on branch `antigravity/continuation-target-5s`',
+          '[Success] Antigravity continuation complete on branch `antigravity/continuation-target-5s`',
       });
     });
 
@@ -371,7 +371,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
       });
       assert.deepEqual(history[3], {
         content:
-          '✅ Antigravity continuation complete on branch `antigravity/continuation-heavy-15s`',
+          '[Success] Antigravity continuation complete on branch `antigravity/continuation-heavy-15s`',
       });
     });
 
@@ -401,7 +401,7 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       assert.equal(interaction.state.deferred, true);
       assert.deepEqual(interaction.state.latestEdit, {
-        content: '❌ Zero-Clobber Guardrail: Worker failed to respond within 60s. Aborted.',
+        content: '[Blocked] Zero-Clobber Guardrail: Worker failed to respond within 60s. Aborted.',
       });
     });
 
@@ -491,9 +491,9 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       for (const interaction of interactions) {
         const content = interaction.state.latestEdit?.content ?? '';
-        if (content.includes('✅ Antigravity continuation complete')) {
+        if (content.includes('[Success] Antigravity continuation complete')) {
           successEdits++;
-        } else if (content.includes('⚠️ A task is already in progress')) {
+        } else if (content.includes('[Warning] A task is already in progress')) {
           debouncedEdits++;
         }
       }
@@ -644,7 +644,9 @@ describe('Challenger M3: Adversarial Stress Test Suite', () => {
 
       assert.equal(receivedPrompt.length, 4000);
       assert.ok(
-        interaction.state.latestEdit?.content.includes('✅ Antigravity continuation complete')
+        interaction.state.latestEdit?.content.includes(
+          '[Success] Antigravity continuation complete'
+        )
       );
     });
 

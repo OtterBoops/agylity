@@ -1,9 +1,11 @@
+import { faChevronDown, faChevronUp, faNetworkWired } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import type { ConfigData, ToastState } from '../types';
 import type { Route } from '../router';
 import { SettingsForm, type FieldDef } from '../components/SettingsForm';
 import { RepoEditor } from '../components/RepoEditor';
 import { ConfigTable } from '../components/ConfigTable';
+import { Icon } from '../components/Icon';
 import { NotificationsView } from './NotificationsView';
 import { updateConfig } from '../api';
 
@@ -19,7 +21,7 @@ const SENTRY_FIELDS: FieldDef[] = [
     key: 'quotaCheckIntervalSeconds',
     label: 'Polling interval (seconds)',
     type: 'number',
-    hint: 'How often to check rolling quota (default: 900s = 15m).',
+    hint: 'How often to check rolling quota (default: 60s, minimum: 30s).',
   },
   {
     key: 'quotaMilestoneHours',
@@ -58,7 +60,7 @@ const SENTRY_FIELDS: FieldDef[] = [
     key: 'antigravityCsrfToken',
     label: 'CSRF Token (x-codeium-csrf-token)',
     type: 'password',
-    hint: '🔒 Encrypted with AES-256-GCM in SQLite. Connect-RPC authentication token.',
+    hint: 'Encrypted at rest with AES-256-GCM. Connect-RPC authentication token.',
   },
   {
     key: 'quotaStateFilePath',
@@ -112,7 +114,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
             <div class="mb-4 flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div class="mb-1 flex items-center gap-2">
-                  <span class="text-2xl">🐝</span>
+                  <Icon icon={faNetworkWired} class="size-5 text-pine-iris" />
                   <h3 class="text-lg font-semibold text-pine-text">
                     Task Orchestrator &amp; Swarm Settings
                   </h3>
@@ -124,13 +126,20 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
               </div>
 
               <span
-                class={`rounded-full border px-3 py-1 text-xs font-bold tracking-wider uppercase ${
+                class={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold tracking-wider uppercase ${
                   isOrchestratorEnabled
                     ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
                     : 'border-pine-highlight bg-pine-overlay text-pine-subtle'
                 }`}
               >
-                {isOrchestratorEnabled ? '● Orchestrator Active' : '○ Orchestrator Disabled'}
+                <span
+                  class={`size-1.5 rounded-full ${
+                    isOrchestratorEnabled ? 'bg-pine-foam' : 'bg-pine-subtle'
+                  }`}
+                />
+                <span>
+                  {isOrchestratorEnabled ? 'Orchestrator Active' : 'Orchestrator Disabled'}
+                </span>
               </span>
             </div>
 
@@ -178,18 +187,6 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
               </div>
             )}
           </div>
-
-          <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
-            <h4 class="mb-2 text-sm font-semibold text-pine-text">
-              Pull-Based Swarm Architecture (Roadmap)
-            </h4>
-            <p class="text-xs/relaxed text-pine-subtle">
-              When enabled, worker machines or homelab containers connect upstream to Agylity via
-              secure WebSockets. When a model quota is nearing reset, tasks can be assigned
-              dynamically to any connected worker node on an isolated git branch without requiring
-              inbound network firewall exceptions or manual broadcast packets across boundaries.
-            </p>
-          </div>
         </div>
       );
 
@@ -207,26 +204,26 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
             onSaved={onChanged}
           />
 
-          <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+          <div class="rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <button
               type="button"
               onClick={() => setShowRawTable(!showRawTable)}
-              class="flex w-full cursor-pointer items-center justify-between text-sm font-semibold text-pine-subtle transition-colors hover:text-pine-text"
+              class="group flex w-full cursor-pointer items-center justify-between p-4 text-left transition-colors"
             >
               <div>
-                <span class="text-pine-text">Direct SQLite Overrides</span>
-                <p class="mt-0.5 text-xs font-normal text-pine-muted">
-                  Inspect and edit low-level key-value settings stored directly in SQLite (
-                  {showRawTable ? 'Hide table' : 'Expand table'})
+                <h3 class="text-sm font-semibold text-pine-text">Configuration Overrides</h3>
+                <p class="mt-0.5 text-xs text-pine-subtle">
+                  Inspect and edit low-level key-value settings
                 </p>
               </div>
-              <span class="rounded bg-pine-overlay px-2 py-1 text-xs text-pine-iris">
-                {showRawTable ? '▲ Collapse' : '▼ View All Keys'}
+              <span class="flex items-center gap-1.5 text-xs text-pine-subtle transition-colors group-hover:text-pine-text">
+                <span>{showRawTable ? 'Hide' : 'View all keys'}</span>
+                <Icon icon={showRawTable ? faChevronUp : faChevronDown} class="size-2.5" />
               </span>
             </button>
 
             {showRawTable && (
-              <div class="mt-6 border-t border-pine-highlight pt-6">
+              <div class="border-t border-pine-highlight/60 p-4">
                 <ConfigTable config={config} onUpdated={onChanged} />
               </div>
             )}

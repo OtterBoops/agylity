@@ -1,6 +1,8 @@
+import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import type { ConfigData, ToastState, QuotaSnapshot } from '../types';
 import { triggerDispatch } from '../api';
+import { Icon } from './Icon';
 
 interface DispatchModalProps {
   isOpen: boolean;
@@ -90,19 +92,23 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     >
       <div class="flex w-full max-w-lg flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl">
         <div class="flex items-center justify-between border-b border-pine-highlight pb-2">
-          <h3 class="text-lg font-semibold text-pine-text">⚡ Dispatch Continuation Task</h3>
+          <h3 class="flex items-center gap-2 text-lg font-semibold text-pine-text">
+            <Icon icon={faBolt} class="size-4 text-pine-iris" />
+            <span>Dispatch Continuation Task</span>
+          </h3>
           <button
             type="button"
-            class="cursor-pointer text-lg text-pine-subtle hover:text-pine-text"
+            class="cursor-pointer text-pine-subtle transition-colors hover:text-pine-text"
             onClick={onClose}
+            aria-label="Close modal"
           >
-            ✕
+            <Icon icon={faXmark} class="size-4" />
           </button>
         </div>
 
         {!isOrchestratorEnabled && (
-          <div class="flex items-start gap-2 rounded-lg border border-pine-gold bg-pine-gold/15 p-3 text-xs font-medium text-pine-gold">
-            <span class="text-base leading-none">⚠️</span>
+          <div class="flex items-start gap-2.5 rounded-lg border border-pine-gold bg-pine-gold/15 p-3 text-xs font-medium text-pine-gold">
+            <Icon icon={faTriangleExclamation} class="mt-0.5 size-4 shrink-0" />
             <span>
               <strong>Orchestrator Inactive:</strong> Task orchestrator is currently disabled
               (Agylity is operating purely as a 24/7 quota sentry). You can enable it anytime under{' '}
@@ -155,8 +161,8 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
 
           {isLowHeadroom && (
             <div class="flex flex-col gap-2 rounded-lg border border-pine-gold bg-pine-gold/20 p-3 text-xs font-medium text-pine-gold">
-              <div class="flex items-start gap-2">
-                <span class="text-base leading-none">⚠️</span>
+              <div class="flex items-start gap-2.5">
+                <Icon icon={faTriangleExclamation} class="mt-0.5 size-4 shrink-0" />
                 <span>
                   <strong>Low Headroom Warning:</strong> Remaining quota ({maxHeadroomPct}%) is
                   below the {minHeadroom}% safety floor. Dispatching now may incur paid AI overage

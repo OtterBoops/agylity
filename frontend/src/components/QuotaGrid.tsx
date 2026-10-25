@@ -142,12 +142,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
             {/* Quota 1: Weekly Limit (Primary Eval Target) */}
             <div class="flex flex-col gap-2 rounded-lg border border-pine-highlight/40 bg-pine-overlay/30 p-3">
               <div class="flex items-center justify-between text-xs font-semibold">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium text-pine-text">Weekly Limit</span>
-                  <span class="rounded border border-pine-iris/30 bg-pine-iris/20 px-1.5 py-0.5 font-mono text-[10px] leading-none tracking-wider text-pine-iris uppercase">
-                    Eval Target
-                  </span>
-                </div>
+                <span class="font-medium text-pine-text">Weekly Limit</span>
                 <span class="font-bold text-pine-text">{weeklyPct}%</span>
               </div>
               <div class="h-2.5 overflow-hidden rounded-full bg-pine-overlay">
@@ -209,18 +204,6 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
           </div>
         );
       })}
-
-      {/* Dual Quota & Policy Notice Card */}
-      <div class="col-span-1 flex items-center gap-3 rounded-xl border border-pine-highlight/70 bg-pine-surface/70 p-4 text-xs text-pine-subtle shadow-sm md:col-span-2 lg:col-span-3">
-        <span class="shrink-0 text-lg">🛡️</span>
-        <p>
-          <strong class="font-semibold text-pine-text">Dual Quota Policy:</strong> Agylity monitors
-          weekly subscription quotas as the primary evaluation target to maximize utilization before
-          the weekly reset, alongside 5-hour demand-smoothing rolling limits. Task dispatch is
-          locked below the safety floor (default: 10%) to prevent burning billable AI credits or
-          incurring pay-as-you-go overages.
-        </p>
-      </div>
     </div>
   );
 };

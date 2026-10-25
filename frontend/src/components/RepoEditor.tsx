@@ -62,7 +62,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       <div>
         <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
         <p class="mt-0.5 text-xs text-pine-subtle">
-          Target workspaces for Discord and dashboard task dispatch. Stored in SQLite.
+          Target workspaces for Discord and dashboard task dispatch.
         </p>
       </div>
 
@@ -78,6 +78,10 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
               <label class="text-xs font-medium text-pine-subtle">ID</label>
               <input
                 class={inputClass}
+                name={`agylity_repo_id_${i}`}
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
                 value={r.id}
                 placeholder="agylity"
                 onInput={(e) => patch(i, { id: (e.target as HTMLInputElement).value })}
@@ -87,15 +91,23 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
               <label class="text-xs font-medium text-pine-subtle">Name</label>
               <input
                 class={inputClass}
+                name={`agylity_repo_name_${i}`}
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
                 value={r.name}
                 placeholder="Agylity"
                 onInput={(e) => patch(i, { name: (e.target as HTMLInputElement).value })}
               />
             </div>
             <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-pine-subtle">Remote path</label>
+              <label class="text-xs font-medium text-pine-subtle">Directory path</label>
               <input
                 class={inputClass}
+                name={`agylity_repo_path_${i}`}
+                autoComplete="off"
+                data-1p-ignore="true"
+                data-lpignore="true"
                 value={r.path}
                 placeholder="/home/otter/Code/agylity"
                 onInput={(e) => patch(i, { path: (e.target as HTMLInputElement).value })}

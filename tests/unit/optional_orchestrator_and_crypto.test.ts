@@ -167,7 +167,7 @@ describe('Unit Tests: Optional Orchestrator, UI Precedence & Secret Encryption',
         assert.equal(res.secretsMeta.antigravityCsrfToken.isSet, true);
 
         // Non-secrets remain visible
-        assert.equal(res.resolved.quotaCheckIntervalSeconds, 900);
+        assert.equal(res.resolved.quotaCheckIntervalSeconds, 60);
       } finally {
         await closeWebServer(server);
         store.close();

@@ -430,16 +430,12 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
                 (s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`
               )
               .join(', ');
-            this.logger.info(
-              'Connected to Language Server Connect-RPC (%d pools: %s)',
-              snapshots.length,
-              summary
-            );
+            this.logger.info('Quota status: %s', summary);
             return snapshots;
           }
         }
       } catch (err: unknown) {
-        this.logger.debug(
+        this.logger.warn(
           'RetrieveUserQuotaSummary probe failed on %s: %s',
           base,
           err instanceof Error ? err.message : String(err)
@@ -479,15 +475,11 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const summary = snapshots
           .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
           .join(', ');
-        this.logger.info(
-          'Connected to Language Server CascadeModelConfig (%d pools: %s)',
-          snapshots.length,
-          summary
-        );
+        this.logger.info('Quota status: %s', summary);
         return snapshots;
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        this.logger.debug('CascadeModelConfig probe failed on %s: %s', base, lastError.message);
+        this.logger.warn('CascadeModelConfig probe failed on %s: %s', base, lastError.message);
       }
     }
 

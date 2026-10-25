@@ -47,7 +47,7 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 | `WEBHOOK_CUSTOM_HEADERS`          | `string`  | —         | Optional JSON object string containing custom HTTP headers sent with webhook requests (e.g. `{"Authorization":"Bearer ..."}`). |
 | **Quota Sentry**                  |           |           |                                                                                                                                |
 | `ANTIGRAVITY_ENDPOINT_URL`        | `string`  | —         | Custom Language Server Connect-RPC URL (port and CSRF credentials are auto-discovered from local process by default).          |
-| `QUOTA_CHECK_INTERVAL_SECONDS`    | `number`  | `900`     | Sentry polling interval (900s = 15m). Min: 10.                                                                                 |
+| `QUOTA_CHECK_INTERVAL_SECONDS`    | `number`  | `60`      | Sentry polling interval (60s = 1m). Min: 30.                                                                                   |
 | `QUOTA_ALERT_THRESHOLD_PERCENT`   | `number`  | `25`      | Minimum quota headroom percentage triggering alert.                                                                            |
 | `QUOTA_MILESTONE_HOURS`           | `string`  | `24,12,3` | Comma-separated deadline milestone evaluation windows.                                                                         |
 | `MIN_DISPATCH_HEADROOM_PERCENT`   | `number`  | `10`      | Safety floor headroom % preventing paid overages. Set to `0` if overages do not apply.                                         |

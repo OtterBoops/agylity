@@ -1,6 +1,8 @@
+import { faPause, faPlay } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { LogEntry, LogLevel } from '../types';
 import { getLogs } from '../api';
+import { Icon } from '../components/Icon';
 
 const MAX_LINES = 1000;
 
@@ -79,10 +81,11 @@ export const LogsView = () => {
         />
         <button
           type="button"
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm font-medium text-pine-text transition-colors hover:bg-pine-overlay"
+          class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm font-medium text-pine-text transition-colors hover:bg-pine-overlay"
           onClick={() => setPaused(!paused)}
         >
-          {paused ? '▶ Resume' : '⏸ Pause'}
+          <Icon icon={paused ? faPlay : faPause} class="size-3 text-pine-iris" />
+          <span>{paused ? 'Resume' : 'Pause'}</span>
         </button>
         <button
           type="button"

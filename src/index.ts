@@ -151,6 +151,7 @@ export class AgylityDaemon {
         endpointUrl: resolved.antigravityEndpointUrl,
         csrfToken: resolved.antigravityCsrfToken,
         port: resolved.antigravityLsPort,
+        minRefreshIntervalMs: 30000,
         logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {
           const state = sentryState.getState();
@@ -245,7 +246,7 @@ export class AgylityDaemon {
     }
 
     // 5. Setup recurring sentry interval
-    const intervalSeconds = Math.max(10, resolved.quotaCheckIntervalSeconds ?? 900);
+    const intervalSeconds = Math.max(30, resolved.quotaCheckIntervalSeconds ?? 60);
     this.logger.info('Sentry recurring check scheduled every %d seconds.', intervalSeconds);
     this.timer = setInterval(() => {
       void this.checkQuota().catch((err) => {
@@ -268,12 +269,24 @@ export class AgylityDaemon {
       const snapshots = await this.quotaClient.fetchQuota();
       const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
 
+      // Warning when quota is low or approaching safety floor
+      for (const s of snapshots) {
+        const pct = Math.round(s.remainingFraction * 100);
+        if (pct <= 10) {
+          this.logger.warn(
+            'Critical quota warning: %s is down to %d%% remaining',
+            s.displayName || s.family,
+            pct
+          );
+        }
+      }
+
       for (const alert of alerts) {
-        this.logger.info(
-          'Milestone alert triggered for %s (%d%% remaining, %sh until reset)',
+        this.logger.warn(
+          'Milestone warning: %s reached %sh milestone with %d%% quota remaining',
           alert.pool.displayName || alert.pool.poolId,
-          alert.remainingPercentage,
-          alert.milestoneHours
+          alert.milestoneHours,
+          alert.remainingPercentage
         );
         await this.notifier.notifyQuotaAlert(alert);
       }
@@ -446,7 +459,7 @@ export const main = async (): Promise<AgylityDaemon> => {
     logger.info('Received %s. Initiating graceful shutdown...', signal);
     try {
       await daemon.shutdown();
-      logger.info('Graceful shutdown completed cleanly.');
+      logger.info('Shutdown complete.');
       process.exit(0);
     } catch (err) {
       logger.error('Error during shutdown:', err);
@@ -458,7 +471,7 @@ export const main = async (): Promise<AgylityDaemon> => {
   process.once('SIGTERM', () => void handleSignal('SIGTERM'));
 
   await daemon.start();
-  logger.info('Daemon successfully started and monitoring rolling quota.');
+  logger.info('Daemon started.');
   return daemon;
 };
 

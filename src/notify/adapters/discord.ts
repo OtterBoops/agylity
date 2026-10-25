@@ -66,7 +66,7 @@ export const renderProgressBar = (fraction: number, totalBars = 10): string => {
 };
 
 export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder => {
-  const embed = new EmbedBuilder().setTitle('⚡ Antigravity Model Quota Status').setColor(0x5865f2);
+  const embed = new EmbedBuilder().setTitle('Antigravity Model Quota Status').setColor(0x5865f2);
 
   if (pools.length === 0) {
     embed.setDescription('No active quota pools currently monitored.');
@@ -315,7 +315,7 @@ export class DiscordNotifier implements Notifier {
         try {
           await interaction.reply({
             content:
-              '⚠️ No repositories are currently configured. Please configure repositories in settings.',
+              '[Notice] No repositories are currently configured. Please configure repositories in settings.',
             ephemeral: true,
           });
         } catch {
@@ -346,7 +346,7 @@ export class DiscordNotifier implements Notifier {
     const submissionKey = `${userId}_${interaction.customId}`;
     if (this.activeSubmissions.has(submissionKey)) {
       await interaction.editReply({
-        content: '⚠️ A task is already in progress. Please wait for it to complete.',
+        content: '[Warning] A task is already in progress. Please wait for it to complete.',
       });
       return;
     }
@@ -372,7 +372,7 @@ export class DiscordNotifier implements Notifier {
       const parseResult = TaskPromptSchema.safeParse(rawPrompt);
       if (!parseResult.success) {
         const errorMsg =
-          `❌ Invalid prompt: ${parseResult.error.errors[0]?.message ?? 'Prompt is required'}`.slice(
+          `[Error] Invalid prompt: ${parseResult.error.errors[0]?.message ?? 'Prompt is required'}`.slice(
             0,
             2000
           );
@@ -398,20 +398,20 @@ export class DiscordNotifier implements Notifier {
 
         if (result.success) {
           const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
-          const msg = `✅ Antigravity continuation complete${branch}`.slice(0, 2000);
+          const msg = `[Success] Antigravity continuation complete${branch}`.slice(0, 2000);
           await interaction.editReply({
             content: msg,
           });
         } else {
           const errMsg = result.error ? `: ${result.error}` : ': Execution aborted.';
-          const msg = `❌ Zero-Clobber Guardrail${errMsg}`.slice(0, 2000);
+          const msg = `[Blocked] Zero-Clobber Guardrail${errMsg}`.slice(0, 2000);
           await interaction.editReply({
             content: msg,
           });
         }
       } else {
         const msg =
-          `ℹ️ Agylity is operating in alerting-first mode. Task dispatch is inactive while swarm worker architecture is finalized.`.slice(
+          `[Notice] Agylity is operating in alerting-first mode. Task dispatch is inactive while swarm worker architecture is finalized.`.slice(
             0,
             2000
           );
@@ -421,7 +421,7 @@ export class DiscordNotifier implements Notifier {
       }
     } catch (err: any) {
       try {
-        const msg = `❌ Task dispatch failed: ${err.message}`.slice(0, 2000);
+        const msg = `[Error] Task dispatch failed: ${err.message}`.slice(0, 2000);
         await interaction.editReply({
           content: msg,
         });
@@ -447,7 +447,7 @@ export class DiscordNotifier implements Notifier {
 
       const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
       const embed = new EmbedBuilder()
-        .setTitle(`🚨 Quota Expiry Alert: ${poolName}`.slice(0, 256))
+        .setTitle(`[Alert] Quota Milestone: ${poolName}`.slice(0, 256))
         .setDescription(
           `**${alert.remainingPercentage}%** quota remains with only **${alert.milestoneHours}h** before reset!`.slice(
             0,
@@ -509,7 +509,7 @@ export class DiscordNotifier implements Notifier {
 
       const step = status.status ?? (status.step as string) ?? 'executing';
       const msg = status.message ?? `Status: ${step}`;
-      const channelMsg = `📡 **[Dispatch: ${step.toUpperCase()}]** ${msg}`.slice(0, 2000);
+      const channelMsg = `**[Dispatch: ${step.toUpperCase()}]** ${msg}`.slice(0, 2000);
       await (channel as any).send({
         content: channelMsg,
       });
@@ -553,7 +553,7 @@ export class DiscordNotifier implements Notifier {
       if ('send' in channel && typeof (channel as any).send === 'function') {
         await (channel as any).send({
           content:
-            '🔔 **Agylity Notification Test** — Discord gateway connection verified successfully.',
+            '**[Notice] Agylity Notification Test** — Discord gateway connection verified successfully.',
         });
       }
 

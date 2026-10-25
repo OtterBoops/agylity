@@ -6,68 +6,64 @@ interface AlertsTableProps {
 
 export const AlertsTable = ({ alerts }: AlertsTableProps) => {
   const pools = alerts?.pools || {};
-  const poolKeys = Object.keys(pools);
+  const firedEvents = Object.keys(pools)
+    .filter(
+      (k) => (pools[k]?.firedMilestones?.length ?? 0) > 0 || Boolean(pools[k]?.lastAlertSentAt)
+    )
+    .map((k) => ({
+      poolId: k,
+      ...pools[k]!,
+    }));
 
   return (
     <div class="mb-8">
-      <div class="mb-4 flex items-center justify-between">
-        <h2 class="text-xl font-semibold text-pine-text">
-          Sentry Alert History &amp; Milestone State
-        </h2>
-        <span class="text-xs text-pine-muted">
-          Probe Engine:{' '}
-          <span class="rounded bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-iris">
-            {alerts?.lastProbeSource || 'connect_rpc'}
-          </span>
-        </span>
+      <div class="mb-3">
+        <h3 class="text-base font-semibold text-pine-text">Alert Event Log</h3>
+        <p class="mt-0.5 text-xs text-pine-subtle">
+          Milestone warnings dispatched when quota thresholds are reached
+        </p>
       </div>
 
       <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
         <div class="overflow-x-auto">
           <table class="w-full border-collapse text-left text-sm">
             <thead>
-              <tr class="border-b border-pine-highlight bg-pine-overlay text-pine-subtle">
-                <th class="px-4 py-3 font-semibold">Model Pool</th>
-                <th class="px-4 py-3 font-semibold">Headroom</th>
-                <th class="px-4 py-3 font-semibold">Reset Time</th>
-                <th class="px-4 py-3 font-semibold">Fired Milestones</th>
-                <th class="px-4 py-3 font-semibold">Last Alert Sent</th>
+              <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-medium text-pine-subtle">
+                <th class="px-4 py-3">Time</th>
+                <th class="px-4 py-3">Model Pool</th>
+                <th class="px-4 py-3">Milestone</th>
+                <th class="px-4 py-3 text-right">Headroom at Alert</th>
               </tr>
             </thead>
             <tbody id="alertsTableBody" class="divide-y divide-pine-highlight/40">
-              {poolKeys.length === 0 ? (
+              {firedEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={5} class="px-4 py-6 text-center text-sm text-pine-muted">
-                    No alert milestones fired yet in current cycle
+                  <td colSpan={4} class="px-4 py-8 text-center text-xs text-pine-muted">
+                    No milestone alerts have fired in the current cycle.
                   </td>
                 </tr>
               ) : (
-                poolKeys.map((k) => {
-                  const pool = pools[k]!;
-                  const pct = Math.round(pool.remainingFraction * 100);
-                  const fired = pool.firedMilestones?.join(', ') || 'None';
-                  const lastSent = pool.lastAlertSentAt
-                    ? new Date(pool.lastAlertSentAt).toLocaleString()
-                    : 'Never';
-
-                  return (
-                    <tr key={k} class="transition-colors hover:bg-white/[0.02]">
-                      <td class="px-4 py-3 font-mono text-xs text-pine-iris">
-                        <span class="rounded bg-pine-overlay px-1.5 py-0.5">{k}</span>
-                      </td>
-                      <td class="px-4 py-3 font-medium text-pine-text">{pct}%</td>
-                      <td class="px-4 py-3 text-pine-subtle">
-                        {pool.resetTime ? new Date(pool.resetTime).toLocaleTimeString() : 'N/A'}
-                      </td>
-                      <td class="px-4 py-3">
-                        <span class="rounded border border-pine-gold bg-pine-gold/20 px-2 py-0.5 text-[11px] font-bold tracking-wider text-pine-gold uppercase">
-                          {fired}
-                        </span>
-                      </td>
-                      <td class="px-4 py-3 text-xs text-pine-subtle">{lastSent}</td>
-                    </tr>
-                  );
-                })
+                firedEvents.map((ev) => (
+                  <tr key={ev.poolId} class="transition-colors hover:bg-white/[0.02]">
+                    <td class="px-4 py-3 text-xs text-pine-subtle">
+                      {ev.lastAlertSentAt
+                        ? new Date(ev.lastAlertSentAt).toLocaleTimeString([], {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                          })
+                        : 'N/A'}
+                    </td>
+                    <td class="px-4 py-3 font-mono text-xs text-pine-iris">{ev.poolId}</td>
+                    <td class="px-4 py-3">
+                      <span class="font-mono text-xs text-pine-gold">
+                        {ev.firedMilestones.join(', ')}
+                      </span>
+                    </td>
+                    <td class="px-4 py-3 text-right text-xs font-medium text-pine-text">
+                      {Math.round(ev.remainingFraction * 100)}%
+                    </td>
+                  </tr>
+                ))
               )}
             </tbody>
           </table>

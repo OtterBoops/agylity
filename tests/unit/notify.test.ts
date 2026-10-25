@@ -388,7 +388,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       assert.deepEqual(interaction.state.editedData, {
         content:
-          '✅ Antigravity continuation complete on branch `antigravity/continuation-20261019-test`',
+          '[Success] Antigravity continuation complete on branch `antigravity/continuation-20261019-test`',
       });
     });
 
@@ -415,7 +415,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       assert.deepEqual(interaction.state.editedData, {
         content:
-          '❌ Zero-Clobber Guardrail: Host node@worker failed to wake within 60s timeout. Aborted.',
+          '[Blocked] Zero-Clobber Guardrail: Host node@worker failed to wake within 60s timeout. Aborted.',
       });
     });
 
@@ -498,7 +498,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const content = interaction.state.editedData?.content ?? '';
       assert.ok(content.length <= 2000);
-      assert.ok(content.startsWith('❌ Zero-Clobber Guardrail: Stack trace error details:'));
+      assert.ok(content.startsWith('[Blocked] Zero-Clobber Guardrail: Stack trace error details:'));
     });
   });
 
@@ -508,7 +508,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   describe('5. Discord UI Components, Embeds & Slash Command', () => {
     it('renderQuotaEmbed handles zero model pools gracefully', () => {
       const embed = renderQuotaEmbed([]);
-      assert.equal(embed.data.title, '⚡ Antigravity Model Quota Status');
+      assert.equal(embed.data.title, 'Antigravity Model Quota Status');
       assert.equal(embed.data.description, 'No active quota pools currently monitored.');
       assert.equal(embed.data.fields, undefined);
     });
@@ -720,7 +720,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(interaction.state.replied, true);
       assert.deepEqual(interaction.state.replyData, {
         content:
-          '⚠️ No repositories are currently configured. Please configure repositories in settings.',
+          '[Notice] No repositories are currently configured. Please configure repositories in settings.',
         ephemeral: true,
       });
     });
