@@ -36,8 +36,11 @@ const formatResetDate = (isoStr?: string): string => {
 export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) => {
   if (quota.length === 0) {
     return (
-      <div id="quotaGrid" class="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
-        <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+      <div
+        id="quotaGrid"
+        class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3"
+      >
+        <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-5 shadow-sm sm:p-6">
           <p class="text-sm text-pine-muted">Probing Antigravity Language Server models...</p>
         </div>
       </div>
@@ -45,7 +48,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
   }
 
   return (
-    <div id="quotaGrid" class="mb-8 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+    <div id="quotaGrid" class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
       {quota.map((pool) => {
         const weeklyFraction = pool.weekly?.remainingFraction ?? pool.remainingFraction;
         const weeklyHours = pool.weekly?.hoursUntilReset ?? pool.hoursUntilReset;
@@ -98,52 +101,57 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
         return (
           <div
             key={pool.poolId}
-            class="flex h-full flex-col justify-between gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm transition-colors hover:border-pine-iris/50"
+            class="flex h-full flex-col justify-between gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm transition-colors hover:border-pine-iris/50 sm:gap-5 sm:p-5 md:p-6"
           >
             {/* Header: Title, Pool ID, and Weekly Eval Status Badge */}
-            <div class="flex min-h-[48px] items-start justify-between gap-3">
+            <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
-                <h2 class="truncate text-lg font-semibold text-pine-text" title={pool.displayName}>
+                <h2
+                  class="text-base leading-snug font-semibold text-pine-text sm:text-lg"
+                  title={pool.displayName}
+                >
                   {pool.displayName}
                 </h2>
-                <div class="mt-1 flex items-center gap-2 text-xs text-pine-muted">
-                  <span>
+                <div class="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs text-pine-muted sm:gap-2">
+                  <span class="inline-flex items-center gap-1">
                     Pool:{' '}
-                    <span class="rounded bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-iris">
+                    <span class="rounded bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris">
                       {pool.poolId}
                     </span>
                   </span>
                   {pool.overageEnabled ? (
                     <span
-                      class="inline-flex items-center gap-1 rounded border border-pine-gold/40 bg-pine-gold/20 px-1.5 py-0.5 text-[10px] font-bold text-pine-gold"
+                      class="inline-flex items-center gap-1 rounded border border-pine-gold/40 bg-pine-gold/20 px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap text-pine-gold"
                       title="AI Flex Credits/Overages are enabled. Falling below safety floor risks monetary charges."
                     >
-                      <span class="size-1.5 animate-pulse rounded-full bg-pine-gold"></span>
+                      <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-pine-gold"></span>
                       Overages Active
                     </span>
                   ) : (
                     <span
-                      class="inline-flex items-center gap-1 rounded border border-pine-foam/40 bg-pine-foam/20 px-1.5 py-0.5 text-[10px] font-bold text-pine-foam"
+                      class="inline-flex items-center gap-1 rounded border border-pine-foam/40 bg-pine-foam/20 px-1.5 py-0.5 text-[10px] font-bold whitespace-nowrap text-pine-foam"
                       title="Capped Plan: Quota depletion triggers 429 throttling without monetary charges."
                     >
-                      <span class="size-1.5 rounded-full bg-pine-foam"></span>
+                      <span class="size-1.5 shrink-0 rounded-full bg-pine-foam"></span>
                       Capped Plan
                     </span>
                   )}
                 </div>
               </div>
               <span
-                class={`shrink-0 rounded px-2 py-0.5 text-[11px] font-bold tracking-wider uppercase ${badgeClasses}`}
+                class={`shrink-0 rounded px-2 py-0.5 text-[10px] font-bold tracking-wider whitespace-nowrap uppercase sm:text-[11px] ${badgeClasses}`}
               >
                 {statusText}
               </span>
             </div>
 
             {/* Quota 1: Weekly Limit (Primary Eval Target) */}
-            <div class="flex flex-col gap-2 rounded-lg border border-pine-highlight/40 bg-pine-overlay/30 p-3">
+            <div class="flex flex-col gap-2 rounded-lg border border-pine-highlight/40 bg-pine-overlay/30 p-3 sm:p-3.5">
               <div class="flex items-center justify-between text-xs font-semibold">
                 <span class="font-medium text-pine-text">Weekly Limit</span>
-                <span class="font-bold text-pine-text">{weeklyPct}%</span>
+                <span class="font-mono text-xs font-bold text-pine-text sm:text-sm">
+                  {weeklyPct}%
+                </span>
               </div>
               <div class="h-2.5 overflow-hidden rounded-full bg-pine-overlay">
                 <div
@@ -151,9 +159,9 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                   style={{ width: `${Math.min(100, Math.max(0, weeklyPct))}%` }}
                 />
               </div>
-              <div class="mt-0.5 flex justify-between text-[11px] text-pine-subtle">
+              <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-[11px] text-pine-subtle">
                 <span>Resets in {weeklyHuman}</span>
-                <span>{weeklyDateStr}</span>
+                <span class="font-mono text-[10px] sm:text-[11px]">{weeklyDateStr}</span>
               </div>
             </div>
 
@@ -162,7 +170,9 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
               <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight/20 bg-pine-overlay/15 px-3 py-2">
                 <div class="flex items-center justify-between text-xs">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="font-bold text-pine-text">{shortTermPct}%</span>
+                  <span class="font-mono text-xs font-bold text-pine-text sm:text-sm">
+                    {shortTermPct}%
+                  </span>
                 </div>
                 <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay">
                   <div
@@ -170,7 +180,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                     style={{ width: `${Math.min(100, Math.max(0, shortTermPct))}%` }}
                   />
                 </div>
-                <div class="mt-0.5 flex justify-between text-[11px] text-pine-muted">
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-[11px] text-pine-muted">
                   <span>Capacity throttle</span>
                   <span>Refreshes in {formatResetHuman(shortTermHours)}</span>
                 </div>
@@ -184,18 +194,18 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay">
                   <div class="size-full rounded-full bg-pine-iris/30" />
                 </div>
-                <div class="mt-0.5 flex justify-between text-[11px] text-pine-muted">
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-[11px] text-pine-muted">
                   <span>Capacity throttle</span>
                   <span class="text-pine-subtle italic">Tier Unconstrained</span>
                 </div>
               </div>
             )}
 
-            {/* Models in Pool - Pinned to bottom with mt-auto */}
-            <div class="mt-auto flex items-center justify-between border-t border-pine-highlight/50 pt-3 text-xs text-pine-subtle">
-              <span>Models:</span>
+            {/* Models in Pool - Responsive flex layout utilizing all space */}
+            <div class="mt-auto flex items-center justify-between gap-2 border-t border-pine-highlight/50 pt-3 text-xs text-pine-subtle">
+              <span class="shrink-0 text-pine-muted">Models:</span>
               <span
-                class="max-w-[200px] truncate font-medium text-pine-text"
+                class="min-w-0 flex-1 truncate text-right font-medium text-pine-text"
                 title={pool.models?.join(', ')}
               >
                 {pool.models?.join(', ') || 'N/A'}

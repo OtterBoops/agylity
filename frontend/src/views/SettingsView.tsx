@@ -191,6 +191,46 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
       );
 
     case 'settings/repositories':
+      if (!isOrchestratorEnabled) {
+        return (
+          <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+            <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
+            <p class="mt-1 text-xs text-pine-subtle">
+              Repository workspaces are only used when Task Orchestration is active. By default,
+              Agylity operates purely as an autonomous 24/7 quota sentry.
+            </p>
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight/60 bg-pine-overlay/40 p-4">
+              <div>
+                <p class="text-sm font-semibold text-pine-text">
+                  Orchestrator is currently disabled
+                </p>
+                <p class="mt-0.5 text-xs text-pine-muted">
+                  Enable the orchestrator to configure target repositories for task dispatching.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleToggleOrchestrator}
+                disabled={isUpdatingOrchestrator}
+                class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm hover:opacity-90 disabled:opacity-50"
+              >
+                {isUpdatingOrchestrator ? 'Enabling...' : 'Enable Orchestrator'}
+              </button>
+            </div>
+            {orchestratorToast && (
+              <div
+                class={`mt-4 rounded-lg border p-3 text-xs font-medium ${
+                  orchestratorToast.type === 'success'
+                    ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
+                    : 'border-pine-love bg-pine-love/20 text-pine-love'
+                }`}
+              >
+                {orchestratorToast.message}
+              </div>
+            )}
+          </div>
+        );
+      }
       return <RepoEditor config={config} onSaved={onChanged} />;
 
     case 'settings/advanced':

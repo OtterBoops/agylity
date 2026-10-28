@@ -88,20 +88,21 @@ export const App = () => {
       <Sidebar
         route={route}
         onNavigate={navigate}
-        theme={theme}
-        onThemeChange={setTheme}
+        orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
       />
 
-      <div class="min-w-0 flex-1 p-6 md:p-8">
-        <div class="mx-auto max-w-6xl">
+      <div class="min-w-0 flex-1 p-4 sm:p-6 md:p-8">
+        <div class="mx-auto max-w-7xl">
           <TopBar
             title={title}
             subtitle={subtitle}
             isRefreshing={isRefreshing}
             refreshCooldown={refreshCooldown}
             orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
+            theme={theme}
+            onThemeChange={setTheme}
             onRefresh={handleManualRefresh}
             onOpenDispatch={() => setDispatchModalOpen(true)}
           />

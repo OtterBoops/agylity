@@ -18,6 +18,8 @@ services:
     volumes:
       # Persistent Data Directory (SQLite store and sentry state)
       - ./data:/app/data
+      # Target repositories mounted in container at /repos/<id>
+      # - /path/to/my-repo:/repos/my-repo
       # Mount host Antigravity OAuth tokens (read-only)
       - ~/.gemini:/home/node/.gemini:ro
       - ~/.config/antigravity:/home/node/.config/antigravity:ro

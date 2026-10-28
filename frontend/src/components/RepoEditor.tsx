@@ -29,7 +29,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
   const patch = (i: number, p: Partial<Repo>) =>
     update(repos.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
 
-  const invalid = repos.some((r) => !r.id.trim() || !r.name.trim() || !r.path.trim());
+  const invalid = repos.some((r) => !r.id.trim() || !r.name.trim());
   const ids = repos.map((r) => r.id.trim());
   const duplicate = new Set(ids).size !== ids.length;
 
@@ -37,13 +37,17 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
     setIsSaving(true);
     setToast(null);
 
-    const clean = repos.map((r) => ({
-      id: r.id.trim(),
-      name: r.name.trim(),
-      path: r.path.trim(),
-      defaultBranch: r.defaultBranch?.trim() || 'main',
-      ...(r.description?.trim() ? { description: r.description.trim() } : {}),
-    }));
+    const clean = repos.map((r) => {
+      const id = r.id.trim();
+      const path = r.path?.trim() || (id ? `/repos/${id}` : '/repos');
+      return {
+        id,
+        name: r.name.trim(),
+        path,
+        defaultBranch: r.defaultBranch?.trim() || 'main',
+        ...(r.description?.trim() ? { description: r.description.trim() } : {}),
+      };
+    });
 
     updateConfig({ repositories: clean })
       .then(() => {
@@ -84,7 +88,15 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
                 data-lpignore="true"
                 value={r.id}
                 placeholder="agylity"
-                onInput={(e) => patch(i, { id: (e.target as HTMLInputElement).value })}
+                onInput={(e) => {
+                  const nextId = (e.target as HTMLInputElement).value;
+                  const prevAuto = r.id ? `/repos/${r.id}` : '';
+                  const isAuto = !r.path || r.path === prevAuto;
+                  patch(i, {
+                    id: nextId,
+                    path: isAuto ? (nextId ? `/repos/${nextId.trim()}` : '') : r.path,
+                  });
+                }}
               />
             </div>
             <div class="flex flex-col gap-1.5">
@@ -101,15 +113,20 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
               />
             </div>
             <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-pine-subtle">Directory path</label>
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-medium text-pine-subtle">In-container path</label>
+                <span class="font-mono text-[10px] text-pine-muted">
+                  auto: /repos/{r.id.trim() || 'id'}
+                </span>
+              </div>
               <input
                 class={inputClass}
                 name={`agylity_repo_path_${i}`}
                 autoComplete="off"
                 data-1p-ignore="true"
                 data-lpignore="true"
-                value={r.path}
-                placeholder="/home/otter/Code/agylity"
+                value={r.path || (r.id.trim() ? `/repos/${r.id.trim()}` : '')}
+                placeholder={`/repos/${r.id.trim() || 'id'}`}
                 onInput={(e) => patch(i, { path: (e.target as HTMLInputElement).value })}
               />
             </div>
@@ -135,7 +152,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         <div class="flex items-center gap-3">
           {(invalid || duplicate) && draft && (
             <span class="text-xs text-pine-gold">
-              {duplicate ? 'IDs must be unique' : 'ID, name and path are required'}
+              {duplicate ? 'IDs must be unique' : 'ID and name are required'}
             </span>
           )}
           <button

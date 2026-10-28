@@ -45,7 +45,7 @@ RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 
 # Create persistent state directory for SQLite database (agylity.db)
-RUN mkdir -p /app/data /home/node/.gemini /home/node/.config
+RUN mkdir -p /app/data /home/node/.gemini /home/node/.config /repos
 
 # Default production environment configuration
 ENV NODE_ENV=production
@@ -57,7 +57,7 @@ ENV WEB_UI_PORT=3000
 ENV WEB_UI_HOST=0.0.0.0
 
 # Persistent volume for SQLite database and state
-VOLUME ["/app/data"]
+VOLUME ["/app/data", "/repos"]
 
 # Expose Web UI dashboard port (conditional listener)
 EXPOSE 3000

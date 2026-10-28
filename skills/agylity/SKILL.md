@@ -18,6 +18,16 @@ description: >-
   - Process Execution: Native `node:child_process.execFile` with array arguments.
   - Logging: Pure TypeScript universal pluggable logger (`src/logs/logger.ts`) with child namespacing, custom sinks, fault isolation, and secret-redacting in-memory ring buffering.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
+- **Container-Native Repository Mounts:**
+  - In containerized deployments (Docker / daemon), target repositories are mounted under `/repos/<id>` (`VOLUME ["/app/data", "/repos"]`).
+  - Web UI dashboard and configuration schemas must automatically derive and default repository directory paths to `/repos/<id>` so users never need to manually enter host paths.
+- **Responsive Dashboard Architecture:**
+  - Layout is strictly mobile-first: 1-column on mobile, 2-column on tablet/laptop (`md:grid-cols-2`), scaling to 3-column on desktop (`xl:grid-cols-3`).
+  - Sticky mobile header `< md` with collapsible navigation drawer; fixed/sticky sidebar on `md+`.
+  - Quota cards enforce non-truncating headers, dynamic model name allocation, and `whitespace-nowrap` badge chip integrity.
+- **Zero In-Place Container Mutation:**
+  - Never hot-patch a running container via `docker cp` (e.g. copying `dist/` into `/app/dist`).
+  - For local development and rapid iteration, iterate using the Vite dev server and host runtime directly. When validating container images, perform a clean container rebuild (`docker compose build` / `docker build`) rather than mutating running containers in-place.
 
 ---
 
@@ -181,6 +191,11 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
 - **Discord 3-Second Timeout Guard:**
   Discord API requires interactions (slash commands like `/quota`, modal submissions) to receive an initial acknowledgment within **3000ms**, or it throws fatal error `10062: Unknown interaction`.
   - **Invariant:** Modal submissions and slash commands must immediately invoke `await interaction.deferReply()` prior to any network I/O, quota polling, or task spawning.
+- **Clean Alert Formatting (Anti-AI Invariant):**
+  - Notification embeds and dispatch alerts must use clean, professional bracketed tags (`[Alert]`, `[Notice]`, `[Blocked]`, `[Success]`, `[Error]`) with zero decorative emojis.
+  - Sentry polling intervals enforce a minimum 30s clamp (default: 60s) with cached cooldown to prevent Connect-RPC log flood.
+- **Multi-Channel Configuration UI:**
+  - Web UI notification settings must provide independent on/off toggles per destination channel, expanding relevant credentials and settings directly in-place.
 
 ---
 
