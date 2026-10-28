@@ -20,23 +20,15 @@ services:
       - ./data:/app/data
       # Target repositories mounted in container at /repos/<id>
       # - /path/to/my-repo:/repos/my-repo
-      # Mount host Antigravity OAuth tokens (read-only)
-      - ~/.gemini:/home/node/.gemini:ro
+      # Mount host Antigravity CLI & OAuth tokens
+      # - /usr/local/bin/agy:/usr/local/bin/agy:ro
+      - ~/.gemini:/home/node/.gemini
       - ~/.config/antigravity:/home/node/.config/antigravity:ro
       # Mount git identity
       - ~/.gitconfig:/home/node/.gitconfig:ro
 
-    env_file:
-      - .env
-
     environment:
-      - NODE_ENV=production
-      - DATA_DIR=/app/data
-      - DATABASE_PATH=/app/data/agylity.db
-      - QUOTA_STATE_FILE_PATH=/app/data/state.json
       - WEB_UI_ENABLED=true
-      - WEB_UI_PORT=3000
-      - WEB_UI_HOST=0.0.0.0
 
     logging:
       driver: 'json-file'
