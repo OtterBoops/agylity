@@ -191,6 +191,18 @@ export const discoverLocalLanguageServer = async (
 
 // Connect-RPC Client Implementation
 
+const isConnectionRefused = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('econnrefused') ||
+    msg.includes('ehostunreach') ||
+    msg.includes('enotfound') ||
+    msg.includes('connection refused') ||
+    msg.includes('failed due to a network error')
+  );
+};
+
 export class ConnectRpcQuotaClient implements IQuotaClient {
   private endpointUrl?: string;
   private host: string;
@@ -206,6 +218,8 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private lastKnownSnapshots: QuotaSnapshot[] = [];
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
+  private activeProvider: 'rpc' | 'cli' | 'unknown' = 'unknown';
+  private nextRpcProbeAt: number = 0;
   private fetchFn?: typeof fetch;
   private logger: Logger;
   private execFileFn: (
@@ -257,6 +271,28 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       return this.lastKnownSnapshots;
     }
 
+    // Fast path: if already latched to healthy CLI fallback and RPC probe cooldown is active, query CLI directly
+    const shouldProbeRpc =
+      force ||
+      this.activeProvider === 'rpc' ||
+      this.activeProvider === 'unknown' ||
+      Date.now() >= this.nextRpcProbeAt;
+
+    if (!shouldProbeRpc && this.enableCliFallback) {
+      try {
+        const cliSnapshots = await this.fallbackToCli();
+        if (cliSnapshots && cliSnapshots.length > 0) {
+          this.lastKnownSnapshots = cliSnapshots;
+          this.lastFetchedAt = Date.now();
+          return cliSnapshots;
+        }
+      } catch (cliErr: unknown) {
+        // CLI failed: reset provider to force immediate RPC re-probe
+        this.activeProvider = 'unknown';
+        this.nextRpcProbeAt = 0;
+      }
+    }
+
     let rpcError: Error | null = null;
 
     // 0. Proactively discover live process credentials if endpointUrl is not explicitly fixed
@@ -277,6 +313,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     try {
       const snapshots = await this.tryConnectRpc();
       if (snapshots && snapshots.length > 0) {
+        this.activeProvider = 'rpc';
         this.lastKnownSnapshots = snapshots;
         this.lastFetchedAt = Date.now();
         return snapshots;
@@ -292,6 +329,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         if (this.applyDiscoveredCredentials(discovered)) {
           const snapshots = await this.tryConnectRpc();
           if (snapshots && snapshots.length > 0) {
+            this.activeProvider = 'rpc';
             this.lastKnownSnapshots = snapshots;
             this.lastFetchedAt = Date.now();
             return snapshots;
@@ -308,10 +346,16 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       try {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
+          this.activeProvider = 'cli';
+          this.nextRpcProbeAt = Date.now() + 15 * 60 * 1000;
           this.logger.info('Retrieved %d model pools via agy CLI fallback', cliSnapshots.length);
+          this.lastKnownSnapshots = cliSnapshots;
+          this.lastFetchedAt = Date.now();
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
+        this.activeProvider = 'unknown';
+        this.nextRpcProbeAt = 0;
         const cliError = cliErr instanceof Error ? cliErr : new Error(String(cliErr));
         this.logger.error('CLI fallback failed: %s', cliError.message);
         throw new LanguageServerError(
@@ -371,8 +415,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       this.port = config.antigravityLsPort;
       this.fallbackPorts = [config.antigravityLsPort, ...this.fallbackPorts];
     }
-    // Invalidate cached snapshots so next fetch immediately uses updated endpoint
+    // Invalidate cached snapshots and reset active provider so next fetch immediately uses updated endpoint
     this.lastFetchedAt = 0;
+    this.activeProvider = 'unknown';
+    this.nextRpcProbeAt = 0;
     this.logger.info(
       'Updated Language Server config (endpoint: %s, port: %d)',
       this.endpointUrl ?? 'dynamic',
@@ -403,6 +449,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     }
 
     const kyInstance = this.fetchFn ? ky.create({ fetch: this.fetchFn }) : ky;
+    const unreachableBases = new Set<string>();
 
     // 1. First attempt RetrieveUserQuotaSummary (exposes both weekly & 5h limits)
     for (const base of targetBases) {
@@ -435,7 +482,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           }
         }
       } catch (err: unknown) {
-        this.logger.warn(
+        if (isConnectionRefused(err)) {
+          unreachableBases.add(base);
+        }
+        this.logger.debug(
           'RetrieveUserQuotaSummary probe failed on %s: %s',
           base,
           err instanceof Error ? err.message : String(err)
@@ -444,9 +494,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
     }
 
-    // 2. Secondary fallback: GetCascadeModelConfigData
+    // 2. Secondary fallback: GetCascadeModelConfigData (skip bases where connection was refused)
+    const reachableBases = targetBases.filter((b) => !unreachableBases.has(b));
     let lastError: Error | null = null;
-    for (const base of targetBases) {
+    for (const base of reachableBases) {
       try {
         const cascadeUrl = `${base}${RPC_PATH}`;
         const response = await kyInstance.post(cascadeUrl, {
@@ -479,11 +530,11 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         return snapshots;
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        this.logger.warn('CascadeModelConfig probe failed on %s: %s', base, lastError.message);
+        this.logger.debug('CascadeModelConfig probe failed on %s: %s', base, lastError.message);
       }
     }
 
-    this.logger.warn(
+    this.logger.debug(
       'Connect-RPC failed across all target ports: %s',
       lastError?.message ?? 'Endpoint unreachable'
     );

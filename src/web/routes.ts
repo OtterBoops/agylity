@@ -554,15 +554,32 @@ export const handleRequest = async (
         let resultMessage = `Test notification sent via ${channel}!`;
         let isSuccess = true;
 
-        const activeNotifier =
-          options.notifier ??
-          (await (async () => {
-            const { createNotifier } = await import('../notify/factory.js');
-            return createNotifier(targetChannel ?? resolved, {});
-          })());
+        let activeNotifier: any;
+        let shouldShutdown = false;
+
+        if (options.notifier) {
+          if (targetChannel) {
+            if (options.notifier.channelName === targetChannel) {
+              activeNotifier = options.notifier;
+            } else if (
+              'getNotifier' in options.notifier &&
+              typeof (options.notifier as any).getNotifier === 'function'
+            ) {
+              activeNotifier = (options.notifier as any).getNotifier(targetChannel);
+            }
+          } else if (options.notifier.channelName !== 'none') {
+            activeNotifier = options.notifier;
+          }
+        }
+
+        if (!activeNotifier) {
+          const { createNotifier } = await import('../notify/factory.js');
+          activeNotifier = await createNotifier(targetChannel ?? resolved, resolved);
+          shouldShutdown = true;
+        }
 
         try {
-          if (!options.notifier) {
+          if (shouldShutdown) {
             await activeNotifier.initialize();
           }
 
@@ -574,7 +591,7 @@ export const handleRequest = async (
             await activeNotifier.notifyQuotaAlert(sampleAlert);
           }
         } finally {
-          if (!options.notifier) {
+          if (shouldShutdown) {
             await activeNotifier.shutdown();
           }
         }

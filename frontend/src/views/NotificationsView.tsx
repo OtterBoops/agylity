@@ -1,4 +1,5 @@
 import {
+  faArrowUpRightFromSquare,
   faChevronDown,
   faChevronRight,
   faLink,
@@ -495,9 +496,21 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                               setDiscordClientId((e.target as HTMLInputElement).value)
                             }
                           />
-                          <span class="text-[11px] text-pine-muted">
-                            Found in Discord Developer Portal General Info
-                          </span>
+                          <div class="flex items-center justify-between text-[11px] text-pine-muted">
+                            <span>Found in Discord Developer Portal General Info</span>
+                            {discordClientId.trim() && (
+                              <a
+                                href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(discordClientId.trim())}&permissions=2147601408&scope=bot%20applications.commands`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                class="inline-flex items-center gap-1 font-medium text-pine-iris hover:underline"
+                                title="Authorize bot with exact required permissions and slash command scopes"
+                              >
+                                <span>Authorize Bot URL</span>
+                                <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                              </a>
+                            )}
+                          </div>
                         </div>
                         <div class="flex flex-col gap-1.5">
                           <label class="text-xs font-medium text-pine-subtle">

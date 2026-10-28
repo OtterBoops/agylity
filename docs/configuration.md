@@ -64,7 +64,40 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 
 ---
 
-## 3. Repositories Management
+## 3. Discord Bot Setup & Permissions
+
+Agylity uses Discord for real-time quota telemetry alerts, formatted progress bar embeds, and slash commands (`/quota`, `/dispatch`).
+
+### One-Click Bot Invite Link
+
+To authorize the bot on your Discord server with exact required permissions and slash command integration scopes, replace `<CLIENT_ID>` with your Discord Application ID from the Developer Portal's **General Information** page:
+
+```text
+https://discord.com/oauth2/authorize?client_id=<CLIENT_ID>&permissions=2147601408&scope=bot%20applications.commands
+```
+
+### Discord Developer Portal Requirements
+
+1. **OAuth2 Scopes**:
+   - `bot`
+   - `applications.commands` _(Mandatory for `/quota` and `/dispatch` to register on your server)_
+2. **Permissions Integer (`2147601408`)**:
+   - **View Channels** (`1024`)
+   - **Send Messages** (`2048`)
+   - **Embed Links** (`16384`) — required for quota progress bar embeds
+   - **Attach Files** (`32768`)
+   - **Read Message History** (`65536`)
+   - **Use Slash Commands** (`2147483648`)
+3. **Privileged Gateway Intents**:
+   - **None required**. Leave `Message Content Intent`, `Server Members Intent`, and `Presence Intent` **disabled**. Agylity uses interaction callbacks and does not inspect general chat messages.
+
+### Server Channel Requirements
+
+Inside your Discord server, ensure the bot's role has permission to **View Channel**, **Send Messages**, and **Embed Links** in the channel matching `DISCORD_NOTIFICATION_CHANNEL_ID`.
+
+---
+
+## 4. Repositories Management
 
 Repository targets for task dispatch (Discord dropdown and Web UI modal) are managed directly in the Web Dashboard under **Settings → Repositories** and persisted in SQLite. This avoids storing complex, escaping-prone JSON arrays in `.env`.
 
@@ -78,7 +111,7 @@ When configured, each repository record includes:
 
 ---
 
-## 4. Test Notification Trigger (`POST /api/notify/test`)
+## 5. Test Notification Trigger (`POST /api/notify/test`)
 
 The web dashboard and REST API provide an endpoint to verify active notification channels without waiting for a quota milestone:
 
