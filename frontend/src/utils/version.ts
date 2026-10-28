@@ -6,7 +6,7 @@ export interface VersionCheckResult {
   isChecking: boolean;
 }
 
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.2.0';
 const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour

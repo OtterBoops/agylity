@@ -316,7 +316,7 @@ export class WebhookNotifier implements Notifier {
     const bodyStr = JSON.stringify(outgoingPayload);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Agylity-Notifier/0.1.0',
+      'User-Agent': 'Agylity-Notifier/0.2.0',
     };
 
     if (this.config.webhookCustomHeaders) {
