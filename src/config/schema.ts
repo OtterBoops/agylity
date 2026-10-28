@@ -174,6 +174,15 @@ export interface AppConfig {
 
 export type ResolvedConfig = AppConfig;
 
+export const CANONICAL_SECRET_CONFIG_KEYS = [
+  'discordToken',
+  'antigravityCsrfToken',
+  'notificationWebhookUrl',
+  'webhookSecret',
+] as const satisfies readonly (keyof AppConfig)[];
+
+export type SecretConfigKey = (typeof CANONICAL_SECRET_CONFIG_KEYS)[number];
+
 // Built-in Defaults (Level 3 Fallback)
 export const BUILTIN_DEFAULTS: AppConfig = {
   notificationChannel: 'none',

@@ -25,6 +25,13 @@ import type {
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import {
+  buildQuotaAlertEmbed,
+  buildTestAlertEmbed,
+  buildQuotaStatusEmbed,
+  renderSquareProgressBar,
+  formatResetWindow,
+} from '../embeds/index.js';
 
 /**
  * Task prompt validation schema enforcing 1-4000 character boundaries.
@@ -52,14 +59,7 @@ export const generateProgressBar = (
   return filledChar.repeat(filled) + emptyChar.repeat(empty);
 };
 
-export const renderSquareProgressBar = (fraction: number, totalBars = 10): string => {
-  const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
-  const bar = generateProgressBar(fraction, safeTotalBars, '■', '□');
-  const percent = Math.round(
-    Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0)) * 100
-  );
-  return `\`[${bar}]\` **${percent}%**`;
-};
+export { renderSquareProgressBar };
 
 export const formatProgressBar = (fraction: number, totalBars = 10): string => {
   const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
@@ -80,37 +80,16 @@ export const renderProgressBar = (fraction: number, totalBars = 10): string => {
 };
 
 export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder => {
-  const embed = new EmbedBuilder().setTitle('Antigravity Model Quota Status').setColor(0x5865f2);
+  const standard = buildQuotaStatusEmbed(pools);
+  const embed = new EmbedBuilder().setTitle(standard.title!).setColor(standard.color!);
 
-  if (pools.length === 0) {
-    embed.setDescription('No active quota pools currently monitored.');
+  if (standard.description) {
+    embed.setDescription(standard.description);
     return embed;
   }
 
-  for (const pool of pools) {
-    const hoursText =
-      pool.hoursUntilReset !== undefined && pool.hoursUntilReset > 0
-        ? `${pool.hoursUntilReset.toFixed(1)}h`
-        : '0h';
-    const fieldName = (pool.displayName || pool.poolId || 'Quota Pool').slice(0, 256);
-    const safeFraction = Number.isFinite(pool.remainingFraction) ? pool.remainingFraction : 0;
-    const percent = Math.round(Math.max(0, Math.min(1, safeFraction)) * 100);
-    let fieldValue = `${generateProgressBar(pool.remainingFraction)} **${percent}%**\nReset in: ${hoursText}`;
-
-    if (pool.weekly && pool.shortTerm) {
-      const weeklyPct = Math.round(pool.weekly.remainingFraction * 100);
-      const stPct = Math.round(pool.shortTerm.remainingFraction * 100);
-      const wHours = pool.weekly.hoursUntilReset.toFixed(1);
-      const stHours = pool.shortTerm.hoursUntilReset.toFixed(1);
-      fieldValue =
-        `**Weekly (Eval Target):** ${generateProgressBar(pool.weekly.remainingFraction)} **${weeklyPct}%** (${wHours}h)\n` +
-        `**5-Hour Throttle:** ${generateProgressBar(pool.shortTerm.remainingFraction)} **${stPct}%** (${stHours}h)`;
-    }
-
-    embed.addFields({
-      name: fieldName,
-      value: fieldValue.slice(0, 1024),
-    });
+  if (standard.fields && standard.fields.length > 0) {
+    embed.addFields(standard.fields);
   }
 
   return embed;
@@ -459,46 +438,7 @@ export class DiscordNotifier implements Notifier {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased?.()) return;
 
-      const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
-      let resetTimestamp = alert.pool.resetTime || 'Unknown';
-      if (alert.pool.resetTime) {
-        const resetDate = new Date(alert.pool.resetTime);
-        if (!isNaN(resetDate.getTime())) {
-          const unixSec = Math.floor(resetDate.getTime() / 1000);
-          resetTimestamp = `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
-        }
-      }
-
-      const embed = new EmbedBuilder()
-        .setTitle(`[Alert] Quota Milestone: ${poolName}`.slice(0, 256))
-        .setDescription(`Milestone threshold: **${alert.milestoneHours}h** before quota reset.`)
-        .setColor(0xffa500)
-        .addFields(
-          {
-            name: 'Remaining Quota',
-            value: renderSquareProgressBar(alert.pool.remainingFraction),
-            inline: true,
-          },
-          {
-            name: 'Reset Window',
-            value: resetTimestamp,
-            inline: true,
-          }
-        );
-
-      if (alert.pool.models && alert.pool.models.length > 0) {
-        const modelPills = alert.pool.models.map((m) => `\`${m}\``).join(' • ');
-        embed.addFields({
-          name: 'Monitored Models',
-          value: modelPills.slice(0, 1024),
-          inline: false,
-        });
-      }
-
-      embed
-        .setFooter({ text: 'Agylity Quota Sentry' })
-        .setTimestamp(new Date(alert.triggeredAt || Date.now()));
-
+      const embed = buildQuotaAlertEmbed(alert);
       const actionRow = createRepoSelectMenu(this.config.repositories);
 
       await (channel as any).send({
@@ -507,7 +447,11 @@ export class DiscordNotifier implements Notifier {
       });
       logger
         .child('notify:discord')
-        .info('Quota alert delivered to Discord channel %s (%s)', channelId, poolName);
+        .info(
+          'Quota alert delivered to Discord channel %s (%s)',
+          channelId,
+          alert.pool.displayName || alert.pool.poolId
+        );
     } catch (err: any) {
       logger.child('notify:discord').error('Failed to notify quota alert: %s', err.message);
     }
@@ -588,39 +532,7 @@ export class DiscordNotifier implements Notifier {
           } catch {}
         }
 
-        const poolName = samplePool?.displayName || 'Claude and GPT models';
-        const modelsList =
-          samplePool?.models && samplePool.models.length > 0
-            ? samplePool.models
-            : ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
-
-        const resetDate = new Date(Date.now() + 3 * 3600 * 1000);
-        const unixSec = Math.floor(resetDate.getTime() / 1000);
-        const resetTimestamp = `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
-
-        const embed = new EmbedBuilder()
-          .setTitle(`[Alert] Quota Milestone: ${poolName}`)
-          .setDescription('Milestone threshold: **3h** before quota reset.')
-          .setColor(0xffa500)
-          .addFields(
-            {
-              name: 'Remaining Quota',
-              value: renderSquareProgressBar(0.25),
-              inline: true,
-            },
-            {
-              name: 'Reset Window',
-              value: resetTimestamp,
-              inline: true,
-            },
-            {
-              name: 'Monitored Models',
-              value: modelsList.map((m) => `\`${m}\``).join(' • '),
-              inline: false,
-            }
-          )
-          .setFooter({ text: 'Agylity Quota Sentry • Test Notification Simulation' })
-          .setTimestamp();
+        const embed = buildTestAlertEmbed(samplePool);
 
         const sendPayload: any = {
           embeds: [embed],

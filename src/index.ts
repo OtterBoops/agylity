@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ConfigStore, type IConfigStore } from './config/store.js';
 import { AppDatabase } from './storage/db.js';
-import { type ResolvedConfig } from './config/schema.js';
+import { type ResolvedConfig, CANONICAL_SECRET_CONFIG_KEYS } from './config/schema.js';
 import { ConnectRpcQuotaClient, QuotaClient, LanguageServerError } from './sentry/client.js';
 import { SentryStateManager } from './sentry/state.js';
 import { QuotaEvaluator } from './sentry/evaluator.js';
@@ -415,10 +415,7 @@ export const main = async (): Promise<AgylityDaemon> => {
   const logBuffer = new LogBuffer(1000, () => {
     const c = daemonRef?.configStore.resolveConfig();
     const secrets: Array<string | undefined> = [
-      c?.discordToken,
-      c?.antigravityCsrfToken,
-      c?.webhookSecret,
-      c?.notificationWebhookUrl,
+      ...(c ? CANONICAL_SECRET_CONFIG_KEYS.map((k) => c[k] as string | undefined) : []),
       process.env.AGYLITY_SECRET_KEY,
       process.env.ENCRYPTION_KEY,
       ...(c?.webhookCustomHeaders ? Object.values(c.webhookCustomHeaders) : []),

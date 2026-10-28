@@ -4,6 +4,15 @@ import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import {
+  buildQuotaAlertEmbed,
+  buildTestAlertEmbed,
+  buildDispatchStatusEmbed,
+  formatResetWindow,
+  renderSquareProgressBar,
+} from '../embeds/index.js';
+
+export { formatResetWindow, renderSquareProgressBar };
 
 export interface WebhookPayload {
   event: 'quota_alert' | 'dispatch_status' | 'test_ping';
@@ -105,18 +114,6 @@ export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   });
 }
 
-export function formatResetWindow(rawResetTime?: string): string {
-  if (!rawResetTime) return 'Unknown';
-  try {
-    const d = new Date(rawResetTime);
-    if (!isNaN(d.getTime())) {
-      const unixSec = Math.floor(d.getTime() / 1000);
-      return `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
-    }
-  } catch {}
-  return rawResetTime;
-}
-
 export function isDiscordWebhook(url?: string): boolean {
   if (!url) return false;
   try {
@@ -132,17 +129,6 @@ export function isDiscordWebhook(url?: string): boolean {
   } catch {
     return false;
   }
-}
-
-export function renderSquareProgressBar(fraction: number, totalBars = 10): string {
-  const safeFraction = Number.isFinite(fraction) ? fraction : 0;
-  const clamped = Math.max(0, Math.min(1, safeFraction));
-  const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
-  const filled = Math.round(clamped * safeTotalBars);
-  const empty = Math.max(0, safeTotalBars - filled);
-  const bar = '■'.repeat(filled) + '□'.repeat(empty);
-  const percent = Math.round(clamped * 100);
-  return `\`[${bar}]\` **${percent}%**`;
 }
 
 export class WebhookNotifier implements Notifier {
@@ -177,6 +163,7 @@ export class WebhookNotifier implements Notifier {
     const percent = alert.remainingPercentage;
     const hours = alert.milestoneHours;
     const textMsg = `[Alert] Quota Milestone: ${poolName} is at ${percent}% with ${hours}h before reset.`;
+    const embed = buildQuotaAlertEmbed(alert);
 
     const payload: WebhookPayload = {
       event: 'quota_alert',
@@ -187,27 +174,7 @@ export class WebhookNotifier implements Notifier {
       content: textMsg,
       text: textMsg,
       message: textMsg,
-      embeds: [
-        {
-          title: `[Alert] Quota Milestone: ${poolName}`,
-          description: `Milestone threshold: **${hours}h** before quota reset.`,
-          color: 0xffa500,
-          fields: [
-            {
-              name: 'Remaining Quota',
-              value: renderSquareProgressBar(alert.pool.remainingFraction ?? percent / 100),
-              inline: true,
-            },
-            {
-              name: 'Reset Window',
-              value: formatResetWindow(alert.pool.resetTime),
-              inline: true,
-            },
-          ],
-          footer: { text: 'Agylity Quota Sentry' },
-          timestamp: alert.triggeredAt || new Date().toISOString(),
-        },
-      ],
+      embeds: [embed],
       data: {
         poolId: alert.pool.poolId,
         displayName: alert.pool.displayName || alert.pool.poolId,
@@ -222,14 +189,6 @@ export class WebhookNotifier implements Notifier {
       },
     };
 
-    if (alert.pool.models && alert.pool.models.length > 0) {
-      (payload.embeds![0] as any).fields.push({
-        name: 'Monitored Models',
-        value: alert.pool.models.map((m) => `\`${m}\``).join(' • '),
-        inline: false,
-      });
-    }
-
     try {
       await this.postWebhook(payload);
     } catch {
@@ -242,6 +201,7 @@ export class WebhookNotifier implements Notifier {
 
     const step = status.status ?? (status.step as string) ?? 'executing';
     const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
+    const embed = buildDispatchStatusEmbed(status);
 
     const payload: WebhookPayload = {
       event: 'dispatch_status',
@@ -251,15 +211,7 @@ export class WebhookNotifier implements Notifier {
       username: 'Agylity',
       content: textMsg,
       text: textMsg,
-      embeds: [
-        {
-          title: `[Dispatch] Task Status: ${step}`,
-          description: status.message || `Dispatch step: ${step}`,
-          color: step === 'completed' ? 0x2ecc71 : step === 'failed' ? 0xe74c3c : 0x3498db,
-          timestamp: status.timestamp || new Date().toISOString(),
-          footer: { text: 'Agylity Orchestrator' },
-        },
-      ],
+      embeds: [embed],
       data: { ...status } as Record<string, unknown>,
     };
 
@@ -280,12 +232,12 @@ export class WebhookNotifier implements Notifier {
       };
     }
 
-    const resetDate = new Date(Date.now() + 3 * 3600 * 1000);
-    const resetIso = resetDate.toISOString();
-    const resetWindow = formatResetWindow(resetIso);
+    const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
     const modelsList = ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
     const textMsg =
       '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
+    const embed = buildTestAlertEmbed();
+
     const payload: WebhookPayload = {
       event: 'test_ping',
       poolId: 'claude',
@@ -295,32 +247,7 @@ export class WebhookNotifier implements Notifier {
       content: textMsg,
       text: textMsg,
       message: textMsg,
-      embeds: [
-        {
-          title: '[Alert] Quota Milestone: Claude & GPT Models',
-          description: 'Milestone threshold: **3h** before quota reset.',
-          color: 0xffa500,
-          fields: [
-            {
-              name: 'Remaining Quota',
-              value: renderSquareProgressBar(0.25),
-              inline: true,
-            },
-            {
-              name: 'Reset Window',
-              value: resetWindow,
-              inline: true,
-            },
-            {
-              name: 'Monitored Models',
-              value: modelsList.map((m) => `\`${m}\``).join(' • '),
-              inline: false,
-            },
-          ],
-          footer: { text: 'Agylity Quota Sentry • Test Notification Simulation' },
-          timestamp: new Date().toISOString(),
-        },
-      ],
+      embeds: [embed],
       data: {
         poolId: 'claude',
         displayName: 'Claude and GPT models',

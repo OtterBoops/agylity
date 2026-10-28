@@ -1,14 +1,12 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
 
 export const ENCRYPTION_PREFIX = 'enc:v1:';
 
-export const SECRET_KEYS = new Set([
-  'discordToken',
-  'antigravityCsrfToken',
-  'notificationWebhookUrl',
-  'webhookSecret',
+export const SECRET_KEYS = new Set<string>([
+  ...CANONICAL_SECRET_CONFIG_KEYS,
   'DISCORD_TOKEN',
   'ANTIGRAVITY_CSRF_TOKEN',
   'NOTIFICATION_WEBHOOK_URL',

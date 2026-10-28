@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'preact/hooks';
-import type { QuotaSnapshot, SentryAlertState, ConfigData } from './types';
 import { useHashRoute, type Route } from './router';
 import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme } from './theme';
 import { Sidebar } from './components/Sidebar';
@@ -9,7 +8,14 @@ import { DispatchModal } from './components/DispatchModal';
 import { ActivityView } from './views/ActivityView';
 import { LogsView } from './views/LogsView';
 import { SettingsView } from './views/SettingsView';
-import { getQuota, getAlerts, getConfig } from './api';
+import {
+  useStore,
+  quotaStore,
+  configStore,
+  refreshQuota,
+  refreshConfig,
+  startQuotaPolling,
+} from './state';
 
 const TITLES: Record<Route, [string, string]> = {
   overview: ['Overview', ''],
@@ -25,9 +31,8 @@ export const App = () => {
   const [theme, setTheme] = useState<ThemeChoice>(() =>
     normalizeStoredTheme(localStorage.getItem('agylity-theme'))
   );
-  const [quota, setQuota] = useState<QuotaSnapshot[]>([]);
-  const [alerts, setAlerts] = useState<SentryAlertState | null>(null);
-  const [config, setConfig] = useState<ConfigData>({ resolved: {}, overrides: {} });
+  const { quota, alerts } = useStore(quotaStore);
+  const { config } = useStore(configStore);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
@@ -50,20 +55,14 @@ export const App = () => {
   }, [theme]);
 
   const fetchAll = () =>
-    Promise.all([getQuota(), getAlerts(), getConfig()])
-      .then(([qRes, aRes, cRes]) => {
-        setQuota(qRes);
-        setAlerts(aRes);
-        setConfig(cRes);
-      })
-      .catch((err) => {
-        console.error('[agylity] Fetch error:', err);
-      });
+    Promise.all([refreshQuota(), refreshConfig()]).catch((err) => {
+      console.error('[agylity] Fetch error:', err);
+    });
 
   useEffect(() => {
-    fetchAll();
-    const interval = setInterval(fetchAll, 60000);
-    return () => clearInterval(interval);
+    refreshConfig();
+    const stopPolling = startQuotaPolling(60000);
+    return () => stopPolling();
   }, []);
 
   const handleManualRefresh = () => {
