@@ -143,7 +143,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
               </span>
             </div>
 
-            <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight/60 bg-pine-overlay/40 p-4">
+            <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-4">
               <div>
                 <p class="text-sm font-semibold text-pine-text">
                   {isOrchestratorEnabled
@@ -199,7 +199,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
               Repository workspaces are only used when Task Orchestration is active. By default,
               Agylity operates purely as an autonomous 24/7 quota sentry.
             </p>
-            <div class="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight/60 bg-pine-overlay/40 p-4">
+            <div class="mt-4 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-4">
               <div>
                 <p class="text-sm font-semibold text-pine-text">
                   Orchestrator is currently disabled
@@ -263,7 +263,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
             </button>
 
             {showRawTable && (
-              <div class="border-t border-pine-highlight/60 p-4">
+              <div class="border-t border-pine-highlight p-4">
                 <ConfigTable config={config} onUpdated={onChanged} />
               </div>
             )}

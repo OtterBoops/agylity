@@ -241,21 +241,21 @@ export const resolveGroupFamily = (
     return {
       family: 'gemini-argon',
       displayName: 'Gemini 4 Argon',
-      defaultModels: ['gemini-4-argon'],
+      defaultModels: ['Gemini 4 Argon'],
     };
   }
   if (name.includes('claude') || name.includes('gpt')) {
     return {
       family: 'claude',
       displayName: 'Claude 5.5 / Opus',
-      defaultModels: ['claude-opus-5-5', 'claude-sonnet-5-5', 'gpt-oss-120b'],
+      defaultModels: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
     };
   }
   if (name.includes('gemini')) {
     return {
       family: 'gemini-flash',
       displayName: 'Gemini 3.8 Flash / Pro',
-      defaultModels: ['gemini-3.8-flash', 'gemini-2.5-pro'],
+      defaultModels: ['Gemini Flash', 'Gemini Pro'],
     };
   }
   return null;

@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
-import { faBolt, faCheck, faChevronDown, faRotate } from '@fortawesome/free-solid-svg-icons';
+import {
+  faBolt,
+  faCheck,
+  faChevronDown,
+  faRotate,
+  faSearch,
+} from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
 import { type ThemeChoice, THEME_OPTIONS, getThemeDisplayLabel } from '../theme';
 
@@ -13,6 +19,7 @@ interface TopBarProps {
   onThemeChange: (theme: ThemeChoice) => void;
   onRefresh: () => void;
   onOpenDispatch: () => void;
+  onOpenCommandPalette?: () => void;
 }
 
 export const TopBar = ({
@@ -25,6 +32,7 @@ export const TopBar = ({
   onThemeChange,
   onRefresh,
   onOpenDispatch,
+  onOpenCommandPalette,
 }: TopBarProps) => {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const themeDropdownRef = useRef<HTMLDivElement>(null);
@@ -50,6 +58,21 @@ export const TopBar = ({
       </div>
 
       <div class="flex items-center gap-2 sm:gap-3">
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            onClick={onOpenCommandPalette}
+            class="hidden cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 py-1.5 text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text sm:inline-flex"
+            title="Search commands and navigate views (Ctrl+K)"
+          >
+            <Icon icon={faSearch} class="size-3 text-pine-muted" />
+            <span>Search</span>
+            <kbd class="rounded border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[10px] text-pine-muted">
+              Ctrl K
+            </kbd>
+          </button>
+        )}
+
         {/* Theme Selector Popover */}
         <div class="relative" ref={themeDropdownRef}>
           <button

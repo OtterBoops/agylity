@@ -193,7 +193,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
             </div>
           )}
 
-          <div class="mt-2 flex justify-end gap-3 border-t border-pine-highlight/50 pt-2">
+          <div class="mt-2 flex justify-end gap-3 border-t border-pine-highlight pt-2">
             <button
               type="button"
               class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-sm font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"

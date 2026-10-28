@@ -76,7 +76,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         {repos.map((r, i) => (
           <div
             key={i}
-            class="grid grid-cols-1 items-end gap-3 rounded-lg border border-pine-highlight/50 bg-pine-overlay/20 p-3 md:grid-cols-[1fr_1fr_2fr_auto]"
+            class="grid grid-cols-1 items-end gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/20 p-3 md:grid-cols-[1fr_1fr_2fr_auto]"
           >
             <div class="flex flex-col gap-1.5">
               <label class="text-xs font-medium text-pine-subtle">ID</label>

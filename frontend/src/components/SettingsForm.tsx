@@ -222,14 +222,14 @@ export const SettingsForm = ({
                   }
                 />
               )}
-              {f.hint && <p class="text-[11px] text-pine-muted">{f.hint}</p>}
+              {f.hint && <p class="text-xs text-pine-muted sm:text-sm">{f.hint}</p>}
             </div>
           );
         })}
       </div>
 
       {/* Bottom Action Bar */}
-      <div class="flex flex-wrap items-center justify-between gap-4 border-t border-pine-highlight/60 pt-4">
+      <div class="flex flex-wrap items-center justify-between gap-4 border-t border-pine-highlight pt-4">
         <div>
           {dirtyKeys.length > 0 ? (
             <span class="text-xs font-medium text-pine-gold">

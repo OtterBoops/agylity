@@ -5,6 +5,7 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { QuotaGrid } from './components/QuotaGrid';
 import { DispatchModal } from './components/DispatchModal';
+import { CommandPalette } from './components/CommandPalette';
 import { ActivityView } from './views/ActivityView';
 import { LogsView } from './views/LogsView';
 import { SettingsView } from './views/SettingsView';
@@ -36,6 +37,24 @@ export const App = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  const handleToggleTheme = () => {
+    const sequence: ThemeChoice[] = ['regular', 'moon', 'dawn', 'system'];
+    const nextIdx = (sequence.indexOf(theme) + 1) % sequence.length;
+    setTheme(sequence[nextIdx]!);
+  };
 
   useEffect(() => {
     const apply = () => {
@@ -83,17 +102,18 @@ export const App = () => {
   const [title, subtitle] = TITLES[route];
 
   return (
-    <div class="min-h-screen bg-pine-base text-pine-text md:flex">
+    <div class="min-h-screen bg-pine-base text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
         route={route}
         onNavigate={navigate}
         orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
+        minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
       />
 
-      <div class="min-w-0 flex-1 p-4 sm:p-6 md:p-8">
-        <div class="mx-auto max-w-7xl">
+      <div class="min-w-0 flex-1 p-4 sm:p-6 md:h-screen md:overflow-y-auto md:p-8 2xl:p-10">
+        <div class="mx-auto max-w-7xl 2xl:max-w-[1760px]">
           <TopBar
             title={title}
             subtitle={subtitle}
@@ -104,6 +124,7 @@ export const App = () => {
             onThemeChange={setTheme}
             onRefresh={handleManualRefresh}
             onOpenDispatch={() => setDispatchModalOpen(true)}
+            onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           />
 
           <main>
@@ -129,6 +150,16 @@ export const App = () => {
         onClose={() => setDispatchModalOpen(false)}
         config={config}
         quota={quota}
+      />
+
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onNavigate={navigate}
+        onRefresh={handleManualRefresh}
+        onOpenDispatch={() => setDispatchModalOpen(true)}
+        onToggleTheme={handleToggleTheme}
+        orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
       />
     </div>
   );

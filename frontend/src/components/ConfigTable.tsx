@@ -63,10 +63,10 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
 
   return (
     <div class="flex flex-col gap-4">
-      <div class="overflow-x-auto rounded-lg border border-pine-highlight/60 bg-pine-base/40">
+      <div class="overflow-x-auto rounded-lg border border-pine-highlight bg-pine-base/40">
         <table class="w-full border-collapse text-left text-sm">
           <thead>
-            <tr class="border-b border-pine-highlight/60 bg-pine-overlay/40 text-xs font-medium text-pine-subtle">
+            <tr class="border-b border-pine-highlight bg-pine-overlay/40 text-xs font-medium text-pine-subtle">
               <th class="px-4 py-2.5">Setting Key</th>
               <th class="px-4 py-2.5">Resolved Value</th>
               <th class="px-4 py-2.5">Source</th>

@@ -2,6 +2,7 @@ import {
   faArrowUpRightFromSquare,
   faChevronDown,
   faChevronRight,
+  faEye,
   faLink,
   faRobot,
   faTerminal,
@@ -124,6 +125,13 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
+  const [testDiagnostics, setTestDiagnostics] = useState<{
+    channel: ChannelId;
+    success: boolean;
+    message: string;
+    timestamp: string;
+  } | null>(null);
+  const [embedPreviewTier, setEmbedPreviewTier] = useState<'alert' | 'warning' | 'burn'>('alert');
 
   // Synchronize when server config updates
   useEffect(() => {
@@ -294,18 +302,30 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     }
 
     testNotification(channel, overrides)
-      .then((data) =>
+      .then((data) => {
         setToast({
           type: 'success',
           message: data.message || `Test ${channel} notification dispatched successfully!`,
-        })
-      )
-      .catch((err) =>
+        });
+        setTestDiagnostics({
+          channel,
+          success: true,
+          message: data.message || 'Notification delivered successfully (HTTP 200 OK)',
+          timestamp: new Date().toLocaleTimeString(),
+        });
+      })
+      .catch((err) => {
         setToast({
           type: 'error',
           message: err.message || `Test ${channel} notification delivery failed.`,
-        })
-      )
+        });
+        setTestDiagnostics({
+          channel,
+          success: false,
+          message: err.message || 'Delivery failed or target unreachable',
+          timestamp: new Date().toLocaleTimeString(),
+        });
+      })
       .finally(() => setTestingChannel(null));
   };
 
@@ -396,7 +416,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
               class={`overflow-hidden rounded-xl border transition-all ${
                 isEnabled
                   ? 'border-pine-iris/50 bg-pine-surface shadow-xs'
-                  : 'border-pine-highlight/50 bg-pine-surface/50 hover:border-pine-highlight'
+                  : 'border-pine-highlight bg-pine-surface/50 hover:border-pine-iris/50'
               }`}
             >
               {/* Card Header Row: Expand trigger + Icon/Label + Badges + Toggle Switch */}
@@ -419,11 +439,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                       <div class="flex items-center gap-2">
                         <span class="text-sm font-semibold text-pine-text">{ch.label}</span>
                         {isEnabled ? (
-                          <span class="rounded bg-pine-iris/15 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris uppercase">
+                          <span class="rounded bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
                             Enabled
                           </span>
                         ) : (
-                          <span class="rounded bg-pine-overlay px-1.5 py-0.5 text-[10px] font-medium text-pine-muted uppercase">
+                          <span class="rounded bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted uppercase">
                             Off
                           </span>
                         )}
@@ -441,7 +461,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                     aria-checked={isEnabled}
                     onClick={() => handleToggleChannel(ch.id)}
                     class={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                      isEnabled ? 'bg-pine-iris' : 'border-pine-highlight/80 bg-pine-overlay'
+                      isEnabled ? 'bg-pine-iris' : 'border-pine-highlight bg-pine-overlay'
                     }`}
                     title={isEnabled ? `Disable ${ch.label}` : `Enable ${ch.label}`}
                   >
@@ -457,157 +477,351 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
               {/* Nested Config Section: Expanded configuration */}
               {isExpanded && (
-                <div class="border-t border-pine-highlight/50 bg-pine-overlay/20 p-4 md:p-6">
+                <div class="border-t border-pine-highlight bg-pine-overlay/20 p-4 md:p-6">
                   {ch.id === 'discord' && (
                     <div class="flex flex-col gap-5">
-                      <div class="flex items-center justify-between border-b border-pine-highlight/40 pb-3">
-                        <span class="text-xs font-semibold text-pine-subtle">
-                          Discord Bot Credentials
-                        </span>
+                      <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
+                        <div class="flex items-center gap-2">
+                          <span class="text-xs font-semibold text-pine-subtle">
+                            Discord Bot Configuration
+                          </span>
+                          <span class="text-[10px] text-pine-muted">
+                            • Slash commands &amp; rich alert embeds
+                          </span>
+                        </div>
                         <button
                           type="button"
                           onClick={() => handleSendTest('discord')}
                           disabled={testingChannel !== null}
-                          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-50"
+                          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-50"
                         >
                           {testingChannel === 'discord' ? 'Testing...' : 'Test Discord Ping'}
                         </button>
                       </div>
 
-                      <div class="flex flex-col gap-1.5">
-                        <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
-                          <span class="flex items-center gap-1.5">
-                            Bot Application Token
-                            <span class="text-[10px] text-pine-foam">(Encrypted at rest)</span>
+                      {testDiagnostics && testDiagnostics.channel === 'discord' && (
+                        <div
+                          class={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
+                            testDiagnostics.success
+                              ? 'border-pine-foam/40 bg-pine-foam/10 text-pine-foam'
+                              : 'border-pine-love/40 bg-pine-love/10 text-pine-love'
+                          }`}
+                        >
+                          <span class="font-mono text-[10px] font-bold tracking-wider uppercase">
+                            [{testDiagnostics.success ? 'Success' : 'Error'}]
                           </span>
-                          {isDiscordTokenSet && (
-                            <div class="flex items-center gap-2">
-                              <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                          <span class="flex-1 wrap-break-word">{testDiagnostics.message}</span>
+                          <span class="shrink-0 font-mono text-[10px] text-pine-muted">
+                            {testDiagnostics.timestamp}
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Stage 1: Bot Credentials & App Identity */}
+                      <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-overlay/30 p-4 sm:p-5">
+                        <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
+                          <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
+                            Stage 1: Bot Credentials &amp; Identity
+                          </h4>
+                          <span class="text-xs text-pine-muted">Discord Developer Portal</span>
+                        </div>
+
+                        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                          <div class="flex flex-col gap-1.5">
+                            <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+                              <span class="flex items-center gap-1.5">
+                                Bot Application Token
+                                <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
+                              </span>
+                              {isDiscordTokenSet && (
+                                <div class="flex items-center gap-2">
+                                  <span class="font-mono text-xs text-pine-foam">Configured</span>
+                                  <button
+                                    type="button"
+                                    onClick={handleClearDiscordToken}
+                                    class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love hover:underline"
+                                    title="Clear saved Discord bot token"
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                              )}
+                            </label>
+                            <div class="flex gap-2">
+                              <input
+                                type={showDiscordToken ? 'text' : 'password'}
+                                name="agylity_discord_bot_token"
+                                autoComplete="new-password"
+                                data-1p-ignore="true"
+                                data-lpignore="true"
+                                class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                                placeholder={
+                                  isDiscordTokenSet
+                                    ? '•••••••••••••••••••• (Encrypted — enter new token to update)'
+                                    : 'Paste Discord Bot Token'
+                                }
+                                value={discordToken}
+                                onInput={(e) => {
+                                  const val = (e.target as HTMLInputElement).value;
+                                  setDiscordToken(val);
+                                  if (val.length > 0) ensureChannelEnabled('discord');
+                                }}
+                              />
                               <button
                                 type="button"
-                                onClick={handleClearDiscordToken}
-                                class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love hover:underline"
-                                title="Clear saved Discord bot token"
+                                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-xs font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
+                                onClick={() => setShowDiscordToken(!showDiscordToken)}
                               >
-                                Clear
+                                {showDiscordToken ? 'Hide' : 'Show'}
                               </button>
                             </div>
-                          )}
-                        </label>
-                        <div class="flex gap-2">
-                          <input
-                            type={showDiscordToken ? 'text' : 'password'}
-                            name="agylity_discord_bot_token"
-                            autoComplete="new-password"
-                            data-1p-ignore="true"
-                            data-lpignore="true"
-                            class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                            placeholder={
-                              isDiscordTokenSet
-                                ? '•••••••••••••••••••• (Encrypted — enter new token to update)'
-                                : 'Paste Discord Bot Token from Developer Portal'
-                            }
-                            value={discordToken}
-                            onInput={(e) => {
-                              const val = (e.target as HTMLInputElement).value;
-                              setDiscordToken(val);
-                              if (val.length > 0) ensureChannelEnabled('discord');
-                            }}
-                          />
-                          <button
-                            type="button"
-                            class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-xs font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
-                            onClick={() => setShowDiscordToken(!showDiscordToken)}
-                          >
-                            {showDiscordToken ? 'Hide' : 'Show'}
-                          </button>
+                            <span class="text-xs text-pine-muted">
+                              Developer Portal &gt; Bot &gt; Reset Token
+                            </span>
+                          </div>
+
+                          <div class="flex flex-col gap-1.5">
+                            <label class="text-xs font-medium text-pine-subtle">
+                              Discord Client / Application ID
+                            </label>
+                            <input
+                              type="text"
+                              name="agylity_discord_client_id"
+                              autoComplete="off"
+                              inputMode="numeric"
+                              data-1p-ignore="true"
+                              data-lpignore="true"
+                              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                              placeholder="e.g. 987654321098765432"
+                              value={discordClientId}
+                              onInput={(e) => {
+                                const val = (e.target as HTMLInputElement).value;
+                                setDiscordClientId(val);
+                                if (val.length > 0) ensureChannelEnabled('discord');
+                              }}
+                            />
+                            <div class="flex items-center justify-between text-xs text-pine-muted">
+                              <span>Developer Portal General Information</span>
+                              {discordClientId.trim() && (
+                                <a
+                                  href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(discordClientId.trim())}&permissions=2147601408&scope=bot%20applications.commands`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  class="inline-flex items-center gap-1 font-medium text-pine-iris hover:underline"
+                                  title="Authorize bot with exact required permissions and slash command scopes"
+                                >
+                                  <span>Authorize Bot URL</span>
+                                  <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                                </a>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </div>
 
-                      <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-                        <div class="flex flex-col gap-1.5">
-                          <label class="text-xs font-medium text-pine-subtle">
-                            Notification Channel ID
-                          </label>
-                          <input
-                            type="text"
-                            name="agylity_discord_channel_id"
-                            autoComplete="off"
-                            inputMode="numeric"
-                            data-1p-ignore="true"
-                            data-lpignore="true"
-                            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                            placeholder="e.g. 123456789012345678"
-                            value={discordChannelId}
-                            onInput={(e) => {
-                              const val = (e.target as HTMLInputElement).value;
-                              setDiscordChannelId(val);
-                              if (val.length > 0) ensureChannelEnabled('discord');
-                            }}
-                          />
-                          <span class="text-[11px] text-pine-muted">
-                            Right click channel in Discord &gt; Copy Channel ID
-                          </span>
+                      {/* Stage 2: Notification Target & Guild Routing */}
+                      <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-overlay/30 p-4 sm:p-5">
+                        <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
+                          <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
+                            Stage 2: Delivery Target &amp; Server Routing
+                          </h4>
+                          <span class="text-xs text-pine-muted">Discord Server &amp; Channels</span>
                         </div>
-                        <div class="flex flex-col gap-1.5">
-                          <label class="text-xs font-medium text-pine-subtle">
-                            Discord Client / Application ID
-                          </label>
-                          <input
-                            type="text"
-                            name="agylity_discord_client_id"
-                            autoComplete="off"
-                            inputMode="numeric"
-                            data-1p-ignore="true"
-                            data-lpignore="true"
-                            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                            placeholder="e.g. 987654321098765432"
-                            value={discordClientId}
-                            onInput={(e) => {
-                              const val = (e.target as HTMLInputElement).value;
-                              setDiscordClientId(val);
-                              if (val.length > 0) ensureChannelEnabled('discord');
-                            }}
-                          />
-                          <div class="flex items-center justify-between text-[11px] text-pine-muted">
-                            <span>Found in Discord Developer Portal General Info</span>
-                            {discordClientId.trim() && (
-                              <a
-                                href={`https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(discordClientId.trim())}&permissions=2147601408&scope=bot%20applications.commands`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="inline-flex items-center gap-1 font-medium text-pine-iris hover:underline"
-                                title="Authorize bot with exact required permissions and slash command scopes"
-                              >
-                                <span>Authorize Bot URL</span>
-                                <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
-                              </a>
-                            )}
+
+                        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+                          <div class="flex flex-col gap-1.5">
+                            <label class="text-xs font-medium text-pine-subtle">
+                              Notification Channel ID
+                            </label>
+                            <input
+                              type="text"
+                              name="agylity_discord_channel_id"
+                              autoComplete="off"
+                              inputMode="numeric"
+                              data-1p-ignore="true"
+                              data-lpignore="true"
+                              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                              placeholder="e.g. 123456789012345678"
+                              value={discordChannelId}
+                              onInput={(e) => {
+                                const val = (e.target as HTMLInputElement).value;
+                                setDiscordChannelId(val);
+                                if (val.length > 0) ensureChannelEnabled('discord');
+                              }}
+                            />
+                            <span class="text-xs text-pine-muted">
+                              Right click channel in Discord &gt; Copy Channel ID
+                            </span>
+                          </div>
+
+                          <div class="flex flex-col gap-1.5">
+                            <label class="text-xs font-medium text-pine-subtle">
+                              Discord Guild ID (Optional)
+                            </label>
+                            <input
+                              type="text"
+                              name="agylity_discord_guild_id"
+                              autoComplete="off"
+                              inputMode="numeric"
+                              data-1p-ignore="true"
+                              data-lpignore="true"
+                              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                              placeholder="e.g. 112233445566778899"
+                              value={discordGuildId}
+                              onInput={(e) => {
+                                const val = (e.target as HTMLInputElement).value;
+                                setDiscordGuildId(val);
+                                if (val.length > 0) ensureChannelEnabled('discord');
+                              }}
+                            />
+                            <span class="text-xs text-pine-muted">
+                              Target server for instant slash command registration
+                            </span>
                           </div>
                         </div>
-                        <div class="flex flex-col gap-1.5">
-                          <label class="text-xs font-medium text-pine-subtle">
-                            Discord Guild ID (Optional)
-                          </label>
-                          <input
-                            type="text"
-                            name="agylity_discord_guild_id"
-                            autoComplete="off"
-                            inputMode="numeric"
-                            data-1p-ignore="true"
-                            data-lpignore="true"
-                            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                            placeholder="e.g. 112233445566778899"
-                            value={discordGuildId}
-                            onInput={(e) => {
-                              const val = (e.target as HTMLInputElement).value;
-                              setDiscordGuildId(val);
-                              if (val.length > 0) ensureChannelEnabled('discord');
-                            }}
-                          />
-                          <span class="text-[11px] text-pine-muted">
-                            Target server for fast command registration
-                          </span>
+                      </div>
+
+                      {/* Interactive Live Embed Simulator */}
+                      <div class="flex flex-col gap-3 rounded-xl border border-pine-highlight bg-pine-overlay/20 p-4 sm:p-5">
+                        <div class="flex flex-wrap items-center justify-between gap-2 border-b border-pine-highlight/60 pb-3">
+                          <div class="flex items-center gap-2">
+                            <Icon icon={faEye} class="size-3.5 text-pine-iris" />
+                            <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
+                              Live Embed Simulator
+                            </h4>
+                          </div>
+                          <div class="flex items-center gap-1.5 text-xs">
+                            <span class="text-[11px] text-pine-muted">Preview Tier:</span>
+                            <button
+                              type="button"
+                              onClick={() => setEmbedPreviewTier('alert')}
+                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                                embedPreviewTier === 'alert'
+                                  ? 'border border-pine-love/50 bg-pine-love/20 text-pine-love'
+                                  : 'text-pine-subtle hover:text-pine-text'
+                              }`}
+                            >
+                              Critical (15%)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEmbedPreviewTier('warning')}
+                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                                embedPreviewTier === 'warning'
+                                  ? 'border border-pine-gold/50 bg-pine-gold/20 text-pine-gold'
+                                  : 'text-pine-subtle hover:text-pine-text'
+                              }`}
+                            >
+                              Warning (35%)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEmbedPreviewTier('burn')}
+                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                                embedPreviewTier === 'burn'
+                                  ? 'border border-pine-iris/50 bg-pine-iris/20 text-pine-iris'
+                                  : 'text-pine-subtle hover:text-pine-text'
+                              }`}
+                            >
+                              Ready (85%)
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Discord-style Embed Container */}
+                        <div class="rounded-lg bg-[#313338] p-4 font-sans text-xs text-[#dbdee1] shadow-inner">
+                          <div class="mb-2 flex items-center gap-2">
+                            <div class="flex size-7 items-center justify-center rounded-full bg-pine-iris/30 text-pine-iris">
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                class="size-3.5"
+                                aria-hidden="true"
+                              >
+                                <path
+                                  fill-rule="evenodd"
+                                  clip-rule="evenodd"
+                                  d="M10.882 1.441A1.25 1.25 0 0 1 13.118 1.441L22.118 19.441A1.25 1.25 0 0 1 21 21.25H17A1.25 1.25 0 0 1 15.882 20.559L13.727 16.25H10.273L8.118 20.559A1.25 1.25 0 0 1 7 21.25H3A1.25 1.25 0 0 1 1.882 19.441ZM11.598 9.899A0.45 0.45 0 0 1 12.402 9.899L13.652 12.399A0.45 0.45 0 0 1 13.25 13.05H10.75A0.45 0.45 0 0 1 10.348 12.399Z"
+                                  fill="currentColor"
+                                />
+                              </svg>
+                            </div>
+                            <span class="font-medium text-white">Agylity Quota Sentry</span>
+                            <span class="py-0.2 rounded bg-[#5865F2] px-1 text-[9px] font-bold text-white uppercase">
+                              BOT
+                            </span>
+                            <span class="text-[10px] text-[#949ba4]">Today at 22:58</span>
+                          </div>
+
+                          <div
+                            class={`max-w-[520px] rounded-[4px] border-l-4 bg-[#2b2d31] p-3.5 shadow-sm ${
+                              embedPreviewTier === 'alert'
+                                ? 'border-[#eb6f92]'
+                                : embedPreviewTier === 'warning'
+                                  ? 'border-[#f6c177]'
+                                  : 'border-[#c4a7e7]'
+                            }`}
+                          >
+                            <div class="mb-1 text-sm font-bold text-white">
+                              [Alert] Quota Milestone: Claude 3.5 Sonnet
+                            </div>
+                            <div class="mb-3 text-xs text-[#dbdee1]">
+                              Milestone threshold:{' '}
+                              <strong>
+                                {embedPreviewTier === 'alert'
+                                  ? '1h'
+                                  : embedPreviewTier === 'warning'
+                                    ? '3h'
+                                    : '12h'}
+                              </strong>{' '}
+                              before quota reset.
+                            </div>
+
+                            <div class="mb-3 grid grid-cols-2 gap-3">
+                              <div>
+                                <div class="text-[10px] font-semibold text-[#949ba4] uppercase">
+                                  Remaining Quota
+                                </div>
+                                <div class="mt-1 flex items-center gap-2">
+                                  <span class="rounded bg-[#1e1f22] px-1.5 py-0.5 font-mono text-xs text-[#dbdee1]">
+                                    {embedPreviewTier === 'alert'
+                                      ? '[■■□□□□□□□□]'
+                                      : embedPreviewTier === 'warning'
+                                        ? '[■■■■□□□□□□]'
+                                        : '[■■■■■■■■□□]'}
+                                  </span>
+                                  <strong class="font-sans text-xs text-white">
+                                    {embedPreviewTier === 'alert'
+                                      ? '15%'
+                                      : embedPreviewTier === 'warning'
+                                        ? '35%'
+                                        : '85%'}
+                                  </strong>
+                                </div>
+                              </div>
+                              <div>
+                                <div class="text-[10px] font-semibold text-[#949ba4] uppercase">
+                                  Reset Window
+                                </div>
+                                <div class="mt-1 text-xs text-white">
+                                  {embedPreviewTier === 'alert'
+                                    ? 'Resets in 45m'
+                                    : embedPreviewTier === 'warning'
+                                      ? 'Resets in 2h 45m'
+                                      : 'Resets in 11h 30m'}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div class="border-t border-[#3f4147] pt-2 text-[10px] text-[#949ba4]">
+                              Monitored Models:{' '}
+                              <span class="font-mono text-white">
+                                claude-sonnet-4, claude-haiku-4
+                              </span>
+                            </div>
+
+                            <div class="mt-2 text-[10px] text-[#949ba4]">Agylity Quota Sentry</div>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -615,7 +829,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
                   {ch.id === 'webhook' && (
                     <div class="flex flex-col gap-5">
-                      <div class="flex items-center justify-between border-b border-pine-highlight/40 pb-3">
+                      <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
                         <span class="text-xs font-semibold text-pine-subtle">
                           Webhook Endpoint &amp; Security
                         </span>
@@ -629,19 +843,37 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                         </button>
                       </div>
 
+                      {testDiagnostics && testDiagnostics.channel === 'webhook' && (
+                        <div
+                          class={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
+                            testDiagnostics.success
+                              ? 'border-pine-foam/40 bg-pine-foam/10 text-pine-foam'
+                              : 'border-pine-love/40 bg-pine-love/10 text-pine-love'
+                          }`}
+                        >
+                          <span class="font-mono text-xs font-bold tracking-wider uppercase">
+                            [{testDiagnostics.success ? 'Success' : 'Error'}]
+                          </span>
+                          <span class="flex-1 wrap-break-word">{testDiagnostics.message}</span>
+                          <span class="shrink-0 font-mono text-xs text-pine-muted">
+                            {testDiagnostics.timestamp}
+                          </span>
+                        </div>
+                      )}
+
                       <div class="flex flex-col gap-1.5">
                         <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
                           <span class="flex items-center gap-1.5">
                             Target Webhook URL
-                            <span class="text-[10px] text-pine-foam">(Encrypted at rest)</span>
+                            <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
                           </span>
                           {isWebhookConfigured && (
                             <div class="flex items-center gap-2">
-                              <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                              <span class="font-mono text-xs text-pine-foam">Configured</span>
                               <button
                                 type="button"
                                 onClick={handleClearWebhook}
-                                class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love hover:underline"
+                                class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love hover:underline"
                                 title="Clear saved webhook URL"
                               >
                                 Clear
@@ -668,7 +900,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             if (val.length > 0) ensureChannelEnabled('webhook');
                           }}
                         />
-                        <span class="text-[11px] text-pine-muted">
+                        <span class="text-xs text-pine-muted">
                           Receives HTTP POST requests with JSON quota milestone payloads (Discord,
                           Slack, &amp; generic endpoints supported).
                         </span>
@@ -678,7 +910,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                         <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
                           <span class="flex items-center gap-1.5">
                             HMAC Secret Key (Optional)
-                            <span class="text-[10px] text-pine-foam">(Encrypted at rest)</span>
+                            <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
                           </span>
                         </label>
                         <div class="flex gap-2">
@@ -715,7 +947,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
                   {ch.id === 'console' && (
                     <div class="flex flex-col gap-4">
-                      <div class="flex items-center justify-between border-b border-pine-highlight/40 pb-3">
+                      <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
                         <span class="text-xs font-semibold text-pine-subtle">
                           Console Output Stream
                         </span>
