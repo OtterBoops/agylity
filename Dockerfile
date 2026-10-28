@@ -4,21 +4,34 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Stage 1: Build & Compile TypeScript
+# Stage 1: Production Dependencies (Built in parallel with builder)
+# ------------------------------------------------------------------------------
+FROM node:24-slim AS prod-deps
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev --ignore-scripts
+
+# ------------------------------------------------------------------------------
+# Stage 2: Build & Compile TypeScript + Vite Client
 # ------------------------------------------------------------------------------
 FROM node:24-slim AS builder
 
 WORKDIR /app
 
-# Copy dependency manifests
-COPY package*.json tsconfig.json ./
+# Copy dependency manifests only (preserves layer cache against config edits)
+COPY package*.json ./
 COPY frontend/package*.json ./frontend/
 
-# Install root and frontend dependencies
-RUN npm ci
-RUN cd frontend && npm ci
+# Install root and frontend dependencies using BuildKit package cache
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci && \
+    cd frontend && npm ci
 
-# Copy application and frontend source code
+# Copy TypeScript configuration and source code
+COPY tsconfig.json ./
 COPY src/ ./src/
 COPY frontend/ ./frontend/
 
@@ -26,20 +39,23 @@ COPY frontend/ ./frontend/
 RUN npm run build
 
 # ------------------------------------------------------------------------------
-# Stage 2: Production Runtime
+# Stage 3: Production Runtime
 # ------------------------------------------------------------------------------
 FROM node:24-slim AS runner
 
 WORKDIR /app
 
-# Install git, curl, and CA certificates
-RUN apt-get update && \
+# Install git, curl, and CA certificates with persistent APT cache
+RUN rm -f /etc/apt/apt.conf.d/docker-clean; echo 'Binary::apt::APT::Keep-Downloaded-Packages "true";' > /etc/apt/apt.conf.d/keep-cache
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends git curl ca-certificates procps && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy package manifests and install strictly production dependencies (zero-CVE surface)
+# Copy package manifests and production dependencies directly from prod-deps stage (instant)
 COPY package*.json ./
-RUN npm ci --omit=dev
+COPY --from=prod-deps /app/node_modules ./node_modules
 
 # Copy compiled JavaScript and static assets from builder stage
 COPY --from=builder /app/dist ./dist
@@ -48,13 +64,13 @@ COPY --from=builder /app/dist ./dist
 RUN mkdir -p /app/data /home/node/.gemini /home/node/.config /repos
 
 # Default production environment configuration
-ENV NODE_ENV=production
-ENV DATA_DIR=/app/data
-ENV DATABASE_PATH=/app/data/agylity.db
-ENV QUOTA_STATE_FILE_PATH=/app/data/state.json
-ENV WEB_UI_ENABLED=false
-ENV WEB_UI_PORT=3000
-ENV WEB_UI_HOST=0.0.0.0
+ENV NODE_ENV=production \
+    DATA_DIR=/app/data \
+    DATABASE_PATH=/app/data/agylity.db \
+    QUOTA_STATE_FILE_PATH=/app/data/state.json \
+    WEB_UI_ENABLED=false \
+    WEB_UI_PORT=3000 \
+    WEB_UI_HOST=0.0.0.0
 
 # Persistent volume for SQLite database and state
 VOLUME ["/app/data", "/repos"]

@@ -86,9 +86,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     () => String(resolved.discordGuildId || ''),
     [resolved.discordGuildId]
   );
-  const serverWebhookUrl = useMemo(
-    () => String(resolved.notificationWebhookUrl || ''),
-    [resolved.notificationWebhookUrl]
+  const isWebhookConfigured = Boolean(
+    config.secretsMeta?.notificationWebhookUrl?.isSet ?? Boolean(resolved.notificationWebhookUrl)
   );
 
   // Enabled channels set (multi-channel toggle state)
@@ -118,7 +117,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [discordGuildId, setDiscordGuildId] = useState(serverDiscordGuildId);
   const [showDiscordToken, setShowDiscordToken] = useState(false);
 
-  const [webhookUrl, setWebhookUrl] = useState(serverWebhookUrl);
+  const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSecret, setWebhookSecret] = useState('');
   const [showWebhookSecret, setShowWebhookSecret] = useState(false);
 
@@ -132,16 +131,21 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordChannelId(serverDiscordChannelId);
     setDiscordClientId(serverDiscordClientId);
     setDiscordGuildId(serverDiscordGuildId);
-    setWebhookUrl(serverWebhookUrl);
+    setWebhookUrl('');
     setDiscordToken('');
     setWebhookSecret('');
-  }, [
-    serverChannels,
-    serverDiscordChannelId,
-    serverDiscordClientId,
-    serverDiscordGuildId,
-    serverWebhookUrl,
-  ]);
+  }, [serverChannels, serverDiscordChannelId, serverDiscordClientId, serverDiscordGuildId]);
+
+  const ensureChannelEnabled = (id: ChannelId) => {
+    setEnabledChannels((prev) => {
+      if (prev.includes(id)) return prev;
+      return [...prev, id];
+    });
+    setExpandedChannels((prev) => {
+      if (prev[id]) return prev;
+      return { ...prev, [id]: true };
+    });
+  };
 
   const handleToggleChannel = (id: ChannelId) => {
     setEnabledChannels((prev) => {
@@ -185,7 +189,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     if (discordChannelId !== serverDiscordChannelId) return true;
     if (discordClientId !== serverDiscordClientId) return true;
     if (discordGuildId !== serverDiscordGuildId) return true;
-    if (webhookUrl !== serverWebhookUrl) return true;
+    if (webhookUrl.trim().length > 0) return true;
     if (webhookSecret.trim().length > 0) return true;
     return false;
   }, [
@@ -198,7 +202,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     discordGuildId,
     serverDiscordGuildId,
     webhookUrl,
-    serverWebhookUrl,
     webhookSecret,
   ]);
 
@@ -208,7 +211,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordChannelId(serverDiscordChannelId);
     setDiscordClientId(serverDiscordClientId);
     setDiscordGuildId(serverDiscordGuildId);
-    setWebhookUrl(serverWebhookUrl);
+    setWebhookUrl('');
     setWebhookSecret('');
     setToast(null);
   };
@@ -235,7 +238,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       payload.discordGuildId = discordGuildId.trim();
     }
 
-    if (webhookUrl !== serverWebhookUrl) {
+    if (webhookUrl.trim() && webhookUrl.trim() !== '••••••••' && webhookUrl.trim() !== '********') {
       payload.notificationWebhookUrl = webhookUrl.trim();
     }
     if (webhookSecret.trim()) {
@@ -252,6 +255,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
             : `Notification channels updated (${channelsList.length} active)!`,
       });
       setDiscordToken('');
+      setWebhookUrl('');
       setWebhookSecret('');
       onSaved();
     } catch (err: any) {
@@ -268,7 +272,28 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setTestingChannel(channel);
     setToast(null);
 
-    testNotification(channel)
+    const overrides: Record<string, unknown> = {};
+    if (channel === 'webhook') {
+      if (
+        webhookUrl.trim() &&
+        webhookUrl.trim() !== '••••••••' &&
+        webhookUrl.trim() !== '********'
+      ) {
+        overrides.notificationWebhookUrl = webhookUrl.trim();
+      }
+      if (webhookSecret.trim()) {
+        overrides.webhookSecret = webhookSecret.trim();
+      }
+    } else if (channel === 'discord') {
+      if (discordToken.trim()) {
+        overrides.discordToken = discordToken.trim();
+      }
+      if (discordChannelId.trim()) {
+        overrides.discordNotificationChannelId = discordChannelId.trim();
+      }
+    }
+
+    testNotification(channel, overrides)
       .then((data) =>
         setToast({
           type: 'success',
@@ -284,12 +309,42 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       .finally(() => setTestingChannel(null));
   };
 
+  const handleClearWebhook = async () => {
+    try {
+      await updateConfig({ notificationWebhookUrl: '' });
+      setToast({
+        type: 'success',
+        message: 'Saved webhook URL cleared successfully.',
+      });
+      setWebhookUrl('');
+      onSaved();
+    } catch (err: any) {
+      setToast({
+        type: 'error',
+        message: err?.message || 'Failed to clear webhook URL',
+      });
+    }
+  };
+
+  const handleClearDiscordToken = async () => {
+    try {
+      await updateConfig({ discordToken: '' });
+      setToast({
+        type: 'success',
+        message: 'Saved Discord Bot Token cleared successfully.',
+      });
+      setDiscordToken('');
+      onSaved();
+    } catch (err: any) {
+      setToast({
+        type: 'error',
+        message: err?.message || 'Failed to clear Discord Bot Token',
+      });
+    }
+  };
+
   const isDiscordTokenSet = Boolean(
     config.secretsMeta?.discordToken?.isSet ?? Boolean(resolved.discordToken)
-  );
-  const isWebhookConfigured = Boolean(
-    config.secretsMeta?.notificationWebhookUrl?.isSet ??
-    Boolean(webhookUrl || resolved.notificationWebhookUrl)
   );
 
   return (
@@ -426,7 +481,17 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             <span class="text-[10px] text-pine-foam">(Encrypted at rest)</span>
                           </span>
                           {isDiscordTokenSet && (
-                            <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                            <div class="flex items-center gap-2">
+                              <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                              <button
+                                type="button"
+                                onClick={handleClearDiscordToken}
+                                class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love hover:underline"
+                                title="Clear saved Discord bot token"
+                              >
+                                Clear
+                              </button>
+                            </div>
                           )}
                         </label>
                         <div class="flex gap-2">
@@ -443,7 +508,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                                 : 'Paste Discord Bot Token from Developer Portal'
                             }
                             value={discordToken}
-                            onInput={(e) => setDiscordToken((e.target as HTMLInputElement).value)}
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setDiscordToken(val);
+                              if (val.length > 0) ensureChannelEnabled('discord');
+                            }}
                           />
                           <button
                             type="button"
@@ -470,9 +539,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                             placeholder="e.g. 123456789012345678"
                             value={discordChannelId}
-                            onInput={(e) =>
-                              setDiscordChannelId((e.target as HTMLInputElement).value)
-                            }
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setDiscordChannelId(val);
+                              if (val.length > 0) ensureChannelEnabled('discord');
+                            }}
                           />
                           <span class="text-[11px] text-pine-muted">
                             Right click channel in Discord &gt; Copy Channel ID
@@ -492,9 +563,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                             placeholder="e.g. 987654321098765432"
                             value={discordClientId}
-                            onInput={(e) =>
-                              setDiscordClientId((e.target as HTMLInputElement).value)
-                            }
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setDiscordClientId(val);
+                              if (val.length > 0) ensureChannelEnabled('discord');
+                            }}
                           />
                           <div class="flex items-center justify-between text-[11px] text-pine-muted">
                             <span>Found in Discord Developer Portal General Info</span>
@@ -526,7 +599,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                             placeholder="e.g. 112233445566778899"
                             value={discordGuildId}
-                            onInput={(e) => setDiscordGuildId((e.target as HTMLInputElement).value)}
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setDiscordGuildId(val);
+                              if (val.length > 0) ensureChannelEnabled('discord');
+                            }}
                           />
                           <span class="text-[11px] text-pine-muted">
                             Target server for fast command registration
@@ -559,7 +636,17 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             <span class="text-[10px] text-pine-foam">(Encrypted at rest)</span>
                           </span>
                           {isWebhookConfigured && (
-                            <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                            <div class="flex items-center gap-2">
+                              <span class="font-mono text-[10px] text-pine-foam">Configured</span>
+                              <button
+                                type="button"
+                                onClick={handleClearWebhook}
+                                class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love hover:underline"
+                                title="Clear saved webhook URL"
+                              >
+                                Clear
+                              </button>
+                            </div>
                           )}
                         </label>
                         <input
@@ -572,13 +659,18 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                           placeholder={
                             isWebhookConfigured
                               ? '•••••••••••••••••••• (Encrypted — enter new URL to update)'
-                              : 'https://your-server.com/api/agylity-alert'
+                              : 'https://discord.com/api/webhooks/... or https://your-server.com/api/alert'
                           }
                           value={webhookUrl}
-                          onInput={(e) => setWebhookUrl((e.target as HTMLInputElement).value)}
+                          onInput={(e) => {
+                            const val = (e.target as HTMLInputElement).value;
+                            setWebhookUrl(val);
+                            if (val.length > 0) ensureChannelEnabled('webhook');
+                          }}
                         />
                         <span class="text-[11px] text-pine-muted">
-                          Receives HTTP POST requests with JSON quota milestone payloads.
+                          Receives HTTP POST requests with JSON quota milestone payloads (Discord,
+                          Slack, &amp; generic endpoints supported).
                         </span>
                       </div>
 
@@ -599,7 +691,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                             placeholder="Optional secret for x-agylity-signature header"
                             value={webhookSecret}
-                            onInput={(e) => setWebhookSecret((e.target as HTMLInputElement).value)}
+                            onInput={(e) => {
+                              const val = (e.target as HTMLInputElement).value;
+                              setWebhookSecret(val);
+                              if (val.length > 0) ensureChannelEnabled('webhook');
+                            }}
                           />
                           <button
                             type="button"

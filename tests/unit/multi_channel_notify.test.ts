@@ -111,6 +111,49 @@ describe('Unit Tests: Multi-Channel & Pluggable Notification Adapters', () => {
         const testResult = await notifier.testNotification();
         assert.equal(testResult.success, true);
         assert.equal(receivedBody.event, 'test_ping');
+        assert.ok(receivedBody.content);
+        assert.ok(receivedBody.text);
+        assert.equal(receivedBody.username, 'Agylity');
+        assert.ok(Array.isArray(receivedBody.embeds));
+
+        await notifier.shutdown();
+      } finally {
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('formats Discord and Slack compatible payloads with content, embeds, and text', async () => {
+      let receivedBody: any = null;
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          receivedBody = JSON.parse(body);
+          res.writeHead(204).end();
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/api/webhooks/123/token`,
+        });
+        await notifier.initialize();
+
+        const res = await notifier.testNotification();
+        assert.equal(res.success, true);
+        assert.ok(res.message.includes('status 204'));
+        assert.equal(receivedBody.username, 'Agylity');
+        assert.ok(typeof receivedBody.content === 'string' && receivedBody.content.length > 0);
+        assert.ok(typeof receivedBody.text === 'string' && receivedBody.text.length > 0);
+        assert.ok(Array.isArray(receivedBody.embeds) && receivedBody.embeds.length > 0);
+        assert.equal(receivedBody.embeds[0].title, '[Alert] Quota Milestone: Claude & GPT Models');
+
+        await notifier.notifyQuotaAlert(sampleAlert);
+        assert.equal(receivedBody.event, 'quota_alert');
+        assert.ok(receivedBody.content.includes('Claude'));
+        assert.ok(receivedBody.embeds[0].title.includes('Claude'));
 
         await notifier.shutdown();
       } finally {
@@ -135,10 +178,11 @@ describe('Unit Tests: Multi-Channel & Pluggable Notification Adapters', () => {
         // notifyQuotaAlert should swallow HTTP errors and not crash
         await notifier.notifyQuotaAlert(sampleAlert);
 
-        // testNotification should return structured failure
+        // testNotification should return structured failure with extracted error body
         const testRes = await notifier.testNotification();
         assert.equal(testRes.success, false);
         assert.ok(testRes.message.includes('Webhook ping failed'));
+        assert.ok(testRes.message.includes('Internal Server Error'));
 
         await notifier.shutdown();
       } finally {

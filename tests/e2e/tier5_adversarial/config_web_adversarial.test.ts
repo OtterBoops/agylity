@@ -1009,11 +1009,11 @@ describe('Tier 5 Adversarial Hardening Suite: Track B (Config, Notifications & W
     it('T5-HTML-1: index.html contains ZERO external network URLs (zero CDN, zero fonts, zero external scripts)', () => {
       const candidates = [
         path.resolve(__dirname, '../../../dist/web/public/index.html'),
-        path.resolve(__dirname, '../../../src/web/public/index.html'),
+        path.resolve(process.cwd(), 'dist/web/public/index.html'),
         path.resolve(__dirname, '../../../frontend/index.html'),
       ];
       const htmlPath = candidates.find((p) => fs.existsSync(p));
-      assert.ok(htmlPath, 'index.html must exist in dist/web/public or src/web/public');
+      assert.ok(htmlPath, 'index.html must exist in dist/web/public or frontend');
 
       const content = fs.readFileSync(htmlPath, 'utf-8');
 
@@ -1037,8 +1037,15 @@ describe('Tier 5 Adversarial Hardening Suite: Track B (Config, Notifications & W
       assert.equal(/@import\s+/i.test(content), false, 'CSS contains forbidden @import rule');
 
       // 4. Verifies presence of self-contained modal, gauges, and tables in the compiled Preact bundle
-      const assetsDir = path.join(process.cwd(), 'src', 'web', 'public', 'assets');
-      assert.ok(fs.existsSync(assetsDir), 'Compiled assets directory must exist');
+      const assetsCandidates = [
+        path.resolve(__dirname, '../../../dist/web/public/assets'),
+        path.join(process.cwd(), 'dist', 'web', 'public', 'assets'),
+      ];
+      const assetsDir = assetsCandidates.find((p) => fs.existsSync(p));
+      assert.ok(
+        assetsDir && fs.existsSync(assetsDir),
+        'Compiled assets directory must exist in dist/web/public'
+      );
       const jsFiles = fs.readdirSync(assetsDir).filter((f: string) => f.endsWith('.js'));
       assert.ok(jsFiles.length > 0, 'Compiled JS bundle must exist');
       const bundleContent = fs.readFileSync(path.join(assetsDir, jsFiles[0]!), 'utf-8');

@@ -36,15 +36,29 @@ export const TaskPromptSchema = z
   .max(4000, 'Prompt exceeds 4000 character limit');
 
 /**
- * Generates an ASCII visual progress bar for quota fractions (e.g. "██████░░░░").
+ * Generates an ASCII visual progress bar for quota fractions (e.g. "██████░░░░" or "■■■■■■□□□□").
  */
-export const generateProgressBar = (fraction: number, totalBars = 10): string => {
+export const generateProgressBar = (
+  fraction: number,
+  totalBars = 10,
+  filledChar = '█',
+  emptyChar = '░'
+): string => {
   const safeFraction = Number.isFinite(fraction) ? fraction : 0;
   const clamped = Math.max(0, Math.min(1, safeFraction));
   const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
   const filled = Math.round(clamped * safeTotalBars);
   const empty = Math.max(0, safeTotalBars - filled);
-  return '█'.repeat(filled) + '░'.repeat(empty);
+  return filledChar.repeat(filled) + emptyChar.repeat(empty);
+};
+
+export const renderSquareProgressBar = (fraction: number, totalBars = 10): string => {
+  const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
+  const bar = generateProgressBar(fraction, safeTotalBars, '■', '□');
+  const percent = Math.round(
+    Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0)) * 100
+  );
+  return `\`[${bar}]\` **${percent}%**`;
 };
 
 export const formatProgressBar = (fraction: number, totalBars = 10): string => {
@@ -446,31 +460,44 @@ export class DiscordNotifier implements Notifier {
       if (!channel || !channel.isTextBased?.()) return;
 
       const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
+      let resetTimestamp = alert.pool.resetTime || 'Unknown';
+      if (alert.pool.resetTime) {
+        const resetDate = new Date(alert.pool.resetTime);
+        if (!isNaN(resetDate.getTime())) {
+          const unixSec = Math.floor(resetDate.getTime() / 1000);
+          resetTimestamp = `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
+        }
+      }
+
       const embed = new EmbedBuilder()
         .setTitle(`[Alert] Quota Milestone: ${poolName}`.slice(0, 256))
-        .setDescription(
-          `**${alert.remainingPercentage}%** quota remains with only **${alert.milestoneHours}h** before reset!`.slice(
-            0,
-            4096
-          )
-        )
+        .setDescription(`Milestone threshold: **${alert.milestoneHours}h** before quota reset.`)
         .setColor(0xffa500)
         .addFields(
           {
             name: 'Remaining Quota',
-            value:
-              `${generateProgressBar(alert.pool.remainingFraction)} **${alert.remainingPercentage}%**`.slice(
-                0,
-                1024
-              ),
+            value: renderSquareProgressBar(alert.pool.remainingFraction),
             inline: true,
           },
           {
-            name: 'Reset Time',
-            value: (alert.pool.resetTime || 'Unknown').slice(0, 1024),
+            name: 'Reset Window',
+            value: resetTimestamp,
             inline: true,
           }
         );
+
+      if (alert.pool.models && alert.pool.models.length > 0) {
+        const modelPills = alert.pool.models.map((m) => `\`${m}\``).join(' • ');
+        embed.addFields({
+          name: 'Monitored Models',
+          value: modelPills.slice(0, 1024),
+          inline: false,
+        });
+      }
+
+      embed
+        .setFooter({ text: 'Agylity Quota Sentry' })
+        .setTimestamp(new Date(alert.triggeredAt || Date.now()));
 
       const actionRow = createRepoSelectMenu(this.config.repositories);
 
@@ -551,10 +578,59 @@ export class DiscordNotifier implements Notifier {
       }
 
       if ('send' in channel && typeof (channel as any).send === 'function') {
-        await (channel as any).send({
-          content:
-            '**[Notice] Agylity Notification Test** — Discord gateway connection verified successfully.',
-        });
+        let samplePool: QuotaSnapshot | undefined;
+        if (this.options.onQuotaRequested) {
+          try {
+            const pools = await this.options.onQuotaRequested();
+            if (pools && pools.length > 0) {
+              samplePool = pools.find((p) => p.family === 'claude') || pools[0];
+            }
+          } catch {}
+        }
+
+        const poolName = samplePool?.displayName || 'Claude and GPT models';
+        const modelsList =
+          samplePool?.models && samplePool.models.length > 0
+            ? samplePool.models
+            : ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
+
+        const resetDate = new Date(Date.now() + 3 * 3600 * 1000);
+        const unixSec = Math.floor(resetDate.getTime() / 1000);
+        const resetTimestamp = `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
+
+        const embed = new EmbedBuilder()
+          .setTitle(`[Alert] Quota Milestone: ${poolName}`)
+          .setDescription('Milestone threshold: **3h** before quota reset.')
+          .setColor(0xffa500)
+          .addFields(
+            {
+              name: 'Remaining Quota',
+              value: renderSquareProgressBar(0.25),
+              inline: true,
+            },
+            {
+              name: 'Reset Window',
+              value: resetTimestamp,
+              inline: true,
+            },
+            {
+              name: 'Monitored Models',
+              value: modelsList.map((m) => `\`${m}\``).join(' • '),
+              inline: false,
+            }
+          )
+          .setFooter({ text: 'Agylity Quota Sentry • Test Notification Simulation' })
+          .setTimestamp();
+
+        const sendPayload: any = {
+          embeds: [embed],
+        };
+
+        if (this.config.repositories && this.config.repositories.length > 0) {
+          sendPayload.components = [createRepoSelectMenu(this.config.repositories)];
+        }
+
+        await (channel as any).send(sendPayload);
       }
 
       return {

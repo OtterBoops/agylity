@@ -65,7 +65,23 @@ export class ConsoleNotifier implements Notifier {
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
-    console.log('[ConsoleNotifier] Test notification ping verified.');
+    const poolName = 'Claude and GPT models';
+    const remainingPct = '25%';
+    const milestoneText = '3h before reset';
+    const resetTime = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
+    const triggeredAt = new Date().toISOString();
+
+    const line1 = `│ [TEST QUOTA ALERT] ${poolName}`.padEnd(72) + '│';
+    const line2 =
+      `│ Headroom: ${remainingPct} remaining | Milestone: ${milestoneText}`.padEnd(72) + '│';
+    const line3 = `│ Reset Deadline: ${resetTime} | Triggered: ${triggeredAt}`.padEnd(72) + '│';
+
+    console.log('┌' + '─'.repeat(71) + '┐');
+    console.log(line1);
+    console.log(line2);
+    console.log(line3);
+    console.log('└' + '─'.repeat(71) + '┘');
+
     return {
       success: true,
       message: 'Test notification printed to local console.',

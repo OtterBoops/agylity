@@ -621,6 +621,56 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('POST /api/notify/test executes ephemeral test with unsaved webhook URL override', async () => {
+      const { dir, cleanup } = makeTempDir('web_ephemeral_webhook_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        notificationChannel: 'none',
+      });
+
+      let receivedBody: any = null;
+      const hookServer = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          receivedBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+
+      await new Promise<void>((r) => hookServer.listen(0, '127.0.0.1', () => r()));
+      const hookPort = (hookServer.address() as { port: number }).port;
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const res = await ky
+          .post(`http://127.0.0.1:${port}/api/notify/test`, {
+            json: {
+              channel: 'webhook',
+              notificationWebhookUrl: `http://127.0.0.1:${hookPort}/ephemeral-hook`,
+            },
+            retry: 0,
+          })
+          .json<any>();
+
+        assert.equal(res.success, true);
+        assert.equal(res.channel, 'webhook');
+        assert.ok(res.message.includes('Webhook ping delivered successfully'));
+        assert.equal(receivedBody?.event, 'test_ping');
+        assert.ok(receivedBody?.content);
+      } finally {
+        await closeWebServer(server);
+        await new Promise<void>((r) => hookServer.close(() => r()));
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

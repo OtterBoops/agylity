@@ -9,7 +9,7 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "build:client": "npm --prefix frontend run build && node -e \"const fs=require('fs'); fs.rmSync('src/web/public/assets',{recursive:true,force:true}); fs.cpSync('dist/web/public','src/web/public',{recursive:true})\"",
+    "build:client": "npm --prefix frontend run build",
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server",
     "dev:client": "npm --prefix frontend run dev",

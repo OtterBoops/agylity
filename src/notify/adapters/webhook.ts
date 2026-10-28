@@ -9,6 +9,14 @@ export interface WebhookPayload {
   event: 'quota_alert' | 'dispatch_status' | 'test_ping';
   timestamp: string;
   data: Record<string, unknown>;
+  content?: string;
+  text?: string;
+  message?: string;
+  username?: string;
+  embeds?: unknown[];
+  poolId?: string;
+  milestone?: number;
+  status?: string;
 }
 
 /**
@@ -97,6 +105,46 @@ export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   });
 }
 
+export function formatResetWindow(rawResetTime?: string): string {
+  if (!rawResetTime) return 'Unknown';
+  try {
+    const d = new Date(rawResetTime);
+    if (!isNaN(d.getTime())) {
+      const unixSec = Math.floor(d.getTime() / 1000);
+      return `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
+    }
+  } catch {}
+  return rawResetTime;
+}
+
+export function isDiscordWebhook(url?: string): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.toLowerCase();
+    return (
+      (host === 'discord.com' ||
+        host === 'discordapp.com' ||
+        host.endsWith('.discord.com') ||
+        host.endsWith('.discordapp.com')) &&
+      u.pathname.toLowerCase().includes('/api/webhooks/')
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function renderSquareProgressBar(fraction: number, totalBars = 10): string {
+  const safeFraction = Number.isFinite(fraction) ? fraction : 0;
+  const clamped = Math.max(0, Math.min(1, safeFraction));
+  const safeTotalBars = Number.isFinite(totalBars) && totalBars > 0 ? Math.floor(totalBars) : 10;
+  const filled = Math.round(clamped * safeTotalBars);
+  const empty = Math.max(0, safeTotalBars - filled);
+  const bar = '■'.repeat(filled) + '□'.repeat(empty);
+  const percent = Math.round(clamped * 100);
+  return `\`[${bar}]\` **${percent}%**`;
+}
+
 export class WebhookNotifier implements Notifier {
   readonly channelName: string = 'webhook';
   public initialized = false;
@@ -125,11 +173,41 @@ export class WebhookNotifier implements Notifier {
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
     this.alerts.push(alert);
 
-    const payload = {
-      event: 'quota_alert' as const,
+    const poolName = alert.pool.displayName || alert.pool.poolId || 'Quota Pool';
+    const percent = alert.remainingPercentage;
+    const hours = alert.milestoneHours;
+    const textMsg = `[Alert] Quota Milestone: ${poolName} is at ${percent}% with ${hours}h before reset.`;
+
+    const payload: WebhookPayload = {
+      event: 'quota_alert',
       poolId: alert.pool.poolId,
       milestone: alert.milestoneHours,
       timestamp: alert.triggeredAt || new Date().toISOString(),
+      username: 'Agylity',
+      content: textMsg,
+      text: textMsg,
+      message: textMsg,
+      embeds: [
+        {
+          title: `[Alert] Quota Milestone: ${poolName}`,
+          description: `Milestone threshold: **${hours}h** before quota reset.`,
+          color: 0xffa500,
+          fields: [
+            {
+              name: 'Remaining Quota',
+              value: renderSquareProgressBar(alert.pool.remainingFraction ?? percent / 100),
+              inline: true,
+            },
+            {
+              name: 'Reset Window',
+              value: formatResetWindow(alert.pool.resetTime),
+              inline: true,
+            },
+          ],
+          footer: { text: 'Agylity Quota Sentry' },
+          timestamp: alert.triggeredAt || new Date().toISOString(),
+        },
+      ],
       data: {
         poolId: alert.pool.poolId,
         displayName: alert.pool.displayName || alert.pool.poolId,
@@ -144,6 +222,14 @@ export class WebhookNotifier implements Notifier {
       },
     };
 
+    if (alert.pool.models && alert.pool.models.length > 0) {
+      (payload.embeds![0] as any).fields.push({
+        name: 'Monitored Models',
+        value: alert.pool.models.map((m) => `\`${m}\``).join(' • '),
+        inline: false,
+      });
+    }
+
     try {
       await this.postWebhook(payload);
     } catch {
@@ -155,11 +241,25 @@ export class WebhookNotifier implements Notifier {
     this.statuses.push(status);
 
     const step = status.status ?? (status.step as string) ?? 'executing';
-    const payload = {
-      event: 'dispatch_status' as const,
+    const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
+
+    const payload: WebhookPayload = {
+      event: 'dispatch_status',
       status: step,
       message: status.message ?? '',
       timestamp: status.timestamp || new Date().toISOString(),
+      username: 'Agylity',
+      content: textMsg,
+      text: textMsg,
+      embeds: [
+        {
+          title: `[Dispatch] Task Status: ${step}`,
+          description: status.message || `Dispatch step: ${step}`,
+          color: step === 'completed' ? 0x2ecc71 : step === 'failed' ? 0xe74c3c : 0x3498db,
+          timestamp: status.timestamp || new Date().toISOString(),
+          footer: { text: 'Agylity Orchestrator' },
+        },
+      ],
       data: { ...status } as Record<string, unknown>,
     };
 
@@ -180,10 +280,57 @@ export class WebhookNotifier implements Notifier {
       };
     }
 
+    const resetDate = new Date(Date.now() + 3 * 3600 * 1000);
+    const resetIso = resetDate.toISOString();
+    const resetWindow = formatResetWindow(resetIso);
+    const modelsList = ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
+    const textMsg =
+      '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
     const payload: WebhookPayload = {
       event: 'test_ping',
+      poolId: 'claude',
+      milestone: 3,
       timestamp: new Date().toISOString(),
+      username: 'Agylity',
+      content: textMsg,
+      text: textMsg,
+      message: textMsg,
+      embeds: [
+        {
+          title: '[Alert] Quota Milestone: Claude & GPT Models',
+          description: 'Milestone threshold: **3h** before quota reset.',
+          color: 0xffa500,
+          fields: [
+            {
+              name: 'Remaining Quota',
+              value: renderSquareProgressBar(0.25),
+              inline: true,
+            },
+            {
+              name: 'Reset Window',
+              value: resetWindow,
+              inline: true,
+            },
+            {
+              name: 'Monitored Models',
+              value: modelsList.map((m) => `\`${m}\``).join(' • '),
+              inline: false,
+            },
+          ],
+          footer: { text: 'Agylity Quota Sentry • Test Notification Simulation' },
+          timestamp: new Date().toISOString(),
+        },
+      ],
       data: {
+        poolId: 'claude',
+        displayName: 'Claude and GPT models',
+        family: 'claude',
+        remainingPercentage: 25,
+        remainingFraction: 0.25,
+        milestoneHours: 3,
+        resetTime: resetIso,
+        hoursUntilReset: 3.0,
+        models: modelsList,
         message: 'Agylity notification test ping',
         source: 'agylity-daemon',
       },
@@ -197,9 +344,18 @@ export class WebhookNotifier implements Notifier {
         channel: this.channelName,
       };
     } catch (err: any) {
+      let extra = '';
+      if (err?.response && typeof err.response.text === 'function') {
+        try {
+          const body = await err.response.text();
+          if (body) {
+            extra = `: ${body.slice(0, 150)}`;
+          }
+        } catch {}
+      }
       return {
         success: false,
-        message: `Webhook ping failed: ${sanitizeErrorMessage(err?.message ?? String(err), url)}`,
+        message: `Webhook ping failed: ${sanitizeErrorMessage((err?.message ?? String(err)) + extra, url)}`,
         channel: this.channelName,
       };
     }
@@ -221,7 +377,16 @@ export class WebhookNotifier implements Notifier {
     const url = this.getWebhookUrl();
     if (!url) return { status: 0 };
 
-    const bodyStr = JSON.stringify(payload);
+    const outgoingPayload: any = { ...payload };
+    if (
+      isDiscordWebhook(url) &&
+      Array.isArray(outgoingPayload.embeds) &&
+      outgoingPayload.embeds.length > 0
+    ) {
+      delete outgoingPayload.content;
+    }
+
+    const bodyStr = JSON.stringify(outgoingPayload);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       'User-Agent': 'Agylity-Notifier/0.1.0',
@@ -250,11 +415,20 @@ export class WebhookNotifier implements Notifier {
         .info('Webhook delivered to %s (status %d)', sanitizeWebhookUrl(url), response.status);
       return { status: response.status };
     } catch (err: any) {
+      let extra = '';
+      if (err?.response && typeof err.response.text === 'function') {
+        try {
+          const body = await err.response.text();
+          if (body) {
+            extra = `: ${body.slice(0, 150)}`;
+          }
+        } catch {}
+      }
       logger
         .child('notify:webhook')
         .error(
           'Webhook delivery failed: %s',
-          sanitizeErrorMessage(err?.message ?? String(err), url)
+          sanitizeErrorMessage((err?.message ?? String(err)) + extra, url)
         );
       throw err;
     }

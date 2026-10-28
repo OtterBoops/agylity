@@ -57,17 +57,19 @@ const methodNotAllowed = (res: http.ServerResponse): void => {
 const resolvePublicFilePath = (relative: string): string | null => {
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
+    // 1. Production bundle: dist/web/public (when running compiled dist/web/routes.js)
     path.join(currentDir, 'public', relative),
-    path.join(currentDir, '..', '..', 'src', 'web', 'public', relative),
-    path.join(process.cwd(), 'src', 'web', 'public', relative),
-    path.join(process.cwd(), 'dist', 'web', 'public', relative),
+    // 2. Dev mode with tsx: <root>/dist/web/public (relative to src/web/routes.ts)
+    path.resolve(currentDir, '..', '..', 'dist', 'web', 'public', relative),
+    // 3. Process CWD fallback
+    path.resolve(process.cwd(), 'dist', 'web', 'public', relative),
   ];
   return candidates.find(existsSync) ?? null;
 };
 
 const resolveIndexHtmlPath = (): string =>
   resolvePublicFilePath('index.html') ??
-  path.join(process.cwd(), 'src', 'web', 'public', 'index.html');
+  path.resolve(process.cwd(), 'dist', 'web', 'public', 'index.html');
 
 const loadIndexHtml = async (): Promise<string> => fs.readFile(resolveIndexHtmlPath(), 'utf-8');
 
@@ -516,18 +518,48 @@ export const handleRequest = async (
 
       const body = await readBody(req, res);
       try {
-        const resolved = options.configStore.resolveConfig();
+        const baseResolved = options.configStore.resolveConfig();
         let targetChannel: string | undefined;
+        let testOverrides: Record<string, unknown> = {};
 
         if (body.trim()) {
           try {
             const parsed = JSON.parse(body);
-            if (parsed.channel && typeof parsed.channel === 'string') {
-              targetChannel = parsed.channel.trim().toLowerCase();
+            if (parsed && typeof parsed === 'object') {
+              if (parsed.channel && typeof parsed.channel === 'string') {
+                targetChannel = parsed.channel.trim().toLowerCase();
+              }
+              testOverrides = parsed;
             }
           } catch {
             // ignore malformed body
           }
+        }
+
+        const resolved = { ...baseResolved };
+        let hasOverrides = false;
+
+        const rawWebhook = testOverrides.notificationWebhookUrl ?? testOverrides.webhookUrl;
+        if (typeof rawWebhook === 'string' && rawWebhook.trim()) {
+          resolved.notificationWebhookUrl = rawWebhook.trim();
+          hasOverrides = true;
+        }
+
+        if (typeof testOverrides.webhookSecret === 'string' && testOverrides.webhookSecret.trim()) {
+          resolved.webhookSecret = testOverrides.webhookSecret.trim();
+          hasOverrides = true;
+        }
+
+        if (typeof testOverrides.discordToken === 'string' && testOverrides.discordToken.trim()) {
+          resolved.discordToken = testOverrides.discordToken.trim();
+          hasOverrides = true;
+        }
+
+        const rawDiscordChan =
+          testOverrides.discordNotificationChannelId ?? testOverrides.discordChannelId;
+        if (typeof rawDiscordChan === 'string' && rawDiscordChan.trim()) {
+          resolved.discordNotificationChannelId = rawDiscordChan.trim();
+          hasOverrides = true;
         }
 
         const channel =
@@ -557,7 +589,7 @@ export const handleRequest = async (
         let activeNotifier: any;
         let shouldShutdown = false;
 
-        if (options.notifier) {
+        if (!hasOverrides && options.notifier) {
           if (targetChannel) {
             if (options.notifier.channelName === targetChannel) {
               activeNotifier = options.notifier;

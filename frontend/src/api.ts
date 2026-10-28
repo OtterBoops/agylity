@@ -66,10 +66,11 @@ export const triggerDispatch = (payload: {
   api.post('dispatch', { json: payload }).json<{ success: boolean; branchName?: string }>();
 
 export const testNotification = (
-  channel?: string
+  channel?: string,
+  overrides?: Record<string, unknown>
 ): Promise<{ success: boolean; message: string; channel?: string }> =>
   api
-    .post('notify/test', { json: channel ? { channel } : {} })
+    .post('notify/test', { json: { ...(channel ? { channel } : {}), ...(overrides ?? {}) } })
     .json<{ success: boolean; message: string; channel?: string }>();
 
 export const getDispatches = (limit = 50): Promise<DispatchRecord[]> =>

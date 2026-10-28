@@ -13,7 +13,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:3000',
+      '/api':
+        process.env.VITE_API_TARGET ||
+        (process.env.WEB_UI_PORT
+          ? `http://127.0.0.1:${process.env.WEB_UI_PORT}`
+          : 'http://127.0.0.1:8484'),
     },
   },
 });
