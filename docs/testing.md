@@ -50,6 +50,7 @@ tests/
     ├── multi_channel_notify.test.ts         # Multi-channel composite routing & test pings
     ├── notify.test.ts                       # Discord adapter, components, modals, 3s defer
     ├── optional_orchestrator_and_crypto.test.ts # AES-256-GCM crypto & orchestrator guardrail
+    ├── orchestrator.test.ts                 # Swarm coordinator, task queue, model routing & pull worker
     ├── sentry.test.ts                       # Connect-RPC parser, CLI fallback, milestone math
     └── web.test.ts                          # REST API routes, 404/405 guards, 64 KB body limits
 ```
@@ -103,7 +104,7 @@ Focused unit tests and adversarial challenger suites verifying:
 ## 4. Running the Test Suite
 
 ```bash
-# 1. Run complete deterministic test suite (381 tests across 99 suites)
+# 1. Run complete deterministic test suite (407 tests across 108 suites)
 npm test
 
 # 2. Run standalone E2E test runner (104 tests across 22 suites)

@@ -6,6 +6,7 @@ interface Repo {
   id: string;
   name: string;
   path: string;
+  cloneUrl?: string;
   description?: string;
   defaultBranch?: string;
 }
@@ -45,6 +46,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         name: r.name.trim(),
         path,
         defaultBranch: r.defaultBranch?.trim() || 'main',
+        ...(r.cloneUrl?.trim() ? { cloneUrl: r.cloneUrl.trim() } : {}),
         ...(r.description?.trim() ? { description: r.description.trim() } : {}),
       };
     });
@@ -115,7 +117,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
             <div class="flex flex-col gap-1.5">
               <div class="flex items-center justify-between">
                 <label class="text-xs font-medium text-pine-subtle">In-container path</label>
-                <span class="font-mono text-[10px] text-pine-muted">
+                <span class="font-mono text-xs text-pine-muted">
                   auto: /repos/{r.id.trim() || 'id'}
                 </span>
               </div>

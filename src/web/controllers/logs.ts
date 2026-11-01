@@ -3,13 +3,13 @@ import { sendJson, methodNotAllowed } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import type { LogLevel } from '../../logs/buffer.js';
 
-export function handleGetLogs(
+export const handleGetLogs = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   url: URL,
   method: string
-): void {
+): void => {
   if (method !== 'GET') return methodNotAllowed(res);
 
   const since = Number(url.searchParams.get('since') ?? 0);
@@ -30,4 +30,4 @@ export function handleGetLogs(
     { enabled: Boolean(options.logBuffer), entries },
     { 'Cache-Control': 'no-store' }
   );
-}
+};

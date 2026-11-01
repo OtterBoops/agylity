@@ -164,7 +164,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
                 <h2
-                  class="text-base leading-snug font-semibold text-pine-text sm:text-lg"
+                  class="text-base/snug font-semibold text-pine-text sm:text-lg"
                   title={pool.displayName}
                 >
                   {pool.displayName}
@@ -172,13 +172,13 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 <div class="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-pine-muted sm:text-sm">
                   <span class="inline-flex items-center gap-1">
                     Pool:{' '}
-                    <span class="rounded bg-pine-overlay px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris sm:text-sm">
+                    <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris sm:text-sm">
                       {pool.poolId}
                     </span>
                   </span>
                   {pool.overageEnabled ? (
                     <span
-                      class="inline-flex items-center gap-1 rounded border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-gold"
+                      class="inline-flex items-center gap-1 rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-gold"
                       title="AI Flex Credits/Overages are enabled. Falling below safety floor risks monetary charges."
                     >
                       <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-pine-gold"></span>
@@ -186,7 +186,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                     </span>
                   ) : (
                     <span
-                      class="inline-flex items-center gap-1 rounded border border-pine-foam/40 bg-pine-foam/20 px-2 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-foam"
+                      class="inline-flex items-center gap-1 rounded-sm border border-pine-foam/40 bg-pine-foam/20 px-2 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-foam"
                       title="Capped Plan: Quota depletion triggers 429 throttling without monetary charges."
                     >
                       <span class="size-1.5 shrink-0 rounded-full bg-pine-foam"></span>
@@ -196,7 +196,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 </div>
               </div>
               <span
-                class={`shrink-0 rounded px-2.5 py-1 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${badgeClasses}`}
+                class={`shrink-0 rounded-sm px-2.5 py-1 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${badgeClasses}`}
               >
                 {statusText}
               </span>

@@ -20,7 +20,7 @@ const initialState: QuotaState = {
 
 export const quotaStore = createStore<QuotaState>(initialState);
 
-export async function refreshQuota(): Promise<void> {
+export const refreshQuota = async (): Promise<void> => {
   quotaStore.setState((prev) => ({ ...prev, loading: true, error: null }));
   try {
     const [quotaRes, alertsRes] = await Promise.all([getQuota(), getAlerts()]);
@@ -39,11 +39,11 @@ export async function refreshQuota(): Promise<void> {
       error: message,
     }));
   }
-}
+};
 
 let pollingIntervalId: ReturnType<typeof setInterval> | null = null;
 
-export function startQuotaPolling(intervalMs = 60000): () => void {
+export const startQuotaPolling = (intervalMs = 60000): (() => void) => {
   if (pollingIntervalId) {
     clearInterval(pollingIntervalId);
   }
@@ -56,4 +56,4 @@ export function startQuotaPolling(intervalMs = 60000): () => void {
       pollingIntervalId = null;
     }
   };
-}
+};

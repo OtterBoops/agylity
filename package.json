@@ -15,9 +15,11 @@
     "dev:client": "npm --prefix frontend run dev",
     "dev:server": "tsx watch --env-file-if-exists=.env src/index.ts",
     "dev": "npm run build:client && tsx watch --env-file-if-exists=.env src/index.ts",
+    "dev:worker": "tsx --env-file-if-exists=.env src/worker-cli.ts",
     "start": "node --no-warnings --env-file-if-exists=.env dist/index.js",
-    "lint": "prettier --check . && node scripts/check-canonical-classes.mjs",
-    "format": "prettier --write .",
+    "start:worker": "node --no-warnings --env-file-if-exists=.env dist/worker-cli.js",
+    "lint": "prettier --check . && eslint frontend/src",
+    "format": "eslint --fix frontend/src && prettier --write .",
     "test": "node --no-warnings --import tsx --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
@@ -28,8 +30,12 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@typescript-eslint/parser": "^8.72.1",
+    "eslint": "^10.13.0",
+    "eslint-plugin-better-tailwindcss": "^4.10.0",
     "prettier": "^3.9.10",
     "prettier-plugin-tailwindcss": "^0.8.1",
+    "tailwindcss": "^4.3.3",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

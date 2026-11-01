@@ -32,7 +32,7 @@ This guide covers deployment options for `agylity`: Docker Compose, Arcane GitOp
    docker compose logs -f
    ```
 
-Access the web dashboard at `http://localhost:3000` (when `WEB_UI_ENABLED=true`).
+Access the web dashboard at `http://localhost:8484` (when `WEB_UI_ENABLED=true`).
 
 ---
 
@@ -49,11 +49,14 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        container_name: agylity
        restart: unless-stopped
        ports:
-         - '3000:3000'
+         - '8484:8484'
        volumes:
-         - /opt/agylity/data:/app/data
+         - agylity-data:/app/data # Or host bind mount: /opt/agylity/data:/app/data
        env_file:
          - /opt/agylity/.env
+
+   volumes:
+     agylity-data:
    ```
 3. Deploy the stack.
 
@@ -63,8 +66,8 @@ Agylity container images published to GitHub Container Registry (`ghcr.io/otterb
 
 | Tag             | Channel            | Description                                                                                                                               |
 | --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.1.0`). Recommended for production homelabs and compose stacks.             |
-| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.1.0`, `0.1`).                                                                                              |
+| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.2.0`). Recommended for production homelabs and compose stacks.             |
+| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.2.0`, `0.2`).                                                                                              |
 | `edge` / `main` | **Development**    | Built from the tip of the `main` branch on every commit. Contains intermediate changes between formal releases without touching `latest`. |
 | `sha-<hash>`    | **Immutable**      | Commit-specific immutable image digest tag (e.g. `sha-9d62b78`).                                                                          |
 

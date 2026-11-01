@@ -3,15 +3,30 @@ import { renderSquareProgressBar, formatResetWindow, formatModelPills } from './
 import type { QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
 
-export function buildQuotaAlertEmbed(alert: QuotaAlert): StandardEmbed {
+export interface EmbedBuildOptions {
+  ownerUserId?: string;
+  pingOwner?: boolean;
+}
+
+const formatOwnerMentionPrefix = (options?: EmbedBuildOptions): string => {
+  if (options?.pingOwner === false) return '';
+  const cleanId = options?.ownerUserId?.trim();
+  return cleanId ? `<@${cleanId}> ` : '';
+};
+
+export const buildQuotaAlertEmbed = (
+  alert: QuotaAlert,
+  options?: EmbedBuildOptions
+): StandardEmbed => {
   const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
   const hours = alert.milestoneHours;
   const fraction = alert.pool.remainingFraction ?? alert.remainingPercentage / 100;
   const resetTimestamp = formatResetWindow(alert.pool.resetTime);
+  const mentionPrefix = formatOwnerMentionPrefix(options);
 
   const embed: StandardEmbed = {
     title: `[Alert] Quota Milestone: ${poolName}`,
-    description: `Milestone threshold: **${hours}h** before quota reset.`,
+    description: `${mentionPrefix}Milestone threshold: **${hours}h** before quota reset.`,
     color: 0xffa500,
     fields: [
       {
@@ -38,9 +53,12 @@ export function buildQuotaAlertEmbed(alert: QuotaAlert): StandardEmbed {
   }
 
   return embed;
-}
+};
 
-export function buildTestAlertEmbed(samplePool?: Partial<QuotaSnapshot>): StandardEmbed {
+export const buildTestAlertEmbed = (
+  samplePool?: Partial<QuotaSnapshot>,
+  options?: EmbedBuildOptions
+): StandardEmbed => {
   const poolName = (samplePool?.displayName || 'Claude & GPT Models').slice(0, 256);
   const modelsList =
     samplePool?.models && samplePool.models.length > 0
@@ -50,10 +68,11 @@ export function buildTestAlertEmbed(samplePool?: Partial<QuotaSnapshot>): Standa
   const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
   const resetTimestamp = formatResetWindow(resetIso);
   const fraction = samplePool?.remainingFraction ?? 0.25;
+  const mentionPrefix = formatOwnerMentionPrefix(options);
 
   return {
     title: `[Alert] Quota Milestone: ${poolName}`,
-    description: 'Milestone threshold: **3h** before quota reset.',
+    description: `${mentionPrefix}Milestone threshold: **3h** before quota reset.`,
     color: 0xffa500,
     fields: [
       {
@@ -75,9 +94,9 @@ export function buildTestAlertEmbed(samplePool?: Partial<QuotaSnapshot>): Standa
     footer: { text: 'Agylity Quota Sentry • Test Notification Simulation' },
     timestamp: new Date().toISOString(),
   };
-}
+};
 
-export function buildDispatchStatusEmbed(status: DispatchStatusUpdate): StandardEmbed {
+export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): StandardEmbed => {
   const step = status.status ?? (status.step as string) ?? 'executing';
   const color = step === 'completed' ? 0x2ecc71 : step === 'failed' ? 0xe74c3c : 0x3498db;
 
@@ -88,9 +107,9 @@ export function buildDispatchStatusEmbed(status: DispatchStatusUpdate): Standard
     timestamp: status.timestamp || new Date().toISOString(),
     footer: { text: 'Agylity Orchestrator' },
   };
-}
+};
 
-export function buildQuotaStatusEmbed(pools: QuotaSnapshot[]): StandardEmbed {
+export const buildQuotaStatusEmbed = (pools: QuotaSnapshot[]): StandardEmbed => {
   const embed: StandardEmbed = {
     title: 'Antigravity Model Quota Status',
     color: 0x5865f2,
@@ -130,4 +149,4 @@ export function buildQuotaStatusEmbed(pools: QuotaSnapshot[]): StandardEmbed {
   }
 
   return embed;
-}
+};

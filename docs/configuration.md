@@ -34,33 +34,53 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 
 ## 2. Environment Variables Reference (`.env`)
 
-| Variable                          | Type      | Default   | Description                                                                                                                    |
-| --------------------------------- | --------- | --------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| **Multi-Channel Notifications**   |           |           |                                                                                                                                |
-| `NOTIFICATION_CHANNELS`           | `string`  | `none`    | Active channels (`discord`, `webhook`, `console`, `none`). Multiple channels can run concurrently (e.g. `discord,webhook`).    |
-| `DISCORD_TOKEN`                   | `string`  | —         | Discord Bot application secret token (encrypted at rest).                                                                      |
-| `DISCORD_CLIENT_ID`               | `string`  | —         | Discord Application ID.                                                                                                        |
-| `DISCORD_GUILD_ID`                | `string`  | —         | Target Discord Guild (Server) ID.                                                                                              |
-| `DISCORD_NOTIFICATION_CHANNEL_ID` | `string`  | —         | Target Discord text channel ID for embeds.                                                                                     |
-| `WEBHOOK_URL`                     | `string`  | —         | Webhook target URL for HTTP POST JSON notifications (encrypted at rest).                                                       |
-| `WEBHOOK_SECRET`                  | `string`  | —         | Optional HMAC-SHA256 signature secret for `x-agylity-signature` (encrypted at rest).                                           |
-| `WEBHOOK_CUSTOM_HEADERS`          | `string`  | —         | Optional JSON object string containing custom HTTP headers sent with webhook requests (e.g. `{"Authorization":"Bearer ..."}`). |
-| **Quota Sentry**                  |           |           |                                                                                                                                |
-| `ANTIGRAVITY_ENDPOINT_URL`        | `string`  | —         | Custom Language Server Connect-RPC URL (port and CSRF credentials are auto-discovered from local process by default).          |
-| `QUOTA_CHECK_INTERVAL_SECONDS`    | `number`  | `60`      | Sentry polling interval (60s = 1m). Min: 30.                                                                                   |
-| `QUOTA_ALERT_THRESHOLD_PERCENT`   | `number`  | `25`      | Minimum quota headroom percentage triggering alert.                                                                            |
-| `QUOTA_MILESTONE_HOURS`           | `string`  | `24,12,3` | Comma-separated deadline milestone evaluation windows.                                                                         |
-| `MIN_DISPATCH_HEADROOM_PERCENT`   | `number`  | `10`      | Safety floor headroom % preventing paid overages. Set to `0` if overages do not apply.                                         |
-| **Optional Task Orchestrator**    |           |           |                                                                                                                                |
-| `ORCHESTRATOR_ENABLED`            | `boolean` | `false`   | Enable/disable optional task continuation & worker orchestrator. Sentry alerts operate when false.                             |
-| **Security & Encryption**         |           |           |                                                                                                                                |
-| `AGYLITY_SECRET_KEY`              | `string`  | —         | Master 256-bit key for AES-256-GCM. Accepts 64-char hex or passphrase. If unset, auto-generates key at `data/.agylity.key`.    |
-| **Decoupled Web Dashboard**       |           |           |                                                                                                                                |
-| `WEB_UI_ENABLED`                  | `boolean` | `false`   | Enable/disable decoupled native HTTP web dashboard.                                                                            |
-| `WEB_UI_PORT`                     | `number`  | `3000`    | Web dashboard listening port.                                                                                                  |
-| `WEB_UI_HOST`                     | `string`  | `0.0.0.0` | Web dashboard interface bind address.                                                                                          |
-| **Logging & Sinks**               |           |           |                                                                                                                                |
-| `LOG_LEVEL`                       | `string`  | `info`    | Minimum log level (`debug`, `info`, `warn`, `error`) for terminal stdout/stderr and web UI log buffer.                         |
+| Variable                          | Type      | Default                            | Description                                                                                                                    |
+| --------------------------------- | --------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| **Multi-Channel Notifications**   |           |                                    |                                                                                                                                |
+| `NOTIFICATION_CHANNELS`           | `string`  | `none`                             | Active channels (`discord`, `webhook`, `console`, `none`). Multiple channels can run concurrently (e.g. `discord,webhook`).    |
+| `DISCORD_TOKEN`                   | `string`  | —                                  | Discord Bot application secret token (encrypted at rest).                                                                      |
+| `DISCORD_CLIENT_ID`               | `string`  | —                                  | Discord Application ID.                                                                                                        |
+| `DISCORD_GUILD_ID`                | `string`  | —                                  | Target Discord Guild (Server) ID.                                                                                              |
+| `DISCORD_NOTIFICATION_CHANNEL_ID` | `string`  | —                                  | Target Discord text channel ID for embeds.                                                                                     |
+| `DISCORD_OWNER_USER_ID`           | `string`  | —                                  | Authorized Discord User ID for strict single-user binding (pins first interacting user via TOFU if unset).                     |
+| `DISCORD_PING_OWNER`              | `boolean` | `true`                             | Whether to mention/ping the owner (`<@ID>`) in active Discord alerts to trigger sound/push notifications.                      |
+| `WEBHOOK_URL`                     | `string`  | —                                  | Webhook target URL for HTTP POST JSON notifications (encrypted at rest).                                                       |
+| `WEBHOOK_SECRET`                  | `string`  | —                                  | Optional HMAC-SHA256 signature secret for `x-agylity-signature` (encrypted at rest).                                           |
+| `WEBHOOK_CUSTOM_HEADERS`          | `string`  | —                                  | Optional JSON object string containing custom HTTP headers sent with webhook requests (e.g. `{"Authorization":"Bearer ..."}`). |
+| **Quota Sentry**                  |           |                                    |                                                                                                                                |
+| `ANTIGRAVITY_ENDPOINT_URL`        | `string`  | —                                  | Custom Language Server Connect-RPC URL (port and CSRF credentials are auto-discovered from local process by default).          |
+| `ANTIGRAVITY_CSRF_TOKEN`          | `string`  | —                                  | Explicit CSRF token for Language Server Connect-RPC requests (auto-discovered if unset).                                       |
+| `ANTIGRAVITY_LS_PORT`             | `number`  | `60643`                            | Explicit Connect-RPC listening port (auto-discovered if unset, default: 60643).                                                |
+| `QUOTA_CHECK_INTERVAL_SECONDS`    | `number`  | `60`                               | Sentry polling interval (60s = 1m). Min: 30.                                                                                   |
+| `QUOTA_ALERT_THRESHOLD_PERCENT`   | `number`  | `25`                               | Minimum quota headroom percentage triggering alert.                                                                            |
+| `QUOTA_MILESTONE_HOURS`           | `string`  | `24,12,3`                          | Comma-separated deadline milestone evaluation windows.                                                                         |
+| `QUOTA_STATE_FILE_PATH`           | `string`  | `data/state.json`                  | Path to the JSON state file tracking deduplicated alert firings across restarts.                                               |
+| `MIN_DISPATCH_HEADROOM_PERCENT`   | `number`  | `10`                               | Safety floor headroom % preventing paid overages. Set to `0` if overages do not apply.                                         |
+| **Optional Task Orchestrator**    |           |                                    |                                                                                                                                |
+| `ORCHESTRATOR_ENABLED`            | `boolean` | `false`                            | Enable/disable optional task continuation & worker orchestrator. Sentry alerts operate when false.                             |
+| `DEFAULT_DISPATCH_MODEL`          | `string`  | `gemini-4-argon-high`              | Default model used for task dispatches when not explicitly selected.                                                           |
+| `DEFAULT_DISPATCH_EFFORT`         | `string`  | `high`                             | Default reasoning effort passed to `agy --effort` (`low`, `medium`, `high`, `xhigh`, `max`).                                   |
+| `DEFAULT_WORKER_MODE`             | `string`  | `headless`                         | Default target runner execution mode (`headless`, `visible`, `any`).                                                           |
+| `WORKER_SHARED_SECRET`            | `string`  | —                                  | Optional shared fallback secret token for worker runners.                                                                      |
+| `QUOTA_BURN_MAX_HOURS`            | `number`  | `2`                                | Maximum hours remaining before reset to release P2 opportunistic tasks.                                                        |
+| `QUOTA_BURN_MIN_HEADROOM_PERCENT` | `number`  | `30`                               | Minimum remaining pool headroom percentage required to release P2 opportunistic tasks.                                         |
+| `AGY_BIN_PATH`                    | `string`  | `agy`                              | Path to official Antigravity CLI binary executable on runner hosts.                                                            |
+| `REPOSITORIES_JSON`               | `string`  | `[]`                               | Optional pre-configured repositories JSON array string (alternative to Web UI configuration).                                  |
+| **Security & Encryption**         |           |                                    |                                                                                                                                |
+| `AGYLITY_SECRET_KEY`              | `string`  | —                                  | Master 256-bit key for AES-256-GCM. Accepts 64-char hex or passphrase. If unset, auto-generates key at `data/.agylity.key`.    |
+| `DATABASE_PATH`                   | `string`  | `data/agylity.db`                  | SQLite database file path.                                                                                                     |
+| **Decoupled Web Dashboard**       |           |                                    |                                                                                                                                |
+| `WEB_UI_ENABLED`                  | `boolean` | `false`                            | Enable/disable decoupled native HTTP web dashboard.                                                                            |
+| `WEB_UI_PORT`                     | `number`  | `8484`                             | Web dashboard listening port.                                                                                                  |
+| `WEB_UI_HOST`                     | `string`  | `0.0.0.0`                          | Web dashboard interface bind address.                                                                                          |
+| **Logging & Sinks**               |           |                                    |                                                                                                                                |
+| `LOG_LEVEL`                       | `string`  | `info`                             | Minimum log level (`debug`, `info`, `warn`, `error`) for terminal stdout/stderr and web UI log buffer.                         |
+| **Swarm Worker Runner**           |           |                                    |                                                                                                                                |
+| `COORDINATOR_URL`                 | `string`  | `http://127.0.0.1:8484`            | URL of the central Agylity Coordinator server.                                                                                 |
+| `RUNNER_TOKEN`                    | `string`  | —                                  | Persistent runner token (`agyr_run_...`) issued during registration.                                                           |
+| `GITHUB_TOKEN`                    | `string`  | —                                  | Optional GitHub PAT used by ephemeral worker for authenticated repository cloning and branch push.                             |
+| `GIT_AUTHOR_NAME`                 | `string`  | `agylity[bot]`                     | Git commit author name for automated task completion commits.                                                                  |
+| `GIT_AUTHOR_EMAIL`                | `string`  | `agylity@users.noreply.github.com` | Git commit author email.                                                                                                       |
 
 ---
 
@@ -91,9 +111,11 @@ https://discord.com/oauth2/authorize?client_id=<CLIENT_ID>&permissions=214760140
 3. **Privileged Gateway Intents**:
    - **None required**. Leave `Message Content Intent`, `Server Members Intent`, and `Presence Intent` **disabled**. Agylity uses interaction callbacks and does not inspect general chat messages.
 
-### Server Channel Requirements
+### Server Channel & Single-User Binding Requirements
 
 Inside your Discord server, ensure the bot's role has permission to **View Channel**, **Send Messages**, and **Embed Links** in the channel matching `DISCORD_NOTIFICATION_CHANNEL_ID`.
+
+To enforce the **Single-Tenant Invariant**, set `DISCORD_OWNER_USER_ID` (or **Owner Discord User ID** in the Web UI under **Settings → Notifications**) to your personal Discord User ID (Right-click your profile in Discord with Developer Mode enabled → **Copy User ID**). When set, all other Discord users are blocked from invoking `/quota` or submitting interactive modals. If left blank, Agylity automatically pins the first Discord user who interacts with the bot for the active session (Trust-On-First-Use).
 
 ---
 
@@ -106,6 +128,7 @@ When configured, each repository record includes:
 - **ID**: Short unique identifier (e.g. `agylity`)
 - **Name**: Display label shown in menus
 - **Path**: Local workspace directory on the worker node
+- **Clone URL**: Optional Git clone URL (HTTPS or SSH) used by workers to clone repository on demand if the workspace directory does not exist locally
 - **Default Branch**: Branch for continuation tasks (default: `main`)
 - **Description**: Optional context displayed in dropdown options
 

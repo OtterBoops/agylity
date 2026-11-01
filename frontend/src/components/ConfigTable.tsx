@@ -81,7 +81,7 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
                 typeof val === 'object' && val !== null ? JSON.stringify(val) : String(val ?? '');
 
               return (
-                <tr key={k} class="transition-colors hover:bg-white/[0.02]">
+                <tr key={k} class="transition-colors hover:bg-white/2">
                   <td class="px-4 py-2.5 font-mono text-xs text-pine-iris">{k}</td>
                   <td class="max-w-md px-4 py-2.5 text-xs break-all text-pine-text">
                     {displayVal}
@@ -121,11 +121,18 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
       </div>
 
       {/* Edit / Add Override Form */}
-      <form onSubmit={handleSaveOverride} class="flex flex-wrap items-end gap-3 pt-1">
+      <form
+        onSubmit={handleSaveOverride}
+        autoComplete="off"
+        class="flex flex-wrap items-end gap-3 pt-1"
+      >
         <div class="flex min-w-[200px] flex-1 flex-col gap-1.5">
           <label class="text-xs font-medium text-pine-subtle">Setting key</label>
           <input
             type="text"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs text-pine-text transition-colors outline-none focus:border-pine-iris"
             placeholder="e.g. quotaAlertThresholdPercent"
             value={overrideKey}
@@ -139,6 +146,9 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
           <input
             type="text"
             id="overrideValInput"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs text-pine-text transition-colors outline-none focus:border-pine-iris"
             placeholder="e.g. 35"
             value={overrideValue}

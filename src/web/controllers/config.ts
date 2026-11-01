@@ -24,12 +24,12 @@ export const getSecretsMeta = (config: Record<string, any>): Record<string, { is
   return meta;
 };
 
-export async function handleConfigEndpoint(
+export const handleConfigEndpoint = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
-): Promise<void> {
+): Promise<void> => {
   const log = options.logger ?? logger.child('web');
 
   if (method === 'GET') {
@@ -95,15 +95,15 @@ export async function handleConfigEndpoint(
   }
 
   return methodNotAllowed(res);
-}
+};
 
-export function handleDeleteConfigOverride(
+export const handleDeleteConfigOverride = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,
   method: string
-): void {
+): void => {
   const log = options.logger ?? logger.child('web');
   const key = pathname.slice('/api/config/'.length).trim();
   if (!key || method !== 'DELETE') return methodNotAllowed(res);
@@ -119,4 +119,4 @@ export function handleDeleteConfigOverride(
     overrides: sanitizeConfigForClient(overrides),
     secretsMeta: getSecretsMeta(resolved),
   });
-}
+};

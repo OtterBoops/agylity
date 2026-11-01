@@ -24,7 +24,18 @@ import {
   getSecretsMeta,
 } from './controllers/config.js';
 import { handleTestNotify } from './controllers/notify.js';
-import { handleGetDispatches, handlePostDispatch } from './controllers/dispatch.js';
+import {
+  handleGetDispatches,
+  handlePostDispatch,
+  handleGetModels,
+  handleGetTasks,
+  handlePollTasks,
+  handleTaskStatus,
+  handleGetWorkers,
+  handleCreateRegistrationToken,
+  handleRegisterWorker,
+  handleManageWorkerById,
+} from './controllers/dispatch.js';
 
 export type { WebServerOptions };
 export {
@@ -109,6 +120,43 @@ export const handleRequest = async (
     // Task Dispatch
     if (pathname === '/api/dispatch') {
       return handlePostDispatch(req, res, options, method);
+    }
+
+    // Available Model Catalog & Live Pool Headroom
+    if (pathname === '/api/models') {
+      return handleGetModels(req, res, options, method);
+    }
+
+    // Swarm Task Queue Listing
+    if (pathname === '/api/tasks') {
+      return handleGetTasks(req, res, options, url, method);
+    }
+
+    // Swarm Worker Outbound Long-Poll Claim
+    if (pathname === '/api/tasks/poll') {
+      return handlePollTasks(req, res, options, method);
+    }
+
+    // Swarm Task Status & Completion Callback
+    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) {
+      return handleTaskStatus(req, res, options, pathname, method);
+    }
+
+    // Registered Swarm Workers & Runner Registration Flow
+    if (pathname === '/api/workers') {
+      return handleGetWorkers(req, res, options, method);
+    }
+
+    if (pathname === '/api/workers/registration-token') {
+      return handleCreateRegistrationToken(req, res, options, method);
+    }
+
+    if (pathname === '/api/workers/register') {
+      return handleRegisterWorker(req, res, options, method);
+    }
+
+    if (pathname.startsWith('/api/workers/')) {
+      return handleManageWorkerById(req, res, options, pathname, method);
     }
 
     // Route Guard 404

@@ -2,26 +2,29 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { ESLint } from 'eslint';
 import prettier from 'prettier';
-import { checkCanonicalClasses } from '../../scripts/check-canonical-classes.mjs';
 
 describe('Tailwind CSS Canonicalization & Prettier Class Sorting Invariants', () => {
-  it('enforces that all utility classes across frontend components are strictly canonical', async () => {
-    const result = await checkCanonicalClasses(path.resolve('.'));
-    if (!result.passed) {
-      const details = result.diffs
-        .map((d) => `  [${d.file}]\n    Current:   ${d.original}\n    Canonical: ${d.canonical}`)
-        .join('\n');
-      assert.fail(`Found non-canonical Tailwind utility classes:\n${details}`);
+  it('enforces that all utility classes across frontend components are strictly canonical via eslint-plugin-better-tailwindcss', async () => {
+    const eslint = new ESLint();
+    const results = await eslint.lintFiles(['frontend/src/**/*.{ts,tsx}']);
+    const errorResults = results.filter((r) => r.errorCount > 0 || r.warningCount > 0);
+
+    if (errorResults.length > 0) {
+      const formatter = await eslint.loadFormatter('stylish');
+      const output = await formatter.format(errorResults);
+      assert.fail(`Found Tailwind CSS lint violations:\n${output}`);
     }
-    assert.equal(result.passed, true);
+
+    assert.equal(errorResults.length, 0);
   });
 
   it('enforces that all frontend source files match Prettier formatting and automatic class sorting', async () => {
     const config = (await prettier.resolveConfig('./prettier.config.mjs')) || {};
     const frontendSrc = path.resolve('frontend/src');
 
-    function getFiles(dir) {
+    const getFiles = (dir: string): string[] => {
       let files: string[] = [];
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
@@ -32,7 +35,7 @@ describe('Tailwind CSS Canonicalization & Prettier Class Sorting Invariants', ()
         }
       }
       return files;
-    }
+    };
 
     const files = getFiles(frontendSrc);
     const unformatted: string[] = [];

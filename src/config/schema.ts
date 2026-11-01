@@ -45,6 +45,7 @@ export const RepositorySchema = z.object({
   id: z.string().min(1, 'Repository ID is required'),
   name: z.string().min(1, 'Repository name is required'),
   path: z.string().min(1, 'Repository filesystem path is required'),
+  cloneUrl: z.string().optional(),
   description: z.string().optional(),
   defaultBranch: z.string().default('main'),
 });
@@ -108,6 +109,8 @@ export const RawEnvSchema = z.object({
   DISCORD_CLIENT_ID: z.string().optional(),
   DISCORD_GUILD_ID: z.string().optional(),
   DISCORD_NOTIFICATION_CHANNEL_ID: z.string().optional(),
+  DISCORD_OWNER_USER_ID: z.string().optional(),
+  DISCORD_PING_OWNER: z.string().optional(),
 
   /* Quota Sentry & RPC */
   ANTIGRAVITY_ENDPOINT_URL: z.string().url().optional().or(z.literal('')),
@@ -127,6 +130,13 @@ export const RawEnvSchema = z.object({
 
   /* Optional Orchestrator */
   ORCHESTRATOR_ENABLED: z.string().optional(),
+  DEFAULT_DISPATCH_MODEL: z.string().optional(),
+  DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  DEFAULT_WORKER_MODE: z.enum(['headless', 'visible', 'any']).optional(),
+  WORKER_SHARED_SECRET: z.string().optional(),
+  QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
+  QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
+  AGY_BIN_PATH: z.string().optional(),
 
   /* Optional Web UI */
   WEB_UI_ENABLED: z.string().optional(),
@@ -150,6 +160,8 @@ export interface AppConfig {
   discordClientId?: string;
   discordGuildId?: string;
   discordNotificationChannelId?: string;
+  discordOwnerUserId?: string;
+  discordPingOwner: boolean;
 
   antigravityEndpointUrl?: string;
   antigravityCsrfToken?: string;
@@ -164,6 +176,13 @@ export interface AppConfig {
   databasePath: string;
 
   orchestratorEnabled: boolean;
+  defaultDispatchModel: string;
+  defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  defaultWorkerMode: 'headless' | 'visible' | 'any';
+  workerSharedSecret?: string;
+  quotaBurnMaxHours: number;
+  quotaBurnMinHeadroomPercent: number;
+  agyBinPath: string;
 
   webUiEnabled: boolean;
   webUiPort: number;
@@ -179,6 +198,7 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'antigravityCsrfToken',
   'notificationWebhookUrl',
   'webhookSecret',
+  'workerSharedSecret',
 ] as const satisfies readonly (keyof AppConfig)[];
 
 export type SecretConfigKey = (typeof CANONICAL_SECRET_CONFIG_KEYS)[number];
@@ -194,6 +214,8 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   discordClientId: undefined,
   discordGuildId: undefined,
   discordNotificationChannelId: undefined,
+  discordOwnerUserId: undefined,
+  discordPingOwner: true,
 
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
@@ -208,9 +230,16 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   databasePath: 'data/agylity.db',
 
   orchestratorEnabled: false,
+  defaultDispatchModel: 'gemini-4-argon-high',
+  defaultDispatchEffort: 'high',
+  defaultWorkerMode: 'headless',
+  workerSharedSecret: undefined,
+  quotaBurnMaxHours: 2,
+  quotaBurnMinHeadroomPercent: 30,
+  agyBinPath: 'agy',
 
   webUiEnabled: false,
-  webUiPort: 3000,
+  webUiPort: 8484,
   webUiHost: '0.0.0.0',
 
   logLevel: 'info',
@@ -248,6 +277,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.DISCORD_GUILD_ID) result.discordGuildId = parsed.DISCORD_GUILD_ID;
   if (parsed.DISCORD_NOTIFICATION_CHANNEL_ID)
     result.discordNotificationChannelId = parsed.DISCORD_NOTIFICATION_CHANNEL_ID;
+  if (parsed.DISCORD_OWNER_USER_ID && parsed.DISCORD_OWNER_USER_ID.trim() !== '')
+    result.discordOwnerUserId = parsed.DISCORD_OWNER_USER_ID.trim();
+  if (parsed.DISCORD_PING_OWNER !== undefined && parsed.DISCORD_PING_OWNER.trim() !== '') {
+    result.discordPingOwner = booleanEnv.parse(parsed.DISCORD_PING_OWNER);
+  }
 
   if (parsed.ANTIGRAVITY_ENDPOINT_URL)
     result.antigravityEndpointUrl = parsed.ANTIGRAVITY_ENDPOINT_URL;
@@ -273,6 +307,27 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
 
   if (parsed.ORCHESTRATOR_ENABLED !== undefined && parsed.ORCHESTRATOR_ENABLED.trim() !== '') {
     result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
+  }
+  if (parsed.DEFAULT_DISPATCH_MODEL && parsed.DEFAULT_DISPATCH_MODEL.trim() !== '') {
+    result.defaultDispatchModel = parsed.DEFAULT_DISPATCH_MODEL.trim();
+  }
+  if (parsed.DEFAULT_DISPATCH_EFFORT) {
+    result.defaultDispatchEffort = parsed.DEFAULT_DISPATCH_EFFORT;
+  }
+  if (parsed.DEFAULT_WORKER_MODE) {
+    result.defaultWorkerMode = parsed.DEFAULT_WORKER_MODE;
+  }
+  if (parsed.WORKER_SHARED_SECRET) {
+    result.workerSharedSecret = parsed.WORKER_SHARED_SECRET;
+  }
+  if (parsed.QUOTA_BURN_MAX_HOURS !== undefined) {
+    result.quotaBurnMaxHours = parsed.QUOTA_BURN_MAX_HOURS;
+  }
+  if (parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT !== undefined) {
+    result.quotaBurnMinHeadroomPercent = parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT;
+  }
+  if (parsed.AGY_BIN_PATH && parsed.AGY_BIN_PATH.trim() !== '') {
+    result.agyBinPath = parsed.AGY_BIN_PATH.trim();
   }
 
   if (parsed.WEB_UI_ENABLED !== undefined && parsed.WEB_UI_ENABLED.trim() !== '') {

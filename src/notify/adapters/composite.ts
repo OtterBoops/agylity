@@ -1,9 +1,10 @@
-import type { Notifier, QuotaAlert, DispatchStatusUpdate } from '../types.js';
+import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
 export class CompositeNotifier implements Notifier {
   public readonly notifiers: Notifier[];
+  private readonly options?: NotifierOptions;
 
   get channelName(): string {
     if (this.notifiers.length === 0) return 'none';
@@ -11,8 +12,9 @@ export class CompositeNotifier implements Notifier {
     return 'composite';
   }
 
-  constructor(notifiers: Notifier[] = []) {
+  constructor(notifiers: Notifier[] = [], options?: NotifierOptions) {
     this.notifiers = notifiers;
+    this.options = options;
   }
 
   public getNotifiers(): Notifier[] {
@@ -31,7 +33,22 @@ export class CompositeNotifier implements Notifier {
     return this.initialize();
   }
 
+  private async syncResolvedOwner(): Promise<void> {
+    const discordNotifier = this.notifiers.find((n) => n.channelName === 'discord') as any;
+    if (discordNotifier && typeof discordNotifier.resolveOwnerUserId === 'function') {
+      const resolvedOwner = await discordNotifier.resolveOwnerUserId();
+      if (resolvedOwner) {
+        for (const n of this.notifiers) {
+          if (n !== discordNotifier && typeof (n as any).updateConfig === 'function') {
+            await (n as any).updateConfig({ discordOwnerUserId: resolvedOwner });
+          }
+        }
+      }
+    }
+  }
+
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
+    await this.syncResolvedOwner();
     const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyQuotaAlert(alert)));
     for (const res of results) {
       if (res.status === 'rejected') {
@@ -94,7 +111,7 @@ export class CompositeNotifier implements Notifier {
         if (!currentNames.includes(ch)) {
           try {
             const { createNotifier } = await import('../factory.js');
-            const newNotifier = await createNotifier(ch, newConfig as ResolvedConfig);
+            const newNotifier = await createNotifier(ch, newConfig as ResolvedConfig, this.options);
             await newNotifier.initialize();
             this.notifiers.push(newNotifier);
           } catch (err: any) {
@@ -131,6 +148,8 @@ export class CompositeNotifier implements Notifier {
     channel: string;
     results?: Record<string, { success: boolean; message: string }>;
   }> {
+    await this.syncResolvedOwner();
+
     if (this.notifiers.length === 0) {
       return {
         success: true,

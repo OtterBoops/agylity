@@ -44,7 +44,7 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
                 </tr>
               ) : (
                 firedEvents.map((ev) => (
-                  <tr key={ev.poolId} class="transition-colors hover:bg-white/[0.02]">
+                  <tr key={ev.poolId} class="transition-colors hover:bg-white/2">
                     <td class="px-4 py-3 text-xs text-pine-subtle sm:text-sm">
                       {ev.lastAlertSentAt
                         ? new Date(ev.lastAlertSentAt).toLocaleTimeString([], {

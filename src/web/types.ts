@@ -4,6 +4,7 @@ import type { SentryStateManager } from '../sentry/state.js';
 import type { LogBuffer } from '../logs/buffer.js';
 import type { Logger } from '../logs/logger.js';
 import type { Notifier } from '../notify/types.js';
+import type { OrchestratorCoordinator } from '../orchestrator/coordinator.js';
 
 export interface WebServerOptions {
   host?: string;
@@ -13,6 +14,7 @@ export interface WebServerOptions {
   sentryState?: SentryStateManager;
   logBuffer?: LogBuffer;
   notifier?: Notifier;
+  orchestrator?: OrchestratorCoordinator;
   logger?: Logger;
 }
 

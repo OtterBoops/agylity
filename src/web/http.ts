@@ -115,11 +115,11 @@ export const sendPayloadTooLarge = (
   req.resume();
 };
 
-export async function readBody(
+export const readBody = async (
   req: http.IncomingMessage,
   resOrMaxBytes?: http.ServerResponse | number,
   optionalMaxBytes?: number
-): Promise<string> {
+): Promise<string> => {
   let res: http.ServerResponse | undefined;
   let maxBytes = MAX_BODY_BYTES;
 
@@ -184,16 +184,16 @@ export async function readBody(
       }
     };
 
-    function cleanup() {
+    const cleanup = () => {
       req.off('data', onData);
       req.off('end', onEnd);
       req.off('error', onError);
       req.off('close', onClose);
-    }
+    };
 
     req.on('data', onData);
     req.on('end', onEnd);
     req.on('error', onError);
     req.on('close', onClose);
   });
-}
+};

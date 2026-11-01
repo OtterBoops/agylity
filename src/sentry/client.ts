@@ -60,6 +60,24 @@ export const CliModelsResponseSchema = z.object({
 
 export type CliModelsResponse = z.infer<typeof CliModelsResponseSchema>;
 
+/**
+ * Extracts a JSON object from CLI stdout, handling leading status banners
+ * such as "Fetching available models...\n{\n...".
+ */
+export const extractCliJsonPayload = (stdout: string): unknown => {
+  const trimmed = stdout.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const firstBrace = trimmed.indexOf('{');
+    const lastBrace = trimmed.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      return JSON.parse(trimmed.slice(firstBrace, lastBrace + 1));
+    }
+    throw new SyntaxError('No valid JSON object found in CLI output');
+  }
+};
+
 export interface ConnectRpcQuotaClientOptions {
   endpointUrl?: string;
   host?: string;
@@ -449,7 +467,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
     let parsedCli: CliModelsResponse;
     try {
-      const json = JSON.parse(stdout);
+      const json = extractCliJsonPayload(stdout);
       parsedCli = CliModelsResponseSchema.parse(json);
     } catch (err: unknown) {
       throw new LanguageServerError(

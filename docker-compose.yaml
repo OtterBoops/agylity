@@ -1,37 +1,100 @@
 # ==============================================================================
 # agylity - Docker Compose Production Deployment
-# Container-native deployment on homelab, VPS, or local docker
+# Container-native deployment for Homelab, VPS, or local Docker
 # ==============================================================================
 
 services:
+  # ----------------------------------------------------------------------------
+  # Control Plane: Quota Sentry, Alerting Engine & Swarm Orchestrator
+  # ----------------------------------------------------------------------------
   agylity:
     build:
       context: .
       dockerfile: Dockerfile
+      target: coordinator
     image: ghcr.io/otterboops/agylity:latest
     container_name: agylity
     restart: unless-stopped
 
     ports:
-      - '3000:3000'
+      - '8484:8484'
 
     volumes:
-      # Persistent Data Directory (SQLite store and sentry state)
-      - ./data:/app/data
-      # Target repositories mounted in container at /repos/<id>
-      # - /path/to/my-repo:/repos/my-repo
-      # Mount host Antigravity CLI & OAuth tokens
-      # - /usr/local/bin/agy:/usr/local/bin/agy:ro
-      - ~/.gemini:/home/node/.gemini
-      - ~/.config/antigravity:/home/node/.config/antigravity:ro
-      # Mount git identity
-      - ~/.gitconfig:/home/node/.gitconfig:ro
+      # Option A (Recommended): Docker-managed named volume.
+      # High I/O performance, native WAL mode support, and zero host permission issues.
+      - agylity-data:/app/data
+
+      # Option B: Direct host bind mount.
+      # Uncomment if you prefer inspecting or backing up SQLite files directly on host disk:
+      # - ./data:/app/data
 
     environment:
+      - NODE_ENV=production
       - WEB_UI_ENABLED=true
+      - WEB_UI_PORT=8484
+      - WEB_UI_HOST=0.0.0.0
+      - ORCHESTRATOR_ENABLED=true
+      - NOTIFICATION_CHANNELS=discord,webhook
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
+      - DISCORD_NOTIFICATION_CHANNEL_ID=${DISCORD_NOTIFICATION_CHANNEL_ID}
+      - DISCORD_OWNER_USER_ID=${DISCORD_OWNER_USER_ID}
+      - DISCORD_PING_OWNER=${DISCORD_PING_OWNER:-true}
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      # URL to local/remote Antigravity Language Server (or empty for local autodiscovery)
+      - ANTIGRAVITY_ENDPOINT_URL=${ANTIGRAVITY_ENDPOINT_URL}
 
     logging:
       driver: 'json-file'
       options:
         max-size: '10m'
         max-file: '3'
+
+  # ----------------------------------------------------------------------------
+  # Ephemeral Swarm Worker: Headless Task Execution Runtime
+  # ----------------------------------------------------------------------------
+  agylity-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: worker
+    image: ghcr.io/otterboops/agylity-worker:latest
+    container_name: agylity-worker
+    restart: unless-stopped
+
+    # Single File Mount:
+    # Google OAuth credentials for the agy CLI. Mounted read-write so agy can
+    # automatically persist refreshed tokens back to disk when access tokens expire.
+    volumes:
+      - ./oauth_creds.json:/home/node/.gemini/oauth_creds.json
+      # Optional: Uncomment if you want to cache git clones between tasks instead of cloning fresh.
+      # - worker-repos:/repos
+
+    environment:
+      - NODE_ENV=production
+      - COORDINATOR_URL=http://agylity:8484
+      - WORKER_NAME=agylity-worker-1
+      - RUNNER_TOKEN=${RUNNER_TOKEN}
+      # Git identity & GitHub token for zero-mount authenticated git clone/push
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GIT_AUTHOR_NAME=agylity[bot]
+      - GIT_AUTHOR_EMAIL=agylity@users.noreply.github.com
+      - GIT_COMMITTER_NAME=agylity[bot]
+      - GIT_COMMITTER_EMAIL=agylity@users.noreply.github.com
+
+    depends_on:
+      - agylity
+
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+volumes:
+  # High-performance Docker-managed volume for SQLite database (agylity.db) & alert state
+  agylity-data:
+  # Optional cache volume for git repos across worker task executions
+  # worker-repos:

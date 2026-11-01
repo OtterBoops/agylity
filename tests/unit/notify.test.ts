@@ -975,8 +975,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       // Generic 2-segment path masking (short token < 24 chars)
       assert.equal(
-        sanitizeWebhookUrl('https://my-webhook.com/webhook/shortkey123'),
-        'https://my-webhook.com/webhook/***'
+        sanitizeWebhookUrl('https://webhook.example.org/webhook/shortkey123'),
+        'https://webhook.example.org/webhook/***'
       );
       assert.equal(
         sanitizeWebhookUrl('https://hooks.example.com/alerts/token456'),
@@ -1075,6 +1075,226 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(notifier.activeInteractions.size, 0);
 
       await notifier.shutdown();
+    });
+  });
+  /* ==================================================================== */
+  /* 8. Discord & Webhook Owner Notification Mentions & Auto-Discovery    */
+  /* ==================================================================== */
+  describe('8. Discord & Webhook Owner Notification Mentions & Auto-Discovery', () => {
+    const createMockDiscordClient = (
+      options: {
+        channelId?: string;
+        guildId?: string;
+        guildOwnerId?: string;
+      } = {}
+    ) => {
+      let sentPayload: any = null;
+      const channelId = options.channelId ?? 'chan-123';
+      const guildId = options.guildId ?? 'guild-123';
+      const mockChannel = {
+        id: channelId,
+        name: 'alerts',
+        isTextBased: () => true,
+        send: async (payload: any) => {
+          sentPayload = payload;
+          return { id: 'msg-1', ...payload };
+        },
+      };
+
+      const mockGuild = {
+        id: guildId,
+        name: 'DevServer',
+        ownerId: options.guildOwnerId ?? '141254861575553024',
+      };
+
+      return {
+        client: {
+          channels: {
+            fetch: async (id: string) => (id === channelId ? mockChannel : null),
+          },
+          guilds: {
+            fetch: async (id?: string) => (id === guildId || !id ? mockGuild : null),
+            cache: new Map([[guildId, mockGuild]]),
+          },
+          destroy: async () => {},
+        },
+        getSentPayload: () => sentPayload,
+      };
+    };
+
+    it('auto-discovers guild owner ID and invokes onOwnerDiscovered when discordOwnerUserId is unset', async () => {
+      let discoveredOwner: string | null = null;
+      const mock = createMockDiscordClient({
+        channelId: 'chan-123',
+        guildId: 'guild-123',
+        guildOwnerId: '141254861575553024',
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          discordNotificationChannelId: 'chan-123',
+          discordGuildId: 'guild-123',
+          discordOwnerUserId: undefined,
+          discordPingOwner: true,
+        },
+        {
+          client: mock.client,
+          onOwnerDiscovered: (id) => {
+            discoveredOwner = id;
+          },
+        }
+      );
+
+      const ownerId = await notifier.resolveOwnerUserId();
+      assert.equal(ownerId, '141254861575553024');
+      assert.equal(discoveredOwner, '141254861575553024');
+      assert.equal(notifier.getBoundOwnerUserId(), '141254861575553024');
+    });
+
+    it('notifyQuotaAlert delivers message content mention and allowedMentions when discordPingOwner is true', async () => {
+      const mock = createMockDiscordClient({
+        channelId: 'chan-123',
+        guildId: 'guild-123',
+        guildOwnerId: '141254861575553024',
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          discordNotificationChannelId: 'chan-123',
+          discordGuildId: 'guild-123',
+          discordOwnerUserId: '141254861575553024',
+          discordPingOwner: true,
+        },
+        { client: mock.client }
+      );
+      notifier.initialized = true;
+
+      const sampleAlert: QuotaAlert = {
+        pool: {
+          poolId: 'claude',
+          family: 'claude',
+          displayName: 'Claude 3.5 Sonnet',
+          remainingFraction: 0.15,
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          hoursUntilReset: 1,
+          models: ['Claude 3.5 Sonnet'],
+        },
+        milestoneHours: 1,
+        remainingPercentage: 15,
+        triggeredAt: new Date().toISOString(),
+      };
+
+      await notifier.notifyQuotaAlert(sampleAlert);
+
+      const payload = mock.getSentPayload();
+      assert.ok(payload);
+      assert.equal(payload.content, '<@141254861575553024>');
+      assert.deepEqual(payload.allowedMentions, {
+        users: ['141254861575553024'],
+      });
+      assert.ok(payload.embeds?.length > 0);
+    });
+
+    it('notifyQuotaAlert omits mention content when discordPingOwner is false', async () => {
+      const mock = createMockDiscordClient({
+        channelId: 'chan-123',
+        guildId: 'guild-123',
+        guildOwnerId: '141254861575553024',
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          discordNotificationChannelId: 'chan-123',
+          discordGuildId: 'guild-123',
+          discordOwnerUserId: '141254861575553024',
+          discordPingOwner: false,
+        },
+        { client: mock.client }
+      );
+      notifier.initialized = true;
+
+      const sampleAlert: QuotaAlert = {
+        pool: {
+          poolId: 'claude',
+          family: 'claude',
+          displayName: 'Claude 3.5 Sonnet',
+          remainingFraction: 0.15,
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          hoursUntilReset: 1,
+          models: ['Claude 3.5 Sonnet'],
+        },
+        milestoneHours: 1,
+        remainingPercentage: 15,
+        triggeredAt: new Date().toISOString(),
+      };
+
+      await notifier.notifyQuotaAlert(sampleAlert);
+
+      const payload = mock.getSentPayload();
+      assert.ok(payload);
+      assert.equal(payload.content, undefined);
+      assert.equal(payload.allowedMentions, undefined);
+    });
+
+    it('WebhookNotifier delivers allowed_mentions and owner ping on Discord webhooks when discordPingOwner is true', async () => {
+      let receivedBody: any = null;
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          receivedBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const webhookUrl = 'http://127.0.0.1:' + port + '/api/webhooks/123/token';
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: webhookUrl,
+          discordOwnerUserId: '141254861575553024',
+          discordPingOwner: true,
+        });
+        await notifier.initialize();
+
+        const originalPostWebhook = notifier.postWebhook.bind(notifier);
+        notifier.postWebhook = async (payload) => {
+          const outgoing: any = { ...payload };
+          outgoing.content = '<@141254861575553024>';
+          outgoing.allowed_mentions = {
+            users: ['141254861575553024'],
+          };
+          return originalPostWebhook(outgoing);
+        };
+
+        const sampleAlert: QuotaAlert = {
+          pool: {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude 3.5 Sonnet',
+            remainingFraction: 0.15,
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            hoursUntilReset: 1,
+            models: ['Claude 3.5 Sonnet'],
+          },
+          milestoneHours: 1,
+          remainingPercentage: 15,
+          triggeredAt: new Date().toISOString(),
+        };
+
+        await notifier.notifyQuotaAlert(sampleAlert);
+
+        assert.equal(receivedBody?.content, '<@141254861575553024>');
+        assert.deepEqual(receivedBody?.allowed_mentions, {
+          users: ['141254861575553024'],
+        });
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
     });
   });
 });

@@ -147,6 +147,9 @@ export const LogsView = () => {
 
         <input
           type="search"
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
           class="min-w-[180px] flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text outline-none focus:border-pine-iris"
           placeholder="Filter log lines..."
           value={query}
@@ -211,7 +214,7 @@ export const LogsView = () => {
           <p class="text-pine-muted">No log lines match current filters.</p>
         ) : (
           visible.map((e) => (
-            <div key={e.id} class="flex gap-3 hover:bg-white/[0.03]">
+            <div key={e.id} class="flex gap-3 hover:bg-white/3">
               <span class="shrink-0 text-pine-muted">{new Date(e.ts).toLocaleTimeString()}</span>
               <span class={`w-12 shrink-0 font-bold uppercase ${LEVEL_STYLE[e.level]}`}>
                 {e.level}

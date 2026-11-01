@@ -103,11 +103,18 @@ Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secre
 
 Tasks are blocked from dispatch when remaining quota headroom is $\le$ `MIN_DISPATCH_HEADROOM_PERCENT` (default: `10%`) to protect against billable AI overages or credit consumption. Pass `allowOverage: true` in the API or UI to override. Setting this to `0` is recommended for flat-tier / non-metered accounts.
 
-### 3.4. Three-Tier Precedence Hierarchy with UI Overrides
+### 3.4. Strict Single-User Binding (Single-Tenant Invariant)
+
+An Antigravity Pro/Individual license represents a single developer seat and must never be exposed as a multi-tenant proxy or shared service bureau:
+
+- **Explicit Owner Binding (`DISCORD_OWNER_USER_ID`)**: When configured via `.env` or SQLite UI override (`discordOwnerUserId`), `DiscordNotifier` verifies `interaction.user.id === discordOwnerUserId` across every slash command (`/quota`), repository selector (`repo_select`), and modal submission (`modal_dispatch`). Unauthorized users are immediately rejected with an ephemeral `[Blocked] Single-User Binding` response.
+- **Trust-On-First-Use (TOFU) Session Pinning**: If `DISCORD_OWNER_USER_ID` is not explicitly set, `DiscordNotifier` automatically pins the first Discord user ID that interacts with the instance for the duration of the session and blocks any subsequent interactions from secondary Discord users in the same guild or channel.
+
+### 3.5. Three-Tier Precedence Hierarchy with UI Overrides
 
 Configuration is resolved dynamically across three tiers:
 $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environment Variables} \mathbin{??} \text{Built-in Defaults}$$
-Changes made in the Web UI take immediate effect over the in-memory event bus without requiring process restarts.
+Changes made in the Web UI take immediate effect over the in-memory event bus (dynamically updating active notification channels, Language Server endpoints, and quota evaluator thresholds/milestones) without requiring process restarts.
 
 ---
 
@@ -243,15 +250,17 @@ agylity/
 │   ├── config/                 # Zod validation & SQLite store hierarchy
 │   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
 │   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
+│   ├── orchestrator/           # Swarm coordinator, task queue, model routing & worker runner
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
+│   ├── worker-cli.ts           # Standalone headless swarm worker runner CLI
 │   └── index.ts                # Daemon bootstrap & graceful shutdown coordinator
 ├── tests/                      # Deterministic test suites (Tiers 1-5 + unit)
 │   ├── e2e/                    # Opaque-box E2E suites & shared mock harness
 │   └── unit/                   # Focused unit tests
 ├── Dockerfile                  # Multi-stage production container (node:24-slim)
-├── docker-compose.yaml         # Container deployment definition (ports: 3000:3000)
+├── docker-compose.yaml         # Container deployment definition (ports: 8484:8484)
 ├── LICENSE                     # PolyForm Noncommercial License 1.0.0
 ├── package.json                # Root manifest (Node >=24, minimal dependencies)
 ├── tsconfig.json               # NodeNext, strict: true

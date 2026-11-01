@@ -29,6 +29,7 @@ Finishing work for the day with 80% quota headroom remaining means donating free
 
 - 🎯 **Dual-Bucket Quota Sentry**: Tracks both short-term 5-hour sprint throttles and authoritative weekly marathon budgets via the local Language Server RPC.
 - 🛑 **Wallet Protection Shield**: Enforces a strict safety floor (`MIN_DISPATCH_HEADROOM_PERCENT`, default: `10%`) to block accidental paid overages. Can be dialed down to `0%` on flat-tier accounts to burn quota down to the last drop.
+- 🔒 **Strict Single-User Binding**: Enforces Antigravity's single-tenant seat boundary via explicit Discord owner pinning (`DISCORD_OWNER_USER_ID`) and automatic Trust-On-First-Use (TOFU) session binding so no secondary Discord user can query quotas or trigger actions.
 - 📣 **Modular Multi-Channel Alerts**: Default is silent sentry mode (`none`). Multiple channels can be active simultaneously (Discord, Webhooks, Console, with more adapters on the roadmap) instead of locking into a single platform.
 - 🎨 **Decoupled Web Dashboard**: Optional dark-mode UI built with **Vite + Preact + Tailwind CSS** (Tailwind v4, Rosé Pine palette) for live gauges and config tweaks. Setting `WEB_UI_ENABLED=false` spawns zero HTTP listeners and binds zero ports.
 - 🔄 **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` $\to$ `.env` $\to$ `Defaults`). Adjust settings live in the web dashboard without taking down the container.
@@ -56,7 +57,7 @@ nano .env
 docker compose up -d
 ```
 
-When `WEB_UI_ENABLED=true`, access the dashboard at `http://localhost:3000`.
+When `WEB_UI_ENABLED=true`, access the dashboard at `http://localhost:8484`.
 
 ---
 
@@ -67,7 +68,7 @@ Detailed operational guides and architectural references live in the [`docs/`](.
 - 📖 **[System Architecture & Protocols](./docs/architecture.md)** — Connect-RPC dual-bucket mechanics, IPC sniffing, encryption internals, and zero-clobber invariants.
 - ⚙️ **[Configuration Reference](./docs/configuration.md)** — Exhaustive breakdown of every `.env` setting, milestone window, and SQLite override.
 - 🚀 **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose configs, homelab GitOps, and vanilla Node 24 systemd service templates.
-- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 381 deterministic tests across 99 suites written with Node's native test runner.
+- 🧪 **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind 400 deterministic tests across 107 suites written with Node's native test runner.
 
 ---
 
@@ -100,14 +101,14 @@ cp .env.example .env
 Agylity separates the backend daemon from the **Vite + Preact + Tailwind CSS** frontend:
 
 ```bash
-# Terminal 1: Run the backend daemon with live watch (http://localhost:3000)
+# Terminal 1: Run the backend daemon with live watch (http://localhost:8484)
 npm run dev:server
 
 # Terminal 2: Run the Vite client dev server with HMR (http://localhost:5173)
 npm run dev:client
 ```
 
-The Vite dev server automatically proxies `/api` requests to the backend daemon on port 3000.
+The Vite dev server automatically proxies `/api` requests to the backend daemon on port 8484.
 
 To test a full production build locally:
 
@@ -139,7 +140,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **381 / 381 tests passing across 99 suites** (0 failures, 0 skipped, 100% deterministic).
+Verification status: **407 / 407 tests passing across 108 suites** (0 failures, 0 skipped, 100% deterministic).
 
 ---
 

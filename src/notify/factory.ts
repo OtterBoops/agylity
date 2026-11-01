@@ -58,7 +58,7 @@ export const createNotifier = async (
   const uniqueChannels = Array.from(new Set(channels));
 
   if (uniqueChannels.length === 0) {
-    return new CompositeNotifier([]);
+    return new CompositeNotifier([], options);
   }
 
   const instantiatedNotifiers: Notifier[] = [];
@@ -90,5 +90,5 @@ export const createNotifier = async (
     return instantiatedNotifiers[0];
   }
 
-  return new CompositeNotifier(instantiatedNotifiers);
+  return new CompositeNotifier(instantiatedNotifiers, options);
 };

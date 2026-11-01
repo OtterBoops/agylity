@@ -32,7 +32,7 @@ export interface WebhookPayload {
  * Sanitizes a webhook URL by masking sensitive path tokens, user credentials,
  * and query parameter values while preserving host, scheme, and non-sensitive path routing.
  */
-export function sanitizeWebhookUrl(rawUrl: string): string {
+export const sanitizeWebhookUrl = (rawUrl: string): string => {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
   try {
     const u = new URL(rawUrl);
@@ -97,7 +97,7 @@ export function sanitizeWebhookUrl(rawUrl: string): string {
   } catch {
     return '[invalid-url]';
   }
-}
+};
 
 /**
  * Strips raw webhook URLs and secrets from error strings before logging or API delivery.
@@ -163,7 +163,10 @@ export class WebhookNotifier implements Notifier {
     const percent = alert.remainingPercentage;
     const hours = alert.milestoneHours;
     const textMsg = `[Alert] Quota Milestone: ${poolName} is at ${percent}% with ${hours}h before reset.`;
-    const embed = buildQuotaAlertEmbed(alert);
+    const embed = buildQuotaAlertEmbed(alert, {
+      ownerUserId: this.config.discordOwnerUserId,
+      pingOwner: this.config.discordPingOwner !== false,
+    });
 
     const payload: WebhookPayload = {
       event: 'quota_alert',
@@ -236,7 +239,10 @@ export class WebhookNotifier implements Notifier {
     const modelsList = ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
     const textMsg =
       '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
-    const embed = buildTestAlertEmbed();
+    const embed = buildTestAlertEmbed(undefined, {
+      ownerUserId: this.config.discordOwnerUserId,
+      pingOwner: this.config.discordPingOwner !== false,
+    });
 
     const payload: WebhookPayload = {
       event: 'test_ping',
@@ -310,7 +316,15 @@ export class WebhookNotifier implements Notifier {
       Array.isArray(outgoingPayload.embeds) &&
       outgoingPayload.embeds.length > 0
     ) {
-      delete outgoingPayload.content;
+      const ownerId = this.config.discordOwnerUserId?.trim();
+      if (this.config.discordPingOwner !== false && ownerId) {
+        outgoingPayload.content = `<@${ownerId}>`;
+        outgoingPayload.allowed_mentions = {
+          users: [ownerId],
+        };
+      } else {
+        delete outgoingPayload.content;
+      }
     }
 
     const bodyStr = JSON.stringify(outgoingPayload);

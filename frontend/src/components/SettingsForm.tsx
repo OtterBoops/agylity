@@ -32,6 +32,9 @@ const parseValue = (field: FieldDef, raw: string): unknown => {
       .map((s) => s.trim())
       .filter(Boolean);
   }
+  if (field.type === 'select' && (raw === 'true' || raw === 'false')) {
+    return raw === 'true';
+  }
   return raw;
 };
 
@@ -155,7 +158,7 @@ export const SettingsForm = ({
               >
                 <span>{f.label}</span>
                 {Object.prototype.hasOwnProperty.call(overrides, f.key) && (
-                  <span class="font-mono text-[10px] text-pine-gold">override</span>
+                  <span class="font-mono text-xs text-pine-gold">override</span>
                 )}
               </label>
               {f.type === 'select' ? (

@@ -479,7 +479,7 @@ describe('Tier 5 Adversarial Hardening Suite: Track B (Config, Notifications & W
       assert.equal(specificPortChanges.length, 3);
       assert.equal(specificPortChanges[0], 8080);
       assert.equal(specificPortChanges[1], 9090);
-      assert.equal(specificPortChanges[2], 3000); // reverted to default
+      assert.equal(specificPortChanges[2], BUILTIN_DEFAULTS.webUiPort); // reverted to default
 
       // Last event from clearAllOverrides has key: '*'
       const lastEvent = generalChanges[generalChanges.length - 1];

@@ -25,12 +25,12 @@ export const resolveIndexHtmlPath = (): string =>
 export const loadIndexHtml = async (): Promise<string> =>
   fs.readFile(resolveIndexHtmlPath(), 'utf-8');
 
-export async function handleStaticAsset(
+export const handleStaticAsset = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   pathname: string,
   method: string
-): Promise<void> {
+): Promise<void> => {
   if (method !== 'GET') return methodNotAllowed(res);
 
   const fullPath = resolvePublicFilePath(pathname.slice(1));
@@ -51,13 +51,13 @@ export async function handleStaticAsset(
       .writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
       .end(`Error loading asset: ${err?.message}`);
   }
-}
+};
 
-export async function handleIndexHtml(
+export const handleIndexHtml = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   method: string
-): Promise<void> {
+): Promise<void> => {
   if (method !== 'GET') return methodNotAllowed(res);
 
   try {
@@ -73,4 +73,4 @@ export async function handleIndexHtml(
       .writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
       .end(`Failed to load dashboard: ${err?.message}`);
   }
-}
+};

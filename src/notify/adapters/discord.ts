@@ -32,6 +32,10 @@ import {
   renderSquareProgressBar,
   formatResetWindow,
 } from '../embeds/index.js';
+import {
+  parseDiscordModelPriorityInput,
+  resolveConcreteModelId,
+} from '../../orchestrator/models.js';
 
 /**
  * Task prompt validation schema enforcing 1-4000 character boundaries.
@@ -97,11 +101,14 @@ export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder => {
 
 /**
  * Creates repository StringSelectMenu component.
+ * Optional poolFamily encodes the triggering quota alert family into customId (`repo_select:<family>`).
  */
 export const createRepoSelectMenu = (
-  repositories: Array<{ id: string; name: string; path?: string; description?: string }>
+  repositories: Array<{ id: string; name: string; path?: string; description?: string }>,
+  poolFamily?: string
 ): ActionRowBuilder<StringSelectMenuBuilder> => {
-  const select = new StringSelectMenuBuilder().setCustomId('repo_select');
+  const customId = poolFamily ? `repo_select:${poolFamily}` : 'repo_select';
+  const select = new StringSelectMenuBuilder().setCustomId(customId);
   const list = repositories ?? [];
 
   if (list.length === 0) {
@@ -135,12 +142,25 @@ export const createRepoSelectMenu = (
   return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
 };
 
+export interface CreateDispatchModalOptions {
+  includeModelInput?: boolean;
+  defaultModel?: string;
+  poolFamily?: string;
+}
+
 /**
- * Creates modal dialog for task prompt.
+ * Creates modal dialog for task prompt (and optional model/priority input).
  */
-export const createDispatchModal = (repoId: string, repoName: string): ModalBuilder => {
+export const createDispatchModal = (
+  repoId: string,
+  repoName: string,
+  options?: CreateDispatchModalOptions
+): ModalBuilder => {
   const title = `Dispatch Task: ${repoName}`.slice(0, 45);
-  const safeCustomId = `modal_dispatch:${repoId}`.slice(0, 100);
+  const rawCustomId = options?.poolFamily
+    ? `modal_dispatch:${repoId}:${options.poolFamily}`
+    : `modal_dispatch:${repoId}`;
+  const safeCustomId = rawCustomId.slice(0, 100);
   const modal = new ModalBuilder().setCustomId(safeCustomId).setTitle(title);
 
   const promptInput = new TextInputBuilder()
@@ -152,8 +172,27 @@ export const createDispatchModal = (repoId: string, repoName: string): ModalBuil
     .setMinLength(1)
     .setMaxLength(4000);
 
-  const row = new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput);
-  modal.addComponents(row);
+  const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput);
+  modal.addComponents(row1);
+
+  if (options?.includeModelInput) {
+    const initialModel = resolveConcreteModelId(
+      options.poolFamily,
+      options.defaultModel || 'gemini-4-argon-high'
+    );
+    const modelInput = new TextInputBuilder()
+      .setCustomId('task_model_priority')
+      .setLabel('Model & Priority (e.g. model-id P0/P1/P2)')
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('gemini-4-argon-high P0 (or claude-opus-5-5-high, P2)')
+      .setValue(`${initialModel} P0`)
+      .setRequired(false)
+      .setMaxLength(120);
+
+    const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(modelInput);
+    modal.addComponents(row2);
+  }
+
   return modal;
 };
 
@@ -169,14 +208,77 @@ export class DiscordNotifier implements Notifier {
   private config: ResolvedConfig;
   private options: DiscordNotifierOptions;
   private activeSubmissions = new Set<string>();
+  private pinnedOwnerUserId?: string;
 
   constructor(config: Partial<ResolvedConfig> = {}, options: DiscordNotifierOptions = {}) {
     this.config = { ...BUILTIN_DEFAULTS, ...config };
     this.options = options;
+    if (this.config.discordOwnerUserId?.trim()) {
+      this.pinnedOwnerUserId = this.config.discordOwnerUserId.trim();
+    }
 
     if (options.client) {
       this.client = options.client;
     }
+  }
+
+  /**
+   * Returns the currently bound Discord owner user ID (explicitly configured or TOFU-pinned).
+   */
+  public getBoundOwnerUserId(): string | undefined {
+    return this.config.discordOwnerUserId?.trim() || this.pinnedOwnerUserId;
+  }
+
+  /**
+   * Enforces strict single-user binding on Discord interactions.
+   * - If `discordOwnerUserId` is explicitly configured, only that user ID is permitted.
+   * - Otherwise, pins the first interacting Discord user ID (Trust-On-First-Use) for the session
+   *   and rejects any subsequent interactions from different Discord users.
+   */
+  private verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string } {
+    const userId = typeof interaction?.user?.id === 'string' ? interaction.user.id.trim() : '';
+    const configuredOwner = this.config.discordOwnerUserId?.trim();
+
+    if (configuredOwner) {
+      if (!userId || userId !== configuredOwner) {
+        logger
+          .child('notify:discord')
+          .warn(
+            'Blocked unauthorized Discord interaction from user %s (bound owner: %s)',
+            userId || 'unknown',
+            configuredOwner
+          );
+        return {
+          allowed: false,
+          reason:
+            '[Blocked] Single-User Binding: This Agylity instance is restricted to the configured Discord owner.',
+        };
+      }
+      return { allowed: true };
+    }
+
+    if (userId) {
+      if (!this.pinnedOwnerUserId) {
+        this.pinnedOwnerUserId = userId;
+        return { allowed: true };
+      }
+      if (this.pinnedOwnerUserId !== userId) {
+        logger
+          .child('notify:discord')
+          .warn(
+            'Blocked Discord interaction from secondary user %s (session pinned to owner: %s)',
+            userId,
+            this.pinnedOwnerUserId
+          );
+        return {
+          allowed: false,
+          reason:
+            '[Blocked] Single-User Binding: This Agylity session is already bound to another Discord user. Set DISCORD_OWNER_USER_ID to configure explicit owner binding.',
+        };
+      }
+    }
+
+    return { allowed: true };
   }
 
   async initialize(): Promise<void> {
@@ -185,6 +287,10 @@ export class DiscordNotifier implements Notifier {
     if (!this.client) {
       this.client = new Client({
         intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+        allowedMentions: {
+          parse: ['users'],
+          repliedUser: true,
+        },
       });
     }
 
@@ -202,6 +308,7 @@ export class DiscordNotifier implements Notifier {
       try {
         await this.client.login(this.config.discordToken);
         logger.child('notify:discord').info('Discord client connected.');
+        await this.autoDiscoverOwnerUserId();
       } catch (err: any) {
         logger.child('notify:discord').error('Client login failed: %s', err.message);
       }
@@ -213,6 +320,9 @@ export class DiscordNotifier implements Notifier {
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
     const oldToken = this.config.discordToken;
     this.config = { ...this.config, ...newConfig };
+    if (newConfig.discordOwnerUserId !== undefined) {
+      this.pinnedOwnerUserId = newConfig.discordOwnerUserId.trim() || undefined;
+    }
 
     if (
       this.config.discordToken &&
@@ -224,6 +334,7 @@ export class DiscordNotifier implements Notifier {
         logger.child('notify:discord').info('Connecting Discord client with new token...');
         await this.client.login(this.config.discordToken);
         logger.child('notify:discord').info('Discord client connected via updated configuration.');
+        await this.autoDiscoverOwnerUserId();
       } catch (err: any) {
         logger
           .child('notify:discord')
@@ -250,7 +361,9 @@ export class DiscordNotifier implements Notifier {
     if (interaction.isStringSelectMenu && interaction.isStringSelectMenu()) {
       if (
         interaction.customId === 'repo_select' ||
-        interaction.customId === 'select_dispatch_repo'
+        interaction.customId === 'select_dispatch_repo' ||
+        (typeof interaction.customId === 'string' &&
+          interaction.customId.startsWith('repo_select:'))
       ) {
         await this.handleRepoSelect(interaction);
       }
@@ -270,6 +383,15 @@ export class DiscordNotifier implements Notifier {
   }
 
   private async handleQuotaCommand(interaction: any): Promise<void> {
+    const ownerCheck = this.verifyOwnerBinding(interaction);
+    if (!ownerCheck.allowed) {
+      await interaction.reply({
+        content: ownerCheck.reason,
+        ephemeral: true,
+      });
+      return;
+    }
+
     const allowedChannelId = this.config.discordNotificationChannelId;
     if (allowedChannelId && interaction.channelId && interaction.channelId !== allowedChannelId) {
       await interaction.reply({
@@ -298,6 +420,25 @@ export class DiscordNotifier implements Notifier {
   }
 
   private async handleRepoSelect(interaction: any): Promise<void> {
+    const ownerCheck = this.verifyOwnerBinding(interaction);
+    if (!ownerCheck.allowed) {
+      if (
+        typeof interaction.reply === 'function' &&
+        !interaction.replied &&
+        !interaction.deferred
+      ) {
+        try {
+          await interaction.reply({
+            content: ownerCheck.reason,
+            ephemeral: true,
+          });
+        } catch {
+          // Safe catch on interaction reply
+        }
+      }
+      return;
+    }
+
     const selectedRepoId = interaction.values?.[0];
     if (!selectedRepoId || selectedRepoId === 'none') {
       if (
@@ -325,14 +466,30 @@ export class DiscordNotifier implements Notifier {
         (selectedRepoId && r.id.startsWith(selectedRepoId))
     );
     const repoName = repo ? repo.name : selectedRepoId;
+    const poolFamily =
+      typeof interaction.customId === 'string' && interaction.customId.startsWith('repo_select:')
+        ? interaction.customId.slice('repo_select:'.length)
+        : undefined;
 
-    const modal = createDispatchModal(selectedRepoId, repoName);
+    const modal = createDispatchModal(selectedRepoId, repoName, {
+      includeModelInput: true,
+      defaultModel: this.config.defaultDispatchModel,
+      poolFamily,
+    });
     await interaction.showModal(modal);
   }
 
   private async handleModalSubmit(interaction: any): Promise<void> {
     // 3s Discord timeout guard: defer immediately before async tasks
     await interaction.deferReply({ ephemeral: false });
+
+    const ownerCheck = this.verifyOwnerBinding(interaction);
+    if (!ownerCheck.allowed) {
+      await interaction.editReply({
+        content: ownerCheck.reason,
+      });
+      return;
+    }
 
     // Deduplication / Debounce guard for rapid duplicate clicks
     const userId = interaction.user?.id ?? 'user';
@@ -345,13 +502,15 @@ export class DiscordNotifier implements Notifier {
     }
     this.activeSubmissions.add(submissionKey);
 
-    const rawRepoId =
+    const rawCustomSuffix =
       typeof interaction.customId === 'string' && interaction.customId.startsWith('modal_dispatch:')
         ? interaction.customId.slice('modal_dispatch:'.length)
         : typeof interaction.customId === 'string' &&
             interaction.customId.startsWith('modal_dispatch_')
           ? interaction.customId.slice('modal_dispatch_'.length)
           : '';
+
+    const [rawRepoId = '', alertPoolFamily] = rawCustomSuffix.split(':');
 
     const repo = this.config.repositories.find(
       (r) => r.id === rawRepoId || r.name === rawRepoId || (rawRepoId && r.id.startsWith(rawRepoId))
@@ -362,6 +521,12 @@ export class DiscordNotifier implements Notifier {
 
     try {
       const rawPrompt = interaction.fields?.getTextInputValue?.('task_prompt') ?? '';
+      let rawModelInput = '';
+      try {
+        rawModelInput = interaction.fields?.getTextInputValue?.('task_model_priority') ?? '';
+      } catch {
+        rawModelInput = '';
+      }
       const parseResult = TaskPromptSchema.safeParse(rawPrompt);
       if (!parseResult.success) {
         const errorMsg =
@@ -381,13 +546,30 @@ export class DiscordNotifier implements Notifier {
       if (repoName) this.activeInteractions.set(repoName, interaction);
 
       if (this.options.onDispatchRequested) {
-        const result = await this.options.onDispatchRequested({
+        const dispatchPayload: DispatchRequest = {
           repositoryId: repoId,
           repositoryName: repoName,
           repositoryPath: repoPath,
           prompt,
           requestedBy: interaction.user?.username ?? 'otter',
-        });
+          requestedByUserId: interaction.user?.id,
+        };
+
+        if (rawModelInput.trim() || alertPoolFamily) {
+          const parsedMeta = parseDiscordModelPriorityInput(
+            rawModelInput,
+            this.config.defaultDispatchModel,
+            alertPoolFamily
+          );
+          dispatchPayload.model = parsedMeta.model;
+          dispatchPayload.priority = parsedMeta.priority;
+          dispatchPayload.effort = parsedMeta.effort;
+          if (alertPoolFamily) {
+            dispatchPayload.poolFamily = alertPoolFamily;
+          }
+        }
+
+        const result = await this.options.onDispatchRequested(dispatchPayload);
 
         if (result.success) {
           const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
@@ -428,6 +610,79 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
+  /**
+   * Automatically discovers and binds the Discord server owner ID if discordOwnerUserId is unset.
+   */
+  public async autoDiscoverOwnerUserId(): Promise<string | undefined> {
+    if (this.config.discordOwnerUserId?.trim()) {
+      return this.config.discordOwnerUserId.trim();
+    }
+    if (this.pinnedOwnerUserId?.trim()) {
+      return this.pinnedOwnerUserId.trim();
+    }
+    if (!this.client) {
+      return undefined;
+    }
+
+    try {
+      let guild: any = null;
+      if (this.config.discordGuildId && typeof this.client.guilds?.fetch === 'function') {
+        guild = await this.client.guilds.fetch(this.config.discordGuildId).catch(() => null);
+      }
+      if (!guild && typeof this.client.guilds?.fetch === 'function') {
+        const guilds = await this.client.guilds.fetch().catch(() => null);
+        const first = guilds?.first?.();
+        if (first && typeof first.fetch === 'function') {
+          guild = await first.fetch().catch(() => null);
+        } else if (first) {
+          guild = first;
+        }
+      }
+      if (
+        !guild &&
+        this.client.guilds?.cache &&
+        typeof this.client.guilds.cache.first === 'function'
+      ) {
+        guild = this.client.guilds.cache.first();
+      }
+
+      if (guild?.ownerId) {
+        this.pinnedOwnerUserId = guild.ownerId;
+        logger
+          .child('notify:discord')
+          .info(
+            'Auto-discovered Discord owner ID from guild %s: %s',
+            guild.name || guild.id,
+            guild.ownerId
+          );
+        if (this.options.onOwnerDiscovered) {
+          try {
+            await this.options.onOwnerDiscovered(guild.ownerId);
+          } catch {
+            // Safe catch on callback
+          }
+        }
+        return guild.ownerId;
+      }
+    } catch (err: any) {
+      logger.child('notify:discord').debug('Could not auto-discover guild owner: %s', err.message);
+    }
+
+    return undefined;
+  }
+
+  public async resolveOwnerUserId(): Promise<string | undefined> {
+    const direct = this.config.discordOwnerUserId?.trim() || this.pinnedOwnerUserId?.trim();
+    if (direct) return direct;
+    return await this.autoDiscoverOwnerUserId();
+  }
+
+  public resolveOwnerMention(ownerId?: string): string | undefined {
+    if (this.config.discordPingOwner === false) return undefined;
+    const targetOwner = ownerId || this.getBoundOwnerUserId();
+    return targetOwner ? `<@${targetOwner}>` : undefined;
+  }
+
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
     if (!this.client || !this.initialized) return;
 
@@ -438,13 +693,27 @@ export class DiscordNotifier implements Notifier {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased?.()) return;
 
-      const embed = buildQuotaAlertEmbed(alert);
-      const actionRow = createRepoSelectMenu(this.config.repositories);
+      const ownerId = await this.resolveOwnerUserId();
+      const embed = buildQuotaAlertEmbed(alert, {
+        ownerUserId: ownerId,
+        pingOwner: this.config.discordPingOwner !== false,
+      });
+      const actionRow = createRepoSelectMenu(this.config.repositories, alert.pool.family);
+      const mention = this.resolveOwnerMention(ownerId);
 
-      await (channel as any).send({
+      const sendPayload: any = {
         embeds: [embed],
         components: [actionRow],
-      });
+      };
+
+      if (mention && ownerId) {
+        sendPayload.content = mention;
+        sendPayload.allowedMentions = {
+          users: [ownerId],
+        };
+      }
+
+      await (channel as any).send(sendPayload);
       logger
         .child('notify:discord')
         .info(
@@ -532,11 +801,23 @@ export class DiscordNotifier implements Notifier {
           } catch {}
         }
 
-        const embed = buildTestAlertEmbed(samplePool);
+        const ownerId = await this.resolveOwnerUserId();
+        const embed = buildTestAlertEmbed(samplePool, {
+          ownerUserId: ownerId,
+          pingOwner: this.config.discordPingOwner !== false,
+        });
+        const mention = this.resolveOwnerMention(ownerId);
 
         const sendPayload: any = {
           embeds: [embed],
         };
+
+        if (mention && ownerId) {
+          sendPayload.content = mention;
+          sendPayload.allowedMentions = {
+            users: [ownerId],
+          };
+        }
 
         if (this.config.repositories && this.config.repositories.length > 0) {
           sendPayload.components = [createRepoSelectMenu(this.config.repositories)];

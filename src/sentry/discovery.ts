@@ -16,9 +16,9 @@ export interface DiscoveredLanguageServer {
   isHttps?: boolean;
 }
 
-export async function discoverWindowsLanguageServer(
+export const discoverWindowsLanguageServer = async (
   execFileFn: ExecFileAsyncFn
-): Promise<DiscoveredLanguageServer | null> {
+): Promise<DiscoveredLanguageServer | null> => {
   const psScript = `
     $proc = Get-Process -Name 'language_server' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($proc) {
@@ -58,11 +58,11 @@ export async function discoverWindowsLanguageServer(
     return { port, ports: rawPorts, csrfToken, isHttps: false };
   }
   return null;
-}
+};
 
-export async function discoverUnixLanguageServer(
+export const discoverUnixLanguageServer = async (
   execFileFn: ExecFileAsyncFn
-): Promise<DiscoveredLanguageServer | null> {
+): Promise<DiscoveredLanguageServer | null> => {
   const { stdout } = await execFileFn('pgrep', ['-a', 'language_server'], {
     timeout: 3000,
   });
@@ -117,7 +117,7 @@ export async function discoverUnixLanguageServer(
     return { port, ports: rawPorts, csrfToken, isHttps: false };
   }
   return null;
-}
+};
 
 export const discoverLocalLanguageServer = async (
   execFileFn: ExecFileAsyncFn = defaultExecFileAsync

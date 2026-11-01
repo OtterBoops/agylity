@@ -5,6 +5,9 @@ import type {
   ConfigData,
   LogEntry,
   DispatchRecord,
+  ModelCatalogEntry,
+  SwarmWorkerRecord,
+  RunnerRegistrationTokenResult,
 } from './types';
 
 export const api = ky.create({
@@ -59,11 +62,62 @@ export const deleteConfigOverride = (key: string): Promise<{ success: boolean }>
 
 export const triggerDispatch = (payload: {
   repositoryName: string;
+  repositoryId?: string;
+  repositoryPath?: string;
+  cloneUrl?: string;
   prompt: string;
   requestedBy?: string;
+  model?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  workerMode?: 'headless' | 'visible' | 'any';
   allowOverage?: boolean;
-}): Promise<{ success: boolean; branchName?: string }> =>
-  api.post('dispatch', { json: payload }).json<{ success: boolean; branchName?: string }>();
+}): Promise<{
+  success: boolean;
+  status?: string;
+  taskId?: string;
+  branchName?: string;
+  model?: string;
+  error?: string;
+  code?: string;
+}> => api.post('dispatch', { json: payload }).json();
+
+export const getModels = (): Promise<{
+  defaultModel: string;
+  defaultEffort: string;
+  models: ModelCatalogEntry[];
+}> =>
+  api
+    .get('models')
+    .json<{ defaultModel: string; defaultEffort: string; models: ModelCatalogEntry[] }>()
+    .catch(() => ({ defaultModel: 'gemini-4-argon-high', defaultEffort: 'high', models: [] }));
+
+export const getWorkers = (): Promise<SwarmWorkerRecord[]> =>
+  api
+    .get('workers')
+    .json<SwarmWorkerRecord[]>()
+    .catch(() => []);
+
+export const createRegistrationToken = (payload: {
+  nameHint?: string;
+  workerMode?: 'headless' | 'visible' | 'any';
+  labels?: string[];
+  repositories?: string[];
+}): Promise<RunnerRegistrationTokenResult> =>
+  api.post('workers/registration-token', { json: payload }).json<RunnerRegistrationTokenResult>();
+
+export const setWorkerEnabled = (
+  workerId: string,
+  enabled: boolean
+): Promise<{ success: boolean; worker: SwarmWorkerRecord }> =>
+  api
+    .patch(`workers/${encodeURIComponent(workerId)}`, { json: { enabled } })
+    .json<{ success: boolean; worker: SwarmWorkerRecord }>();
+
+export const revokeWorker = (workerId: string): Promise<{ success: boolean; revoked: boolean }> =>
+  api
+    .delete(`workers/${encodeURIComponent(workerId)}`)
+    .json<{ success: boolean; revoked: boolean }>();
 
 export const testNotification = (
   channel?: string,

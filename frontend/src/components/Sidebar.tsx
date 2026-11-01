@@ -30,6 +30,7 @@ interface NavItem {
   route: Route;
   label: string;
   icon: IconDefinition;
+  badge?: string;
 }
 
 const MONITOR: NavItem[] = [{ route: 'overview', label: 'Overview', icon: faChartPie }];
@@ -69,6 +70,11 @@ const NavButton = ({
       <Icon icon={item.icon} class="size-3.5" />
     </div>
     <span class="truncate">{item.label}</span>
+    {item.badge && (
+      <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-[10px] font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
+        {item.badge}
+      </span>
+    )}
   </button>
 );
 
@@ -104,9 +110,14 @@ export const Sidebar = ({
     });
   }, []);
 
-  const configurationItems = [
+  const configurationItems: NavItem[] = [
     { route: 'settings/notifications' as Route, label: 'Notifications', icon: faBell },
-    { route: 'settings/remote' as Route, label: 'Orchestrator', icon: faNetworkWired },
+    {
+      route: 'settings/remote' as Route,
+      label: 'Orchestrator',
+      icon: faNetworkWired,
+      badge: orchestratorEnabled ? 'Active' : undefined,
+    },
     ...(orchestratorEnabled
       ? [{ route: 'settings/repositories' as Route, label: 'Repositories', icon: faCodeBranch }]
       : []),
@@ -150,7 +161,7 @@ export const Sidebar = ({
           </span>
           <span class="relative flex size-2 shrink-0">
             <span
-              class={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${probeColor}`}
+              class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
             />
             <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
           </span>
@@ -234,7 +245,7 @@ export const Sidebar = ({
               <div class="flex items-center gap-2">
                 <span class="relative flex size-2 shrink-0">
                   <span
-                    class={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${probeColor}`}
+                    class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
                   />
                   <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                 </span>
@@ -266,7 +277,7 @@ export const Sidebar = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 rounded bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
                   <span>Update v{updateInfo.latestVersion}</span>
                   <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
@@ -370,7 +381,7 @@ export const Sidebar = ({
               <div class="flex min-w-0 items-center gap-2">
                 <span class="relative flex size-2 shrink-0">
                   <span
-                    class={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-75 ${probeColor}`}
+                    class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
                   />
                   <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                 </span>
@@ -411,7 +422,7 @@ export const Sidebar = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 rounded bg-pine-iris/20 px-1.5 py-0.5 text-[0.6875rem] font-semibold text-pine-iris transition-colors hover:bg-pine-iris/30"
+                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[0.6875rem] font-semibold text-pine-iris transition-colors hover:bg-pine-iris/30"
                   title={`New version v${updateInfo.latestVersion} available`}
                 >
                   <span>Update v{updateInfo.latestVersion}</span>

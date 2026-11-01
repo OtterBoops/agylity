@@ -6,7 +6,7 @@ export interface Store<T> {
   subscribe: (listener: () => void) => () => void;
 }
 
-export function createStore<T>(initialState: T): Store<T> {
+export const createStore = <T>(initialState: T): Store<T> => {
   let state = initialState;
   const listeners = new Set<() => void>();
 
@@ -29,9 +29,9 @@ export function createStore<T>(initialState: T): Store<T> {
       };
     },
   };
-}
+};
 
-export function useStore<T>(store: Store<T>): T {
+export const useStore = <T>(store: Store<T>): T => {
   const [state, setState] = useState(store.getState);
 
   useEffect(() => {
@@ -42,4 +42,4 @@ export function useStore<T>(store: Store<T>): T {
   }, [store]);
 
   return state;
-}
+};

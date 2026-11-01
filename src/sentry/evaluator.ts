@@ -13,8 +13,8 @@ export interface EvaluationResult {
 }
 
 export class QuotaEvaluator {
-  public readonly milestoneHours: number[];
-  public readonly alertThresholdPercent: number;
+  public milestoneHours: number[];
+  public alertThresholdPercent: number;
 
   constructor(options: QuotaEvaluatorOptions = {}) {
     const rawMilestones = options.milestoneHours ?? [24, 12, 3];
@@ -28,6 +28,22 @@ export class QuotaEvaluator {
       !Number.isNaN(options.alertThresholdPercent)
         ? options.alertThresholdPercent
         : 25;
+  }
+
+  public updateConfig(options: QuotaEvaluatorOptions): void {
+    if (options.milestoneHours !== undefined) {
+      this.milestoneHours = Array.from(
+        new Set(
+          options.milestoneHours.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0)
+        )
+      ).sort((a, b) => b - a);
+    }
+    if (
+      typeof options.alertThresholdPercent === 'number' &&
+      !Number.isNaN(options.alertThresholdPercent)
+    ) {
+      this.alertThresholdPercent = options.alertThresholdPercent;
+    }
   }
 
   /**

@@ -9,12 +9,12 @@ import {
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
 
-export async function handleTestNotify(
+export const handleTestNotify = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
-): Promise<void> {
+): Promise<void> => {
   const log = options.logger ?? logger.child('web');
   if (method !== 'POST') return methodNotAllowed(res);
 
@@ -74,6 +74,24 @@ export async function handleTestNotify(
       hasOverrides = true;
     }
 
+    if (typeof testOverrides.discordOwnerUserId === 'string') {
+      resolved.discordOwnerUserId = testOverrides.discordOwnerUserId.trim() || undefined;
+      hasOverrides = true;
+    }
+
+    if (typeof testOverrides.discordPingOwner === 'boolean') {
+      resolved.discordPingOwner = testOverrides.discordPingOwner;
+      hasOverrides = true;
+    }
+
+    if (!targetChannel && hasOverrides) {
+      if (testOverrides.discordToken || rawDiscordChan) {
+        targetChannel = 'discord';
+      } else if (rawWebhook || testOverrides.webhookSecret) {
+        targetChannel = 'webhook';
+      }
+    }
+
     const channel =
       targetChannel ??
       (resolved.notificationChannels && resolved.notificationChannels.length > 0
@@ -118,7 +136,13 @@ export async function handleTestNotify(
 
     if (!activeNotifier) {
       const { createNotifier } = await import('../../notify/factory.js');
-      activeNotifier = await createNotifier(targetChannel ?? resolved, resolved);
+      activeNotifier = await createNotifier(targetChannel ?? resolved, resolved, {
+        onOwnerDiscovered: async (ownerId: string) => {
+          if (!resolved.discordOwnerUserId && options.configStore) {
+            options.configStore.setOverride('discordOwnerUserId', ownerId);
+          }
+        },
+      });
       shouldShutdown = true;
     }
 
@@ -160,4 +184,4 @@ export async function handleTestNotify(
       error: err?.message || 'Failed to send test notification',
     });
   }
-}
+};

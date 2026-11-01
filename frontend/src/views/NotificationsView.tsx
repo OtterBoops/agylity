@@ -87,6 +87,14 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     () => String(resolved.discordGuildId || ''),
     [resolved.discordGuildId]
   );
+  const serverDiscordOwnerUserId = useMemo(
+    () => String(resolved.discordOwnerUserId || ''),
+    [resolved.discordOwnerUserId]
+  );
+  const serverDiscordPingOwner = useMemo(
+    () => resolved.discordPingOwner !== false,
+    [resolved.discordPingOwner]
+  );
   const isWebhookConfigured = Boolean(
     config.secretsMeta?.notificationWebhookUrl?.isSet ?? Boolean(resolved.notificationWebhookUrl)
   );
@@ -116,6 +124,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [discordChannelId, setDiscordChannelId] = useState(serverDiscordChannelId);
   const [discordClientId, setDiscordClientId] = useState(serverDiscordClientId);
   const [discordGuildId, setDiscordGuildId] = useState(serverDiscordGuildId);
+  const [discordOwnerUserId, setDiscordOwnerUserId] = useState(serverDiscordOwnerUserId);
+  const [discordPingOwner, setDiscordPingOwner] = useState(serverDiscordPingOwner);
   const [showDiscordToken, setShowDiscordToken] = useState(false);
 
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -139,10 +149,19 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordChannelId(serverDiscordChannelId);
     setDiscordClientId(serverDiscordClientId);
     setDiscordGuildId(serverDiscordGuildId);
+    setDiscordOwnerUserId(serverDiscordOwnerUserId);
+    setDiscordPingOwner(serverDiscordPingOwner);
     setWebhookUrl('');
     setDiscordToken('');
     setWebhookSecret('');
-  }, [serverChannels, serverDiscordChannelId, serverDiscordClientId, serverDiscordGuildId]);
+  }, [
+    serverChannels,
+    serverDiscordChannelId,
+    serverDiscordClientId,
+    serverDiscordGuildId,
+    serverDiscordOwnerUserId,
+    serverDiscordPingOwner,
+  ]);
 
   const ensureChannelEnabled = (id: ChannelId) => {
     setEnabledChannels((prev) => {
@@ -197,6 +216,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     if (discordChannelId !== serverDiscordChannelId) return true;
     if (discordClientId !== serverDiscordClientId) return true;
     if (discordGuildId !== serverDiscordGuildId) return true;
+    if (discordOwnerUserId !== serverDiscordOwnerUserId) return true;
+    if (discordPingOwner !== serverDiscordPingOwner) return true;
     if (webhookUrl.trim().length > 0) return true;
     if (webhookSecret.trim().length > 0) return true;
     return false;
@@ -209,6 +230,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     serverDiscordClientId,
     discordGuildId,
     serverDiscordGuildId,
+    discordOwnerUserId,
+    serverDiscordOwnerUserId,
+    discordPingOwner,
+    serverDiscordPingOwner,
     webhookUrl,
     webhookSecret,
   ]);
@@ -219,6 +244,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordChannelId(serverDiscordChannelId);
     setDiscordClientId(serverDiscordClientId);
     setDiscordGuildId(serverDiscordGuildId);
+    setDiscordOwnerUserId(serverDiscordOwnerUserId);
+    setDiscordPingOwner(serverDiscordPingOwner);
     setWebhookUrl('');
     setWebhookSecret('');
     setToast(null);
@@ -244,6 +271,12 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     }
     if (discordGuildId !== serverDiscordGuildId) {
       payload.discordGuildId = discordGuildId.trim();
+    }
+    if (discordOwnerUserId !== serverDiscordOwnerUserId) {
+      payload.discordOwnerUserId = discordOwnerUserId.trim();
+    }
+    if (discordPingOwner !== serverDiscordPingOwner) {
+      payload.discordPingOwner = discordPingOwner;
     }
 
     if (webhookUrl.trim() && webhookUrl.trim() !== '••••••••' && webhookUrl.trim() !== '********') {
@@ -292,6 +325,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       if (webhookSecret.trim()) {
         overrides.webhookSecret = webhookSecret.trim();
       }
+      if (discordOwnerUserId.trim()) {
+        overrides.discordOwnerUserId = discordOwnerUserId.trim();
+      }
+      overrides.discordPingOwner = discordPingOwner;
     } else if (channel === 'discord') {
       if (discordToken.trim()) {
         overrides.discordToken = discordToken.trim();
@@ -299,6 +336,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       if (discordChannelId.trim()) {
         overrides.discordNotificationChannelId = discordChannelId.trim();
       }
+      if (discordOwnerUserId.trim()) {
+        overrides.discordOwnerUserId = discordOwnerUserId.trim();
+      }
+      overrides.discordPingOwner = discordPingOwner;
     }
 
     testNotification(channel, overrides)
@@ -439,11 +480,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                       <div class="flex items-center gap-2">
                         <span class="text-sm font-semibold text-pine-text">{ch.label}</span>
                         {isEnabled ? (
-                          <span class="rounded bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
+                          <span class="rounded-sm bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
                             Enabled
                           </span>
                         ) : (
-                          <span class="rounded bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted uppercase">
+                          <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted uppercase">
                             Off
                           </span>
                         )}
@@ -678,6 +719,76 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                               Target server for instant slash command registration
                             </span>
                           </div>
+
+                          <div class="flex flex-col gap-1.5 md:col-span-2">
+                            <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+                              <span>Owner Discord User ID (Single-User Binding)</span>
+                              <span class="font-mono text-xs text-pine-foam">
+                                {discordOwnerUserId.trim()
+                                  ? 'Explicitly Bound'
+                                  : 'Session Auto-Pinned (TOFU)'}
+                              </span>
+                            </label>
+                            <input
+                              type="text"
+                              name="agylity_discord_owner_user_id"
+                              autoComplete="off"
+                              inputMode="numeric"
+                              data-1p-ignore="true"
+                              data-lpignore="true"
+                              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                              placeholder="e.g. 334455667788990011 (Restricts /quota and dispatches to this Discord user ID)"
+                              value={discordOwnerUserId}
+                              onInput={(e) => {
+                                const val = (e.target as HTMLInputElement).value;
+                                setDiscordOwnerUserId(val);
+                                if (val.length > 0) ensureChannelEnabled('discord');
+                              }}
+                            />
+                            <span class="text-xs text-pine-muted">
+                              Enforces the Single-Tenant Invariant: only your Discord User ID can
+                              query quotas or trigger tasks
+                            </span>
+                          </div>
+
+                          <div class="flex items-center justify-between gap-4 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-3.5 md:col-span-2">
+                            <div class="flex flex-col gap-0.5">
+                              <span class="text-xs font-semibold text-pine-text">
+                                Ping Owner on Discord
+                              </span>
+                              <span class="text-xs text-pine-muted">
+                                Mentions your Discord user ID (
+                                <code class="font-mono text-pine-foam">
+                                  &lt;@{discordOwnerUserId.trim() || 'owner'}&gt;
+                                </code>
+                                ) in the notification message so Discord triggers an active push and
+                                sound alert
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              role="switch"
+                              aria-checked={discordPingOwner}
+                              onClick={() => setDiscordPingOwner(!discordPingOwner)}
+                              class={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                                discordPingOwner
+                                  ? 'bg-pine-iris'
+                                  : 'border-pine-highlight bg-pine-overlay'
+                              }`}
+                              title={
+                                discordPingOwner
+                                  ? 'Disable owner mention in Discord notifications'
+                                  : 'Enable owner mention in Discord notifications'
+                              }
+                            >
+                              <span
+                                aria-hidden="true"
+                                class={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+                                  discordPingOwner ? 'translate-x-5' : 'translate-x-0'
+                                }`}
+                              />
+                            </button>
+                          </div>
                         </div>
                       </div>
 
@@ -695,7 +806,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             <button
                               type="button"
                               onClick={() => setEmbedPreviewTier('alert')}
-                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                              class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
                                 embedPreviewTier === 'alert'
                                   ? 'border border-pine-love/50 bg-pine-love/20 text-pine-love'
                                   : 'text-pine-subtle hover:text-pine-text'
@@ -706,7 +817,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             <button
                               type="button"
                               onClick={() => setEmbedPreviewTier('warning')}
-                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                              class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
                                 embedPreviewTier === 'warning'
                                   ? 'border border-pine-gold/50 bg-pine-gold/20 text-pine-gold'
                                   : 'text-pine-subtle hover:text-pine-text'
@@ -717,7 +828,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                             <button
                               type="button"
                               onClick={() => setEmbedPreviewTier('burn')}
-                              class={`cursor-pointer rounded px-2 py-0.5 text-[11px] font-medium transition-colors ${
+                              class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
                                 embedPreviewTier === 'burn'
                                   ? 'border border-pine-iris/50 bg-pine-iris/20 text-pine-iris'
                                   : 'text-pine-subtle hover:text-pine-text'
@@ -747,11 +858,19 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                               </svg>
                             </div>
                             <span class="font-medium text-white">Agylity Quota Sentry</span>
-                            <span class="py-0.2 rounded bg-[#5865F2] px-1 text-[9px] font-bold text-white uppercase">
+                            <span class="py-0.2 rounded-sm bg-[#5865F2] px-1 text-[9px] font-bold text-white uppercase">
                               BOT
                             </span>
                             <span class="text-[10px] text-[#949ba4]">Today at 22:58</span>
                           </div>
+
+                          {discordPingOwner && (
+                            <div class="mb-2 text-xs font-normal text-[#dbdee1]">
+                              <span class="rounded-sm bg-[#5865F2]/30 px-1 py-0.5 font-medium text-[#c9cdfb]">
+                                @{discordOwnerUserId.trim() || 'owner'}
+                              </span>
+                            </div>
+                          )}
 
                           <div
                             class={`max-w-[520px] rounded-[4px] border-l-4 bg-[#2b2d31] p-3.5 shadow-sm ${
@@ -766,6 +885,13 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                               [Alert] Quota Milestone: Claude 3.5 Sonnet
                             </div>
                             <div class="mb-3 text-xs text-[#dbdee1]">
+                              {discordPingOwner && (
+                                <>
+                                  <span class="rounded-sm bg-[#5865F2]/30 px-1 py-0.5 font-medium text-[#c9cdfb]">
+                                    @{discordOwnerUserId.trim() || 'owner'}
+                                  </span>{' '}
+                                </>
+                              )}
                               Milestone threshold:{' '}
                               <strong>
                                 {embedPreviewTier === 'alert'
@@ -783,7 +909,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                                   Remaining Quota
                                 </div>
                                 <div class="mt-1 flex items-center gap-2">
-                                  <span class="rounded bg-[#1e1f22] px-1.5 py-0.5 font-mono text-xs text-[#dbdee1]">
+                                  <span class="rounded-sm bg-[#1e1f22] px-1.5 py-0.5 font-mono text-xs text-[#dbdee1]">
                                     {embedPreviewTier === 'alert'
                                       ? '[■■□□□□□□□□]'
                                       : embedPreviewTier === 'warning'
@@ -891,7 +1017,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                           placeholder={
                             isWebhookConfigured
                               ? '•••••••••••••••••••• (Encrypted — enter new URL to update)'
-                              : 'https://discord.com/api/webhooks/... or https://your-server.com/api/alert'
+                              : 'https://discord.com/api/webhooks/... or https://example.com/api/alert'
                           }
                           value={webhookUrl}
                           onInput={(e) => {

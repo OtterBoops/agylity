@@ -18,7 +18,7 @@ const initialState: ConfigState = {
 
 export const configStore = createStore<ConfigState>(initialState);
 
-export async function refreshConfig(): Promise<ConfigData> {
+export const refreshConfig = async (): Promise<ConfigData> => {
   configStore.setState((prev) => ({ ...prev, loading: true, error: null }));
   try {
     const data = await getConfig();
@@ -38,11 +38,11 @@ export async function refreshConfig(): Promise<ConfigData> {
     }));
     return configStore.getState().config;
   }
-}
+};
 
-export async function saveConfigOverrides(
+export const saveConfigOverrides = async (
   overrides: Record<string, unknown>
-): Promise<{ success: boolean; config?: ConfigData }> {
+): Promise<{ success: boolean; config?: ConfigData }> => {
   configStore.setState((prev) => ({ ...prev, saving: true, error: null }));
   try {
     const res = await updateConfig(overrides);
@@ -66,9 +66,9 @@ export async function saveConfigOverrides(
     }));
     throw err;
   }
-}
+};
 
-export async function removeConfigOverride(key: string): Promise<{ success: boolean }> {
+export const removeConfigOverride = async (key: string): Promise<{ success: boolean }> => {
   configStore.setState((prev) => ({ ...prev, saving: true, error: null }));
   try {
     const res = await deleteConfigOverride(key);
@@ -83,4 +83,4 @@ export async function removeConfigOverride(key: string): Promise<{ success: bool
     }));
     throw err;
   }
-}
+};

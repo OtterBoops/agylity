@@ -2,6 +2,7 @@ import http from 'node:http';
 import type net from 'node:net';
 import { handleRequest, type WebServerOptions } from './routes.js';
 import { logger } from '../logs/logger.js';
+import { BUILTIN_DEFAULTS } from '../config/schema.js';
 
 export { type WebServerOptions };
 
@@ -42,7 +43,7 @@ export const startWebServer = async (
 ): Promise<{ server: http.Server; port: number; host: string }> => {
   const resolved = options.configStore.resolveConfig();
   const host = options.host ?? resolved.webUiHost ?? '0.0.0.0';
-  const port = options.port ?? resolved.webUiPort ?? 3000;
+  const port = options.port ?? resolved.webUiPort ?? BUILTIN_DEFAULTS.webUiPort;
   const server = createWebServer(options);
 
   return new Promise((resolve, reject) => {

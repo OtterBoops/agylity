@@ -100,13 +100,14 @@ export const App = () => {
   }, [refreshCooldown]);
 
   const [title, subtitle] = TITLES[route];
+  const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
 
   return (
     <div class="min-h-screen bg-pine-base text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
         route={route}
         onNavigate={navigate}
-        orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
+        orchestratorEnabled={isOrchestratorEnabled}
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
@@ -119,7 +120,7 @@ export const App = () => {
             subtitle={subtitle}
             isRefreshing={isRefreshing}
             refreshCooldown={refreshCooldown}
-            orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
+            orchestratorEnabled={isOrchestratorEnabled}
             theme={theme}
             onThemeChange={setTheme}
             onRefresh={handleManualRefresh}
@@ -159,7 +160,7 @@ export const App = () => {
         onRefresh={handleManualRefresh}
         onOpenDispatch={() => setDispatchModalOpen(true)}
         onToggleTheme={handleToggleTheme}
-        orchestratorEnabled={Boolean(config.resolved?.orchestratorEnabled)}
+        orchestratorEnabled={isOrchestratorEnabled}
       />
     </div>
   );

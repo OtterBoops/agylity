@@ -16,11 +16,11 @@ description: >-
   - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^3.24.0`.
   - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode.
   - Process Execution: Native `node:child_process.execFile` with array arguments.
-  - Logging: Pure TypeScript universal pluggable logger (`src/logs/logger.ts`) with child namespacing, custom sinks, fault isolation, and secret-redacting in-memory ring buffering.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
-- **Container-Native Repository Mounts:**
-  - In containerized deployments (Docker / daemon), target repositories are mounted under `/repos/<id>` (`VOLUME ["/app/data", "/repos"]`).
-  - Web UI dashboard and configuration schemas must automatically derive and default repository directory paths to `/repos/<id>` so users never need to manually enter host paths.
+- **Container-Native Storage Posture:**
+  - In containerized deployments (Docker / daemon), coordinator requires only a single named volume for database state (`agylity-data:/app/data`).
+  - Target repositories do NOT require mandatory host bind mounts. Workers support dynamic on-the-fly git cloning (via `cloneUrl` and optional `GITHUB_TOKEN`) with ephemeral container storage, while also supporting pre-cloned local directories or mounted named volumes.
+  - Authentication credentials (`oauth_creds.json`) are mounted as a single read-only file (`./oauth_creds.json:/home/node/.gemini/oauth_creds.json`) avoiding entire home directory bind mounts.
 - **Responsive Dashboard Architecture:**
   - Layout is strictly mobile-first: 1-column on mobile, 2-column on tablet/laptop (`md:grid-cols-2`), scaling to 3-column on desktop (`xl:grid-cols-3`).
   - Sticky mobile header `< md` with collapsible navigation drawer; fixed/sticky sidebar on `md+`.
@@ -41,14 +41,14 @@ Agylity is designed to be **cross-platform and container-native** (Linux, macOS,
 
 #### 1. Container & Production Deployment (Platform-Agnostic Default)
 
-In containerized environments (Docker, Kubernetes, homelab host, cloud VPS) or headless servers, Agylity eliminates host dependency by running `language_server` as an internal companion daemon:
+In containerized environments (Docker, Kubernetes, homelab server, cloud VPS) or headless servers, Agylity eliminates host dependency by running `language_server` as an internal companion daemon:
 
 ```bash
 language_server -standalone -headless -http_server_port=60643 -gemini_dir=/home/node/.gemini
 ```
 
 - **Port:** Fixed internal loopback port (`http://127.0.0.1:60643`).
-- **Auth:** Standard read-only volume mount for OAuth credentials (`~/.gemini` or `~/.config/antigravity`).
+- **Auth:** Standard read-only single-file mount for OAuth credentials (`./oauth_creds.json:/home/node/.gemini/oauth_creds.json`).
 - **Isolation:** 100% self-contained in the container network namespace across any host OS.
 
 #### 2. Environment Configuration Precedence (12-Factor Standard)
@@ -97,7 +97,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
    - **Rule:** The Antigravity Pro license is an individual developer seat; never expose Agylity as a public service bureau or multi-tenant proxy.
    - **Implementation:** Restrict Discord bot dispatches to whitelisted owner IDs (`DISCORD_OWNER_USER_ID`) and keep Web UI local/authenticated.
 3. **Network Egress & Account Safety:**
-   - **Rule:** Keep `agy` execution within the same residential network (e.g. desktop or local homelab node on `192.168.0.0/24`) to share the same public IP. Avoid cloud datacenter IPs or commercial VPN exit nodes that trigger Google Account fraud/suspicious sign-in locks.
+   - **Rule:** Keep `agy` execution within the same residential network (e.g. desktop or local homelab server on `192.168.0.0/24`) to share the same public IP. Avoid cloud datacenter IPs or commercial VPN exit nodes that trigger Google Account fraud/suspicious sign-in locks.
 4. **Task-Driven Cadence:**
    - **Rule:** Automate discrete, queued software engineering objectives; never run continuous 24/7 infinite loops purely to drain quota to 0%.
 
@@ -107,9 +107,9 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ### Use Case 1: 24/7 Quota Sentry & Milestone Alerting
 
-- Evaluates quota pools every 15 minutes.
+- Evaluates quota pools every 60 seconds by default (`QUOTA_CHECK_INTERVAL_SECONDS=60`, minimum clamp 30s).
 - Milestones: Alerts at configurable intervals (default: 24h, 12h, 3h before reset) if quota headroom exceeds threshold (`>25%` remaining).
-- Deduplication: State persisted in SQLite (`sentry_alerts` table) across daemon restarts.
+- Deduplication: State persisted in `data/state.json` via `SentryStateManager` across daemon restarts.
 - Notification: Rich Discord embeds showing reset countdowns (`"1d 21h"`, `"3h 15m"`) matching native IDE formatting.
 
 ### Use Case 2: AI Overcharge & Flex Credit Protection
@@ -135,7 +135,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ## 5. Swarm & Task Poller Architecture (Roadmap)
 
-Remote task dispatch is architected around a modern **Pull-Based Worker Swarm**:
+Legacy direct SSH push and Wake-on-LAN have been scrapped in favor of a **Pull-Based Worker Swarm**:
 
 ```
 Coordinator (Homelab / Cloud)
@@ -144,7 +144,7 @@ Coordinator (Homelab / Cloud)
   └── REST API (/api/tasks/poll)
         ▲
         │ (Outbound HTTPS Long-Poll)
-        ├── Headless Worker (Docker container) -> Unattended tasks
+        ├── Headless Worker (Docker on server) -> Unattended tasks
         └── Visible Worker (Home Desktop PC)   -> Supervised tasks in active terminal
 ```
 
@@ -177,10 +177,11 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
 - **Database Path:** `data/agylity.db` (enforces `PRAGMA journal_mode = WAL;`).
 - **Configuration Hierarchy:**
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
-- **Key Tables:**
-  - `config_overrides`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)`
-  - `sentry_alerts`: `(id TEXT PRIMARY KEY, pool_family TEXT, milestone_hours REAL, triggered_at TEXT)`
-  - `log_entries`: In-memory and persistent ring buffer for recent operations and dispatch traces.
+- **Key Tables & State:**
+  - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
+  - `swarm_tasks`: `(id TEXT PRIMARY KEY, title TEXT, prompt TEXT, repository_name TEXT, repository_id TEXT, repository_path TEXT, clone_url TEXT, branch_name TEXT, status TEXT, ...)` - stores swarm task queue and execution lifecycle.
+  - Sentry Alert State: `data/state.json` tracks deduplicated milestone firings per pool across restarts.
+  - Log Buffer: In-memory ring buffer (`LogBuffer`) for recent operations, broadcast to subscribers via SSE.
 
 ---
 

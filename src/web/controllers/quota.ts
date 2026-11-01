@@ -3,12 +3,12 @@ import { sendJson, methodNotAllowed } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
 
-export async function handleGetQuota(
+export const handleGetQuota = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
-): Promise<void> {
+): Promise<void> => {
   if (method !== 'GET') return methodNotAllowed(res);
 
   try {
@@ -51,14 +51,14 @@ export async function handleGetQuota(
   } catch (err: any) {
     return sendJson(res, 500, { error: 'Failed to fetch quota', message: err?.message });
   }
-}
+};
 
-export function handleGetAlerts(
+export const handleGetAlerts = (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
-): void {
+): void => {
   if (method !== 'GET') return methodNotAllowed(res);
   const alertData = options.sentryState?.getState() ?? {
     version: 1,
@@ -67,4 +67,4 @@ export function handleGetAlerts(
     pools: {},
   };
   return sendJson(res, 200, alertData);
-}
+};

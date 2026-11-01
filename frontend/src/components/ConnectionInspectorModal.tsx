@@ -15,7 +15,7 @@ interface ConnectionInspectorModalProps {
 export const ConnectionInspectorModal = ({
   isOpen,
   onClose,
-  lastProbeSource = 'connect_rpc',
+  lastProbeSource,
   lastProbeAt,
   orchestratorEnabled = false,
   minHeadroomPercent = 10,
@@ -23,6 +23,19 @@ export const ConnectionInspectorModal = ({
   const [copied, setCopied] = useState(false);
 
   if (!isOpen) return null;
+
+  const probeStatus =
+    lastProbeSource === 'connect_rpc'
+      ? 'Live Connect-RPC'
+      : lastProbeSource === 'cli'
+        ? 'CLI Fallback'
+        : 'Offline';
+  const probeColor =
+    lastProbeSource === 'connect_rpc'
+      ? 'bg-pine-pine'
+      : lastProbeSource === 'cli'
+        ? 'bg-pine-gold'
+        : 'bg-pine-love';
 
   const handleCopyDiagnostics = async () => {
     const diag = {
@@ -78,10 +91,8 @@ export const ConnectionInspectorModal = ({
             <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
               <span class="text-pine-muted">Language Server RPC</span>
               <div class="mt-0.5 flex items-center gap-2 font-medium text-pine-text">
-                <span class="size-2 rounded-full bg-pine-pine"></span>
-                <span>
-                  {lastProbeSource === 'connect_rpc' ? 'Connect-RPC (Live)' : 'CLI Fallback'}
-                </span>
+                <span class={`size-2 rounded-full ${probeColor}`}></span>
+                <span>{probeStatus}</span>
               </div>
             </div>
 
@@ -92,7 +103,7 @@ export const ConnectionInspectorModal = ({
 
             <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
               <span class="text-pine-muted">Last Telemetry Probe</span>
-              <div class="mt-0.5 font-mono text-[11px] text-pine-text">
+              <div class="mt-0.5 font-mono text-xs text-pine-text">
                 {lastProbeAt ? new Date(lastProbeAt).toLocaleTimeString() : 'Pending'}
               </div>
             </div>
@@ -117,9 +128,9 @@ export const ConnectionInspectorModal = ({
 
             <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
               <span class="text-pine-muted">Software Release</span>
-              <div class="mt-0.5 flex items-center justify-between font-mono text-[11px] text-pine-text">
+              <div class="mt-0.5 flex items-center justify-between font-mono text-xs text-pine-text">
                 <span>v{APP_VERSION}</span>
-                <span class="font-sans text-[10px] text-pine-foam">Up to date</span>
+                <span class="font-sans text-xs text-pine-foam">Up to date</span>
               </div>
             </div>
           </div>

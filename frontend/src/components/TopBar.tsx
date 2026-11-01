@@ -67,7 +67,7 @@ export const TopBar = ({
           >
             <Icon icon={faSearch} class="size-3 text-pine-muted" />
             <span>Search</span>
-            <kbd class="rounded border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[10px] text-pine-muted">
+            <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
               Ctrl K
             </kbd>
           </button>
@@ -97,7 +97,7 @@ export const TopBar = ({
               role="menu"
               class="absolute right-0 z-50 mt-1.5 w-44 rounded-xl border border-pine-highlight bg-pine-surface p-1 shadow-lg backdrop-blur-md"
             >
-              <div class="px-2 py-1 text-[10px] font-bold tracking-wider text-pine-muted uppercase">
+              <div class="px-2 py-1 text-xs font-bold tracking-wider text-pine-muted uppercase">
                 Theme
               </div>
               {THEME_OPTIONS.map((opt) => {

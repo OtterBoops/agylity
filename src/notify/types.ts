@@ -54,7 +54,13 @@ export interface DispatchRequest {
   repositoryPath: string;
   prompt: string;
   requestedBy: string;
+  requestedByUserId?: string;
   repositoryId?: string;
+  model?: string;
+  priority?: 'P0' | 'P1' | 'P2';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  workerMode?: 'headless' | 'visible' | 'any';
+  poolFamily?: string;
 }
 
 export const DispatchRequestSchema = z.object({
@@ -62,7 +68,13 @@ export const DispatchRequestSchema = z.object({
   repositoryPath: z.string().min(1),
   prompt: z.string().min(1).max(4000),
   requestedBy: z.string().min(1),
+  requestedByUserId: z.string().optional(),
   repositoryId: z.string().optional(),
+  model: z.string().optional(),
+  priority: z.enum(['P0', 'P1', 'P2']).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  workerMode: z.enum(['headless', 'visible', 'any']).optional(),
+  poolFamily: z.string().optional(),
 });
 
 export interface DispatchResult {
@@ -99,4 +111,5 @@ export interface Notifier {
 export interface NotifierOptions {
   onDispatchRequested?: (req: DispatchRequest) => Promise<DispatchResult>;
   onQuotaRequested?: () => Promise<QuotaSnapshot[]>;
+  onOwnerDiscovered?: (ownerUserId: string) => void | Promise<void>;
 }

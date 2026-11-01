@@ -21,6 +21,8 @@ const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   DISCORD_CLIENT_ID: 'discordClientId',
   DISCORD_GUILD_ID: 'discordGuildId',
   DISCORD_NOTIFICATION_CHANNEL_ID: 'discordNotificationChannelId',
+  DISCORD_OWNER_USER_ID: 'discordOwnerUserId',
+  DISCORD_PING_OWNER: 'discordPingOwner',
   ANTIGRAVITY_ENDPOINT_URL: 'antigravityEndpointUrl',
   ANTIGRAVITY_CSRF_TOKEN: 'antigravityCsrfToken',
   ANTIGRAVITY_LS_PORT: 'antigravityLsPort',
@@ -32,9 +34,17 @@ const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   REPOSITORIES_JSON: 'repositories',
   DATABASE_PATH: 'databasePath',
   ORCHESTRATOR_ENABLED: 'orchestratorEnabled',
+  DEFAULT_DISPATCH_MODEL: 'defaultDispatchModel',
+  DEFAULT_DISPATCH_EFFORT: 'defaultDispatchEffort',
+  DEFAULT_WORKER_MODE: 'defaultWorkerMode',
+  WORKER_SHARED_SECRET: 'workerSharedSecret',
+  QUOTA_BURN_MAX_HOURS: 'quotaBurnMaxHours',
+  QUOTA_BURN_MIN_HEADROOM_PERCENT: 'quotaBurnMinHeadroomPercent',
+  AGY_BIN_PATH: 'agyBinPath',
   WEB_UI_ENABLED: 'webUiEnabled',
   WEB_UI_PORT: 'webUiPort',
   WEB_UI_HOST: 'webUiHost',
+  LOG_LEVEL: 'logLevel',
 };
 
 const normalizeKey = (key: string): keyof AppConfig | string => ENV_TO_CONFIG_KEY[key] ?? key;

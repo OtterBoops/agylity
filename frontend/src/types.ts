@@ -67,3 +67,46 @@ export interface DispatchRecord {
   error?: string;
   durationMs: number;
 }
+
+export interface ModelCatalogEntry {
+  id: string;
+  label: string;
+  family: 'claude' | 'gemini-argon' | 'gemini-flash';
+  defaultEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effectiveHeadroomPercent: number | null;
+  weeklyRemainingPercent: number | null;
+  shortTermRemainingPercent: number | null;
+  resetTime: string | null;
+  hoursUntilReset: number | null;
+  belowSafetyFloor: boolean;
+}
+
+export interface SwarmWorkerRecord {
+  workerId: string;
+  name: string;
+  workerMode: 'headless' | 'visible' | 'any';
+  labels: string[];
+  repositories: string[];
+  systemInfo?: {
+    hostname?: string;
+    platform?: string;
+    arch?: string;
+  };
+  enabled: boolean;
+  hasToken: boolean;
+  activeTaskId?: string;
+  status: 'idle' | 'busy' | 'offline';
+  registeredAt?: string;
+  lastSeenAt: string;
+}
+
+export interface RunnerRegistrationTokenResult {
+  id: string;
+  registrationToken: string;
+  nameHint?: string;
+  workerMode: 'headless' | 'visible' | 'any';
+  labels: string[];
+  repositories: string[];
+  expiresAt: string;
+  createdAt: string;
+}

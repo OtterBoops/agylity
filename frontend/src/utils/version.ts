@@ -11,7 +11,7 @@ const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-export function isNewerVersion(current: string, latest: string): boolean {
+export const isNewerVersion = (current: string, latest: string): boolean => {
   const clean = (v: string) => v.replace(/^v/, '').trim();
   const [c1 = 0, c2 = 0, c3 = 0] = clean(current)
     .split('.')
@@ -23,9 +23,9 @@ export function isNewerVersion(current: string, latest: string): boolean {
   if (l1 !== c1) return l1 > c1;
   if (l2 !== c2) return l2 > c2;
   return l3 > c3;
-}
+};
 
-export async function fetchLatestRelease(): Promise<{ latest: string; url: string } | null> {
+export const fetchLatestRelease = async (): Promise<{ latest: string; url: string } | null> => {
   try {
     const cached = localStorage.getItem(CACHE_KEY);
     if (cached) {
@@ -70,4 +70,4 @@ export async function fetchLatestRelease(): Promise<{ latest: string; url: strin
   }
 
   return null;
-}
+};

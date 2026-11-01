@@ -87,7 +87,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                     <tr
                       key={d.id}
                       onClick={() => setSelectedDispatch(d)}
-                      class="cursor-pointer align-top transition-colors hover:bg-white/[0.04]"
+                      class="cursor-pointer align-top transition-colors hover:bg-white/4"
                       title="Click to inspect task details"
                     >
                       <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle sm:text-sm">
@@ -102,7 +102,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       <td class="px-4 py-3 text-xs text-pine-subtle sm:text-sm">{d.requestedBy}</td>
                       <td class="px-4 py-3">
                         <span
-                          class={`rounded border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                          class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
                             d.success
                               ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
                               : 'border-pine-love bg-pine-love/20 text-pine-love'
@@ -143,7 +143,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
               <div class="flex items-center gap-3">
                 <h3 class="text-lg font-bold text-pine-text">Task #{selectedDispatch.id}</h3>
                 <span
-                  class={`rounded border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                  class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
                     selectedDispatch.success
                       ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
                       : 'border-pine-love bg-pine-love/20 text-pine-love'
@@ -185,7 +185,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                 </div>
                 <div>
                   <span class="text-pine-muted">Timestamp</span>
-                  <div class="mt-0.5 font-mono text-[11px] text-pine-text">
+                  <div class="mt-0.5 font-mono text-xs text-pine-text">
                     {new Date(selectedDispatch.createdAt).toLocaleTimeString()}
                   </div>
                 </div>
@@ -194,7 +194,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
               {selectedDispatch.branch && (
                 <div class="flex items-center gap-2 text-xs">
                   <span class="text-pine-muted">Target Branch:</span>
-                  <span class="rounded border border-pine-highlight bg-pine-overlay px-2 py-0.5 font-mono text-pine-foam">
+                  <span class="rounded-sm border border-pine-highlight bg-pine-overlay px-2 py-0.5 font-mono text-pine-foam">
                     {selectedDispatch.branch}
                   </span>
                 </div>

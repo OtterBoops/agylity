@@ -100,6 +100,17 @@ export const CommandPalette = ({
               onClose();
             },
           },
+          {
+            id: 'act-dispatch',
+            title: 'Dispatch New Autonomous Task...',
+            category: 'Action' as const,
+            shortcut: 'Alt D',
+            icon: faBolt,
+            action: () => {
+              onClose();
+              onOpenDispatch();
+            },
+          },
         ]
       : []),
     {
@@ -110,17 +121,6 @@ export const CommandPalette = ({
       action: () => {
         onNavigate('settings/advanced');
         onClose();
-      },
-    },
-    {
-      id: 'act-dispatch',
-      title: 'Dispatch New Autonomous Task...',
-      category: 'Action',
-      shortcut: 'Alt D',
-      icon: faBolt,
-      action: () => {
-        onClose();
-        onOpenDispatch();
       },
     },
     {
@@ -203,12 +203,15 @@ export const CommandPalette = ({
           <input
             ref={inputRef}
             type="text"
+            autoComplete="off"
+            data-1p-ignore="true"
+            data-lpignore="true"
             class="flex-1 bg-transparent text-sm text-pine-text outline-none placeholder:text-pine-muted"
             placeholder="Type a command or navigate views..."
             value={query}
             onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
           />
-          <kbd class="rounded border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[10px] text-pine-muted">
+          <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
             Esc
           </kbd>
         </div>
@@ -248,11 +251,11 @@ export const CommandPalette = ({
                   </div>
 
                   <div class="flex items-center gap-2">
-                    <span class="rounded bg-pine-overlay/60 px-1.5 py-0.5 text-[10px] text-pine-muted">
+                    <span class="rounded-sm bg-pine-overlay/60 px-1.5 py-0.5 text-xs text-pine-muted">
                       {cmd.category}
                     </span>
                     {cmd.shortcut && (
-                      <kbd class="rounded border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[10px] text-pine-muted">
+                      <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
                         {cmd.shortcut}
                       </kbd>
                     )}
@@ -264,16 +267,16 @@ export const CommandPalette = ({
         </div>
 
         {/* Footer shortcuts hint */}
-        <div class="flex items-center justify-between border-t border-pine-highlight bg-pine-overlay/30 px-3 py-2 text-[11px] text-pine-muted">
+        <div class="flex items-center justify-between border-t border-pine-highlight bg-pine-overlay/30 px-3 py-2 text-xs text-pine-muted">
           <div class="flex items-center gap-3">
             <span>
-              <kbd class="font-mono text-[10px] text-pine-subtle">↑↓</kbd> navigate
+              <kbd class="font-mono text-xs text-pine-subtle">↑↓</kbd> navigate
             </span>
             <span>
-              <kbd class="font-mono text-[10px] text-pine-subtle">Enter</kbd> select
+              <kbd class="font-mono text-xs text-pine-subtle">Enter</kbd> select
             </span>
             <span>
-              <kbd class="font-mono text-[10px] text-pine-subtle">Esc</kbd> close
+              <kbd class="font-mono text-xs text-pine-subtle">Esc</kbd> close
             </span>
           </div>
           <span>Agylity Command Palette</span>

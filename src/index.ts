@@ -16,6 +16,14 @@ import { createNotifier } from './notify/factory.js';
 import { type Notifier } from './notify/types.js';
 import { LogBuffer, installConsoleTee } from './logs/buffer.js';
 import { logger, createLogger, type Logger } from './logs/logger.js';
+import {
+  OrchestratorCoordinator,
+  TaskQueue,
+  TaskExecutor,
+  RemoteSwarmWorker,
+  CANONICAL_AGY_MODELS,
+  evaluateModelDispatchEligibility,
+} from './orchestrator/index.js';
 
 // Alias exports for external consumers and test suites
 export {
@@ -31,6 +39,12 @@ export {
   logger,
   createLogger,
   type Logger,
+  OrchestratorCoordinator,
+  TaskQueue,
+  TaskExecutor,
+  RemoteSwarmWorker,
+  CANONICAL_AGY_MODELS,
+  evaluateModelDispatchEligibility,
 };
 
 export interface AgylityDaemonOptions {
@@ -41,6 +55,7 @@ export interface AgylityDaemonOptions {
   sentryState?: SentryStateManager;
   sentryEvaluator?: QuotaEvaluator;
   notifier?: Notifier;
+  orchestrator?: OrchestratorCoordinator;
   dbPath?: string;
   statePath?: string;
   autoCheckOnStart?: boolean;
@@ -65,6 +80,7 @@ export class AgylityDaemon {
   public readonly sentryState: SentryStateManager;
   public readonly sentryEvaluator: QuotaEvaluator;
   public readonly notifier: Notifier;
+  public readonly orchestrator: OrchestratorCoordinator;
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
   public readonly logger: Logger;
@@ -85,7 +101,8 @@ export class AgylityDaemon {
     notifier: Notifier,
     autoCheckOnStart = true,
     logBuffer?: LogBuffer,
-    loggerInstance?: Logger
+    loggerInstance?: Logger,
+    orchestratorInstance?: OrchestratorCoordinator
   ) {
     this.configStore = configStore;
     this.database = configStore.getDatabase();
@@ -96,6 +113,15 @@ export class AgylityDaemon {
     this.autoCheckOnStart = autoCheckOnStart;
     this.logBuffer = logBuffer;
     this.logger = loggerInstance ?? logger.child('daemon');
+    this.orchestrator =
+      orchestratorInstance ??
+      new OrchestratorCoordinator({
+        configStore,
+        sentryState,
+        notifier,
+        logger: this.logger.child('orchestrator'),
+      });
+    this.orchestrator.setNotifier(notifier);
     const initialConfig = configStore.resolveConfig();
     if (initialConfig.logLevel) {
       this.logger.setLevel(initialConfig.logLevel);
@@ -113,6 +139,12 @@ export class AgylityDaemon {
         }
         if (typeof this.quotaClient.updateConfig === 'function') {
           this.quotaClient.updateConfig(resolvedConfig);
+        }
+        if (typeof this.sentryEvaluator.updateConfig === 'function') {
+          this.sentryEvaluator.updateConfig({
+            milestoneHours: resolvedConfig.quotaMilestoneHours,
+            alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
+          });
         }
       } catch (err: any) {
         this.logger.error('Error syncing updated configuration:', err?.message ?? err);
@@ -171,13 +203,52 @@ export class AgylityDaemon {
         },
       });
 
+    const orchestrator =
+      options.orchestrator ??
+      new OrchestratorCoordinator({
+        configStore,
+        sentryState,
+        logger: options.logger
+          ? options.logger.child('orchestrator')
+          : logger.child('orchestrator'),
+      });
+
     const notifier =
       options.notifier ??
       (await createNotifier(resolved, {
         onQuotaRequested: async (): Promise<QuotaSnapshot[]> => {
           return await quotaClient.fetchQuota();
         },
+        onOwnerDiscovered: async (ownerId: string): Promise<void> => {
+          if (!resolved.discordOwnerUserId) {
+            configStore.setOverride('discordOwnerUserId', ownerId);
+          }
+        },
+        onDispatchRequested: async (req) => {
+          const startedAt = Date.now();
+          const disp = await orchestrator.dispatch({
+            repositoryId: req.repositoryId,
+            repositoryName: req.repositoryName,
+            repositoryPath: req.repositoryPath,
+            prompt: req.prompt,
+            requestedBy: req.requestedBy,
+            requestedByUserId: req.requestedByUserId,
+            model: req.model,
+            priority: req.priority,
+            effort: req.effort,
+            workerMode: req.workerMode,
+          });
+          return {
+            success: disp.success,
+            branchName: disp.branchName,
+            output: disp.output,
+            error: disp.error,
+            durationMs: disp.durationMs ?? Date.now() - startedAt,
+          };
+        },
       }));
+
+    orchestrator.setNotifier(notifier);
 
     const autoCheckOnStart = options.autoCheckOnStart ?? true;
 
@@ -189,7 +260,8 @@ export class AgylityDaemon {
       notifier,
       autoCheckOnStart,
       options.logBuffer,
-      options.logger
+      options.logger,
+      orchestrator
     );
   }
 
@@ -230,6 +302,7 @@ export class AgylityDaemon {
         sentryState: this.sentryState,
         logBuffer: this.logBuffer,
         notifier: this.notifier,
+        orchestrator: this.orchestrator,
         logger: this.logger.child('web'),
         port: resolved.webUiPort,
         host: resolved.webUiHost,
@@ -267,6 +340,7 @@ export class AgylityDaemon {
     try {
       this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
+      this.orchestrator.onQuotaUpdated(snapshots);
       const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
 
       // Warning when quota is low or approaching safety floor
