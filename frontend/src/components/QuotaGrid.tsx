@@ -202,14 +202,6 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                       {pool.poolId}
                     </span>
                   </span>
-                  {typeof pool.remainingCredits === 'number' && (
-                    <span
-                      class="inline-flex items-center gap-1 rounded-sm border border-pine-iris/40 bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-iris"
-                      title="Available Google AI Credits"
-                    >
-                      AI Credits: {pool.remainingCredits}
-                    </span>
-                  )}
                   {pool.overageEnabled ? (
                     <span
                       class="inline-flex items-center gap-1 rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-gold"

@@ -143,7 +143,6 @@ export const App = () => {
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
-        remainingCredits={remainingCredits}
       />
 
       <div class="min-w-0 flex-1 p-4 sm:p-6 md:h-screen md:overflow-y-auto md:p-6 2xl:p-8">

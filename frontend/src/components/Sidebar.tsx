@@ -8,7 +8,6 @@ import {
   faChartPie,
   faCheckToSlot,
   faCodeBranch,
-  faCoins,
   faList,
   faNetworkWired,
   faSliders,
@@ -28,7 +27,6 @@ interface SidebarProps {
   lastProbeSource?: string;
   lastProbeAt?: string;
   minHeadroomPercent?: number;
-  remainingCredits?: number | null;
 }
 
 interface NavItem {
@@ -107,7 +105,6 @@ export const Sidebar = ({
   lastProbeSource,
   lastProbeAt,
   minHeadroomPercent = 10,
-  remainingCredits,
 }: SidebarProps) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -301,15 +298,7 @@ export const Sidebar = ({
                 </span>
                 <span class="font-medium text-pine-text">{probeStatus}</span>
               </div>
-              {typeof remainingCredits === 'number' ? (
-                <span
-                  class="inline-flex items-center gap-1 font-mono text-xs font-semibold text-pine-iris"
-                  title={`Google AI Credits: ${remainingCredits}`}
-                >
-                  <Icon icon={faCoins} class="size-3 text-pine-iris" />
-                  <span>{remainingCredits}</span>
-                </span>
-              ) : lastProbeAt ? (
+              {lastProbeAt && (
                 <span class="font-mono text-[0.6875rem] text-pine-muted" title={lastProbeAt}>
                   {new Date(lastProbeAt).toLocaleTimeString([], {
                     hour: '2-digit',
@@ -317,7 +306,7 @@ export const Sidebar = ({
                     second: '2-digit',
                   })}
                 </span>
-              ) : null}
+              )}
             </div>
             <div class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-muted">
               <a
@@ -492,15 +481,7 @@ export const Sidebar = ({
                   </span>
                   <span class="truncate font-medium text-pine-text">{probeStatus}</span>
                 </div>
-                {typeof remainingCredits === 'number' ? (
-                  <span
-                    class="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-pine-iris"
-                    title={`Google AI Credits: ${remainingCredits}`}
-                  >
-                    <Icon icon={faCoins} class="size-2.5 text-pine-iris" />
-                    <span>{remainingCredits}</span>
-                  </span>
-                ) : lastProbeAt ? (
+                {lastProbeAt && (
                   <span class="shrink-0 font-mono text-[11px] text-pine-muted" title={lastProbeAt}>
                     {new Date(lastProbeAt).toLocaleTimeString([], {
                       hour: '2-digit',
@@ -508,7 +489,7 @@ export const Sidebar = ({
                       second: '2-digit',
                     })}
                   </span>
-                ) : null}
+                )}
               </div>
 
               <div
