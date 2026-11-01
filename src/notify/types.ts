@@ -30,6 +30,9 @@ export interface DispatchStatusUpdate {
   timestamp?: string;
   details?: Record<string, unknown>;
   taskId?: string;
+  model?: string;
+  runnerName?: string;
+  createdAt?: string;
 }
 
 export const DispatchStatusUpdateSchema = z.object({
@@ -47,6 +50,9 @@ export const DispatchStatusUpdateSchema = z.object({
   timestamp: z.string().optional(),
   details: z.record(z.string(), z.unknown()).optional(),
   taskId: z.string().optional(),
+  model: z.string().optional(),
+  runnerName: z.string().optional(),
+  createdAt: z.string().optional(),
 });
 
 export interface DispatchRequest {

@@ -5,11 +5,14 @@ import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { QuotaGrid } from './components/QuotaGrid';
 import { DispatchModal } from './components/DispatchModal';
+import { ControlPlaneGate } from './components/ControlPlaneGate';
+import { SessionModal } from './components/SessionModal';
 import { CommandPalette } from './components/CommandPalette';
 import { TasksView } from './components/TasksView';
 import { ActivityView } from './views/ActivityView';
 import { LogsView } from './views/LogsView';
 import { SettingsView } from './views/SettingsView';
+import { checkHealth, getAuthToken } from './api';
 import {
   useStore,
   quotaStore,
@@ -41,6 +44,42 @@ export const App = () => {
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [sessionModalOpen, setSessionModalOpen] = useState(false);
+  const [isLocked, setIsLocked] = useState(false);
+  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+    checkHealth()
+      .then((health) => {
+        if (!mounted) return;
+        if (health.authRequired && !getAuthToken()) {
+          setIsLocked(true);
+        } else {
+          fetchAll();
+        }
+      })
+      .catch(() => {
+        if (!mounted) return;
+        fetchAll();
+      })
+      .finally(() => {
+        if (mounted) setIsCheckingAuth(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setIsLocked(true);
+      setSessionModalOpen(false);
+    };
+    window.addEventListener('agylity:unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('agylity:unauthorized', handleUnauthorized);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -106,13 +145,10 @@ export const App = () => {
     Math.max(30, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
 
   useEffect(() => {
-    refreshConfig();
-  }, []);
-
-  useEffect(() => {
+    if (isLocked || isCheckingAuth) return;
     const stopPolling = startQuotaPolling(checkIntervalMs);
     return () => stopPolling();
-  }, [checkIntervalMs]);
+  }, [checkIntervalMs, isLocked, isCheckingAuth]);
 
   const handleManualRefresh = () => {
     if (refreshCooldown > 0 || isRefreshing) return;
@@ -133,6 +169,28 @@ export const App = () => {
   const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
   const remainingCredits =
     quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;
+
+  if (isCheckingAuth) {
+    return (
+      <div class="flex min-h-screen w-full items-center justify-center bg-pine-base text-pine-muted">
+        <div class="flex items-center gap-3">
+          <div class="size-4 animate-spin rounded-full border-2 border-pine-iris border-t-transparent" />
+          <span class="font-mono text-xs">Connecting to Agylity...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (isLocked) {
+    return (
+      <ControlPlaneGate
+        onAuthenticated={() => {
+          setIsLocked(false);
+          fetchAll();
+        }}
+      />
+    );
+  }
 
   return (
     <div class="min-h-screen bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
@@ -158,6 +216,7 @@ export const App = () => {
             onThemeChange={setTheme}
             onRefresh={handleManualRefresh}
             onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+            onOpenAuthModal={() => setSessionModalOpen(true)}
           />
 
           <main>
@@ -186,6 +245,16 @@ export const App = () => {
         onClose={() => setDispatchModalOpen(false)}
         config={config}
         quota={quota}
+      />
+
+      <SessionModal
+        isOpen={sessionModalOpen}
+        onClose={() => setSessionModalOpen(false)}
+        onLock={() => {
+          setIsLocked(true);
+          setSessionModalOpen(false);
+        }}
+        onTokenUpdated={fetchAll}
       />
 
       <CommandPalette

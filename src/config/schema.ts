@@ -172,18 +172,13 @@ export const RawEnvSchema = z.object({
   /* Quota Sentry & RPC */
   ANTIGRAVITY_ENDPOINT_URL: z.string().url().optional().or(z.literal('')),
   ANTIGRAVITY_CSRF_TOKEN: z.string().optional(),
-  ANTIGRAVITY_LS_PORT: z.coerce.number().int().positive().optional(),
   QUOTA_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(30).optional(),
   QUOTA_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(0).max(100).optional(),
   QUOTA_MILESTONE_HOURS: z.string().optional(),
-  QUOTA_STATE_FILE_PATH: z.string().optional(),
   MIN_DISPATCH_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
 
   /* Repositories */
   REPOSITORIES_JSON: z.string().optional(),
-
-  /* Persistence */
-  DATABASE_PATH: z.string().optional(),
 
   /* Optional Orchestrator */
   ORCHESTRATOR_ENABLED: z.string().optional(),
@@ -192,13 +187,16 @@ export const RawEnvSchema = z.object({
   WORKER_SHARED_SECRET: z.string().optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
-  AGY_BIN_PATH: z.string().optional(),
 
   /* Optional Web UI */
   WEB_UI_ENABLED: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
   WEB_UI_AUTH_TOKEN: z.string().optional(),
+
+  /* In-App Network & IP Security */
+  ALLOWED_IP_RANGES: z.string().optional(),
+  TRUSTED_PROXIES: z.string().optional(),
 
   /* Logging */
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -222,16 +220,13 @@ export interface AppConfig {
 
   antigravityEndpointUrl?: string;
   antigravityCsrfToken?: string;
-  antigravityLsPort?: number;
   quotaCheckIntervalSeconds: number;
   quotaAlertThresholdPercent: number;
   quotaMilestoneHours: number[];
-  quotaStateFilePath: string;
   minDispatchHeadroomPercent: number;
   poolPolicies: PoolPolicies;
 
   repositories: RepositoryEntry[];
-  databasePath: string;
 
   orchestratorEnabled: boolean;
   defaultDispatchModel: string;
@@ -239,12 +234,14 @@ export interface AppConfig {
   workerSharedSecret?: string;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
-  agyBinPath: string;
 
   webUiEnabled: boolean;
   webUiPort: number;
   webUiHost: string;
   webUiAuthToken?: string;
+
+  allowedIpRanges: string[];
+  trustedProxies: boolean;
 
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -278,16 +275,13 @@ export const BUILTIN_DEFAULTS: AppConfig = {
 
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
-  antigravityLsPort: 60643,
   quotaCheckIntervalSeconds: 60, // 60 seconds (1 minute default, minimum 30s)
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
   quotaMilestoneHours: [24, 12, 3],
-  quotaStateFilePath: 'data/state.json',
   minDispatchHeadroomPercent: 10, // 10% safety floor preventing billable overages
   poolPolicies: DEFAULT_POOL_POLICIES,
 
   repositories: [],
-  databasePath: 'data/agylity.db',
 
   orchestratorEnabled: false,
   defaultDispatchModel: 'gemini-3.8-flash',
@@ -295,12 +289,14 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   workerSharedSecret: undefined,
   quotaBurnMaxHours: 2,
   quotaBurnMinHeadroomPercent: 30,
-  agyBinPath: 'agy',
 
   webUiEnabled: false,
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
   webUiAuthToken: undefined,
+
+  allowedIpRanges: [],
+  trustedProxies: false,
 
   logLevel: 'info',
 };
@@ -376,8 +372,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.ANTIGRAVITY_CSRF_TOKEN && !isTemplatePlaceholder(parsed.ANTIGRAVITY_CSRF_TOKEN)) {
     result.antigravityCsrfToken = parsed.ANTIGRAVITY_CSRF_TOKEN;
   }
-  if (parsed.ANTIGRAVITY_LS_PORT !== undefined)
-    result.antigravityLsPort = parsed.ANTIGRAVITY_LS_PORT;
   if (parsed.QUOTA_CHECK_INTERVAL_SECONDS !== undefined)
     result.quotaCheckIntervalSeconds = parsed.QUOTA_CHECK_INTERVAL_SECONDS;
   if (parsed.QUOTA_ALERT_THRESHOLD_PERCENT !== undefined)
@@ -385,7 +379,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.QUOTA_MILESTONE_HOURS) {
     result.quotaMilestoneHours = milestoneHoursEnv.parse(parsed.QUOTA_MILESTONE_HOURS);
   }
-  if (parsed.QUOTA_STATE_FILE_PATH) result.quotaStateFilePath = parsed.QUOTA_STATE_FILE_PATH;
   if (parsed.MIN_DISPATCH_HEADROOM_PERCENT !== undefined) {
     result.minDispatchHeadroomPercent = parsed.MIN_DISPATCH_HEADROOM_PERCENT;
   }
@@ -393,7 +386,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.REPOSITORIES_JSON) {
     result.repositories = RepositoriesJsonSchema.parse(parsed.REPOSITORIES_JSON);
   }
-  if (parsed.DATABASE_PATH) result.databasePath = parsed.DATABASE_PATH;
 
   if (parsed.ORCHESTRATOR_ENABLED !== undefined && parsed.ORCHESTRATOR_ENABLED.trim() !== '') {
     result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
@@ -413,9 +405,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT !== undefined) {
     result.quotaBurnMinHeadroomPercent = parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT;
   }
-  if (parsed.AGY_BIN_PATH && parsed.AGY_BIN_PATH.trim() !== '') {
-    result.agyBinPath = parsed.AGY_BIN_PATH.trim();
-  }
 
   if (parsed.WEB_UI_ENABLED !== undefined && parsed.WEB_UI_ENABLED.trim() !== '') {
     result.webUiEnabled = booleanEnv.parse(parsed.WEB_UI_ENABLED);
@@ -426,8 +415,16 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     result.webUiAuthToken = parsed.WEB_UI_AUTH_TOKEN;
   }
 
-  if (parsed.LOG_LEVEL) result.logLevel = parsed.LOG_LEVEL;
+  if (parsed.ALLOWED_IP_RANGES !== undefined) {
+    result.allowedIpRanges = parsed.ALLOWED_IP_RANGES.split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+  if (parsed.TRUSTED_PROXIES !== undefined && parsed.TRUSTED_PROXIES.trim() !== '') {
+    result.trustedProxies = booleanEnv.parse(parsed.TRUSTED_PROXIES);
+  }
 
+  if (parsed.LOG_LEVEL) result.logLevel = parsed.LOG_LEVEL;
   return result;
 };
 
@@ -445,31 +442,24 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   discordPingOwner: z.boolean(),
   antigravityEndpointUrl: z.string().url().or(z.literal('')).optional(),
   antigravityCsrfToken: z.string().optional(),
-  antigravityLsPort: z.number().int().positive().optional(),
   quotaCheckIntervalSeconds: z.number().int().min(30),
   quotaAlertThresholdPercent: z.number().min(0).max(100),
   quotaMilestoneHours: z.array(z.number().positive()),
-  quotaStateFilePath: z.string(),
   minDispatchHeadroomPercent: z.number().min(0).max(100),
   poolPolicies: PoolPoliciesSchema,
   repositories: z.array(RepositorySchema),
-  databasePath: z.string(),
   orchestratorEnabled: z.boolean(),
   defaultDispatchModel: z.string(),
   defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
   workerSharedSecret: z.string().optional(),
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
-  agyBinPath: z
-    .string()
-    .min(1)
-    .refine((val) => !/[;&|`$><\r\n\s]/.test(val), {
-      message: 'agyBinPath must not contain spaces or shell metacharacters',
-    }),
   webUiEnabled: z.boolean(),
   webUiPort: z.number().int().positive(),
   webUiHost: z.string(),
   webUiAuthToken: z.string().optional(),
+  allowedIpRanges: z.array(z.string()),
+  trustedProxies: z.boolean(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
 };
 

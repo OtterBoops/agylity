@@ -174,14 +174,14 @@ export class AgylityDaemon {
    */
   public static async create(options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> {
     // 1. Initialize configuration store & database
-    const dbPath = options.dbPath ?? options.config?.databasePath ?? 'data/agylity.db';
+    const dbPath = options.dbPath ?? process.env.DATABASE_PATH ?? 'data/agylity.db';
     const configStore =
       options.configStore ?? new ConfigStore(options.database ?? dbPath, options.config);
 
     const resolved = configStore.resolveConfig();
 
     // 2. Initialize Sentry State Manager
-    const statePath = options.statePath ?? resolved.quotaStateFilePath ?? 'data/state.json';
+    const statePath = options.statePath ?? process.env.QUOTA_STATE_FILE_PATH ?? 'data/state.json';
     const sentryState = options.sentryState ?? new SentryStateManager(statePath);
 
     // 3. Initialize Quota Evaluator
@@ -199,8 +199,6 @@ export class AgylityDaemon {
       new ConnectRpcQuotaClient({
         endpointUrl: resolved.antigravityEndpointUrl,
         csrfToken: resolved.antigravityCsrfToken,
-        port: resolved.antigravityLsPort,
-        agyBinPath: resolved.agyBinPath,
         minRefreshIntervalMs: 30000,
         logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {

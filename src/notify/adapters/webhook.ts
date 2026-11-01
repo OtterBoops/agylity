@@ -208,7 +208,16 @@ export class WebhookNotifier implements Notifier {
     this.statuses.push(status);
     if (this.statuses.length > 100) this.statuses.shift();
 
-    const step = status.status ?? (status.step as string) ?? 'executing';
+    const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
+    const isTerminal = ['completed', 'failed', 'aborted'].includes(step);
+    const isInitial = step === 'polling' || step === 'waking';
+
+    // Only broadcast initial dispatch and final completion to webhooks
+    // Suppress noisy intermediate runner progress heartbeats
+    if (!isInitial && !isTerminal) {
+      return;
+    }
+
     const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
     const embed = buildDispatchStatusEmbed(status);
 
@@ -319,19 +328,17 @@ export class WebhookNotifier implements Notifier {
     const outgoingPayload: any = { ...payload };
     const isOwnerAlertEvent =
       outgoingPayload.event === 'quota_alert' || outgoingPayload.event === 'test_ping';
-    if (
-      isDiscordWebhook(url) &&
-      isOwnerAlertEvent &&
-      Array.isArray(outgoingPayload.embeds) &&
-      outgoingPayload.embeds.length > 0
-    ) {
+    const hasEmbeds = Array.isArray(outgoingPayload.embeds) && outgoingPayload.embeds.length > 0;
+    if (isDiscordWebhook(url) && hasEmbeds) {
       const ownerId = this.config.discordOwnerUserId?.trim();
-      if (this.config.discordPingOwner !== false && ownerId) {
+      if (isOwnerAlertEvent && this.config.discordPingOwner !== false && ownerId) {
         outgoingPayload.content = `<@${ownerId}>`;
         outgoingPayload.allowed_mentions = {
           users: [ownerId],
         };
       } else {
+        // Prevent double-posting: Discord renders both content and embeds if content is populated.
+        // Strip duplicate content so only the clean embed box appears.
         delete outgoingPayload.content;
       }
     }
@@ -339,7 +346,7 @@ export class WebhookNotifier implements Notifier {
     const bodyStr = JSON.stringify(outgoingPayload);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Agylity-Notifier/0.3.0',
+      'User-Agent': 'Agylity-Notifier/0.3.1',
     };
 
     if (this.config.webhookCustomHeaders) {

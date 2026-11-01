@@ -122,6 +122,8 @@ export class OrchestratorCoordinator {
           taskId: t.id,
           repositoryName: t.repositoryName,
           status: 'failed',
+          durationMs: t.durationMs,
+          createdAt: t.createdAt,
           error: t.error || 'Worker heartbeat lease expired',
         });
       }
@@ -302,6 +304,7 @@ export class OrchestratorCoordinator {
       repositoryPath: repoPath,
       prompt: task.prompt,
       branchName: plannedBranch,
+      model: concreteModel,
       requestedBy: task.requestedBy,
       message:
         eligibility.code === 'QUOTA_BURN_CONDITIONS_NOT_MET'
@@ -531,9 +534,11 @@ export class OrchestratorCoordinator {
       repositoryPath: updated.repositoryPath,
       prompt: updated.prompt,
       branchName: updated.branchName,
+      model: updated.model,
       output: updated.output,
       error: updated.error,
       durationMs: updated.durationMs,
+      createdAt: updated.createdAt,
       requestedBy: updated.requestedBy,
       message: patch.message ?? defaultMsg,
     });

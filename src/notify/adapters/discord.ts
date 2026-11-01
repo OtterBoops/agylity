@@ -32,6 +32,7 @@ import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
   buildQuotaStatusEmbed,
+  buildDispatchStatusEmbed,
   renderSquareProgressBar,
   formatResetWindow,
 } from '../embeds/index.js';
@@ -97,6 +98,35 @@ export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder => {
 
   if (standard.fields && standard.fields.length > 0) {
     embed.addFields(standard.fields);
+  }
+
+  return embed;
+};
+
+export const renderDispatchEmbed = (status: DispatchStatusUpdate): EmbedBuilder => {
+  const standard = buildDispatchStatusEmbed(status);
+  const embed = new EmbedBuilder().setTitle(standard.title!).setColor(standard.color!);
+
+  if (standard.description) {
+    embed.setDescription(standard.description.slice(0, 4096));
+  }
+
+  if (standard.fields && standard.fields.length > 0) {
+    embed.addFields(
+      standard.fields.map((f) => ({
+        name: f.name.slice(0, 256),
+        value: f.value.slice(0, 1024),
+        inline: f.inline ?? true,
+      }))
+    );
+  }
+
+  if (standard.footer) {
+    embed.setFooter({ text: standard.footer.text.slice(0, 2048) });
+  }
+
+  if (standard.timestamp) {
+    embed.setTimestamp(new Date(standard.timestamp));
   }
 
   return embed;
@@ -986,12 +1016,18 @@ export class DiscordNotifier implements Notifier {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased?.()) return;
 
-      const step = status.status ?? (status.step as string) ?? 'executing';
-      const msg = status.message ?? `Status: ${step}`;
-      const channelMsg = `**[Dispatch: ${step.toUpperCase()}]** ${msg}`.slice(0, 2000);
-      await (channel as any).send({
-        content: channelMsg,
-      });
+      const st = String(status.status || status.step || '').toLowerCase();
+      const isTerminal = ['completed', 'failed', 'aborted'].includes(st);
+      const isInitial = st === 'polling' || st === 'waking';
+
+      // Only notify on initial dispatch and final completion
+      // Drop noisy intermediate runner progress heartbeats (checking out branch, launching agy)
+      if (!isInitial && !isTerminal) {
+        return;
+      }
+
+      const embed = renderDispatchEmbed(status);
+      await (channel as any).send({ embeds: [embed] });
     } catch {
       // Safe catch
     }

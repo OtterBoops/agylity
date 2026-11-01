@@ -116,6 +116,29 @@ Configuration is resolved dynamically across three tiers:
 $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environment Variables} \mathbin{??} \text{Built-in Defaults}$$
 Changes made in the Web UI take immediate effect over the in-memory event bus (dynamically updating active notification channels, Language Server endpoints, and quota evaluator thresholds/milestones) without requiring process restarts.
 
+### 3.6. Application-Native IP Filtering & Anti-Spoofing Defense (CWE-290)
+
+Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
+
+- **Dynamic Posture**: Inactive when `ALLOWED_IP_RANGES` is empty; strictly active when entries exist.
+- **Proxy Header Spoof Protection**: Reverse proxy headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`) are strictly ignored unless the direct TCP peer socket (`req.socket.remoteAddress`) is verified as a loopback or RFC1918 private network hop (`127.0.0.0/8`, `::1/128`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`). Direct external connections attempting header injection are evaluated against their physical peer IP.
+
+### 3.7. Edge Rate Limiting & Timing-Safe Control Plane
+
+When `WEB_UI_AUTH_TOKEN` is configured:
+
+- **Route Lockdown**: All `/api/*` routes require Bearer token authorization, except public `/api/health` and runner-authenticated endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`).
+- **Timing-Safe Verification**: Bearer tokens and runner shared secrets are verified using constant-time `crypto.timingSafeEqual` with buffer length validation.
+- **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP. 10 failures within 60s temporarily blocks the IP with HTTP 429 (`Retry-After: 60`).
+
+### 3.8. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
+
+In the Web UI, unauthenticated requests or active lockouts completely unmount the application shell:
+
+- Rather than displaying a dismissable translucent overlay over private dashboards, unauthenticated users see a solid, dedicated full-screen lock screen.
+- Zero dashboard views, navigation sidebars, settings forms, or embed simulators exist in the DOM until a valid Bearer token is verified.
+- Authenticated sessions provide in-place session locking from the TopBar, instantly purging local credentials and remounting the secure gate.
+
 ---
 
 ## 4. Strict Zero-CVE Dependency Posture

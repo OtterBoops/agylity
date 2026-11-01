@@ -2,7 +2,7 @@ import type http from 'node:http';
 import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sendJson, methodNotAllowed } from '../http.js';
+import { sendJson, methodNotAllowed, STANDARD_SECURITY_HEADERS } from '../http.js';
 import { MIME_TYPES } from '../types.js';
 
 export const resolvePublicFilePath = (relative: string): string | null => {
@@ -57,6 +57,7 @@ export const handleStaticAsset = async (
     res
       .writeHead(200, {
         'Content-Type': contentType,
+        ...STANDARD_SECURITY_HEADERS,
         'Cache-Control': isImmutable
           ? 'public, max-age=31536000, immutable'
           : 'no-cache, must-revalidate',
@@ -84,6 +85,7 @@ export const handleIndexHtml = async (
     res
       .writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
+        ...STANDARD_SECURITY_HEADERS,
         'Cache-Control': 'no-cache, no-store, must-revalidate',
         Pragma: 'no-cache',
         Expires: '0',

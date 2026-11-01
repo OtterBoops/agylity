@@ -29,6 +29,60 @@ export const setAuthToken = (token: string | null): void => {
   } catch {}
 };
 
+export interface HealthStatus {
+  status: string;
+  uptime?: number;
+  timestamp?: string;
+  authRequired?: boolean;
+}
+
+export const checkHealth = async (): Promise<HealthStatus> => {
+  try {
+    return await ky.get('/api/health', { retry: 0, timeout: 5000 }).json<HealthStatus>();
+  } catch {
+    return { status: 'error' };
+  }
+};
+
+export const verifyAuthToken = async (
+  testToken: string
+): Promise<{ success: boolean; error?: string }> => {
+  const clean = testToken.trim();
+  if (!clean) {
+    return { success: false, error: 'Bearer token cannot be empty' };
+  }
+  try {
+    const res = await ky.get('/api/config', {
+      headers: {
+        Authorization: `Bearer ${clean}`,
+      },
+      retry: 0,
+      timeout: 5000,
+    });
+    if (res.ok) {
+      setAuthToken(clean);
+      return { success: true };
+    }
+    return { success: false, error: 'Authentication failed' };
+  } catch (err: any) {
+    if (isHTTPError(err) && err.response) {
+      if (err.response.status === 401) {
+        return { success: false, error: 'Invalid or missing Bearer token' };
+      }
+      if (err.response.status === 429) {
+        return {
+          success: false,
+          error: 'Rate limit engaged: Too many failed attempts. Please wait 60s.',
+        };
+      }
+      if (err.response.status === 403) {
+        return { success: false, error: 'Forbidden: IP address not in allowlist' };
+      }
+    }
+    return { success: false, error: err?.message || 'Failed to connect to control plane' };
+  }
+};
+
 export const api = ky.create({
   prefix: '/api',
   retry: {
@@ -46,6 +100,9 @@ export const api = ky.create({
     beforeError: [
       async ({ error }) => {
         if (isHTTPError(error) && error.response) {
+          if (typeof window !== 'undefined' && error.response.status === 401) {
+            window.dispatchEvent(new CustomEvent('agylity:unauthorized'));
+          }
           try {
             const body: any = await error.response.json();
             if (body && typeof body.error === 'string') {

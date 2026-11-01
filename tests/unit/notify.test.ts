@@ -1094,6 +1094,96 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       await notifier.shutdown();
     });
+
+    it('sends two discrete embeds to channel (Start and Finish) and suppresses intermediate heartbeat noise', async () => {
+      const sentPayloads: any[] = [];
+
+      const mockClient = {
+        channels: {
+          fetch: async () => ({
+            id: 'chan-alerts',
+            isTextBased: () => true,
+            send: async (payload: any) => {
+              sentPayloads.push(payload);
+              return { id: `msg-${sentPayloads.length}`, ...payload };
+            },
+          }),
+        },
+      };
+
+      const notifier = new DiscordNotifier(
+        {
+          discordNotificationChannelId: 'chan-alerts',
+        },
+        { client: mockClient }
+      );
+      notifier.initialized = true;
+
+      // 1. Task queued - should send initial embed to channel
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-123',
+        status: 'polling',
+        repositoryName: 'test-repo',
+        model: 'gemini-3.8-flash',
+        prompt: 'Fix memory leak',
+        createdAt: new Date(Date.now() - 18200).toISOString(),
+      });
+
+      assert.equal(sentPayloads.length, 1);
+      const queuedEmbed = sentPayloads[0].embeds[0];
+      assert.equal(queuedEmbed.data.title, '[Task: Queued]');
+
+      // 2. Intermediate progress heartbeats (runner claimed, checkout, launching agy) - should be suppressed from channel
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-123',
+        status: 'executing',
+        repositoryName: 'test-repo',
+        branchName: 'antigravity/task-123',
+        message: 'Runner claimed task...',
+      });
+
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-123',
+        status: 'executing',
+        repositoryName: 'test-repo',
+        branchName: 'antigravity/task-123',
+        message: 'Checking out branch and launching agy...',
+      });
+
+      assert.equal(
+        sentPayloads.length,
+        1,
+        'Should NOT send messages for intermediate progress heartbeats'
+      );
+
+      // 3. Task completed - should send final completion embed with prominent duration in title and fields
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-123',
+        status: 'completed',
+        repositoryName: 'test-repo',
+        branchName: 'antigravity/task-123',
+        durationMs: 18200,
+        model: 'gemini-3.8-flash',
+        createdAt: new Date(Date.now() - 18200).toISOString(),
+      });
+
+      assert.equal(
+        sentPayloads.length,
+        2,
+        'Should send exactly 2 discrete messages: Queued + Completed'
+      );
+      const completedEmbed = sentPayloads[1].embeds[0];
+      assert.equal(completedEmbed.data.title, '[Task: Completed] • Took 18.2s');
+
+      const durationField = completedEmbed.data.fields.find((f: any) => f.name === 'Duration');
+      assert.ok(durationField);
+      assert.equal(durationField.value, '**18.2s**');
+
+      const timelineField = completedEmbed.data.fields.find((f: any) => f.name === 'Timeline');
+      assert.ok(timelineField);
+
+      await notifier.shutdown();
+    });
   });
   /* ==================================================================== */
   /* 8. Discord & Webhook Owner Notification Mentions & Auto-Discovery    */

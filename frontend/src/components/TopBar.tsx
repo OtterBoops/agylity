@@ -3,6 +3,7 @@ import {
   faCheck,
   faChevronDown,
   faCoins,
+  faKey,
   faRotate,
   faSearch,
 } from '@fortawesome/free-solid-svg-icons';
@@ -20,6 +21,7 @@ interface TopBarProps {
   onThemeChange: (theme: ThemeChoice) => void;
   onRefresh: () => void;
   onOpenCommandPalette?: () => void;
+  onOpenAuthModal?: () => void;
 }
 
 export const TopBar = ({
@@ -32,6 +34,7 @@ export const TopBar = ({
   onThemeChange,
   onRefresh,
   onOpenCommandPalette,
+  onOpenAuthModal,
 }: TopBarProps) => {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
   const themeDropdownRef = useRef<HTMLDivElement>(null);
@@ -138,6 +141,15 @@ export const TopBar = ({
             </div>
           )}
         </div>
+
+        <button
+          type="button"
+          class="inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 py-1.5 text-xs font-medium text-pine-text transition-colors hover:bg-pine-overlay sm:text-sm"
+          onClick={onOpenAuthModal}
+          title="Configure Control-Plane Auth Token"
+        >
+          <Icon icon={faKey} class="size-3.5 text-pine-iris" />
+        </button>
 
         <button
           type="button"

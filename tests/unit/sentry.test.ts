@@ -29,6 +29,7 @@ import {
   RPC_PATH,
   QUOTA_SUMMARY_RPC_PATH,
 } from '../../src/sentry/client.js';
+import type { ExecFileAsyncFn } from '../../src/sentry/discovery.js';
 
 // ==========================================
 // Test Fixtures: 13 Antigravity Models
@@ -932,6 +933,114 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const parsedOmitted = RetrieveUserQuotaSummaryResponseSchema.parse(summaryOmitted);
       const snapshotsOmitted = aggregateUserQuotaSummary(parsedOmitted);
       assert.equal(snapshotsOmitted[0]?.overageEnabled, false);
+    });
+
+    it('non-blocking background credits probe queries without blocking fetchQuota and caches balance', async () => {
+      let capturedCmd = '';
+      let capturedArgs: readonly string[] = [];
+      let capturedOptions: Record<string, unknown> = {};
+
+      const mockExecFile = async (
+        file: string,
+        args: readonly string[],
+        options: Record<string, unknown>
+      ) => {
+        capturedCmd = file;
+        capturedArgs = args;
+        capturedOptions = options;
+        return {
+          stdout: JSON.stringify({
+            command: {
+              name: 'credits',
+              data: { remaining_credits: 717 },
+            },
+          }),
+          stderr: '',
+        };
+      };
+
+      const nowMs = Date.now();
+      const testQuotaSummary = {
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-weekly',
+                  displayName: 'Weekly Limit Remaining',
+                  window: 'weekly',
+                  remainingFraction: 0.73,
+                  resetTime: new Date(nowMs + 120 * 3600 * 1000).toISOString(),
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      const server = createServer((req, res) => {
+        if (req.url === QUOTA_SUMMARY_RPC_PATH && req.method === 'POST') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(testQuotaSummary));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as any).port;
+
+      try {
+        const client = new ConnectRpcQuotaClient({
+          endpointUrl: `http://127.0.0.1:${port}`,
+          csrfToken: 'test-token',
+          timeoutMs: 1000,
+          enableCliFallback: false,
+          execFileFn: mockExecFile as any,
+        });
+
+        // 1. fetchQuota returns immediately without blocking
+        const snapshots = await client.fetchQuota();
+        assert.equal(snapshots.length, 1);
+
+        // 2. Await the background refresh probe directly
+        const credits = await client.triggerCreditsRefreshInBackground(true);
+        assert.equal(credits, 717);
+        assert.equal(await client.getRemainingCredits(), 717);
+
+        // 3. Verify Windows/Linux execution hygiene
+        if (process.platform === 'win32') {
+          assert.equal(capturedCmd, 'powershell.exe');
+          assert.ok(capturedArgs.includes('-WindowStyle'));
+          assert.ok(capturedArgs.includes('Hidden'));
+        }
+        assert.equal(capturedOptions.windowsHide, true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it('discoverWindowsLanguageServer executes powershell with hidden window flags', async () => {
+      let capturedArgs: readonly string[] = [];
+      let capturedOptions: Record<string, unknown> = {};
+
+      const mockExecFile: ExecFileAsyncFn = async (_file, args, options) => {
+        capturedArgs = args;
+        capturedOptions = options ?? {};
+        return { stdout: 'PORTS:63728\nCMD:--csrf_token test', stderr: '' };
+      };
+
+      const { discoverWindowsLanguageServer } = await import('../../src/sentry/discovery.js');
+      const discovered = await discoverWindowsLanguageServer(mockExecFile);
+
+      assert.ok(discovered);
+      assert.equal(discovered.port, 63728);
+      assert.equal(discovered.csrfToken, 'test');
+      assert.ok(capturedArgs.includes('-WindowStyle'));
+      assert.ok(capturedArgs.includes('Hidden'));
+      assert.equal(capturedOptions.windowsHide, true);
     });
   });
 });

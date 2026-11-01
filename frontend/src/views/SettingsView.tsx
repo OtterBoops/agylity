@@ -1,17 +1,9 @@
-import {
-  faChevronDown,
-  faChevronUp,
-  faCodeBranch,
-  faMinus,
-  faNetworkWired,
-  faPlus,
-} from '@fortawesome/free-solid-svg-icons';
+import { faCodeBranch, faMinus, faNetworkWired, faPlus } from '@fortawesome/free-solid-svg-icons';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import type { ConfigData, SwarmWorkerRecord } from '../types';
 import type { Route } from '../router';
 import { getWorkers, revokeWorker, setWorkerEnabled, updateConfig } from '../api';
 import { SettingsForm } from '../components/SettingsForm';
-import { ConfigTable } from '../components/ConfigTable';
 import { RepoEditor } from '../components/RepoEditor';
 import { Icon } from '../components/Icon';
 import { NotificationsView } from './NotificationsView';
@@ -27,7 +19,6 @@ interface SettingsViewProps {
 }
 
 export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) => {
-  const [showRawTable, setShowRawTable] = useState(false);
   const [isTogglingOrchestrator, setIsTogglingOrchestrator] = useState(false);
   const [workers, setWorkers] = useState<SwarmWorkerRecord[]>([]);
   const [showRegisterPanel, setShowRegisterPanel] = useState(false);
@@ -211,31 +202,6 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
             config={config}
             onSaved={onChanged}
           />
-
-          <div class="rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-            <button
-              type="button"
-              onClick={() => setShowRawTable(!showRawTable)}
-              class="group flex w-full cursor-pointer items-center justify-between p-4 text-left transition-colors"
-            >
-              <div>
-                <h3 class="text-sm font-semibold text-pine-text">Configuration Overrides</h3>
-                <p class="mt-0.5 text-xs text-pine-subtle">
-                  Inspect and edit low-level key-value settings
-                </p>
-              </div>
-              <span class="flex items-center gap-1.5 text-xs text-pine-subtle transition-colors group-hover:text-pine-text">
-                <span>{showRawTable ? 'Hide' : 'View all keys'}</span>
-                <Icon icon={showRawTable ? faChevronUp : faChevronDown} class="size-2.5" />
-              </span>
-            </button>
-
-            {showRawTable && (
-              <div class="border-t border-pine-highlight p-4">
-                <ConfigTable config={config} onUpdated={onChanged} />
-              </div>
-            )}
-          </div>
         </div>
       );
 

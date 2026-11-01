@@ -118,6 +118,7 @@ const isConnectionRefused = (err: unknown): boolean => {
 };
 
 export class ConnectRpcQuotaClient implements IQuotaClient {
+  private static readonly CREDITS_TTL_MS = 5 * 60 * 1000; // 5 minutes
   private endpointUrl?: string;
   private host: string;
   private port: number;
@@ -128,6 +129,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private agyBinPath: string;
   private enableCliFallback: boolean;
   private enableProcessDiscovery: boolean;
+  private isCreditsProbing: boolean = false;
   private cachedSnapshotProvider?: () => QuotaSnapshot[];
   private lastKnownSnapshots: QuotaSnapshot[] = [];
   private minRefreshIntervalMs: number;
@@ -332,8 +334,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   public updateConfig(config: {
     antigravityEndpointUrl?: string;
     antigravityCsrfToken?: string;
-    antigravityLsPort?: number;
-    agyBinPath?: string;
   }): void {
     if (config.antigravityEndpointUrl !== undefined) {
       this.endpointUrl = config.antigravityEndpointUrl;
@@ -341,48 +341,82 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     if (config.antigravityCsrfToken !== undefined) {
       this.csrfToken = config.antigravityCsrfToken;
     }
-    if (config.antigravityLsPort !== undefined) {
-      this.port = config.antigravityLsPort;
-      this.fallbackPorts = Array.from(new Set([config.antigravityLsPort, ...this.fallbackPorts]));
-    }
-    if (config.agyBinPath !== undefined && config.agyBinPath.trim() !== '') {
-      this.agyBinPath = config.agyBinPath.trim();
-    }
     // Invalidate cached snapshots and reset active provider so next fetch immediately uses updated endpoint
     this.lastFetchedAt = 0;
     this.activeProvider = 'unknown';
     this.nextRpcProbeAt = 0;
     this.logger.info(
-      'Updated Language Server config (endpoint: %s, port: %d, agyBinPath: %s)',
-      this.endpointUrl ?? 'dynamic',
-      this.port,
-      this.agyBinPath
+      'Updated Language Server config (endpoint: %s)',
+      this.endpointUrl ?? 'dynamic'
     );
   }
 
   /**
-   * Probes /credits best-effort via CLI to retrieve exact AI credit balance.
-   * Results are cached for 60 seconds to prevent unnecessary process spawns.
+   * Returns cached AI credits immediately without blocking quota queries.
+   * Kicks off asynchronous background refresh if cache is stale or missing.
    */
-  private async getRemainingCredits(): Promise<number | null> {
+  public async getRemainingCredits(force = false): Promise<number | null> {
+    void this.triggerCreditsRefreshInBackground(force);
+    return this.cachedRemainingCredits;
+  }
+
+  /**
+   * Asynchronously probes /credits in the background without blocking callers.
+   * On Windows locally, routes through hidden PowerShell to prevent terminal popups.
+   * In container / Linux, executes directly.
+   */
+  public async triggerCreditsRefreshInBackground(force = false): Promise<number | null> {
     const now = Date.now();
-    if (this.cachedRemainingCredits !== null && now - this.lastCreditsProbeAt < 60000) {
+    if (
+      !force &&
+      this.cachedRemainingCredits !== null &&
+      now - this.lastCreditsProbeAt < ConnectRpcQuotaClient.CREDITS_TTL_MS
+    ) {
       return this.cachedRemainingCredits;
     }
+    if (this.isCreditsProbing) {
+      return this.cachedRemainingCredits;
+    }
+    this.isCreditsProbing = true;
+
     try {
-      const { stdout: creditsStdout } = await this.execFileFn(
-        this.agyBinPath,
-        ['--output-format', 'json', '-p', '/credits'],
-        { timeout: 8000, windowsHide: true }
-      );
-      const creditsJson = extractCliJsonPayload(creditsStdout) as any;
-      if (typeof creditsJson?.command?.data?.remaining_credits === 'number') {
-        this.cachedRemainingCredits = creditsJson.command.data.remaining_credits;
-        this.lastCreditsProbeAt = now;
-        return this.cachedRemainingCredits;
+      let stdout: string;
+      if (process.platform === 'win32') {
+        const script = `& '${this.agyBinPath.replace(/'/g, "''")}' --output-format json -p /credits`;
+        const res = await this.execFileFn(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
+          { timeout: 15000, windowsHide: true }
+        );
+        stdout = res.stdout;
+      } else {
+        const res = await this.execFileFn(
+          this.agyBinPath,
+          ['--output-format', 'json', '-p', '/credits'],
+          { timeout: 15000, windowsHide: true }
+        );
+        stdout = res.stdout;
       }
-    } catch {
-      // Best-effort probe
+
+      const creditsJson = extractCliJsonPayload(stdout) as any;
+      if (typeof creditsJson?.command?.data?.remaining_credits === 'number') {
+        const credits = creditsJson.command.data.remaining_credits;
+        this.cachedRemainingCredits = credits;
+        this.lastCreditsProbeAt = Date.now();
+        if (this.lastKnownSnapshots && this.lastKnownSnapshots.length > 0) {
+          for (const s of this.lastKnownSnapshots) {
+            s.remainingCredits = credits;
+          }
+        }
+        return credits;
+      }
+    } catch (err: unknown) {
+      this.logger.debug(
+        'Background credits query failed: %s',
+        err instanceof Error ? err.message : String(err)
+      );
+    } finally {
+      this.isCreditsProbing = false;
     }
     return this.cachedRemainingCredits;
   }

@@ -1,4 +1,4 @@
-import type { StandardEmbed } from './types.js';
+import type { StandardEmbed, EmbedField } from './types.js';
 import { renderSquareProgressBar, formatResetWindow, formatModelPills } from './formatters.js';
 import type { QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
@@ -94,16 +94,127 @@ export const buildTestAlertEmbed = (
   };
 };
 
+interface StepVisualConfig {
+  title: string;
+  color: number;
+}
+
+const STEP_VISUALS: Record<string, StepVisualConfig> = {
+  completed: { title: '[Task: Completed]', color: 0x31748f }, // Pine
+  failed: { title: '[Task: Failed]', color: 0xeb6f92 }, // Love
+  aborted: { title: '[Task: Aborted]', color: 0xf6c177 }, // Gold
+  polling: { title: '[Task: Queued]', color: 0x908caa }, // Muted
+  waking: { title: '[Task: Queued]', color: 0x908caa }, // Muted
+  executing: { title: '[Task: In Progress]', color: 0x9ccfd8 }, // Foam
+};
+
+const DEFAULT_STEP_VISUAL: StepVisualConfig = {
+  title: '[Task: In Progress]',
+  color: 0x9ccfd8,
+};
+
+export const formatDurationHuman = (durationMs?: number): string => {
+  if (typeof durationMs !== 'number' || durationMs <= 0) return '0s';
+  const sec = durationMs / 1000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const mins = Math.floor(sec / 60);
+  const remSec = Math.round(sec % 60);
+  return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
+};
+
 export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): StandardEmbed => {
-  const step = status.status ?? (status.step as string) ?? 'executing';
-  const color = step === 'completed' ? 0x2ecc71 : step === 'failed' ? 0xe74c3c : 0x3498db;
+  const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
+  const visual = STEP_VISUALS[step] ?? DEFAULT_STEP_VISUAL;
+  const isTerminal = ['completed', 'failed', 'aborted'].includes(step);
+
+  let title = visual.title;
+  if (isTerminal && typeof status.durationMs === 'number' && status.durationMs > 0) {
+    title = `${visual.title} • Took ${formatDurationHuman(status.durationMs)}`;
+  }
+  const color = visual.color;
+
+  const fields: EmbedField[] = [];
+
+  if (typeof status.durationMs === 'number' && status.durationMs > 0) {
+    fields.push({
+      name: 'Duration',
+      value: `**${formatDurationHuman(status.durationMs)}**`,
+      inline: true,
+    });
+  }
+
+  if (status.createdAt) {
+    const startEpoch = Math.floor(new Date(status.createdAt).getTime() / 1000);
+    const endEpoch = Math.floor(new Date(status.timestamp || Date.now()).getTime() / 1000);
+    if (!Number.isNaN(startEpoch) && !Number.isNaN(endEpoch) && isTerminal) {
+      fields.push({
+        name: 'Timeline',
+        value: `<t:${startEpoch}:T> → <t:${endEpoch}:T>`,
+        inline: true,
+      });
+    }
+  }
+
+  if (status.repositoryName) {
+    fields.push({
+      name: 'Repository',
+      value: status.repositoryName.slice(0, 100),
+      inline: true,
+    });
+  }
+
+  if (status.model) {
+    fields.push({
+      name: 'Model',
+      value: status.model.slice(0, 100),
+      inline: true,
+    });
+  }
+
+  if (status.branchName) {
+    fields.push({
+      name: 'Branch',
+      value: `\`${status.branchName.slice(0, 100)}\``,
+      inline: true,
+    });
+  }
+
+  if (status.runnerName) {
+    fields.push({
+      name: 'Runner',
+      value: status.runnerName.slice(0, 100),
+      inline: true,
+    });
+  }
+
+  if (status.taskId) {
+    fields.push({
+      name: 'Task ID',
+      value: `\`${status.taskId.slice(0, 100)}\``,
+      inline: true,
+    });
+  }
+
+  let description = '';
+  if (status.prompt) {
+    const cleanPrompt = status.prompt.trim();
+    description += `**Prompt:** *${cleanPrompt.slice(0, 300)}${cleanPrompt.length > 300 ? '…' : ''}*\n\n`;
+  }
+
+  if (step === 'failed' && status.error) {
+    const cleanError = status.error.trim().slice(0, 800);
+    description += `**Error Details:**\n\`\`\`bash\n${cleanError}\n\`\`\``;
+  } else if (status.message) {
+    description += status.message.slice(0, 500);
+  }
 
   return {
-    title: `[Dispatch] Task Status: ${step}`,
-    description: status.message || `Dispatch step: ${step}`,
+    title,
+    description: description.trim() || undefined,
     color,
+    fields: fields.length > 0 ? fields : undefined,
     timestamp: status.timestamp || new Date().toISOString(),
-    footer: { text: 'Agylity Orchestrator' },
+    footer: { text: 'Agylity Swarm Orchestrator' },
   };
 };
 

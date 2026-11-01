@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import type { QuotaFamily } from '../sentry/models.js';
@@ -449,8 +449,12 @@ export class TaskQueue {
         return { authenticated: true, worker: this.mapRowToWorker(row) };
       }
 
-      if (cleanShared && cleanToken === cleanShared) {
-        return { authenticated: true, viaSharedSecret: true };
+      if (cleanShared) {
+        const tokenBuf = Buffer.from(cleanToken);
+        const sharedBuf = Buffer.from(cleanShared);
+        if (tokenBuf.length === sharedBuf.length && timingSafeEqual(tokenBuf, sharedBuf)) {
+          return { authenticated: true, viaSharedSecret: true };
+        }
       }
 
       return { authenticated: false };

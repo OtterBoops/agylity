@@ -11,13 +11,23 @@ export class PayloadTooLargeError extends Error {
   }
 }
 
+export const STANDARD_SECURITY_HEADERS: Record<string, string> = {
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+};
+
 export const sendJson = (
   res: http.ServerResponse,
   status: number,
   data: unknown,
   headers: Record<string, string> = {}
 ): void => {
-  res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    ...STANDARD_SECURITY_HEADERS,
+    ...headers,
+  });
   res.end(JSON.stringify(data));
 };
 

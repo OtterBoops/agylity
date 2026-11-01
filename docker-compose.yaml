@@ -21,7 +21,6 @@ services:
 
     volumes:
       - agylity-data:/app/data
-      - agylity-gemini:/home/node/.gemini
 
     environment:
       - NODE_ENV=production
@@ -38,13 +37,7 @@ services:
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
 
     healthcheck:
-      test:
-        [
-          'CMD',
-          'node',
-          '-e',
-          "fetch('http://127.0.0.1:8484/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
-        ]
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8484/api/health']
       interval: 30s
       timeout: 5s
       retries: 3

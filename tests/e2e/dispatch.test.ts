@@ -105,7 +105,7 @@ async function main() {
     const customExecFile: ExecFileAsyncFn = async (
       file: string,
       args: readonly string[],
-      options: Record<string, unknown>
+      options?: Record<string, unknown>
     ) => {
       if (file === 'git') {
         const res = await defaultExecFileAsync(file, args as string[], options as any);

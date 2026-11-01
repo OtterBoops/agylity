@@ -21,8 +21,18 @@ description: >-
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
-- **Web UI & Control-Plane Security:**
-  - Optional `WEB_UI_AUTH_TOKEN`: When configured, control-plane mutation endpoints (`/api/config`, `/api/dispatch`, `/api/notify/test`, `/api/workers/*`) enforce constant-time Bearer token verification (`crypto.timingSafeEqual`). Runner communication endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`) use dedicated runner authentication tokens.
+- **Web UI & Control-Plane Security & Lock Invariant:**
+  - `WEB_UI_AUTH_TOKEN`: When configured, control-plane endpoints enforce constant-time Bearer token verification (`crypto.timingSafeEqual`) and anti-brute-force sliding-window rate limiting (HTTP 429 after 10 failed attempts within 60s). Runner endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`) use dedicated runner authentication tokens.
+  - Zero-DOM-Leak Lock Screen: Unauthenticated requests or locked sessions unmount the application shell completely, rendering a dedicated full-screen `<ControlPlaneGate />`. Zero private views, sidebars, or settings forms are exposed in the DOM.
+- **Application-Native IP Filtering & Anti-Spoofing (CWE-290):**
+  - `ALLOWED_IP_RANGES`: Zero-dependency IPv4/IPv6 and CIDR allowlist engine. Dynamically active only when entries exist.
+  - `TRUSTED_PROXIES`: Proxy headers (`CF-Connecting-IP`, `X-Forwarded-For`, `X-Real-IP`) are strictly ignored unless the direct TCP peer socket (`req.socket.remoteAddress`) is verified as an RFC1918 private network or loopback hop. Direct external connections attempting header injection are evaluated against their physical peer IP.
+- **Non-Blocking Telemetry & Hidden Execution:**
+  - Background stale-while-revalidate credits probing (`getRemainingCredits`) updates cached credit balances without blocking quota queries.
+  - On Windows, local CLI commands execute via PowerShell with `-WindowStyle Hidden` and `windowsHide: true`, eliminating focus stealing and flashing terminal windows.
+- **Single-Post Webhook Invariant:**
+  - Discord and generic webhooks render clean rich embeds without duplicating text content (`delete outgoingPayload.content`).
+  - Intermediate runner progress heartbeats (`executing`, polling) are suppressed from webhooks, delivering discrete initial dispatch and final completion embeds with elapsed duration metrics.
 - **Container-Native Storage Posture:**
   - In containerized deployments (Docker / daemon), coordinator requires only a single named volume for database state (`agylity-data:/app/data`).
   - Target repositories do NOT require mandatory host bind mounts. Workers support dynamic on-the-fly git cloning (via `cloneUrl` and optional `GITHUB_TOKEN`) with ephemeral container storage, while also supporting pre-cloned local directories or mounted named volumes.
@@ -50,7 +60,6 @@ Agylity is designed to be **cross-platform and container-native** (Linux, macOS,
 When running in Docker or headless server environments, configure explicit connection parameters via environment variables:
 
 - `ANTIGRAVITY_ENDPOINT_URL`: Explicit Connect-RPC base URL (e.g. `http://host.docker.internal:60643` or `http://192.168.1.100:60643`).
-- `ANTIGRAVITY_LS_PORT`: Explicit port override (default: 60643, fallback: 60642).
 - `ANTIGRAVITY_CSRF_TOKEN`: Explicit session CSRF token (`x-codeium-csrf-token`).
 
 #### 2. Best-Effort Local IDE Process Discovery (Host Workstations)
@@ -76,6 +85,14 @@ Every request to the Language Server Connect-RPC endpoints must provide:
 - **Legacy Fallback Endpoint:**
   `POST /exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData`
   - Returns: `clientModelConfigs` containing model configuration list and availability.
+
+### Non-Blocking Background AI Credits Probing & Window Hiding
+
+In addition to percentage headroom, Antigravity accounts may carry pay-as-you-go or bundled AI credits probed via `agy --output-format json -p /credits`:
+
+- **Stale-While-Revalidate Invariant:** Quota polling queries (`getQuotaSnapshots`) must never block waiting for the CLI process. `getRemainingCredits()` returns cached credits immediately and triggers background refresh (`triggerCreditsRefreshInBackground`) if stale (built-in 5m cache TTL).
+- **Windows Terminal Suppression:** On Windows workstations, CLI queries spawn through hidden PowerShell (`-WindowStyle Hidden`, `windowsHide: true`) to completely eliminate disruptive console popup windows during user workflows.
+- **Built-in Sentry Architecture:** Operates automatically as a core daemon capability without requiring configuration flags.
 
 ---
 
@@ -199,6 +216,11 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
   - `dispatches`: `(id INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT, prompt TEXT, requested_by TEXT, success INTEGER, branch TEXT, error TEXT, duration_ms INTEGER, created_at TEXT)` - stores task execution records.
   - Sentry Alert State: `data/state.json` tracks deduplicated milestone firings per pool across restarts.
   - Log Buffer: In-memory ring buffer (`LogBuffer`) for recent operations, broadcast to subscribers via SSE.
+
+### Control Plane Authentication & Edge Security
+
+- **Zero-Leak Control Plane Gate:** When `WEB_UI_AUTH_TOKEN` is configured, all API endpoints (excluding `/api/health` and `/api/auth/verify`) require `Authorization: Bearer <token>`. Unauthenticated clients receive a solid `<ControlPlaneGate />` that completely unmounts and replaces the DOM, ensuring zero settings, logs, or metrics leak in the browser before authentication.
+- **Application IP Allowlisting & Anti-Spoofing:** When `ALLOWED_CLIENT_IPS` is configured, requests from unlisted IPs or CIDR blocks receive HTTP 403 Forbidden. When behind reverse proxies (Caddy, Cloudflare, Traefik), `TRUSTED_REVERSE_PROXIES` ensures the rightmost untrusted address in `x-forwarded-for` is verified, preventing client-spoofed header bypasses.
 
 ---
 

@@ -1,6 +1,8 @@
 import type http from 'node:http';
 import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
+import { logger } from '../logs/logger.js';
+import { extractClientIp, isIpAllowed } from './ip.js';
 import {
   MAX_BODY_BYTES,
   PayloadTooLargeError,
@@ -69,19 +71,58 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
   return crypto.timingSafeEqual(tokenBuf, expectedBuf);
 };
 
-const isControlPlaneRoute = (pathname: string, method: string): boolean => {
-  if (pathname === '/api/config' && (method === 'GET' || method === 'POST')) return true;
-  if (pathname.startsWith('/api/config/') && method === 'DELETE') return true;
-  if (pathname === '/api/dispatch' && method === 'POST') return true;
-  if (pathname === '/api/dispatches' && method === 'GET') return true;
-  if (pathname === '/api/notify/test' && method === 'POST') return true;
-  if (pathname === '/api/logs' && method === 'GET') return true;
-  if (pathname === '/api/tasks' && method === 'GET') return true;
-  if (pathname === '/api/workers' && method === 'GET') return true;
-  if (pathname === '/api/workers/registration-token' && method === 'POST') return true;
-  if (pathname.startsWith('/api/workers/') && (method === 'PATCH' || method === 'DELETE'))
-    return true;
-  return false;
+interface AuthFailureRecord {
+  failures: number;
+  blockedUntilMs: number;
+  lastFailureMs: number;
+}
+
+const authFailuresByIp = new Map<string, AuthFailureRecord>();
+
+export const recordAuthFailure = (clientIp: string): boolean => {
+  const now = Date.now();
+  const record = authFailuresByIp.get(clientIp) ?? {
+    failures: 0,
+    blockedUntilMs: 0,
+    lastFailureMs: now,
+  };
+
+  if (now - record.lastFailureMs > 60_000) {
+    record.failures = 0;
+    record.blockedUntilMs = 0;
+  }
+
+  record.failures++;
+  record.lastFailureMs = now;
+
+  if (record.failures >= 10) {
+    record.blockedUntilMs = now + 60_000;
+  }
+
+  authFailuresByIp.set(clientIp, record);
+  return record.blockedUntilMs > now;
+};
+
+export const isIpRateLimited = (clientIp: string): boolean => {
+  const record = authFailuresByIp.get(clientIp);
+  if (!record) return false;
+  return record.blockedUntilMs > Date.now();
+};
+
+export const clearAuthFailures = (clientIp: string): void => {
+  authFailuresByIp.delete(clientIp);
+};
+
+const isControlPlaneRoute = (pathname: string): boolean => {
+  if (!pathname.startsWith('/api/')) return false;
+  if (pathname === '/api/health') return false;
+  // Outbound pull-worker runner endpoints (authenticated independently via runnerToken)
+  if (pathname === '/api/tasks/poll') return false;
+  if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) return false;
+  if (pathname === '/api/workers/register') return false;
+
+  // All other API routes require WEB_UI_AUTH_TOKEN
+  return true;
 };
 
 export const handleRequest = async (
@@ -95,12 +136,65 @@ export const handleRequest = async (
     const { pathname } = url;
     const method = req.method ?? 'GET';
 
-    const expectedToken =
-      options.configStore?.resolveConfig().webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
-    if (expectedToken && isControlPlaneRoute(pathname, method)) {
+    const resolvedConfig = options.configStore?.resolveConfig();
+    const allowedRanges = resolvedConfig?.allowedIpRanges ?? [];
+    const trustedProxies = resolvedConfig?.trustedProxies ?? false;
+
+    const clientIp = extractClientIp(req, trustedProxies);
+
+    // Application-Native IP Whitelisting: Off by default, strictly enforced when entries exist
+    if (allowedRanges.length > 0) {
+      if (!isIpAllowed(clientIp, allowedRanges)) {
+        logger
+          .child('security')
+          .warn('Rejected connection from unauthorized IP: %s (path: %s)', clientIp, pathname);
+        return sendJson(res, 403, { error: 'Forbidden: IP not in allowlist', clientIp });
+      }
+    }
+
+    const expectedToken = resolvedConfig?.webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
+    if (expectedToken && isControlPlaneRoute(pathname)) {
+      if (isIpRateLimited(clientIp)) {
+        logger
+          .child('security')
+          .warn(
+            'Temporarily blocked brute-force requests from IP: %s (path: %s)',
+            clientIp,
+            pathname
+          );
+        return sendJson(
+          res,
+          429,
+          {
+            error:
+              'Too Many Requests: IP temporarily blocked due to repeated failed authentication attempts',
+            retryAfterSeconds: 60,
+          },
+          { 'Retry-After': '60' }
+        );
+      }
+
       if (!isAuthorized(req, expectedToken)) {
+        const isBlocked = recordAuthFailure(clientIp);
+        if (isBlocked) {
+          logger
+            .child('security')
+            .warn('Rate limit threshold engaged for IP: %s (10 failed auth attempts)', clientIp);
+          return sendJson(
+            res,
+            429,
+            {
+              error:
+                'Too Many Requests: IP temporarily blocked due to repeated failed authentication attempts',
+              retryAfterSeconds: 60,
+            },
+            { 'Retry-After': '60' }
+          );
+        }
         return sendJson(res, 401, { error: 'Unauthorized: Invalid or missing Bearer token' });
       }
+
+      clearAuthFailures(clientIp);
     }
 
     if (pathname === '/favicon.ico') {
@@ -117,6 +211,7 @@ export const handleRequest = async (
         status: 'ok',
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
+        authRequired: Boolean(expectedToken),
       });
     }
 

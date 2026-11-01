@@ -25,25 +25,23 @@ const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   DISCORD_PING_OWNER: 'discordPingOwner',
   ANTIGRAVITY_ENDPOINT_URL: 'antigravityEndpointUrl',
   ANTIGRAVITY_CSRF_TOKEN: 'antigravityCsrfToken',
-  ANTIGRAVITY_LS_PORT: 'antigravityLsPort',
   QUOTA_CHECK_INTERVAL_SECONDS: 'quotaCheckIntervalSeconds',
   QUOTA_ALERT_THRESHOLD_PERCENT: 'quotaAlertThresholdPercent',
   QUOTA_MILESTONE_HOURS: 'quotaMilestoneHours',
-  QUOTA_STATE_FILE_PATH: 'quotaStateFilePath',
   MIN_DISPATCH_HEADROOM_PERCENT: 'minDispatchHeadroomPercent',
   REPOSITORIES_JSON: 'repositories',
-  DATABASE_PATH: 'databasePath',
   ORCHESTRATOR_ENABLED: 'orchestratorEnabled',
   DEFAULT_DISPATCH_MODEL: 'defaultDispatchModel',
   DEFAULT_DISPATCH_EFFORT: 'defaultDispatchEffort',
   WORKER_SHARED_SECRET: 'workerSharedSecret',
   QUOTA_BURN_MAX_HOURS: 'quotaBurnMaxHours',
   QUOTA_BURN_MIN_HEADROOM_PERCENT: 'quotaBurnMinHeadroomPercent',
-  AGY_BIN_PATH: 'agyBinPath',
   WEB_UI_ENABLED: 'webUiEnabled',
   WEB_UI_PORT: 'webUiPort',
   WEB_UI_HOST: 'webUiHost',
   WEB_UI_AUTH_TOKEN: 'webUiAuthToken',
+  ALLOWED_IP_RANGES: 'allowedIpRanges',
+  TRUSTED_PROXIES: 'trustedProxies',
   LOG_LEVEL: 'logLevel',
 };
 
@@ -69,7 +67,7 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     if (dbOrPath instanceof AppDatabase) {
       this.database = dbOrPath;
     } else {
-      const activeDbPath = dbOrPath ?? this.envConfig.databasePath ?? this.defaults.databasePath;
+      const activeDbPath = dbOrPath ?? process.env.DATABASE_PATH ?? 'data/agylity.db';
       this.database = new AppDatabase(activeDbPath);
     }
   }

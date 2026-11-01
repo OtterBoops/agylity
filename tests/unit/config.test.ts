@@ -52,11 +52,11 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     const valid = validateConfigOverridePatch({
       quotaCheckIntervalSeconds: 45,
       logLevel: 'debug',
-      agyBinPath: 'custom-agy',
+      defaultDispatchModel: 'gemini-3.8-flash',
     });
     assert.equal(valid.quotaCheckIntervalSeconds, 45);
     assert.equal(valid.logLevel, 'debug');
-    assert.equal(valid.agyBinPath, 'custom-agy');
+    assert.equal(valid.defaultDispatchModel, 'gemini-3.8-flash');
 
     assert.throws(
       () => validateConfigOverridePatch({ unknownKey: 123 }),
@@ -71,8 +71,8 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       /Forbidden configuration key/
     );
     assert.throws(
-      () => validateConfigOverridePatch({ agyBinPath: 'agy; rm -rf /' }),
-      /agyBinPath must not contain spaces or shell metacharacters/
+      () => validateConfigOverridePatch({ defaultDispatchEffort: 'invalid-effort' as any }),
+      /Invalid option: expected one of/
     );
   });
 

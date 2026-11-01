@@ -35,7 +35,11 @@ Finishing work for the day with 80% quota headroom remaining means donating free
 - **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` $\to$ `.env` $\to$ `Defaults`). Adjust settings live in the web dashboard without taking down the container.
 - **Encrypted at Rest**: Sensitive bot tokens and CSRF credentials receive AES-256-GCM authenticated encryption at rest in SQLite and are masked in client-facing APIs.
 - **Universal Pluggable Logger**: Lightweight, zero-dependency logging engine with hierarchical child namespaces (`[sentry]`, `[daemon]`, `[web]`), pluggable sinks, fault isolation, secret redaction, and real-time streaming to the Web UI dashboard.
-- **Task Orchestrator & Swarm Runners**: Pure runner control plane: queue tasks into SQLite and execute isolated continuation branches across registered Docker or host CLI runners.
+- **Task Orchestrator & Swarm Runners**: Pull-based distributed task runner control plane: queue tasks into SQLite and execute isolated continuation branches across registered Docker or host CLI runners without opening inbound firewall ports.
+- **Control-Plane Auth & Edge Defense**: Constant-time Bearer token verification (`WEB_UI_AUTH_TOKEN`), sliding-window anti-brute-force rate limiting (HTTP 429), standard security headers (`nosniff`, `DENY`), and a zero-DOM-leak `<ControlPlaneGate />` lock screen that prevents unauthenticated UI inspection.
+- **Application IP Whitelisting & Anti-Spoofing**: Native IPv4, IPv6, and CIDR subnet allowlisting (`ALLOWED_IP_RANGES`) with strict RFC1918 peer socket validation (`TRUSTED_PROXIES`) preventing proxy header injection (CWE-290).
+- **Non-Blocking Hidden Telemetry**: Background stale-while-revalidate credits probe and headless Windows process execution (`-WindowStyle Hidden`, `windowsHide: true`) preventing terminal flashing or focus stealing.
+- **Clean Single-Post Webhook Embeds**: Formatted rich Discord and generic webhook cards with elapsed duration metrics, dynamic Discord relative timestamps, and intermediate runner heartbeat suppression.
 - **Zero npm Bloat**: Powered by Node 24 native primitives (`node:http`, `node:sqlite`, `node:crypto`, `node:test`). The entire production runtime depends strictly on **3 packages** (`discord.js`, `ky`, `zod`).
 
 ---

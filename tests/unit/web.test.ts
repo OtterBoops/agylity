@@ -515,6 +515,42 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('enforces application-native IP whitelist when allowedIpRanges is configured', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_ip_whitelist_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        allowedIpRanges: ['10.0.0.1'], // Rejects 127.0.0.1
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // Rejected IP -> 403 Forbidden
+        await assert.rejects(
+          async () => {
+            await ky.get(`http://127.0.0.1:${started.port}/api/health`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 403
+        );
+
+        // Update allowedIpRanges to include 127.0.0.1 -> 200 OK
+        store.set('allowedIpRanges', ['127.0.0.1']);
+        const res = await ky
+          .get(`http://127.0.0.1:${started.port}/api/health`, { retry: 0 })
+          .json<any>();
+        assert.equal(res.status, 'ok');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
@@ -1059,6 +1095,119 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const parsed = JSON.parse(result.body);
         assert.equal(parsed.error, 'Payload Too Large');
         assert.ok(parsed.message.includes('65536 bytes'));
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 9. Hardened Security & Edge Protection                               */
+  /* ==================================================================== */
+  describe('9. Hardened Security & Edge Protection', () => {
+    it('sets standard security headers on API responses', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_sec_headers_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const res = await ky.get(`http://127.0.0.1:${started.port}/api/health`);
+        assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+        assert.equal(res.headers.get('x-frame-options'), 'DENY');
+        assert.equal(res.headers.get('referrer-policy'), 'strict-origin-when-cross-origin');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('locks down all API routes (including quota and models) when webUiAuthToken is set', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_token_lockdown_');
+      const secretToken = 'super_secret_test_token_42';
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        webUiAuthToken: secretToken,
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // /api/health remains public and reports authRequired: true
+        const healthRes = await ky.get(`http://127.0.0.1:${started.port}/api/health`);
+        assert.equal(healthRes.status, 200);
+        const healthData: any = await healthRes.json();
+        assert.equal(healthData.authRequired, true);
+
+        // /api/quota rejected with 401 without token
+        const quotaErr = await ky
+          .get(`http://127.0.0.1:${started.port}/api/quota`, { throwHttpErrors: false })
+          .then((r) => r.status);
+        assert.equal(quotaErr, 401);
+
+        // /api/models rejected with 401 without token
+        const modelsErr = await ky
+          .get(`http://127.0.0.1:${started.port}/api/models`, { throwHttpErrors: false })
+          .then((r) => r.status);
+        assert.equal(modelsErr, 401);
+
+        // /api/quota accepted with valid Bearer token
+        const validRes = await ky.get(`http://127.0.0.1:${started.port}/api/quota`, {
+          headers: { Authorization: `Bearer ${secretToken}` },
+        });
+        assert.equal(validRes.status, 200);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('engages rate limiter with HTTP 429 after 10 failed auth attempts', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_ratelimit_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        webUiAuthToken: 'correct_token',
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // 9 failed attempts should return 401
+        for (let i = 0; i < 9; i++) {
+          const res = await ky.get(`http://127.0.0.1:${started.port}/api/quota`, {
+            headers: { Authorization: 'Bearer wrong_token' },
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 401);
+        }
+
+        // 10th failed attempt triggers 429
+        const tenthRes = await ky.get(`http://127.0.0.1:${started.port}/api/quota`, {
+          headers: { Authorization: 'Bearer wrong_token' },
+          throwHttpErrors: false,
+        });
+        assert.equal(tenthRes.status, 429);
+        assert.equal(tenthRes.headers.get('retry-after'), '60');
       } finally {
         if (server) await closeWebServer(server);
         store.close();

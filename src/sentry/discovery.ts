@@ -1,13 +1,24 @@
 import { execFile as nodeExecFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-export const defaultExecFileAsync = promisify(nodeExecFile);
+const promisifiedExecFile = promisify(nodeExecFile);
 
 export type ExecFileAsyncFn = (
   file: string,
   args: readonly string[],
-  options: Record<string, unknown>
+  options?: Record<string, unknown>
 ) => Promise<{ stdout: string; stderr: string }>;
+
+export const defaultExecFileAsync: ExecFileAsyncFn = (
+  file: string,
+  args: readonly string[],
+  options?: Record<string, unknown>
+): Promise<{ stdout: string; stderr: string }> => {
+  return promisifiedExecFile(file, args as string[], {
+    windowsHide: true,
+    ...options,
+  }) as Promise<{ stdout: string; stderr: string }>;
+};
 
 export interface DiscoveredLanguageServer {
   port?: number;
@@ -31,7 +42,7 @@ export const discoverWindowsLanguageServer = async (
 
   const { stdout } = await execFileFn(
     'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', psScript],
+    ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', psScript],
     { timeout: 4000, windowsHide: true }
   );
 
