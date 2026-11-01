@@ -1,7 +1,13 @@
-import { faCheck, faCopy, faTimes, faWifi } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowUpRightFromSquare,
+  faCheck,
+  faCopy,
+  faTimes,
+  faWifi,
+} from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
-import { APP_VERSION } from '../utils/version';
+import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 
 interface ConnectionInspectorModalProps {
   isOpen: boolean;
@@ -21,7 +27,28 @@ export const ConnectionInspectorModal = ({
   minHeadroomPercent = 10,
 }: ConnectionInspectorModalProps) => {
   const [copied, setCopied] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<{
+    hasUpdate: boolean;
+    latestVersion: string | null;
+    releaseUrl: string | null;
+  }>({
+    hasUpdate: false,
+    latestVersion: null,
+    releaseUrl: null,
+  });
   const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    fetchLatestRelease().then((rel) => {
+      if (rel && isNewerVersion(APP_VERSION, rel.latest)) {
+        setUpdateInfo({
+          hasUpdate: true,
+          latestVersion: rel.latest,
+          releaseUrl: rel.url,
+        });
+      }
+    });
+  }, []);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -138,7 +165,21 @@ export const ConnectionInspectorModal = ({
             <span class="text-pine-muted">Software Release</span>
             <div class="mt-0.5 flex items-center justify-between font-mono text-xs text-pine-text">
               <span>v{APP_VERSION}</span>
-              <span class="font-sans text-xs text-pine-foam">Up to date</span>
+              {updateInfo.hasUpdate ? (
+                <a
+                  href={
+                    updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
+                >
+                  <span>Update v{updateInfo.latestVersion}</span>
+                  <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                </a>
+              ) : (
+                <span class="font-sans text-xs text-pine-foam">Up to date</span>
+              )}
             </div>
           </div>
         </div>

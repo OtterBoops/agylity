@@ -3,6 +3,7 @@ import {
   faBell,
   faBolt,
   faChartPie,
+  faCheckToSlot,
   faCodeBranch,
   faMoon,
   faNetworkWired,
@@ -85,12 +86,22 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faNetworkWired,
       action: () => {
-        onNavigate('settings/remote');
+        onNavigate('settings/orchestrator');
         onClose();
       },
     },
     ...(orchestratorEnabled
       ? [
+          {
+            id: 'nav-tasks',
+            title: 'Go to Tasks Queue & Runner Jobs',
+            category: 'Navigation' as const,
+            icon: faCheckToSlot,
+            action: () => {
+              onNavigate('tasks');
+              onClose();
+            },
+          },
           {
             id: 'nav-repositories',
             title: 'Configure Target Repositories',

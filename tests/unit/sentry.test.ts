@@ -193,7 +193,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const sample = createMock13ModelsResponse();
       const parsed = LanguageServerResponseSchema.parse(sample);
       assert.equal(parsed.clientModelConfigs.length, 13);
-      assert.equal(parsed.clientModelSorts?.[0].groups[0].modelLabels.length, 3);
+      assert.equal(parsed.clientModelSorts?.[0]?.groups?.[0]?.modelLabels.length, 3);
     });
 
     it('accurately resolves canonical model families', () => {
@@ -217,23 +217,29 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       assert.equal(snapshots.length, 3);
 
-      const [claudePool, argonPool, flashPool] = snapshots;
+      const claudePool = snapshots.find((s) => s.family === 'claude');
+      const argonPool = snapshots.find((s) => s.family === 'gemini-argon');
+      const flashPool = snapshots.find((s) => s.family === 'gemini-flash');
+
+      assert.ok(claudePool);
+      assert.ok(argonPool);
+      assert.ok(flashPool);
 
       assert.equal(claudePool.family, 'claude');
       assert.equal(claudePool.poolId, 'claude');
-      assert.equal(claudePool.displayName, 'Claude 5.5 / Opus');
+      assert.equal(claudePool.displayName, 'Claude and GPT models');
       assert.equal(claudePool.remainingFraction, 0.4944);
       assert.equal(claudePool.models.length, 7); // 3 sonnet + 3 opus + 1 gpt-oss
 
       assert.equal(argonPool.family, 'gemini-argon');
       assert.equal(argonPool.poolId, 'gemini-argon');
-      assert.equal(argonPool.displayName, 'Gemini 4 Argon');
+      assert.equal(argonPool.displayName, 'Gemini Argon');
       assert.equal(argonPool.remainingFraction, 0.1699);
       assert.equal(argonPool.models.length, 3); // 3 argon variants
 
       assert.equal(flashPool.family, 'gemini-flash');
       assert.equal(flashPool.poolId, 'gemini-flash');
-      assert.equal(flashPool.displayName, 'Gemini 3.8 Flash');
+      assert.equal(flashPool.displayName, 'Gemini Flash');
       assert.equal(flashPool.remainingFraction, 0.8084);
       assert.equal(flashPool.models.length, 3); // 3 flash variants
     });
@@ -271,7 +277,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const pools = aggregateQuotaPools(mixedConfigs);
       assert.equal(pools.length, 1);
-      assert.equal(pools[0].family, 'gemini-argon');
+      assert.equal(pools[0]?.family, 'gemini-argon');
     });
   });
 
@@ -515,7 +521,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // First run: fires 3h milestone, supersedes 24 and 12
       const alerts = evaluator.evaluate(snapshots, stateManager);
       assert.equal(alerts.length, 1);
-      assert.equal(alerts[0].milestoneHours, 3);
+      assert.equal(alerts[0]?.milestoneHours, 3);
 
       assert.equal(stateManager.isMilestoneFired('claude', 3), true);
       assert.equal(stateManager.isMilestoneFired('claude', 12), true);
@@ -655,9 +661,9 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const snapshots = await client.fetchQuota();
       assert.equal(snapshots.length, 3);
-      assert.equal(snapshots[0].family, 'claude');
-      assert.equal(snapshots[1].family, 'gemini-argon');
-      assert.equal(snapshots[2].family, 'gemini-flash');
+      assert.equal(snapshots[0]?.family, 'gemini-flash');
+      assert.equal(snapshots[1]?.family, 'gemini-argon');
+      assert.equal(snapshots[2]?.family, 'claude');
     });
 
     it('throws LanguageServerError with code LANGUAGE_SERVER_UNAVAILABLE when all options fail', async () => {
@@ -724,9 +730,13 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const snapshots = await client.fetchQuota();
       assert.equal(snapshots.length, 1);
-      assert.equal(snapshots[0].remainingFraction, 0.42);
+      assert.equal(snapshots[0]?.remainingFraction, 0.42);
       // Recalculated hoursUntilReset should be approximately 5, not stale 10
-      assert.ok(snapshots[0].hoursUntilReset >= 4.9 && snapshots[0].hoursUntilReset <= 5.1);
+      assert.ok(
+        snapshots[0]?.hoursUntilReset !== undefined &&
+          snapshots[0].hoursUntilReset >= 4.9 &&
+          snapshots[0].hoursUntilReset <= 5.1
+      );
     });
 
     it('successfully queries RetrieveUserQuotaSummary Connect-RPC endpoint with weekly eval target', async () => {

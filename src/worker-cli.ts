@@ -1,7 +1,6 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
 import { RemoteSwarmWorker } from './orchestrator/worker.js';
-import { WorkerModeSchema, type WorkerMode } from './orchestrator/models.js';
 
 export interface WorkerCliOptions {
   coordinatorUrl: string;
@@ -10,7 +9,6 @@ export interface WorkerCliOptions {
   sharedSecret?: string;
   workerId?: string;
   workerName?: string;
-  workerMode: WorkerMode;
   labels: string[];
   repositories?: string[];
   runnerStatePath: string;
@@ -87,10 +85,6 @@ export const parseWorkerCliArgs = (
   const workerName =
     (args.name || args['worker-name'] || env.WORKER_NAME || os.hostname()).trim() || os.hostname();
 
-  const rawMode = (args.mode || args['worker-mode'] || env.WORKER_MODE || 'headless').trim();
-  const modeParse = WorkerModeSchema.safeParse(rawMode);
-  const workerMode: WorkerMode = modeParse.success ? modeParse.data : 'headless';
-
   const labels = parseCsvList(args.labels || env.WORKER_LABELS);
   const repoList = parseCsvList(args.repos || args.repositories || env.WORKER_REPOSITORIES);
 
@@ -112,7 +106,6 @@ export const parseWorkerCliArgs = (
     sharedSecret,
     workerId,
     workerName,
-    workerMode,
     labels,
     repositories: repoList.length > 0 ? repoList : undefined,
     runnerStatePath,
@@ -127,9 +120,8 @@ export const runWorkerCli = async (): Promise<void> => {
   const opts = parseWorkerCliArgs();
 
   log.info(
-    '[Notice] Starting Agylity Swarm Runner "%s" (mode=%s, coordinator=%s, state=%s)',
+    '[Notice] Starting Agylity Swarm Runner "%s" (coordinator=%s, state=%s)',
     opts.workerName ?? 'runner',
-    opts.workerMode,
     opts.coordinatorUrl,
     opts.runnerStatePath
   );
@@ -141,7 +133,6 @@ export const runWorkerCli = async (): Promise<void> => {
     sharedSecret: opts.sharedSecret,
     workerId: opts.workerId,
     workerName: opts.workerName,
-    workerMode: opts.workerMode,
     labels: opts.labels,
     repositories: opts.repositories,
     runnerStatePath: opts.runnerStatePath,

@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'preact/hooks';
 import {
-  faBolt,
   faCheck,
   faChevronDown,
+  faCoins,
   faRotate,
   faSearch,
 } from '@fortawesome/free-solid-svg-icons';
@@ -15,10 +15,10 @@ interface TopBarProps {
   isRefreshing: boolean;
   refreshCooldown: number;
   orchestratorEnabled?: boolean;
+  remainingCredits?: number | null;
   theme: ThemeChoice;
   onThemeChange: (theme: ThemeChoice) => void;
   onRefresh: () => void;
-  onOpenDispatch: () => void;
   onOpenCommandPalette?: () => void;
 }
 
@@ -27,11 +27,10 @@ export const TopBar = ({
   subtitle,
   isRefreshing,
   refreshCooldown,
-  orchestratorEnabled = false,
+  remainingCredits,
   theme,
   onThemeChange,
   onRefresh,
-  onOpenDispatch,
   onOpenCommandPalette,
 }: TopBarProps) => {
   const [themeMenuOpen, setThemeMenuOpen] = useState(false);
@@ -51,21 +50,32 @@ export const TopBar = ({
   }, [themeMenuOpen]);
 
   return (
-    <header class="mb-6 flex flex-wrap items-center justify-between gap-3 border-b border-pine-highlight pb-4 sm:mb-8 sm:gap-4">
+    <header class="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-pine-highlight pb-4 sm:mb-6 sm:gap-4">
       <div>
         <h1 class="text-xl font-bold tracking-tight text-pine-text sm:text-2xl">{title}</h1>
         {subtitle && <p class="mt-0.5 text-xs text-pine-subtle sm:text-sm">{subtitle}</p>}
       </div>
 
       <div class="flex items-center gap-2 sm:gap-3">
+        {typeof remainingCredits === 'number' && (
+          <div
+            class="inline-flex items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 py-1.5 text-xs font-semibold text-pine-text shadow-xs sm:px-3 sm:text-sm"
+            title="Available Google AI Credits / Flex Tokens"
+          >
+            <Icon icon={faCoins} class="size-3 text-pine-iris sm:size-3.5" />
+            <span class="font-mono text-pine-iris">{remainingCredits}</span>
+            <span class="text-[11px] text-pine-subtle sm:text-xs">Credits</span>
+          </div>
+        )}
+
         {onOpenCommandPalette && (
           <button
             type="button"
             onClick={onOpenCommandPalette}
-            class="hidden cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 py-1.5 text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text sm:inline-flex"
+            class="hidden cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 py-1.5 text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text sm:inline-flex sm:text-sm"
             title="Search commands and navigate views (Ctrl+K)"
           >
-            <Icon icon={faSearch} class="size-3 text-pine-muted" />
+            <Icon icon={faSearch} class="size-3 text-pine-muted sm:size-3.5" />
             <span>Search</span>
             <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
               Ctrl K
@@ -111,7 +121,7 @@ export const TopBar = ({
                       onThemeChange(opt.id);
                       setThemeMenuOpen(false);
                     }}
-                    class={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                    class={`flex w-full cursor-pointer items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors sm:text-sm ${
                       isSelected
                         ? 'bg-pine-iris/15 font-semibold text-pine-iris'
                         : 'text-pine-subtle hover:bg-pine-overlay hover:text-pine-text'
@@ -139,18 +149,6 @@ export const TopBar = ({
           <Icon icon={faRotate} class={`size-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
           <span>Refresh</span>
         </button>
-
-        {orchestratorEnabled && (
-          <button
-            type="button"
-            class="inline-flex cursor-pointer items-center justify-center gap-2 rounded-lg bg-pine-iris px-3.5 py-1.5 text-xs font-semibold text-pine-base shadow-xs transition-opacity hover:opacity-90 sm:text-sm"
-            onClick={onOpenDispatch}
-            title="Dispatch continuation task to worker"
-          >
-            <Icon icon={faBolt} class="size-3.5" />
-            <span>Dispatch Task</span>
-          </button>
-        )}
       </div>
     </header>
   );

@@ -41,16 +41,81 @@ export const milestoneHoursEnv = z.preprocess(
 );
 
 // Repository schema
-export const RepositorySchema = z.object({
-  id: z.string().min(1, 'Repository ID is required'),
-  name: z.string().min(1, 'Repository name is required'),
-  path: z.string().min(1, 'Repository filesystem path is required'),
-  cloneUrl: z.string().optional(),
-  description: z.string().optional(),
-  defaultBranch: z.string().default('main'),
-});
+export const RepositorySchema = z.preprocess(
+  (val) => {
+    if (typeof val === 'object' && val !== null) {
+      const raw = val as Record<string, unknown>;
+      const cloneUrl = typeof raw.cloneUrl === 'string' ? raw.cloneUrl.trim() : undefined;
+      let derivedId = typeof raw.id === 'string' ? raw.id.trim() : '';
+      let derivedName = typeof raw.name === 'string' ? raw.name.trim() : '';
+      let derivedPath = typeof raw.path === 'string' ? raw.path.trim() : '';
+
+      if (!derivedId && cloneUrl) {
+        const match = cloneUrl.match(/([^/:]+)\/([^/]+?)(?:\.git)?$/);
+        if (match && match[2]) {
+          derivedId = match[2];
+          if (!derivedName) derivedName = `${match[1]}/${match[2]}`;
+        } else {
+          derivedId = cloneUrl.replace(/[^a-zA-Z0-9_-]/g, '_');
+        }
+      }
+
+      if (!derivedId && derivedName) {
+        derivedId = derivedName.split('/').pop() || derivedName;
+      }
+
+      if (!derivedPath && cloneUrl && derivedId) {
+        derivedPath = `/repos/${derivedId}`;
+      }
+
+      return {
+        id: derivedId,
+        name: derivedName,
+        path: derivedPath,
+        cloneUrl,
+        defaultBranch:
+          typeof raw.defaultBranch === 'string' && raw.defaultBranch.trim() !== ''
+            ? raw.defaultBranch.trim()
+            : 'main',
+      };
+    }
+    return val;
+  },
+  z.object({
+    id: z.string().min(1, 'Repository ID is required'),
+    name: z.string().min(1, 'Repository name is required'),
+    path: z.string().min(1, 'Repository filesystem path is required'),
+    cloneUrl: z.string().optional(),
+    description: z.string().optional(),
+    defaultBranch: z.string().default('main'),
+  })
+);
 
 export type RepositoryEntry = z.infer<typeof RepositorySchema>;
+
+export interface PoolPolicy {
+  alertsEnabled: boolean;
+  dispatchEnabled: boolean;
+}
+
+export const PoolPolicySchema = z.object({
+  alertsEnabled: z.boolean(),
+  dispatchEnabled: z.boolean(),
+});
+
+export const PoolPoliciesSchema = z.object({
+  claude: PoolPolicySchema,
+  'gemini-argon': PoolPolicySchema,
+  'gemini-flash': PoolPolicySchema,
+});
+
+export type PoolPolicies = z.infer<typeof PoolPoliciesSchema>;
+
+export const DEFAULT_POOL_POLICIES: PoolPolicies = {
+  'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+  'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+  claude: { alertsEnabled: false, dispatchEnabled: false },
+};
 
 // Repositories JSON parser
 export const RepositoriesJsonSchema = z.preprocess((val) => {
@@ -124,7 +189,6 @@ export const RawEnvSchema = z.object({
   ORCHESTRATOR_ENABLED: z.string().optional(),
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
   DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
-  DEFAULT_WORKER_MODE: z.enum(['headless', 'visible', 'any']).optional(),
   WORKER_SHARED_SECRET: z.string().optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
@@ -164,6 +228,7 @@ export interface AppConfig {
   quotaMilestoneHours: number[];
   quotaStateFilePath: string;
   minDispatchHeadroomPercent: number;
+  poolPolicies: PoolPolicies;
 
   repositories: RepositoryEntry[];
   databasePath: string;
@@ -171,7 +236,6 @@ export interface AppConfig {
   orchestratorEnabled: boolean;
   defaultDispatchModel: string;
   defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  defaultWorkerMode: 'headless' | 'visible' | 'any';
   workerSharedSecret?: string;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
@@ -220,14 +284,14 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   quotaMilestoneHours: [24, 12, 3],
   quotaStateFilePath: 'data/state.json',
   minDispatchHeadroomPercent: 10, // 10% safety floor preventing billable overages
+  poolPolicies: DEFAULT_POOL_POLICIES,
 
   repositories: [],
   databasePath: 'data/agylity.db',
 
   orchestratorEnabled: false,
-  defaultDispatchModel: 'gemini-4-argon-high',
-  defaultDispatchEffort: 'high',
-  defaultWorkerMode: 'headless',
+  defaultDispatchModel: 'gemini-3.8-flash',
+  defaultDispatchEffort: 'medium',
   workerSharedSecret: undefined,
   quotaBurnMaxHours: 2,
   quotaBurnMinHeadroomPercent: 30,
@@ -245,7 +309,15 @@ export const isTemplatePlaceholder = (val: string | undefined): boolean =>
   typeof val === 'string' && /^your_[a-z0-9_]+_here$/i.test(val.trim());
 
 export const parseRawEnv = (env: Record<string, string | undefined>): Partial<AppConfig> => {
-  const parsed = RawEnvSchema.parse(env);
+  const sanitizedEnv: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) {
+      const trimmed = value.trim();
+      sanitizedEnv[key] = trimmed === '' ? undefined : value;
+    }
+  }
+
+  const parsed = RawEnvSchema.parse(sanitizedEnv);
   const result: Partial<AppConfig> = {};
 
   if (parsed.NOTIFICATION_CHANNELS) {
@@ -332,9 +404,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.DEFAULT_DISPATCH_EFFORT) {
     result.defaultDispatchEffort = parsed.DEFAULT_DISPATCH_EFFORT;
   }
-  if (parsed.DEFAULT_WORKER_MODE) {
-    result.defaultWorkerMode = parsed.DEFAULT_WORKER_MODE;
-  }
   if (parsed.WORKER_SHARED_SECRET && !isTemplatePlaceholder(parsed.WORKER_SHARED_SECRET)) {
     result.workerSharedSecret = parsed.WORKER_SHARED_SECRET;
   }
@@ -382,12 +451,12 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   quotaMilestoneHours: z.array(z.number().positive()),
   quotaStateFilePath: z.string(),
   minDispatchHeadroomPercent: z.number().min(0).max(100),
+  poolPolicies: PoolPoliciesSchema,
   repositories: z.array(RepositorySchema),
   databasePath: z.string(),
   orchestratorEnabled: z.boolean(),
   defaultDispatchModel: z.string(),
   defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
-  defaultWorkerMode: z.enum(['headless', 'visible', 'any']),
   workerSharedSecret: z.string().optional(),
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),

@@ -95,6 +95,8 @@ export interface DispatchResult {
   durationMs: number;
   taskId?: string;
   priority?: 'P0' | 'P1' | 'P2';
+  status?: string;
+  code?: string;
 }
 
 export const DispatchResultSchema = z.object({
@@ -105,6 +107,8 @@ export const DispatchResultSchema = z.object({
   durationMs: z.number().nonnegative(),
   taskId: z.string().optional(),
   priority: z.enum(['P0', 'P1', 'P2']).optional(),
+  status: z.string().optional(),
+  code: z.string().optional(),
 });
 
 export interface Notifier {

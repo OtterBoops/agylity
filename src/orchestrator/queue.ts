@@ -5,9 +5,8 @@ import type { QuotaFamily } from '../sentry/models.js';
 import {
   resolvePoolFamilyForModel,
   type ReasoningEffort,
-  type TaskPriority,
+  type ScheduleMode,
   type TaskStatus,
-  type WorkerMode,
 } from './models.js';
 
 export interface RunnerSystemInfo {
@@ -19,7 +18,6 @@ export interface RunnerSystemInfo {
 
 export interface SwarmTask {
   id: string;
-  dispatchId?: number;
   createdAt: string;
   updatedAt: string;
   repositoryId: string;
@@ -29,14 +27,17 @@ export interface SwarmTask {
   defaultBranch: string;
   prompt: string;
   requestedBy: string;
-  priority: TaskPriority;
-  workerMode: WorkerMode;
+  scheduleMode: ScheduleMode;
   requiredLabels: string[];
   model: string;
   poolFamily: QuotaFamily;
   effort: ReasoningEffort;
   allowOverage: boolean;
   pushBranch: boolean;
+  autoCreatePr: boolean;
+  prUrl?: string;
+  expiresAt?: string;
+  standingTaskId?: string;
   verifyCommand?: string;
   status: TaskStatus;
   workerId?: string;
@@ -47,6 +48,9 @@ export interface SwarmTask {
   output?: string;
   error?: string;
   durationMs: number;
+  numTurns?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
 }
 
 export interface EnqueueTaskInput {
@@ -58,20 +62,21 @@ export interface EnqueueTaskInput {
   defaultBranch?: string;
   prompt: string;
   requestedBy?: string;
-  priority?: TaskPriority;
-  workerMode?: WorkerMode;
+  scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model: string;
   effort?: ReasoningEffort;
   allowOverage?: boolean;
   pushBranch?: boolean;
+  autoCreatePr?: boolean;
+  expiresAt?: string;
+  standingTaskId?: string;
   verifyCommand?: string;
 }
 
 export interface ClaimTaskOptions {
   workerId: string;
   workerName?: string;
-  workerMode?: WorkerMode;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
@@ -82,15 +87,18 @@ export interface TaskStatusPatch {
   status: TaskStatus;
   workerId?: string;
   branchName?: string;
+  prUrl?: string;
   output?: string;
   error?: string;
   durationMs?: number;
+  numTurns?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
 }
 
 export interface SwarmWorkerRecord {
   workerId: string;
   name: string;
-  workerMode: WorkerMode;
   labels: string[];
   repositories: string[];
   systemInfo: RunnerSystemInfo;
@@ -104,7 +112,6 @@ export interface SwarmWorkerRecord {
 
 export interface CreateRegistrationTokenInput {
   nameHint?: string;
-  workerMode?: WorkerMode;
   labels?: string[];
   repositories?: string[];
   ttlMs?: number;
@@ -114,7 +121,6 @@ export interface RunnerRegistrationTokenResult {
   id: string;
   registrationToken: string;
   nameHint?: string;
-  workerMode: WorkerMode;
   labels: string[];
   repositories: string[];
   expiresAt: string;
@@ -125,17 +131,28 @@ export interface ExchangeRegistrationTokenInput {
   registrationToken: string;
   workerId?: string;
   workerName?: string;
-  workerMode?: WorkerMode;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
 }
 
-const PRIORITY_RANK: Record<TaskPriority, number> = {
-  P0: 0,
-  P1: 1,
-  P2: 2,
-};
+export interface StandingTaskRecord {
+  id: string;
+  title: string;
+  prompt: string;
+  repositoryId: string;
+  model: string;
+  effort: ReasoningEffort;
+  verifyCommand?: string;
+  autoCreatePr: boolean;
+  enabled: boolean;
+  sortOrder: number;
+  triggerBeforeResetHours: number;
+  lastTriggeredResetTime?: string;
+  lastTaskId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export const hashRunnerToken = (token: string): string =>
   createHash('sha256').update(token.trim()).digest('hex');
@@ -170,7 +187,6 @@ export class TaskQueue {
     this.rawDb.exec(`
       CREATE TABLE IF NOT EXISTS swarm_tasks (
         id TEXT PRIMARY KEY,
-        dispatch_id INTEGER,
         created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
         repository_id TEXT NOT NULL,
@@ -180,15 +196,17 @@ export class TaskQueue {
         default_branch TEXT NOT NULL DEFAULT 'main',
         prompt TEXT NOT NULL,
         requested_by TEXT NOT NULL DEFAULT 'web-ui',
-        priority TEXT NOT NULL DEFAULT 'P0',
-        priority_rank INTEGER NOT NULL DEFAULT 0,
-        worker_mode TEXT NOT NULL DEFAULT 'headless',
+        schedule_mode TEXT NOT NULL DEFAULT 'immediate',
         required_labels_json TEXT NOT NULL DEFAULT '[]',
         model TEXT NOT NULL,
         pool_family TEXT NOT NULL,
         effort TEXT NOT NULL DEFAULT 'high',
         allow_overage INTEGER NOT NULL DEFAULT 0,
         push_branch INTEGER NOT NULL DEFAULT 1,
+        auto_create_pr INTEGER NOT NULL DEFAULT 1,
+        pr_url TEXT,
+        expires_at TEXT,
+        standing_task_id TEXT,
         verify_command TEXT,
         status TEXT NOT NULL DEFAULT 'queued',
         worker_id TEXT,
@@ -198,17 +216,37 @@ export class TaskQueue {
         branch_name TEXT,
         output TEXT,
         error TEXT,
-        duration_ms INTEGER NOT NULL DEFAULT 0
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        num_turns INTEGER,
+        total_tokens INTEGER,
+        thinking_tokens INTEGER
       );
 
       CREATE INDEX IF NOT EXISTS idx_swarm_tasks_queue
-        ON swarm_tasks (status, priority_rank ASC, created_at ASC);
+        ON swarm_tasks (status, created_at ASC);
+
+      CREATE TABLE IF NOT EXISTS standing_tasks (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        repository_id TEXT NOT NULL,
+        model TEXT NOT NULL,
+        effort TEXT NOT NULL DEFAULT 'high',
+        verify_command TEXT,
+        auto_create_pr INTEGER NOT NULL DEFAULT 1,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        trigger_before_reset_hours REAL NOT NULL DEFAULT 2,
+        last_triggered_reset_time TEXT,
+        last_task_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+      );
 
       CREATE TABLE IF NOT EXISTS swarm_workers (
         worker_id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         token_hash TEXT,
-        worker_mode TEXT NOT NULL DEFAULT 'headless',
         labels_json TEXT NOT NULL DEFAULT '[]',
         repositories_json TEXT NOT NULL DEFAULT '[]',
         system_info_json TEXT NOT NULL DEFAULT '{}',
@@ -223,7 +261,6 @@ export class TaskQueue {
         id TEXT PRIMARY KEY,
         token_hash TEXT NOT NULL UNIQUE,
         name_hint TEXT,
-        worker_mode TEXT NOT NULL DEFAULT 'headless',
         labels_json TEXT NOT NULL DEFAULT '[]',
         repositories_json TEXT NOT NULL DEFAULT '[]',
         expires_at TEXT NOT NULL,
@@ -232,24 +269,6 @@ export class TaskQueue {
         consumed_at TEXT
       );
     `);
-
-    // Safe forward-migrations for existing SQLite databases
-    const migrations = [
-      "ALTER TABLE swarm_tasks ADD COLUMN required_labels_json TEXT NOT NULL DEFAULT '[]'",
-      'ALTER TABLE swarm_tasks ADD COLUMN clone_url TEXT',
-      'ALTER TABLE swarm_workers ADD COLUMN token_hash TEXT',
-      "ALTER TABLE swarm_workers ADD COLUMN labels_json TEXT NOT NULL DEFAULT '[]'",
-      "ALTER TABLE swarm_workers ADD COLUMN system_info_json TEXT NOT NULL DEFAULT '{}'",
-      'ALTER TABLE swarm_workers ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1',
-      "ALTER TABLE swarm_workers ADD COLUMN registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
-    ];
-    for (const sql of migrations) {
-      try {
-        this.rawDb.exec(sql);
-      } catch {
-        // Column already exists
-      }
-    }
   }
 
   /**
@@ -266,7 +285,6 @@ export class TaskQueue {
     const ttlMs = Math.max(60_000, input.ttlMs ?? 60 * 60 * 1000); // 1 hour default
     const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
     const createdAt = now.toISOString();
-    const workerMode: WorkerMode = input.workerMode ?? 'headless';
     const labels = Array.from(
       new Set((input.labels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
     );
@@ -278,14 +296,13 @@ export class TaskQueue {
     this.rawDb
       .prepare(
         `INSERT INTO swarm_runner_registrations (
-          id, token_hash, name_hint, worker_mode, labels_json, repositories_json, expires_at, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          id, token_hash, name_hint, labels_json, repositories_json, expires_at, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
         tokenHash,
         nameHint ?? null,
-        workerMode,
         JSON.stringify(labels),
         JSON.stringify(repositories),
         expiresAt,
@@ -296,7 +313,6 @@ export class TaskQueue {
       id,
       registrationToken,
       nameHint,
-      workerMode,
       labels,
       repositories,
       expiresAt,
@@ -350,8 +366,6 @@ export class TaskQueue {
         input.workerName?.trim() ||
         (regRow.name_hint ? String(regRow.name_hint) : undefined) ||
         workerId;
-      const workerMode: WorkerMode =
-        input.workerMode ?? ((regRow.worker_mode as WorkerMode) || 'headless');
       const labels = Array.from(
         new Set(
           (input.labels && input.labels.length > 0 ? input.labels : defaultLabels)
@@ -383,13 +397,12 @@ export class TaskQueue {
       this.rawDb
         .prepare(
           `INSERT INTO swarm_workers (
-            worker_id, name, token_hash, worker_mode, labels_json, repositories_json,
+            worker_id, name, token_hash, labels_json, repositories_json,
             system_info_json, enabled, active_task_id, status, registered_at, last_seen_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, 'idle', ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, 'idle', ?, ?)
           ON CONFLICT(worker_id) DO UPDATE SET
             name = excluded.name,
             token_hash = excluded.token_hash,
-            worker_mode = excluded.worker_mode,
             labels_json = excluded.labels_json,
             repositories_json = excluded.repositories_json,
             system_info_json = excluded.system_info_json,
@@ -401,7 +414,6 @@ export class TaskQueue {
           workerId,
           workerName,
           runnerTokenHash,
-          workerMode,
           JSON.stringify(labels),
           JSON.stringify(repositories),
           JSON.stringify(systemInfo),
@@ -427,6 +439,7 @@ export class TaskQueue {
     const cleanToken = providedToken?.trim() || '';
     const cleanShared = fallbackSharedSecret?.trim() || '';
 
+    // Require a valid runner token (hash match) or valid configured fallback shared secret
     if (cleanToken) {
       const tokenHash = hashRunnerToken(cleanToken);
       const row = this.rawDb
@@ -443,19 +456,7 @@ export class TaskQueue {
       return { authenticated: false };
     }
 
-    // If a shared secret is configured or at least one token-backed runner is registered, require a token
-    if (cleanShared) {
-      return { authenticated: false };
-    }
-
-    const registeredCountRow = this.rawDb
-      .prepare('SELECT COUNT(*) as cnt FROM swarm_workers WHERE token_hash IS NOT NULL')
-      .get() as { cnt?: number } | undefined;
-    if ((registeredCountRow?.cnt ?? 0) > 0) {
-      return { authenticated: false };
-    }
-
-    return { authenticated: true };
+    return { authenticated: false };
   }
 
   public getWorker(workerId: string): SwarmWorkerRecord | undefined {
@@ -512,26 +513,25 @@ export class TaskQueue {
     const defaultBranch = (input.defaultBranch || 'main').trim();
     const prompt = input.prompt.slice(0, 4000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
-    const priority: TaskPriority = input.priority ?? 'P0';
-    const priorityRank = PRIORITY_RANK[priority] ?? 0;
-    const workerMode: WorkerMode = input.workerMode ?? 'headless';
+    const scheduleMode: ScheduleMode = input.scheduleMode ?? 'immediate';
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
     );
-    const model = (input.model ?? 'gemini-4-argon-high').trim();
+    const model = (input.model ?? 'gemini-3.8-flash').trim();
     const poolFamily = resolvePoolFamilyForModel(model);
     const effort: ReasoningEffort = input.effort ?? 'high';
     const allowOverage = Boolean(input.allowOverage);
     const pushBranch = input.pushBranch !== false;
+    const autoCreatePr = input.autoCreatePr !== false;
 
     this.rawDb
       .prepare(
         `INSERT INTO swarm_tasks (
           id, created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, priority, priority_rank, worker_mode,
+          clone_url, default_branch, prompt, requested_by, schedule_mode,
           required_labels_json, model, pool_family, effort, allow_overage, push_branch,
-          verify_command, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+          auto_create_pr, expires_at, standing_task_id, verify_command, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
       )
       .run(
         id,
@@ -544,19 +544,40 @@ export class TaskQueue {
         defaultBranch,
         prompt,
         requestedBy,
-        priority,
-        priorityRank,
-        workerMode,
+        scheduleMode,
         JSON.stringify(requiredLabels),
         model,
         poolFamily,
         effort,
         allowOverage ? 1 : 0,
         pushBranch ? 1 : 0,
+        autoCreatePr ? 1 : 0,
+        input.expiresAt ?? null,
+        input.standingTaskId ?? null,
         input.verifyCommand ?? null
       );
 
+    this.pruneOldTasks();
     return this.getTask(id)!;
+  }
+
+  public pruneOldTasks(keepTerminalCount = 250): void {
+    try {
+      this.rawDb
+        .prepare(
+          `DELETE FROM swarm_tasks
+           WHERE status IN ('completed', 'failed', 'aborted')
+             AND id NOT IN (
+               SELECT id FROM swarm_tasks
+               WHERE status IN ('completed', 'failed', 'aborted')
+               ORDER BY updated_at DESC
+               LIMIT ?
+             )`
+        )
+        .run(keepTerminalCount);
+    } catch {
+      // Best-effort pruning
+    }
   }
 
   public getTask(id: string): SwarmTask | undefined {
@@ -565,27 +586,41 @@ export class TaskQueue {
     return row ? this.mapRowToTask(row) : undefined;
   }
 
-  public listTasks(options: { status?: TaskStatus; limit?: number } = {}): SwarmTask[] {
+  public listTasks(
+    options: {
+      status?: TaskStatus;
+      scheduleMode?: ScheduleMode;
+      limit?: number;
+    } = {}
+  ): SwarmTask[] {
     const limit = Math.min(Math.max(1, options.limit ?? 50), 500);
+    const conditions: string[] = [];
+    const params: any[] = [];
+
     if (options.status) {
-      const rows = this.rawDb
-        .prepare(
-          'SELECT * FROM swarm_tasks WHERE status = ? ORDER BY priority_rank ASC, created_at ASC LIMIT ?'
-        )
-        .all(options.status, limit) as Array<Record<string, any>>;
-      return rows.map((r) => this.mapRowToTask(r));
+      conditions.push('status = ?');
+      params.push(options.status);
+    }
+    if (options.scheduleMode) {
+      conditions.push('schedule_mode = ?');
+      params.push(options.scheduleMode);
     }
 
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limit);
+
     const rows = this.rawDb
-      .prepare('SELECT * FROM swarm_tasks ORDER BY created_at DESC, rowid DESC LIMIT ?')
-      .all(limit) as Array<Record<string, any>>;
+      .prepare(
+        `SELECT * FROM swarm_tasks ${whereClause} ORDER BY created_at DESC, rowid DESC LIMIT ?`
+      )
+      .all(...params) as Array<Record<string, any>>;
     return rows.map((r) => this.mapRowToTask(r));
   }
 
   /**
    * Atomically claims the next eligible queued task for a worker.
-   * Evaluates priority order (P0 -> P1 -> P2, FIFO within tier), worker enabled state,
-   * workerMode, required labels, repository match, and optional live quota eligibility.
+   * Evaluates worker enabled state, required labels, repository match,
+   * expiration cutoff (pre-reset expiration), and live quota eligibility.
    */
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
@@ -594,7 +629,6 @@ export class TaskQueue {
         this.registerWorkerHeartbeat({
           workerId: options.workerId,
           name: options.workerName,
-          workerMode: options.workerMode,
           labels: options.labels,
           repositories: options.repositories,
           systemInfo: options.systemInfo,
@@ -603,7 +637,6 @@ export class TaskQueue {
         return null;
       }
 
-      const workerMode = options.workerMode ?? existingWorker?.workerMode ?? 'headless';
       const effectiveLabels =
         options.labels && options.labels.length > 0
           ? options.labels
@@ -621,19 +654,35 @@ export class TaskQueue {
         .prepare(
           `SELECT * FROM swarm_tasks
            WHERE status = 'queued'
-           ORDER BY priority_rank ASC, created_at ASC, rowid ASC`
+           ORDER BY created_at ASC, rowid ASC`
         )
         .all() as Array<Record<string, any>>;
+
+      const now = new Date().toISOString();
+      const nowEpoch = Date.now();
 
       for (const row of candidates) {
         const task = this.mapRowToTask(row);
 
-        // 1. Check workerMode compatibility
-        if (task.workerMode !== 'any' && workerMode !== 'any' && task.workerMode !== workerMode) {
-          continue;
+        // Check pre-reset expiration: if expiresAt is set and has passed, abort task immediately
+        if (task.expiresAt) {
+          const expEpoch = Date.parse(task.expiresAt);
+          if (!Number.isNaN(expEpoch) && nowEpoch >= expEpoch) {
+            this.rawDb
+              .prepare(
+                `UPDATE swarm_tasks
+                 SET status = 'aborted',
+                     error = 'Expired: weekly quota reset window passed',
+                     completed_at = ?,
+                     updated_at = ?
+                 WHERE id = ? AND status = 'queued'`
+              )
+              .run(now, now, task.id);
+            continue;
+          }
         }
 
-        // 2. Check required labels (if task specifies labels, worker must have all of them)
+        // Check required labels (if task specifies labels, worker must have all of them)
         if (task.requiredLabels.length > 0) {
           const hasAllLabels = task.requiredLabels.every((reqLabel) =>
             workerLabelSet.has(reqLabel.toLowerCase())
@@ -643,7 +692,7 @@ export class TaskQueue {
           }
         }
 
-        // 3. Check repository capability filter if worker specified a subset
+        // Check repository capability filter if worker specified a subset
         if (
           repoFilter &&
           !repoFilter.has(task.repositoryId.toLowerCase()) &&
@@ -652,7 +701,7 @@ export class TaskQueue {
           continue;
         }
 
-        // 4. Check live quota / P2 burn eligibility
+        // Check live quota eligibility
         let updatedModel = task.model;
         if (options.eligibilityCheck) {
           const check = options.eligibilityCheck(task);
@@ -664,7 +713,6 @@ export class TaskQueue {
           }
         }
 
-        const now = new Date().toISOString();
         const updateResult = this.rawDb
           .prepare(
             `UPDATE swarm_tasks
@@ -691,7 +739,6 @@ export class TaskQueue {
           this.registerWorkerHeartbeat({
             workerId: options.workerId,
             name: options.workerName,
-            workerMode,
             labels: options.labels,
             repositories: options.repositories,
             systemInfo: options.systemInfo,
@@ -705,7 +752,6 @@ export class TaskQueue {
       this.registerWorkerHeartbeat({
         workerId: options.workerId,
         name: options.workerName,
-        workerMode,
         labels: options.labels,
         repositories: options.repositories,
         systemInfo: options.systemInfo,
@@ -720,6 +766,20 @@ export class TaskQueue {
     const existing = this.getTask(taskId);
     if (!existing) return undefined;
 
+    // Guard against status updates on already terminal tasks
+    const existingTerminal =
+      existing.status === 'completed' ||
+      existing.status === 'failed' ||
+      existing.status === 'aborted';
+    if (existingTerminal) {
+      return existing;
+    }
+
+    // Guard against cross-worker task status tampering
+    if (patch.workerId && existing.workerId && patch.workerId !== existing.workerId) {
+      return existing;
+    }
+
     const now = new Date().toISOString();
     const isTerminal =
       patch.status === 'completed' || patch.status === 'failed' || patch.status === 'aborted';
@@ -732,10 +792,16 @@ export class TaskQueue {
           : existing.durationMs;
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
+    const prUrl = patch.prUrl ?? existing.prUrl ?? null;
     const output =
       patch.output !== undefined ? patch.output.slice(0, 16000) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
     const workerId = patch.workerId ?? existing.workerId ?? null;
+    const numTurns = patch.numTurns !== undefined ? patch.numTurns : (existing.numTurns ?? null);
+    const totalTokens =
+      patch.totalTokens !== undefined ? patch.totalTokens : (existing.totalTokens ?? null);
+    const thinkingTokens =
+      patch.thinkingTokens !== undefined ? patch.thinkingTokens : (existing.thinkingTokens ?? null);
 
     this.rawDb
       .prepare(
@@ -743,9 +809,13 @@ export class TaskQueue {
          SET status = ?,
              worker_id = ?,
              branch_name = ?,
+             pr_url = ?,
              output = ?,
              error = ?,
              duration_ms = ?,
+             num_turns = ?,
+             total_tokens = ?,
+             thinking_tokens = ?,
              heartbeat_at = ?,
              completed_at = ?,
              updated_at = ?
@@ -755,30 +825,21 @@ export class TaskQueue {
         patch.status,
         workerId,
         branchName,
+        prUrl,
         output,
         error,
         durationMs,
+        numTurns,
+        totalTokens,
+        thinkingTokens,
         now,
         completedAt,
         now,
         taskId
       );
 
-    if (isTerminal && existing.dispatchId === undefined) {
-      const dispatchId = this.appDb.recordDispatch({
-        repository: existing.repositoryName,
-        prompt: existing.prompt,
-        requestedBy: existing.requestedBy,
-        success: patch.status === 'completed',
-        branch: branchName ?? undefined,
-        error: error ?? undefined,
-        durationMs,
-      });
-      if (dispatchId) {
-        this.rawDb
-          .prepare('UPDATE swarm_tasks SET dispatch_id = ? WHERE id = ?')
-          .run(dispatchId, taskId);
-      }
+    if (isTerminal) {
+      this.pruneOldTasks();
     }
 
     if (workerId && this.getWorker(workerId)) {
@@ -795,23 +856,23 @@ export class TaskQueue {
   /**
    * Fails tasks whose worker lease heartbeat has expired and marks stale workers offline.
    */
-  public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): number {
+  public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {
     const activeRows = this.rawDb
       .prepare("SELECT * FROM swarm_tasks WHERE status IN ('claimed', 'executing')")
       .all() as Array<Record<string, any>>;
 
-    let reaped = 0;
+    const reapedTasks: SwarmTask[] = [];
     for (const row of activeRows) {
       const task = this.mapRowToTask(row);
       const lastBeat = task.heartbeatAt || task.claimedAt || task.updatedAt;
       const beatEpoch = new Date(lastBeat).getTime();
       if (!Number.isNaN(beatEpoch) && nowMs - beatEpoch > leaseTimeoutMs) {
-        this.updateTaskStatus(task.id, {
+        const updated = this.updateTaskStatus(task.id, {
           status: 'failed',
           error: `Worker lease expired after ${Math.round(leaseTimeoutMs / 1000)}s without heartbeat`,
           durationMs: nowMs - beatEpoch,
         });
-        reaped++;
+        if (updated) reapedTasks.push(updated);
       }
     }
 
@@ -832,13 +893,12 @@ export class TaskQueue {
       }
     }
 
-    return reaped;
+    return reapedTasks;
   }
 
   public registerWorkerHeartbeat(info: {
     workerId: string;
     name?: string;
-    workerMode?: WorkerMode;
     labels?: string[];
     repositories?: string[];
     systemInfo?: RunnerSystemInfo;
@@ -851,7 +911,6 @@ export class TaskQueue {
       .get(info.workerId) as Record<string, any> | undefined;
 
     const name = info.name ?? existing?.name ?? info.workerId;
-    const workerMode = info.workerMode ?? existing?.worker_mode ?? 'headless';
     const labelsJson =
       info.labels !== undefined
         ? JSON.stringify(info.labels.map((l) => l.trim().toLowerCase()).filter(Boolean))
@@ -875,12 +934,11 @@ export class TaskQueue {
     this.rawDb
       .prepare(
         `INSERT INTO swarm_workers (
-          worker_id, name, worker_mode, labels_json, repositories_json, system_info_json,
+          worker_id, name, labels_json, repositories_json, system_info_json,
           active_task_id, status, registered_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(worker_id) DO UPDATE SET
           name = excluded.name,
-          worker_mode = excluded.worker_mode,
           labels_json = excluded.labels_json,
           repositories_json = excluded.repositories_json,
           system_info_json = excluded.system_info_json,
@@ -891,7 +949,6 @@ export class TaskQueue {
       .run(
         info.workerId,
         name,
-        workerMode,
         labelsJson,
         reposJson,
         systemInfoJson,
@@ -927,7 +984,6 @@ export class TaskQueue {
     return {
       workerId: String(r.worker_id),
       name: String(r.name),
-      workerMode: (r.worker_mode as WorkerMode) || 'headless',
       labels,
       repositories,
       systemInfo,
@@ -948,10 +1004,6 @@ export class TaskQueue {
 
     return {
       id: String(row.id),
-      dispatchId:
-        row.dispatch_id !== null && row.dispatch_id !== undefined
-          ? Number(row.dispatch_id)
-          : undefined,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
       repositoryId: String(row.repository_id),
@@ -961,14 +1013,17 @@ export class TaskQueue {
       defaultBranch: String(row.default_branch || 'main'),
       prompt: String(row.prompt),
       requestedBy: String(row.requested_by || 'web-ui'),
-      priority: (row.priority as TaskPriority) || 'P0',
-      workerMode: (row.worker_mode as WorkerMode) || 'headless',
+      scheduleMode: (row.schedule_mode as ScheduleMode) || 'immediate',
       requiredLabels,
       model: String(row.model),
       poolFamily: (row.pool_family as QuotaFamily) || 'gemini-argon',
       effort: (row.effort as ReasoningEffort) || 'high',
       allowOverage: row.allow_overage === 1,
       pushBranch: row.push_branch === 1,
+      autoCreatePr: row.auto_create_pr !== 0,
+      prUrl: row.pr_url ? String(row.pr_url) : undefined,
+      expiresAt: row.expires_at ? String(row.expires_at) : undefined,
+      standingTaskId: row.standing_task_id ? String(row.standing_task_id) : undefined,
       verifyCommand: row.verify_command ? String(row.verify_command) : undefined,
       status: (row.status as TaskStatus) || 'queued',
       workerId: row.worker_id ? String(row.worker_id) : undefined,
@@ -979,6 +1034,197 @@ export class TaskQueue {
       output: row.output ? String(row.output) : undefined,
       error: row.error ? String(row.error) : undefined,
       durationMs: Number(row.duration_ms || 0),
+      numTurns:
+        row.num_turns !== null && row.num_turns !== undefined ? Number(row.num_turns) : undefined,
+      totalTokens:
+        row.total_tokens !== null && row.total_tokens !== undefined
+          ? Number(row.total_tokens)
+          : undefined,
+      thinkingTokens:
+        row.thinking_tokens !== null && row.thinking_tokens !== undefined
+          ? Number(row.thinking_tokens)
+          : undefined,
+    };
+  }
+
+  // --- Standing Tasks CRUD Methods ---
+
+  public listStandingTasks(): StandingTaskRecord[] {
+    const rows = this.rawDb
+      .prepare('SELECT * FROM standing_tasks ORDER BY sort_order ASC, created_at ASC')
+      .all() as Array<Record<string, any>>;
+    return rows.map((r) => this.mapRowToStandingTask(r));
+  }
+
+  public getStandingTask(id: string): StandingTaskRecord | undefined {
+    const row = this.rawDb.prepare('SELECT * FROM standing_tasks WHERE id = ?').get(id) as
+      Record<string, any> | undefined;
+    return row ? this.mapRowToStandingTask(row) : undefined;
+  }
+
+  public createStandingTask(input: {
+    id?: string;
+    title: string;
+    prompt: string;
+    repositoryId: string;
+    model: string;
+    effort?: ReasoningEffort;
+    verifyCommand?: string;
+    autoCreatePr?: boolean;
+    enabled?: boolean;
+    sortOrder?: number;
+    triggerBeforeResetHours?: number;
+  }): StandingTaskRecord {
+    const id = input.id ?? `standing-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    const now = new Date().toISOString();
+    const effort: ReasoningEffort = input.effort ?? 'high';
+    const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
+    const enabled = input.enabled !== false ? 1 : 0;
+    const sortOrder = input.sortOrder ?? 0;
+    const triggerHours = input.triggerBeforeResetHours ?? 2;
+
+    this.rawDb
+      .prepare(
+        `INSERT INTO standing_tasks (
+          id, title, prompt, repository_id, model, effort, verify_command,
+          auto_create_pr, enabled, sort_order, trigger_before_reset_hours,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.title.trim(),
+        input.prompt.trim(),
+        input.repositoryId.trim(),
+        input.model.trim(),
+        effort,
+        input.verifyCommand ?? null,
+        autoCreatePr,
+        enabled,
+        sortOrder,
+        triggerHours,
+        now,
+        now
+      );
+
+    return this.getStandingTask(id)!;
+  }
+
+  public updateStandingTask(
+    id: string,
+    patch: Partial<{
+      title: string;
+      prompt: string;
+      repositoryId: string;
+      model: string;
+      effort: ReasoningEffort;
+      verifyCommand: string | null;
+      autoCreatePr: boolean;
+      enabled: boolean;
+      sortOrder: number;
+      triggerBeforeResetHours: number;
+      lastTriggeredResetTime: string | null;
+      lastTaskId: string | null;
+    }>
+  ): StandingTaskRecord | undefined {
+    const existing = this.getStandingTask(id);
+    if (!existing) return undefined;
+
+    const now = new Date().toISOString();
+    const title = patch.title !== undefined ? patch.title.trim() : existing.title;
+    const prompt = patch.prompt !== undefined ? patch.prompt.trim() : existing.prompt;
+    const repositoryId =
+      patch.repositoryId !== undefined ? patch.repositoryId.trim() : existing.repositoryId;
+    const model = patch.model !== undefined ? patch.model.trim() : existing.model;
+    const effort = patch.effort !== undefined ? patch.effort : existing.effort;
+    const verifyCommand =
+      patch.verifyCommand !== undefined ? patch.verifyCommand : (existing.verifyCommand ?? null);
+    const autoCreatePr =
+      patch.autoCreatePr !== undefined
+        ? patch.autoCreatePr
+          ? 1
+          : 0
+        : existing.autoCreatePr
+          ? 1
+          : 0;
+    const enabled =
+      patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
+    const sortOrder = patch.sortOrder !== undefined ? patch.sortOrder : existing.sortOrder;
+    const triggerHours =
+      patch.triggerBeforeResetHours !== undefined
+        ? patch.triggerBeforeResetHours
+        : existing.triggerBeforeResetHours;
+    const lastReset =
+      patch.lastTriggeredResetTime !== undefined
+        ? patch.lastTriggeredResetTime
+        : (existing.lastTriggeredResetTime ?? null);
+    const lastTaskId =
+      patch.lastTaskId !== undefined ? patch.lastTaskId : (existing.lastTaskId ?? null);
+
+    this.rawDb
+      .prepare(
+        `UPDATE standing_tasks
+         SET title = ?,
+             prompt = ?,
+             repository_id = ?,
+             model = ?,
+             effort = ?,
+             verify_command = ?,
+             auto_create_pr = ?,
+             enabled = ?,
+             sort_order = ?,
+             trigger_before_reset_hours = ?,
+             last_triggered_reset_time = ?,
+             last_task_id = ?,
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        title,
+        prompt,
+        repositoryId,
+        model,
+        effort,
+        verifyCommand,
+        autoCreatePr,
+        enabled,
+        sortOrder,
+        triggerHours,
+        lastReset,
+        lastTaskId,
+        now,
+        id
+      );
+
+    return this.getStandingTask(id);
+  }
+
+  public deleteStandingTask(id: string): boolean {
+    const info = this.rawDb
+      .prepare('DELETE FROM standing_tasks WHERE id = ?')
+      .run(id) as unknown as { changes?: number };
+    return (info?.changes ?? 0) > 0;
+  }
+
+  private mapRowToStandingTask(r: Record<string, any>): StandingTaskRecord {
+    return {
+      id: String(r.id),
+      title: String(r.title),
+      prompt: String(r.prompt),
+      repositoryId: String(r.repository_id),
+      model: String(r.model),
+      effort: (r.effort as ReasoningEffort) || 'high',
+      verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
+      autoCreatePr: r.auto_create_pr !== 0,
+      enabled: r.enabled !== 0,
+      sortOrder: Number(r.sort_order ?? 0),
+      triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? 2),
+      lastTriggeredResetTime: r.last_triggered_reset_time
+        ? String(r.last_triggered_reset_time)
+        : undefined,
+      lastTaskId: r.last_task_id ? String(r.last_task_id) : undefined,
+      createdAt: String(r.created_at),
+      updatedAt: String(r.updated_at),
     };
   }
 }

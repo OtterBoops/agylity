@@ -25,6 +25,7 @@ export class ConsoleNotifier implements Notifier {
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
     this.alerts.push(alert);
+    if (this.alerts.length > 100) this.alerts.shift();
 
     // Format rich ASCII box for console output
     const poolName = alert.pool.displayName || alert.pool.poolId;
@@ -47,6 +48,7 @@ export class ConsoleNotifier implements Notifier {
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
     this.statuses.push(status);
+    if (this.statuses.length > 100) this.statuses.shift();
 
     const step = status.status ?? (status.step as string) ?? 'executing';
     const repo = status.repositoryName ?? 'N/A';

@@ -2,6 +2,7 @@ import {
   faChevronDown,
   faChevronUp,
   faCodeBranch,
+  faMinus,
   faNetworkWired,
   faPlus,
 } from '@fortawesome/free-solid-svg-icons';
@@ -16,6 +17,7 @@ import { Icon } from '../components/Icon';
 import { NotificationsView } from './NotificationsView';
 import { RunnerRegistrationPanel } from '../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../components/SwarmRunnersGrid';
+import { PoolPoliciesCard } from '../components/PoolPoliciesCard';
 import { ORCHESTRATOR_FIELDS, SENTRY_FIELDS } from '../config/fields';
 
 interface SettingsViewProps {
@@ -37,7 +39,12 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
   }, []);
 
   useEffect(() => {
-    if (route !== 'settings/remote' || !isOrchestratorEnabled) return;
+    if (
+      (route !== 'settings/orchestrator' && route !== 'settings/remote') ||
+      !isOrchestratorEnabled
+    ) {
+      return;
+    }
     refreshWorkers();
     const timer = setInterval(refreshWorkers, 8000);
     return () => clearInterval(timer);
@@ -72,6 +79,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
     case 'settings/notifications':
       return <NotificationsView config={config} onSaved={onChanged} />;
 
+    case 'settings/orchestrator':
     case 'settings/remote':
       return (
         <div class="flex flex-col gap-6">
@@ -106,7 +114,7 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
                     onClick={() => setShowRegisterPanel(!showRegisterPanel)}
                     class="flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-iris/40 bg-pine-iris/15 px-3.5 py-2 text-xs font-semibold whitespace-nowrap text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base sm:text-sm"
                   >
-                    <Icon icon={faPlus} class="size-3" />
+                    <Icon icon={showRegisterPanel ? faMinus : faPlus} class="size-3" />
                     <span>{showRegisterPanel ? 'Hide Form' : 'New Runner'}</span>
                   </button>
                 )}
@@ -137,21 +145,15 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
             )}
 
             {isOrchestratorEnabled && (
-              <div class="mt-5 border-t border-pine-highlight pt-4">
-                <div class="mb-2.5 flex items-center justify-between">
-                  <h4 class="text-xs font-semibold tracking-wider text-pine-subtle uppercase">
-                    Registered Swarm Runners ({workers.length})
-                  </h4>
-                </div>
-
-                <SwarmRunnersGrid
-                  workers={workers}
-                  onToggleEnabled={handleToggleWorkerEnabled}
-                  onRevoke={handleRevokeWorker}
-                />
-              </div>
+              <SwarmRunnersGrid
+                workers={workers}
+                onToggleEnabled={handleToggleWorkerEnabled}
+                onRevoke={handleRevokeWorker}
+              />
             )}
           </div>
+
+          {isOrchestratorEnabled && <PoolPoliciesCard config={config} onSaved={onChanged} />}
 
           {isOrchestratorEnabled && (
             <SettingsForm
@@ -200,6 +202,8 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
     case 'settings/advanced':
       return (
         <div class="flex flex-col gap-6">
+          <PoolPoliciesCard config={config} onSaved={onChanged} />
+
           <SettingsForm
             title="Sentry &amp; Quota Safeguards"
             description="Fine-tune quota polling frequency, milestone warnings, Language Server Connect-RPC, and overcharge safety floor."

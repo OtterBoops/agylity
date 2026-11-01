@@ -6,6 +6,7 @@ import { TopBar } from './components/TopBar';
 import { QuotaGrid } from './components/QuotaGrid';
 import { DispatchModal } from './components/DispatchModal';
 import { CommandPalette } from './components/CommandPalette';
+import { TasksView } from './components/TasksView';
 import { ActivityView } from './views/ActivityView';
 import { LogsView } from './views/LogsView';
 import { SettingsView } from './views/SettingsView';
@@ -20,8 +21,10 @@ import {
 
 const TITLES: Record<Route, [string, string]> = {
   overview: ['Overview', ''],
+  tasks: ['Tasks', ''],
   logs: ['Logs', ''],
   'settings/notifications': ['Notifications', ''],
+  'settings/orchestrator': ['Orchestrator', ''],
   'settings/remote': ['Orchestrator', ''],
   'settings/repositories': ['Repositories', ''],
   'settings/advanced': ['Advanced', ''],
@@ -44,11 +47,32 @@ export const App = () => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCommandPaletteOpen((prev) => !prev);
+        return;
+      }
+
+      // Check if target is an interactive input
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.tagName === 'SELECT' ||
+          target.isContentEditable);
+
+      if (e.altKey && e.key.toLowerCase() === 'd') {
+        e.preventDefault();
+        setDispatchModalOpen(true);
+        return;
+      }
+
+      if (!isInput && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        handleManualRefresh();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [refreshCooldown, isRefreshing]);
 
   const handleToggleTheme = () => {
     const sequence: ThemeChoice[] = ['regular', 'moon', 'dawn', 'system'];
@@ -107,9 +131,11 @@ export const App = () => {
 
   const [title, subtitle] = TITLES[route];
   const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
+  const remainingCredits =
+    quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;
 
   return (
-    <div class="min-h-screen bg-pine-base text-pine-text md:flex md:h-screen md:overflow-hidden">
+    <div class="min-h-screen bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
         route={route}
         onNavigate={navigate}
@@ -117,20 +143,21 @@ export const App = () => {
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+        remainingCredits={remainingCredits}
       />
 
-      <div class="min-w-0 flex-1 p-4 sm:p-6 md:h-screen md:overflow-y-auto md:p-8 2xl:p-10">
-        <div class="mx-auto max-w-7xl 2xl:max-w-[1760px]">
+      <div class="min-w-0 flex-1 p-4 sm:p-6 md:h-screen md:overflow-y-auto md:p-6 2xl:p-8">
+        <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
           <TopBar
             title={title}
             subtitle={subtitle}
             isRefreshing={isRefreshing}
             refreshCooldown={refreshCooldown}
             orchestratorEnabled={isOrchestratorEnabled}
+            remainingCredits={remainingCredits}
             theme={theme}
             onThemeChange={setTheme}
             onRefresh={handleManualRefresh}
-            onOpenDispatch={() => setDispatchModalOpen(true)}
             onOpenCommandPalette={() => setCommandPaletteOpen(true)}
           />
 
@@ -143,6 +170,9 @@ export const App = () => {
                 />
                 <ActivityView alerts={alerts} />
               </>
+            )}
+            {route === 'tasks' && (
+              <TasksView onRefresh={fetchAll} onOpenDispatch={() => setDispatchModalOpen(true)} />
             )}
             {route === 'logs' && <LogsView />}
             {route.startsWith('settings/') && (

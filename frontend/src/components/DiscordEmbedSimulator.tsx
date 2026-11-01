@@ -75,7 +75,7 @@ export const DiscordEmbedSimulator = ({
             </svg>
           </div>
           <span class="font-medium text-white">Agylity Quota Sentry</span>
-          <span class="py-0.2 rounded-sm bg-[#5865F2] px-1 text-[9px] font-bold text-white uppercase">
+          <span class="rounded-sm bg-[#5865F2] px-1 py-0.5 text-[9px] font-bold text-white uppercase">
             BOT
           </span>
           <span class="text-[10px] text-[#949ba4]">Today at 22:58</span>
@@ -102,13 +102,6 @@ export const DiscordEmbedSimulator = ({
             [Alert] Quota Milestone: Claude 5.5 Sonnet / Opus
           </div>
           <div class="mb-3 text-xs text-[#dbdee1]">
-            {pingOwner && (
-              <>
-                <span class="rounded-sm bg-[#5865F2]/30 px-1 py-0.5 font-medium text-[#c9cdfb]">
-                  @{ownerUserId.trim() || 'owner'}
-                </span>{' '}
-              </>
-            )}
             Milestone threshold:{' '}
             <strong>
               {previewTier === 'alert' ? '1h' : previewTier === 'warning' ? '3h' : '12h'}

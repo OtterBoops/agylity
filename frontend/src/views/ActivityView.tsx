@@ -102,7 +102,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                         {t.prompt}
                       </td>
                       <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle">
-                        <span class="font-bold text-pine-gold">{t.priority}</span> • {t.model}
+                        <span class="font-bold text-pine-gold">{t.scheduleMode}</span> • {t.model}
                       </td>
                       <td class="px-4 py-3 whitespace-nowrap">
                         <span
@@ -124,24 +124,26 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
         </div>
       )}
 
-      <div class="mb-8">
+      <div class="mb-8 2xl:mb-12">
         <div class="mb-4 flex items-center justify-between">
-          <h2 class="text-xl font-semibold text-pine-text sm:text-2xl">Dispatch History</h2>
-          <span class="text-xs text-pine-muted sm:text-sm">
+          <h2 class="text-xl font-semibold text-pine-text sm:text-2xl 2xl:text-3xl">
+            Dispatch History
+          </h2>
+          <span class="text-xs text-pine-muted sm:text-sm 2xl:text-base">
             Click any row to inspect task prompt &amp; telemetry
           </span>
         </div>
         <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
           <div class="overflow-x-auto">
-            <table class="w-full border-collapse text-left text-sm">
+            <table class="w-full border-collapse text-left text-sm 2xl:text-base">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm">
-                  <th class="px-4 py-3">When</th>
-                  <th class="px-4 py-3">Repository</th>
-                  <th class="px-4 py-3">Prompt</th>
-                  <th class="px-4 py-3">By</th>
-                  <th class="px-4 py-3">Result</th>
-                  <th class="px-4 py-3">Took</th>
+                <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm 2xl:text-base">
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">When</th>
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Repository</th>
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Prompt</th>
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">By</th>
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Result</th>
+                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Took</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-pine-highlight">
@@ -149,7 +151,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                   <tr>
                     <td
                       colSpan={6}
-                      class="px-4 py-8 text-center text-xs text-pine-muted sm:text-sm"
+                      class="px-4 py-8 text-center text-xs text-pine-muted sm:text-sm 2xl:py-12 2xl:text-base"
                     >
                       No tasks dispatched yet
                     </td>
@@ -162,19 +164,24 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       class="cursor-pointer align-top transition-colors hover:bg-white/4"
                       title="Click to inspect task details"
                     >
-                      <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle sm:text-sm">
+                      <td class="px-4 py-3.5 text-xs whitespace-nowrap text-pine-subtle sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
                         {new Date(d.createdAt).toLocaleString()}
                       </td>
-                      <td class="px-4 py-3 font-mono text-xs text-pine-iris sm:text-sm">
+                      <td class="px-4 py-3.5 font-mono text-xs text-pine-iris sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
                         {d.repository}
                       </td>
-                      <td class="max-w-sm truncate px-4 py-3 text-pine-text" title={d.prompt}>
+                      <td
+                        class="max-w-sm truncate px-4 py-3.5 text-pine-text 2xl:max-w-md 2xl:px-5 2xl:py-4"
+                        title={d.prompt}
+                      >
                         {d.prompt}
                       </td>
-                      <td class="px-4 py-3 text-xs text-pine-subtle sm:text-sm">{d.requestedBy}</td>
-                      <td class="px-4 py-3">
+                      <td class="px-4 py-3.5 text-xs text-pine-subtle sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
+                        {d.requestedBy}
+                      </td>
+                      <td class="px-4 py-3.5 2xl:px-5 2xl:py-4">
                         <span
-                          class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                          class={`rounded-sm border px-2.5 py-0.5 text-xs font-bold tracking-wider uppercase sm:text-sm 2xl:text-base ${
                             d.success
                               ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
                               : 'border-pine-love bg-pine-love/20 text-pine-love'
@@ -183,10 +190,12 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                           {d.success ? 'Done' : 'Failed'}
                         </span>
                         {d.branch && (
-                          <div class="mt-1 font-mono text-xs text-pine-muted">{d.branch}</div>
+                          <div class="mt-1 font-mono text-xs text-pine-muted 2xl:text-sm">
+                            {d.branch}
+                          </div>
                         )}
                       </td>
-                      <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle sm:text-sm">
+                      <td class="px-4 py-3.5 text-xs whitespace-nowrap text-pine-subtle sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
                         {formatDuration(d.durationMs)}
                       </td>
                     </tr>

@@ -341,7 +341,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       });
 
       const notifier = new DiscordNotifier({
-        repositories: [{ id: 'repo-1', name: 'Agylity', path: '/opt/agylity' }],
+        repositories: [
+          { id: 'repo-1', name: 'Agylity', path: '/opt/agylity', defaultBranch: 'main' },
+        ],
       });
 
       const startTime = Date.now();
@@ -364,7 +366,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-1', name: 'Agylity Core', path: '/opt/agylity' }],
+          repositories: [
+            { id: 'repo-1', name: 'Agylity Core', path: '/opt/agylity', defaultBranch: 'main' },
+          ],
         },
         {
           onDispatchRequested: async (req: DispatchRequest) => {
@@ -382,9 +386,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.handleInteraction(interaction);
 
       assert.equal(dispatchCalled, true);
-      assert.equal(receivedReq?.repositoryId, 'repo-1');
-      assert.equal(receivedReq?.repositoryName, 'Agylity Core');
-      assert.equal(receivedReq?.prompt, 'Run unit test suite');
+      assert.equal((receivedReq as any)?.repositoryId, 'repo-1');
+      assert.equal((receivedReq as any)?.repositoryName, 'Agylity Core');
+      assert.equal((receivedReq as any)?.prompt, 'Run unit test suite');
 
       assert.deepEqual(interaction.state.editedData, {
         content:
@@ -400,7 +404,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-1', name: 'Backend API', path: '/opt/backend' }],
+          repositories: [
+            { id: 'repo-1', name: 'Backend API', path: '/opt/backend', defaultBranch: 'main' },
+          ],
         },
         {
           onDispatchRequested: async () => ({
@@ -415,7 +421,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       assert.deepEqual(interaction.state.editedData, {
         content:
-          '[Blocked] Zero-Clobber Guardrail: Host node@worker failed to wake within 60s timeout. Aborted.',
+          '[Blocked] Task Dispatch: Host node@worker failed to wake within 60s timeout. Aborted.',
       });
     });
 
@@ -435,7 +441,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-rapid', name: 'Rapid', path: '/opt/rapid' }],
+          repositories: [
+            { id: 'repo-rapid', name: 'Rapid', path: '/opt/rapid', defaultBranch: 'main' },
+          ],
         },
         {
           onDispatchRequested: async () => {
@@ -466,7 +474,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       });
 
       const notifier = new DiscordNotifier({
-        repositories: [{ id: 'repo-1', name: 'Agylity', path: '/opt/agylity' }],
+        repositories: [
+          { id: 'repo-1', name: 'Agylity', path: '/opt/agylity', defaultBranch: 'main' },
+        ],
       });
 
       await notifier.handleInteraction(interaction);
@@ -483,7 +493,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const hugeError = 'Stack trace error details: ' + 'x'.repeat(2500);
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-1', name: 'Error Repo', path: '/opt/error' }],
+          repositories: [
+            { id: 'repo-1', name: 'Error Repo', path: '/opt/error', defaultBranch: 'main' },
+          ],
         },
         {
           onDispatchRequested: async () => ({
@@ -498,7 +510,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const content = interaction.state.editedData?.content ?? '';
       assert.ok(content.length <= 2000);
-      assert.ok(content.startsWith('[Blocked] Zero-Clobber Guardrail: Stack trace error details:'));
+      assert.ok(content.startsWith('[Blocked] Task Dispatch: Stack trace error details:'));
     });
   });
 
@@ -600,7 +612,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const notifier = new DiscordNotifier(
         {
           discordNotificationChannelId: 'sentry-channel',
-          repositories: [{ id: 'agylity', name: 'Agylity', path: '/opt/agylity' }],
+          repositories: [
+            { id: 'agylity', name: 'Agylity', path: '/opt/agylity', defaultBranch: 'main' },
+          ],
         },
         {
           onQuotaRequested: async () => [
@@ -652,7 +666,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       });
 
       const notifier = new DiscordNotifier({
-        repositories: [{ id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity' }],
+        repositories: [
+          { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+        ],
       });
 
       await notifier.handleInteraction(interaction);
@@ -1019,14 +1035,16 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         customId: 'modal_dispatch:repo-1',
       });
 
-      let resolveDispatch!: (res: any) => void;
-      const dispatchPromise = new Promise((resolve) => {
+      let resolveDispatch!: (res: DispatchResult) => void;
+      const dispatchPromise = new Promise<DispatchResult>((resolve) => {
         resolveDispatch = resolve;
       });
 
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'repo-1', name: 'Repo One', path: '/opt/repo1' }],
+          repositories: [
+            { id: 'repo-1', name: 'Repo One', path: '/opt/repo1', defaultBranch: 'main' },
+          ],
         },
         {
           onDispatchRequested: async () => {
@@ -1298,8 +1316,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
 
     it('createDaemonNotifier returns CompositeNotifier with dynamic multi-channel switching and updateConfig', async () => {
-      const notifier = createDaemonNotifier({
-        channels: ['console'],
+      const notifier = await createDaemonNotifier({
+        ...BUILTIN_DEFAULTS,
+        notificationChannels: ['console'],
       });
       assert.ok(notifier);
 

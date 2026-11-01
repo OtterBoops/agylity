@@ -1,12 +1,13 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^7.3.1",
@@ -18,7 +19,7 @@
     "@tailwindcss/vite": "^4.3.3",
     "@types/node": "^24.19.2",
     "tailwindcss": "^4.3.3",
-    "typescript": "~7.0.2",
+    "typescript": "^5.9.3",
     "vite": "^8.3.4"
   }
 }

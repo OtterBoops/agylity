@@ -20,13 +20,8 @@ services:
       - '8484:8484'
 
     volumes:
-      # Option A (Recommended): Docker-managed named volume.
-      # High I/O performance, native WAL mode support, and zero host permission issues.
       - agylity-data:/app/data
-
-      # Option B: Direct host bind mount.
-      # Uncomment if you prefer inspecting or backing up SQLite files directly on host disk:
-      # - ./data:/app/data
+      - agylity-gemini:/home/node/.gemini
 
     environment:
       - NODE_ENV=production
@@ -36,15 +31,11 @@ services:
       - ORCHESTRATOR_ENABLED=true
       - NOTIFICATION_CHANNELS=discord,webhook
       - DISCORD_TOKEN=${DISCORD_TOKEN}
-      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID}
-      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID}
       - DISCORD_NOTIFICATION_CHANNEL_ID=${DISCORD_NOTIFICATION_CHANNEL_ID}
       - DISCORD_OWNER_USER_ID=${DISCORD_OWNER_USER_ID}
       - DISCORD_PING_OWNER=${DISCORD_PING_OWNER:-true}
       - WEBHOOK_URL=${WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
-      # URL to local/remote Antigravity Language Server (or empty for local autodiscovery)
-      - ANTIGRAVITY_ENDPOINT_URL=${ANTIGRAVITY_ENDPOINT_URL}
 
     healthcheck:
       test:
@@ -77,17 +68,18 @@ services:
     container_name: agylity-worker
     restart: unless-stopped
 
-    # Single File Mount:
-    # Google OAuth credentials for the agy CLI. Mounted read-write so agy can
-    # automatically persist refreshed tokens back to disk when access tokens expire.
+    # Shared Docker named volume for Antigravity CLI credentials:
+    # Authenticate once via: docker exec -it agylity agy
     volumes:
-      - ./oauth_creds.json:/home/node/.gemini/oauth_creds.json
+      - agylity-gemini:/home/node/.gemini
+      - agylity-worker-data:/data
       # Optional: Uncomment if you want to cache git clones between tasks instead of cloning fresh.
       # - worker-repos:/repos
 
     environment:
       - NODE_ENV=production
       - COORDINATOR_URL=http://agylity:8484
+      - RUNNER_STATE_PATH=/data/runner.json
       - WORKER_NAME=agylity-worker-1
       - RUNNER_TOKEN=${RUNNER_TOKEN}
       # Git identity & GitHub token for zero-mount authenticated git clone/push
@@ -110,5 +102,9 @@ services:
 volumes:
   # High-performance Docker-managed volume for SQLite database (agylity.db) & alert state
   agylity-data:
+  # Shared credential volume for agy CLI across coordinator and worker
+  agylity-gemini:
+  # Persistent volume for worker runner registration token & runner.json state
+  agylity-worker-data:
   # Optional cache volume for git repos across worker task executions
   # worker-repos:

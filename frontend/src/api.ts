@@ -101,9 +101,9 @@ export const triggerDispatch = (payload: {
   prompt: string;
   requestedBy?: string;
   model?: string;
-  priority?: 'P0' | 'P1' | 'P2';
+  scheduleMode?: 'immediate' | 'pre_reset';
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  workerMode?: 'headless' | 'visible' | 'any';
+  autoCreatePr?: boolean;
   allowOverage?: boolean;
 }): Promise<{
   success: boolean;
@@ -123,7 +123,7 @@ export const getModels = (): Promise<{
   api
     .get('models')
     .json<{ defaultModel: string; defaultEffort: string; models: ModelCatalogEntry[] }>()
-    .catch(() => ({ defaultModel: 'gemini-4-argon-high', defaultEffort: 'high', models: [] }));
+    .catch(() => ({ defaultModel: 'gemini-4-argon', defaultEffort: 'high', models: [] }));
 
 export const getWorkers = (): Promise<SwarmWorkerRecord[]> =>
   api
@@ -133,7 +133,6 @@ export const getWorkers = (): Promise<SwarmWorkerRecord[]> =>
 
 export const createRegistrationToken = (payload: {
   nameHint?: string;
-  workerMode?: 'headless' | 'visible' | 'any';
   labels?: string[];
   repositories?: string[];
 }): Promise<RunnerRegistrationTokenResult> =>

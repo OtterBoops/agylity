@@ -2,12 +2,7 @@ import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
 import { getModels, triggerDispatch } from '../api';
-import {
-  EFFORT_OPTIONS,
-  MODEL_OPTIONS,
-  PRIORITY_OPTIONS,
-  WORKER_MODE_OPTIONS,
-} from '../config/fields';
+import { EFFORT_OPTIONS, MODEL_OPTIONS } from '../config/fields';
 import { Icon } from './Icon';
 
 interface DispatchModalProps {
@@ -34,20 +29,27 @@ const computePoolHeadroomPct = (pool?: QuotaSnapshot): number | null => {
   return Math.round(Math.max(0, Math.min(1, Math.min(...fractions))) * 100);
 };
 
+const normalizeBaseModel = (raw?: string): string => {
+  if (!raw) return 'gemini-3.8-flash';
+  if (raw.startsWith('gemini-3.8-flash')) return 'gemini-3.8-flash';
+  if (raw.startsWith('gemini-4-argon')) return 'gemini-4-argon';
+  if (raw.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
+  if (raw.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
+  if (raw.startsWith('gpt-oss-120b')) return 'gpt-oss-120b';
+  return raw;
+};
+
 export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
-  const configuredDefaultModel = config.resolved?.defaultDispatchModel || 'gemini-4-argon-high';
-  const configuredDefaultMode = config.resolved?.defaultWorkerMode || 'headless';
+  const configuredDefaultModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
   const configuredDefaultEffort = (config.resolved?.defaultDispatchEffort as any) || 'high';
 
   const [selectedRepo, setSelectedRepo] = useState('');
   const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
-  const [priority, setPriority] = useState<'P0' | 'P1' | 'P2'>('P0');
+  const [scheduleMode, setScheduleMode] = useState<'immediate' | 'pre_reset'>('immediate');
   const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(
     configuredDefaultEffort
   );
-  const [workerMode, setWorkerMode] = useState<'headless' | 'visible' | 'any'>(
-    configuredDefaultMode
-  );
+  const [autoCreatePr, setAutoCreatePr] = useState(true);
   const [taskPrompt, setTaskPrompt] = useState('');
   const [requestedBy, setRequestedBy] = useState('web-ui');
   const [allowOverage, setAllowOverage] = useState(false);
@@ -57,14 +59,9 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
-    setSelectedModel(config.resolved?.defaultDispatchModel || 'gemini-4-argon-high');
-    setWorkerMode(config.resolved?.defaultWorkerMode || 'headless');
+    setSelectedModel(normalizeBaseModel(config.resolved?.defaultDispatchModel));
     setEffort((config.resolved?.defaultDispatchEffort as any) || 'high');
-  }, [
-    config.resolved?.defaultDispatchModel,
-    config.resolved?.defaultWorkerMode,
-    config.resolved?.defaultDispatchEffort,
-  ]);
+  }, [config.resolved?.defaultDispatchModel, config.resolved?.defaultDispatchEffort]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -145,9 +142,9 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       prompt: taskPrompt.trim(),
       requestedBy: requestedBy.trim() || 'web-ui',
       model: selectedModel,
-      priority,
+      scheduleMode,
       effort,
-      workerMode,
+      autoCreatePr,
       allowOverage,
     })
       .then((data) => {
@@ -161,7 +158,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
         }
         const label =
           data.status === 'queued'
-            ? `Task queued (${priority}, ${data.model || selectedModel})! Planned branch: ${data.branchName || 'antigravity/continuation'}`
+            ? `Task queued (${scheduleMode}, ${data.model || selectedModel})! Planned branch: ${data.branchName || 'antigravity/continuation'}`
             : `Task dispatched (${data.model || selectedModel})! Branch: ${data.branchName || 'antigravity/continuation'}`;
         setStatus({
           type: 'success',
@@ -274,28 +271,27 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
             </div>
 
             <div class="flex flex-col gap-1.5">
-              <label for="prioritySelect" class="text-xs font-medium text-pine-subtle">
-                Queue Priority
+              <label for="scheduleModeSelect" class="text-xs font-medium text-pine-subtle">
+                Schedule Mode
               </label>
               <select
-                id="prioritySelect"
-                name="priority"
+                id="scheduleModeSelect"
+                name="scheduleMode"
                 class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                value={priority}
+                value={scheduleMode}
                 onChange={(e) =>
-                  setPriority((e.target as HTMLSelectElement).value as 'P0' | 'P1' | 'P2')
+                  setScheduleMode(
+                    (e.target as HTMLSelectElement).value as 'immediate' | 'pre_reset'
+                  )
                 }
               >
-                {PRIORITY_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
+                <option value="immediate">Run Immediately</option>
+                <option value="pre_reset">Pre-Reset Quota Burn</option>
               </select>
             </div>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div class="flex flex-col gap-1.5">
               <label for="effortSelect" class="text-xs font-medium text-pine-subtle">
                 Reasoning Effort (--effort)
@@ -321,29 +317,6 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
             </div>
 
             <div class="flex flex-col gap-1.5">
-              <label for="workerModeSelect" class="text-xs font-medium text-pine-subtle">
-                Worker Routing
-              </label>
-              <select
-                id="workerModeSelect"
-                name="workerMode"
-                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
-                value={workerMode}
-                onChange={(e) =>
-                  setWorkerMode(
-                    (e.target as HTMLSelectElement).value as 'headless' | 'visible' | 'any'
-                  )
-                }
-              >
-                {WORKER_MODE_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div class="flex flex-col gap-1.5">
               <label for="requestedByInput" class="text-xs font-medium text-pine-subtle">
                 Requested By Identifier
               </label>
@@ -360,6 +333,20 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
                 onInput={(e) => setRequestedBy((e.target as HTMLInputElement).value)}
               />
             </div>
+          </div>
+
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              id="autoCreatePrCheck"
+              type="checkbox"
+              class="size-4 cursor-pointer rounded-sm border-pine-highlight text-pine-iris focus:ring-pine-iris"
+              checked={autoCreatePr}
+              onChange={(e) => setAutoCreatePr((e.target as HTMLInputElement).checked)}
+            />
+            <label for="autoCreatePrCheck" class="cursor-pointer text-xs text-pine-text">
+              Automatically create Pull Request via{' '}
+              <code class="font-mono text-pine-foam">gh pr create</code> on branch push
+            </label>
           </div>
 
           <div class="flex flex-col gap-1.5">

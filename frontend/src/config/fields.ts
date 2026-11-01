@@ -1,19 +1,11 @@
 import type { FieldDef } from '../components/SettingsForm';
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
-  { value: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
-  { value: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)' },
-  { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)' },
-  { value: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
-  { value: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
-  { value: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
-  { value: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)' },
-  { value: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)' },
-  { value: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)' },
-  { value: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)' },
-  { value: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)' },
-  { value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' },
+  { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
+  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
+  { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
+  { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
+  { value: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
 ];
 
 export const EFFORT_OPTIONS: Array<{
@@ -27,28 +19,20 @@ export const EFFORT_OPTIONS: Array<{
   { value: 'max', label: 'Max' },
 ];
 
-export const WORKER_MODE_OPTIONS: Array<{ value: 'headless' | 'visible' | 'any'; label: string }> =
-  [
-    { value: 'headless', label: 'Headless (Unattended Docker / Server)' },
-    { value: 'visible', label: 'Visible (Supervised Desktop Terminal)' },
-    { value: 'any', label: 'Any Available Runner' },
-  ];
-
-export const PRIORITY_OPTIONS: Array<{ value: 'P0' | 'P1' | 'P2'; label: string; desc: string }> = [
+export const SCHEDULE_MODE_OPTIONS: Array<{
+  value: 'immediate' | 'pre_reset';
+  label: string;
+  desc: string;
+}> = [
   {
-    value: 'P0',
-    label: 'P0 — Critical Fast-Track',
-    desc: 'Preempts lower tiers; immediate runner execution',
+    value: 'immediate',
+    label: 'Immediate',
+    desc: 'Dispatches as soon as a runner is available and pool quota permits',
   },
   {
-    value: 'P1',
-    label: 'P1 — Standard Workflow',
-    desc: 'Default priority for routine continuation tasks',
-  },
-  {
-    value: 'P2',
-    label: 'P2 — Quota-Burn Opportunistic',
-    desc: 'Released when pool reset is imminent with surplus headroom',
+    value: 'pre_reset',
+    label: 'Pre-Reset Opportunistic',
+    desc: 'Dispatches only when pool reset is imminent with surplus headroom',
   },
 ];
 
@@ -66,19 +50,6 @@ export const ORCHESTRATOR_FIELDS: FieldDef[] = [
     type: 'select',
     options: EFFORT_OPTIONS,
     hint: 'Reasoning effort level passed to agy --effort.',
-  },
-  {
-    key: 'defaultWorkerMode',
-    label: 'Default runner target mode',
-    type: 'select',
-    options: WORKER_MODE_OPTIONS,
-    hint: 'Target runner class for newly queued continuation tasks.',
-  },
-  {
-    key: 'workerSharedSecret',
-    label: 'Fallback shared runner secret (optional)',
-    type: 'password',
-    hint: 'Encrypted at rest with AES-256-GCM. Optional fallback token alongside per-runner registration tokens.',
   },
   {
     key: 'agyBinPath',
@@ -100,6 +71,13 @@ export const ORCHESTRATOR_FIELDS: FieldDef[] = [
     type: 'number',
     placeholder: '30',
     hint: 'Minimum remaining pool quota required to release P2 opportunistic tasks (default: 30%).',
+  },
+  {
+    key: 'workerSharedSecret',
+    label: 'Fallback shared runner secret (optional)',
+    type: 'password',
+    colSpan: 2,
+    hint: 'Encrypted at rest with AES-256-GCM. Optional fallback token alongside per-runner registration tokens.',
   },
 ];
 

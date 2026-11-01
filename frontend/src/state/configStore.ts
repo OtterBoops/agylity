@@ -51,6 +51,7 @@ export const saveConfigOverrides = async (
         config: {
           resolved: res.resolved,
           overrides: res.overrides,
+          sources: res.sources ?? configStore.getState().config.sources,
           secretsMeta: res.secretsMeta,
         },
         loading: false,

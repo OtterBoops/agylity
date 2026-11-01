@@ -27,13 +27,6 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
       .get() as { name: string } | undefined;
     assert.ok(tableCheck);
     assert.equal(tableCheck.name, 'settings');
-
-    // Verify schema_migrations table exists
-    const migCheck = raw
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations';")
-      .get() as { name: string } | undefined;
-    assert.ok(migCheck);
-    assert.equal(migCheck.name, 'schema_migrations');
   });
 
   it('auto-creates parent directories and enables WAL mode on disk files', () => {
@@ -143,32 +136,10 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     memDb.close();
   });
 
-  it('sets busyTimeoutMs pragma and recordDispatch returns lastInsertRowid', () => {
+  it('sets busyTimeoutMs pragma correctly', () => {
     const busyDb = new AppDatabase({ path: ':memory:', busyTimeoutMs: 2500 });
     const pragma = busyDb.getRawDb().prepare('PRAGMA busy_timeout;').get() as { timeout: number };
     assert.equal(pragma.timeout, 2500);
-
-    const id1 = busyDb.recordDispatch({
-      repository: 'test-repo',
-      prompt: 'Fix memory leak',
-      requestedBy: 'user-1',
-      success: true,
-      branch: 'main',
-      durationMs: 120,
-    });
-    assert.equal(typeof id1, 'number');
-    assert.ok(id1 > 0);
-
-    const id2 = busyDb.recordDispatch({
-      repository: 'test-repo-2',
-      prompt: 'Refactor types',
-      requestedBy: 'user-2',
-      success: false,
-      error: 'Build failed',
-      durationMs: 450,
-    });
-    assert.equal(id2, id1 + 1);
-
     busyDb.close();
   });
 });

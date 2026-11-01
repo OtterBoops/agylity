@@ -77,6 +77,16 @@ export const LogsView = () => {
     const msg = e.message.toLowerCase();
     if (q && !msg.includes(q)) return false;
     if (namespace !== 'all') {
+      const match = e.message.match(/^\[([a-zA-Z0-9_\-:]+)\]/);
+      if (match && match[1]) {
+        const prefix = match[1].toLowerCase();
+        if (
+          namespace === 'runner' &&
+          (prefix.startsWith('runner') || prefix === 'orchestrator' || prefix === 'worker')
+        )
+          return true;
+        if (prefix.startsWith(namespace)) return true;
+      }
       const keywords = FACET_KEYWORDS[namespace];
       if (!keywords.some((kw) => msg.includes(kw))) return false;
     }

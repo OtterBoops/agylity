@@ -5,13 +5,11 @@ import { logger } from '../../logs/logger.js';
 import { OrchestratorCoordinator } from '../../orchestrator/coordinator.js';
 import {
   annotateModelsWithQuota,
-  TaskPrioritySchema,
-  WorkerModeSchema,
   ReasoningEffortSchema,
+  ScheduleModeSchema,
   TaskStatusSchema,
-  type TaskPriority,
-  type WorkerMode,
   type ReasoningEffort,
+  type ScheduleMode,
   type TaskStatus,
 } from '../../orchestrator/models.js';
 
@@ -55,11 +53,17 @@ export const handleGetDispatches = (
   method: string
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
+  const orchestrator = resolveOrchestrator(options);
   const limit = Number(url.searchParams.get('limit') ?? 50);
-  const rows = options.configStore
-    .getDatabase()
-    .listDispatches(Number.isFinite(limit) ? limit : 50);
-  return sendJson(res, 200, rows, { 'Cache-Control': 'no-store' });
+  const tasks = orchestrator.queue.listTasks({
+    limit: Number.isFinite(limit) ? limit : 50,
+  });
+  const mapped = tasks.map((t) => ({
+    ...t,
+    repository: t.repositoryName,
+    success: t.status === 'completed',
+  }));
+  return sendJson(res, 200, mapped, { 'Cache-Control': 'no-store' });
 };
 
 export const handleGetModels = async (
@@ -86,7 +90,7 @@ export const handleGetModels = async (
     res,
     200,
     {
-      defaultModel: resolved.defaultDispatchModel || 'gemini-4-argon-high',
+      defaultModel: resolved.defaultDispatchModel || 'gemini-4-argon',
       defaultEffort: resolved.defaultDispatchEffort || 'high',
       models,
     },
@@ -126,15 +130,12 @@ export const handlePostDispatch = async (
     return sendJson(res, 400, { error: 'prompt is required' });
   }
 
-  const priorityParse = TaskPrioritySchema.safeParse(payload.priority ?? 'P0');
-  const priority: TaskPriority = priorityParse.success ? priorityParse.data : 'P0';
-
-  const workerModeParse = WorkerModeSchema.safeParse(payload.workerMode ?? 'headless');
-  const workerMode: WorkerMode | undefined = payload.workerMode
-    ? workerModeParse.success
-      ? workerModeParse.data
-      : undefined
-    : undefined;
+  const scheduleModeParse = ScheduleModeSchema.safeParse(
+    payload.scheduleMode ?? (payload.priority === 'P2' ? 'pre_reset' : 'immediate')
+  );
+  const scheduleMode: ScheduleMode = scheduleModeParse.success
+    ? scheduleModeParse.data
+    : 'immediate';
 
   const effortParse = ReasoningEffortSchema.safeParse(payload.effort ?? 'high');
   const effort: ReasoningEffort | undefined = payload.effort
@@ -155,13 +156,15 @@ export const handlePostDispatch = async (
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,
     requestedBy: typeof payload.requestedBy === 'string' ? payload.requestedBy : 'web-ui',
-    priority,
-    workerMode,
+    scheduleMode,
     requiredLabels,
     model: typeof payload.model === 'string' ? payload.model : undefined,
     effort,
     allowOverage: Boolean(payload.allowOverage),
     pushBranch: typeof payload.pushBranch === 'boolean' ? payload.pushBranch : true,
+    autoCreatePr: typeof payload.autoCreatePr === 'boolean' ? payload.autoCreatePr : true,
+    expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : undefined,
+    standingTaskId: typeof payload.standingTaskId === 'string' ? payload.standingTaskId : undefined,
     verifyCommand: typeof payload.verifyCommand === 'string' ? payload.verifyCommand : undefined,
   });
 
@@ -233,10 +236,6 @@ export const handlePollTasks = async (
     (typeof payload?.workerName === 'string' && payload.workerName.trim() !== ''
       ? payload.workerName.trim()
       : workerId);
-  const modeParse = WorkerModeSchema.safeParse(
-    payload?.workerMode ?? auth.worker?.workerMode ?? 'headless'
-  );
-  const workerMode: WorkerMode = modeParse.success ? modeParse.data : 'headless';
   const labels = Array.isArray(payload?.labels)
     ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
     : auth.worker?.labels;
@@ -259,7 +258,6 @@ export const handlePollTasks = async (
       {
         workerId,
         workerName,
-        workerMode,
         labels,
         repositories,
         systemInfo,
@@ -328,7 +326,157 @@ export const handleTaskStatus = async (
     return sendJson(res, 404, { error: `Task ${taskId} not found` });
   }
 
+  // Relay runner status update into coordinator logs
+  if (payload.message && typeof payload.message === 'string') {
+    logger.child('runner').info('[%s] %s', taskId, payload.message);
+  }
+
   return sendJson(res, 200, { success: true, task: updated });
+};
+
+export const handleTaskCancel = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  pathname: string,
+  method: string
+): void => {
+  if (method !== 'POST') return methodNotAllowed(res);
+  const match = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(pathname);
+  const taskId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
+
+  const orchestrator = resolveOrchestrator(options);
+  const task = orchestrator.queue.getTask(taskId);
+  if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+
+  const updated = orchestrator.queue.updateTaskStatus(taskId, {
+    status: 'aborted',
+    error: 'Task aborted by user',
+  });
+  return sendJson(res, 200, { success: true, task: updated });
+};
+
+export const handleTaskRetry = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  pathname: string,
+  method: string
+): Promise<void> => {
+  if (method !== 'POST') return methodNotAllowed(res);
+  const match = /^\/api\/tasks\/([^/]+)\/retry$/.exec(pathname);
+  const taskId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
+
+  const orchestrator = resolveOrchestrator(options);
+  const task = orchestrator.queue.getTask(taskId);
+  if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+
+  const retryRes = await orchestrator.dispatch({
+    repositoryId: task.repositoryId,
+    repositoryName: task.repositoryName,
+    repositoryPath: task.repositoryPath,
+    cloneUrl: task.cloneUrl,
+    prompt: task.prompt,
+    requestedBy: 'web-ui (retry)',
+    scheduleMode: task.scheduleMode,
+    model: task.model,
+    effort: task.effort,
+    allowOverage: task.allowOverage,
+    pushBranch: task.pushBranch,
+    autoCreatePr: task.autoCreatePr,
+    verifyCommand: task.verifyCommand,
+  });
+
+  return sendJson(res, 200, retryRes);
+};
+
+export const handleStandingTasks = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  url: URL,
+  method: string
+): Promise<void> => {
+  const orchestrator = resolveOrchestrator(options);
+
+  if (method === 'GET') {
+    const list = orchestrator.queue.listStandingTasks();
+    return sendJson(res, 200, list, { 'Cache-Control': 'no-store' });
+  }
+
+  if (method === 'POST') {
+    const body = await readBody(req, res);
+    let payload: any;
+    try {
+      payload = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { error: 'Malformed JSON payload' });
+    }
+    if (!payload?.title || !payload?.prompt || !payload?.repositoryId || !payload?.model) {
+      return sendJson(res, 400, {
+        error: 'title, prompt, repositoryId, and model are required for standing task',
+      });
+    }
+    const created = orchestrator.queue.createStandingTask(payload);
+    return sendJson(res, 201, created);
+  }
+
+  return methodNotAllowed(res);
+};
+
+export const handleStandingTaskById = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  pathname: string,
+  method: string
+): Promise<void> => {
+  const match = /^\/api\/standing-tasks\/([^/]+)(?:\/(trigger))?$/.exec(pathname);
+  const id = match?.[1] ? decodeURIComponent(match[1]) : '';
+  const action = match?.[2];
+  if (!id) return sendJson(res, 400, { error: 'id is required' });
+
+  const orchestrator = resolveOrchestrator(options);
+
+  if (action === 'trigger' && method === 'POST') {
+    const st = orchestrator.queue.getStandingTask(id);
+    if (!st) return sendJson(res, 404, { error: `Standing task ${id} not found` });
+    const dispatchRes = await orchestrator.dispatch({
+      repositoryId: st.repositoryId,
+      repositoryName: st.repositoryId,
+      prompt: st.prompt,
+      model: st.model,
+      effort: st.effort,
+      autoCreatePr: st.autoCreatePr,
+      verifyCommand: st.verifyCommand,
+      standingTaskId: st.id,
+      scheduleMode: 'immediate',
+    });
+    return sendJson(res, 200, dispatchRes);
+  }
+
+  if (method === 'PATCH') {
+    const body = await readBody(req, res);
+    let patch: any;
+    try {
+      patch = JSON.parse(body);
+    } catch {
+      return sendJson(res, 400, { error: 'Malformed JSON payload' });
+    }
+    const updated = orchestrator.queue.updateStandingTask(id, patch);
+    if (!updated) return sendJson(res, 404, { error: `Standing task ${id} not found` });
+    return sendJson(res, 200, updated);
+  }
+
+  if (method === 'DELETE') {
+    const deleted = orchestrator.queue.deleteStandingTask(id);
+    if (!deleted) return sendJson(res, 404, { error: `Standing task ${id} not found` });
+    return sendJson(res, 200, { success: true, deleted: true });
+  }
+
+  return methodNotAllowed(res);
 };
 
 export const handleGetWorkers = (
@@ -361,8 +509,6 @@ export const handleCreateRegistrationToken = async (
     }
   }
 
-  const modeParse = WorkerModeSchema.safeParse(payload?.workerMode ?? 'headless');
-  const workerMode: WorkerMode = modeParse.success ? modeParse.data : 'headless';
   const labels = Array.isArray(payload?.labels)
     ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
     : [];
@@ -381,7 +527,6 @@ export const handleCreateRegistrationToken = async (
   const orchestrator = resolveOrchestrator(options);
   const result = orchestrator.createRegistrationToken({
     nameHint,
-    workerMode,
     labels,
     repositories,
     ttlMs,
@@ -414,10 +559,6 @@ export const handleRegisterWorker = async (
     return sendJson(res, 400, { error: 'registrationToken is required' });
   }
 
-  const modeParse = payload?.workerMode
-    ? WorkerModeSchema.safeParse(payload.workerMode)
-    : undefined;
-  const workerMode = modeParse?.success ? modeParse.data : undefined;
   const labels = Array.isArray(payload?.labels)
     ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
     : undefined;
@@ -433,7 +574,6 @@ export const handleRegisterWorker = async (
       registrationToken,
       workerId: typeof payload?.workerId === 'string' ? payload.workerId : undefined,
       workerName: typeof payload?.workerName === 'string' ? payload.workerName : undefined,
-      workerMode,
       labels,
       repositories,
       systemInfo,

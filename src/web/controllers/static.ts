@@ -53,10 +53,13 @@ export const handleStaticAsset = async (
     const ext = path.extname(fullPath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
     const content = await fs.readFile(fullPath);
+    const isImmutable = pathname.startsWith('/assets/');
     res
       .writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': 'public, max-age=86400',
+        'Cache-Control': isImmutable
+          ? 'public, max-age=31536000, immutable'
+          : 'no-cache, must-revalidate',
       })
       .end(content);
   } catch (err: any) {
@@ -81,7 +84,9 @@ export const handleIndexHtml = async (
     res
       .writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
-        'Cache-Control': 'no-cache',
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+        Expires: '0',
       })
       .end(html);
   } catch (err: any) {

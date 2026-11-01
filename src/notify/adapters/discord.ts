@@ -181,13 +181,13 @@ export const createDispatchModal = (
   if (options?.includeModelInput) {
     const initialModel = resolveConcreteModelId(
       options.poolFamily,
-      options.defaultModel || 'gemini-4-argon-high'
+      options.defaultModel || 'gemini-4-argon'
     );
     const modelInput = new TextInputBuilder()
       .setCustomId('task_model_priority')
       .setLabel('Model & Priority (e.g. model-id P0/P1/P2)')
       .setStyle(TextInputStyle.Short)
-      .setPlaceholder('gemini-4-argon-high P0 (or claude-opus-5-5-high, P2)')
+      .setPlaceholder('gemini-4-argon P0 (or claude-opus-5-5, P2)')
       .setValue(`${initialModel} P0`)
       .setRequired(false)
       .setMaxLength(120);
@@ -314,12 +314,15 @@ export class DiscordNotifier implements Notifier {
         logger.child('notify:discord').info('Discord client connected.');
         await this.autoDiscoverOwnerUserId();
         await this.registerSlashCommands();
+        this.initialized = true;
       } catch (err: any) {
         logger.child('notify:discord').error('Client login failed: %s', err.message);
+        // Do not mark initialized if login threw
       }
+    } else {
+      // Mock or unauthenticated client mode
+      this.initialized = true;
     }
-
-    this.initialized = true;
   }
 
   private async registerSlashCommands(): Promise<void> {
@@ -346,7 +349,7 @@ export class DiscordNotifier implements Notifier {
           .addStringOption((opt) =>
             opt
               .setName('model')
-              .setDescription('Model override (e.g. gemini-4-argon-high, claude-opus-5-5-high)')
+              .setDescription('Model override (e.g. gemini-4-argon, claude-opus-5-5)')
               .setRequired(false)
           )
           .addStringOption((opt) =>
@@ -381,28 +384,32 @@ export class DiscordNotifier implements Notifier {
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
     const oldToken = this.config.discordToken;
+    const oldClientId = this.config.discordClientId;
+    const oldGuildId = this.config.discordGuildId;
     this.config = { ...this.config, ...newConfig };
     if (newConfig.discordOwnerUserId !== undefined) {
       this.pinnedOwnerUserId = newConfig.discordOwnerUserId.trim() || undefined;
     }
 
-    if (
-      this.config.discordToken &&
-      this.config.discordToken !== oldToken &&
-      this.client &&
-      typeof this.client.login === 'function'
-    ) {
-      try {
-        logger.child('notify:discord').info('Connecting Discord client with new token...');
-        await this.client.login(this.config.discordToken);
-        logger.child('notify:discord').info('Discord client connected via updated configuration.');
-        await this.autoDiscoverOwnerUserId();
-        await this.registerSlashCommands();
-      } catch (err: any) {
-        logger
-          .child('notify:discord')
-          .error('Client login with updated token failed: %s', err.message);
+    if (oldToken && !this.config.discordToken && this.client) {
+      logger.child('notify:discord').info('Discord token cleared; disconnecting client.');
+      await this.shutdown();
+      return;
+    }
+
+    if (this.config.discordToken && this.config.discordToken !== oldToken) {
+      if (!this.client || typeof this.client.destroy === 'function') {
+        await this.shutdown();
       }
+      this.initialized = false;
+      this.client = null;
+      await this.initialize();
+    } else if (
+      this.client &&
+      this.config.discordToken &&
+      (this.config.discordClientId !== oldClientId || this.config.discordGuildId !== oldGuildId)
+    ) {
+      await this.registerSlashCommands();
     }
   }
 
@@ -488,10 +495,10 @@ export class DiscordNotifier implements Notifier {
       return;
     }
 
-    const onContinue =
-      this.options.onContinueRequested || (this.options as any).onDispatchRequested;
-    if (!onContinue) {
-      const errReply = { content: '[Error] Orchestrator continuation callback is not registered.' };
+    const onDispatch =
+      this.options.onDispatchRequested || (this.options as any).onContinueRequested;
+    if (!onDispatch) {
+      const errReply = { content: '[Error] Orchestrator dispatch callback is not registered.' };
       if (canDefer && typeof interaction.editReply === 'function') {
         await interaction.editReply(errReply);
       } else if (typeof interaction.reply === 'function') {
@@ -501,21 +508,28 @@ export class DiscordNotifier implements Notifier {
     }
 
     const requestedBy = interaction.user?.tag || interaction.user?.username || 'Discord User';
+    const requestedByUserId = interaction.user?.id;
     try {
-      const result = await onContinue({
+      const result = await onDispatch({
         repositoryName,
         prompt: prompt.trim(),
         requestedBy,
+        requestedByUserId,
         model,
         priority,
         effort,
       });
 
+      if (result.taskId) {
+        this.activeInteractions.set(result.taskId, interaction);
+      }
+
       let content = '';
+      const isQueued = result.status === 'queued' || Boolean(result.taskId && !result.branchName);
       if (!result.success) {
         content = `[Error] Dispatch failed: ${result.error ?? 'Unknown error'}`;
-      } else if (result.taskId && !result.branchName) {
-        content = `[Notice] Continuation task \`#${result.taskId.slice(0, 8)}\` (${result.priority ?? priority ?? 'P1'}) queued for \`${repositoryName}\` — waiting for swarm runner...`;
+      } else if (isQueued) {
+        content = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` (${result.priority ?? priority ?? 'P1'}) queued for \`${repositoryName}\` — waiting for swarm runner...`;
       } else {
         content = `[Success] Antigravity continuation complete on branch \`${result.branchName ?? 'main'}\`.`;
       }
@@ -548,7 +562,13 @@ export class DiscordNotifier implements Notifier {
     }
 
     const allowedChannelId = this.config.discordNotificationChannelId;
-    if (allowedChannelId && interaction.channelId && interaction.channelId !== allowedChannelId) {
+    const inGuild = typeof interaction.inGuild === 'function' ? interaction.inGuild() : true;
+    if (
+      inGuild &&
+      allowedChannelId &&
+      interaction.channelId &&
+      interaction.channelId !== allowedChannelId
+    ) {
       if (typeof interaction.reply === 'function') {
         await interaction.reply({
           content: 'You do not have permission to run /quota in this channel.',
@@ -654,7 +674,13 @@ export class DiscordNotifier implements Notifier {
 
   private async handleModalSubmit(interaction: any): Promise<void> {
     // 3s Discord timeout guard: defer immediately before async tasks
-    await interaction.deferReply({ ephemeral: false });
+    try {
+      await interaction.deferReply({ ephemeral: false });
+    } catch (err: any) {
+      logger
+        .child('notify:discord')
+        .debug('Modal deferReply failed or already acknowledged: %s', err.message);
+    }
 
     const ownerCheck = this.verifyOwnerBinding(interaction);
     if (!ownerCheck.allowed) {
@@ -683,7 +709,11 @@ export class DiscordNotifier implements Notifier {
           ? interaction.customId.slice('modal_dispatch_'.length)
           : '';
 
-    const [rawRepoId = '', alertPoolFamily] = rawCustomSuffix.split(':');
+    const lastColonIdx = rawCustomSuffix.lastIndexOf(':');
+    const rawRepoId =
+      lastColonIdx !== -1 ? rawCustomSuffix.slice(0, lastColonIdx) : rawCustomSuffix;
+    const alertPoolFamily =
+      lastColonIdx !== -1 ? rawCustomSuffix.slice(lastColonIdx + 1) : undefined;
 
     const repo = this.config.repositories.find(
       (r) => r.id === rawRepoId || r.name === rawRepoId || (rawRepoId && r.id.startsWith(rawRepoId))
@@ -736,7 +766,6 @@ export class DiscordNotifier implements Notifier {
             alertPoolFamily
           );
           dispatchPayload.model = parsedMeta.model;
-          dispatchPayload.priority = parsedMeta.priority;
           dispatchPayload.effort = parsedMeta.effort;
           if (alertPoolFamily) {
             dispatchPayload.poolFamily = alertPoolFamily;
@@ -745,10 +774,11 @@ export class DiscordNotifier implements Notifier {
 
         result = await this.options.onDispatchRequested(dispatchPayload);
 
+        const isQueued = result.status === 'queued' || Boolean(result.taskId && !result.branchName);
         if (result.success) {
-          if (result.taskId && !result.branchName) {
+          if (isQueued) {
             const p = result.priority ?? dispatchPayload.priority ?? 'P1';
-            const msg = `[Notice] Continuation task \`#${result.taskId.slice(0, 8)}\` (${p}) queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
+            const msg = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` (${p}) queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
             await interaction.editReply({
               content: msg,
             });
@@ -761,7 +791,11 @@ export class DiscordNotifier implements Notifier {
           }
         } else {
           const errMsg = result.error ? `: ${result.error}` : ': Execution aborted.';
-          const msg = `[Blocked] Zero-Clobber Guardrail${errMsg}`.slice(0, 2000);
+          const prefix =
+            result.code === 'OVERAGE_PROTECTION_TRIGGERED'
+              ? '[Blocked] Safety Floor'
+              : '[Blocked] Task Dispatch';
+          const msg = `${prefix}${errMsg}`.slice(0, 2000);
           await interaction.editReply({
             content: msg,
           });
@@ -787,9 +821,13 @@ export class DiscordNotifier implements Notifier {
       }
     } finally {
       this.activeSubmissions.delete(submissionKey);
-      if (result?.taskId && !result.branchName) {
+      const isQueuedTask =
+        result?.status === 'queued' || Boolean(result?.taskId && !result?.branchName);
+      if (isQueuedTask && result?.taskId) {
+        this.activeInteractions.set(result.taskId, interaction);
         setTimeout(
           () => {
+            if (result?.taskId) this.activeInteractions.delete(result.taskId);
             if (repoId) this.activeInteractions.delete(repoId);
             if (repoName) this.activeInteractions.delete(repoName);
           },
@@ -919,9 +957,13 @@ export class DiscordNotifier implements Notifier {
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
+    const taskKey = status.taskId;
     const repoKey = status.repositoryName;
-    if (repoKey && this.activeInteractions.has(repoKey)) {
-      const interaction = this.activeInteractions.get(repoKey);
+    const interaction =
+      (taskKey ? this.activeInteractions.get(taskKey) : undefined) ||
+      (repoKey ? this.activeInteractions.get(repoKey) : undefined);
+
+    if (interaction) {
       try {
         const step = status.status ?? (status.step as string) ?? 'executing';
         const msg = (status.message ?? `Step: ${step}`).slice(0, 2000);
@@ -931,7 +973,8 @@ export class DiscordNotifier implements Notifier {
       }
       const st = String(status.status || status.step || '').toLowerCase();
       if (['completed', 'failed', 'aborted'].includes(st)) {
-        this.activeInteractions.delete(repoKey);
+        if (taskKey) this.activeInteractions.delete(taskKey);
+        if (repoKey) this.activeInteractions.delete(repoKey);
       }
     }
 
@@ -1040,12 +1083,22 @@ export class DiscordNotifier implements Notifier {
     this.initialized = false;
     this.activeInteractions.clear();
     this.activeSubmissions.clear();
-    if (this.client && typeof this.client.destroy === 'function') {
-      try {
-        await this.client.destroy();
-      } catch {
-        // Safe catch on destroy
+    if (this.client) {
+      if (typeof this.client.removeAllListeners === 'function') {
+        try {
+          this.client.removeAllListeners();
+        } catch {
+          // Safe catch
+        }
       }
+      if (typeof this.client.destroy === 'function') {
+        try {
+          await this.client.destroy();
+        } catch {
+          // Safe catch on destroy
+        }
+      }
+      this.client = null;
     }
   }
 }

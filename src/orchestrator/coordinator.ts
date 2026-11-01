@@ -9,8 +9,7 @@ import {
   resolveConcreteModelId,
   type ModelEligibilityResult,
   type ReasoningEffort,
-  type TaskPriority,
-  type WorkerMode,
+  type ScheduleMode,
 } from './models.js';
 import {
   TaskQueue,
@@ -32,13 +31,15 @@ export interface DispatchTaskRequest {
   prompt: string;
   requestedBy?: string;
   requestedByUserId?: string;
-  priority?: TaskPriority;
-  workerMode?: WorkerMode;
+  scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model?: string;
   effort?: ReasoningEffort;
   allowOverage?: boolean;
   pushBranch?: boolean;
+  autoCreatePr?: boolean;
+  expiresAt?: string;
+  standingTaskId?: string;
   verifyCommand?: string;
 }
 
@@ -51,8 +52,7 @@ export interface DispatchTaskResponse {
   branchName?: string;
   model?: string;
   poolFamily?: string;
-  priority?: TaskPriority;
-  workerMode?: WorkerMode;
+  scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   output?: string;
   error?: string;
@@ -69,7 +69,6 @@ export interface DispatchTaskResponse {
 export interface WorkerPollRequest {
   workerId: string;
   workerName?: string;
-  workerMode?: WorkerMode;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
@@ -114,30 +113,65 @@ export class OrchestratorCoordinator {
     return snapshotsFromSentryState(state);
   }
 
+  public reapStaleClaims(): SwarmTask[] {
+    const expiredTasks = this.queue.reapStaleClaims();
+    if (expiredTasks.length > 0) {
+      this.log.info('Reaped %d expired worker task lease(s)', expiredTasks.length);
+      for (const t of expiredTasks) {
+        void this.notifier?.notifyDispatchStatus({
+          taskId: t.id,
+          repositoryName: t.repositoryName,
+          status: 'failed',
+          error: t.error || 'Worker heartbeat lease expired',
+        });
+      }
+    }
+    return expiredTasks;
+  }
+
   public onQuotaUpdated(snapshots: QuotaSnapshot[]): void {
     this.latestSnapshots = snapshots;
-    const reaped = this.queue.reapStaleClaims();
-    if (reaped > 0) {
-      this.log.info('Reaped %d stale worker task claim(s) back to queue', reaped);
-    }
+    this.reapStaleClaims();
     this.bus.emit('task:available');
   }
 
   public evaluateEligibility(params: {
     model?: string;
-    priority?: TaskPriority;
+    scheduleMode?: ScheduleMode;
     allowOverage?: boolean;
   }): ModelEligibilityResult {
     const resolved = this.configStore.resolveConfig();
+    const concreteModel = resolveConcreteModelId(params.model, resolved.defaultDispatchModel);
+    const family = resolveConcreteModelId(params.model, resolved.defaultDispatchModel);
+
+    // Check per-pool dispatchEnabled policy
+    const poolFamily =
+      params.model?.includes('claude') || params.model?.includes('3p')
+        ? 'claude'
+        : params.model?.includes('flash')
+          ? 'gemini-flash'
+          : 'gemini-argon';
+    const policy = resolved.poolPolicies?.[poolFamily];
+    if (policy && !policy.dispatchEnabled && !params.allowOverage) {
+      return {
+        allowed: false,
+        resolvedModel: concreteModel,
+        family: poolFamily,
+        effectiveHeadroomPercent: 0,
+        hoursUntilReset: null,
+        code: 'OVERAGE_PROTECTION_TRIGGERED',
+        reason: `Dispatch Disabled: Pool policy for ${poolFamily} disables task dispatching.`,
+      };
+    }
+
     return evaluateModelDispatchEligibility({
       requestedModel: params.model,
       defaultModel: resolved.defaultDispatchModel,
-      priority: params.priority ?? 'P0',
+      scheduleMode: params.scheduleMode ?? 'immediate',
       pools: this.getActivePools(),
       minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
       allowOverage: params.allowOverage,
       quotaBurnMaxHours: resolved.quotaBurnMaxHours,
-      quotaBurnMinHeadroomPercent: resolved.quotaBurnMinHeadroomPercent,
     });
   }
 
@@ -149,7 +183,7 @@ export class OrchestratorCoordinator {
   public async dispatch(req: DispatchTaskRequest): Promise<DispatchTaskResponse> {
     const resolved = this.configStore.resolveConfig();
     const repositoryName = req.repositoryName.trim();
-    const priority: TaskPriority = req.priority ?? 'P0';
+    const scheduleMode: ScheduleMode = req.scheduleMode ?? 'immediate';
     const allowOverage = Boolean(req.allowOverage);
 
     // 0. Enforce single-user owner binding when requestedByUserId is supplied
@@ -171,7 +205,7 @@ export class OrchestratorCoordinator {
     // 1. Evaluate model & safety floor before orchestrator gate so overage blocks are caught consistently
     const eligibility = this.evaluateEligibility({
       model: req.model,
-      priority,
+      scheduleMode,
       allowOverage,
     });
 
@@ -228,7 +262,6 @@ export class OrchestratorCoordinator {
 
     const concreteModel = resolveConcreteModelId(req.model, resolved.defaultDispatchModel);
     const effort: ReasoningEffort = req.effort ?? resolved.defaultDispatchEffort ?? 'high';
-    const workerMode: WorkerMode = req.workerMode ?? resolved.defaultWorkerMode ?? 'headless';
     const requiredLabels = req.requiredLabels ?? [];
 
     // 4. Enqueue task in SQLite swarm_tasks queue
@@ -240,25 +273,26 @@ export class OrchestratorCoordinator {
       defaultBranch,
       prompt: req.prompt,
       requestedBy: req.requestedBy || 'web-ui',
-      priority,
-      workerMode,
+      scheduleMode,
       requiredLabels,
       model: concreteModel,
       effort,
       allowOverage,
       pushBranch: req.pushBranch ?? true,
+      autoCreatePr: req.autoCreatePr ?? true,
+      expiresAt: req.expiresAt,
+      standingTaskId: req.standingTaskId,
       verifyCommand: req.verifyCommand,
     });
 
     const plannedBranch = buildContinuationBranchName(task.id, task.prompt);
 
     this.log.info(
-      'Task %s enqueued for %s (priority=%s, model=%s, mode=%s)',
+      'Task %s enqueued for %s (scheduleMode=%s, model=%s)',
       task.id,
       repoDisplayName,
-      priority,
-      concreteModel,
-      workerMode
+      scheduleMode,
+      concreteModel
     );
 
     await this.notifier?.notifyDispatchStatus({
@@ -271,14 +305,14 @@ export class OrchestratorCoordinator {
       requestedBy: task.requestedBy,
       message:
         eligibility.code === 'QUOTA_BURN_CONDITIONS_NOT_MET'
-          ? `Task ${task.id} queued for P2 Quota-Burn (${concreteModel})`
-          : `Task ${task.id} queued (${priority}, model: ${concreteModel})`,
+          ? `Task ${task.id} queued for Pre-Reset Quota-Burn (${concreteModel})`
+          : `Task ${task.id} queued (${scheduleMode}, model: ${concreteModel})`,
     });
 
     // Wake any long-polling runners
     this.bus.emit('task:available');
 
-    // 5. If P2 conditions are not yet met, return QUOTA_BURN_QUEUED status code
+    // 5. If pre-reset conditions are not yet met, return QUOTA_BURN_QUEUED status code
     if (!eligibility.allowed && eligibility.code === 'QUOTA_BURN_CONDITIONS_NOT_MET') {
       return {
         success: true,
@@ -289,8 +323,7 @@ export class OrchestratorCoordinator {
         branchName: plannedBranch,
         model: concreteModel,
         poolFamily: task.poolFamily,
-        priority,
-        workerMode,
+        scheduleMode,
         requiredLabels: task.requiredLabels,
         code: 'QUOTA_BURN_QUEUED',
       };
@@ -305,8 +338,7 @@ export class OrchestratorCoordinator {
       branchName: plannedBranch,
       model: concreteModel,
       poolFamily: task.poolFamily,
-      priority,
-      workerMode,
+      scheduleMode,
       requiredLabels: task.requiredLabels,
     };
   }
@@ -318,20 +350,23 @@ export class OrchestratorCoordinator {
     requestedBy?: string;
     requestedByUserId?: string;
     effort?: ReasoningEffort;
+    repositoryName?: string;
+    repositoryId?: string;
+    model?: string;
+    scheduleMode?: ScheduleMode;
   }): Promise<DispatchTaskResponse> {
     const parentTask = params.taskId ? this.queue.getTask(params.taskId) : null;
     return this.dispatch({
-      repositoryId: parentTask?.repositoryId,
-      repositoryName: parentTask?.repositoryName || 'unknown',
+      repositoryId: parentTask?.repositoryId || params.repositoryId,
+      repositoryName: parentTask?.repositoryName || params.repositoryName || 'unknown',
       repositoryPath: parentTask?.repositoryPath,
       cloneUrl: parentTask?.cloneUrl,
       prompt: params.prompt,
       requestedBy: params.requestedBy || parentTask?.requestedBy,
       requestedByUserId: params.requestedByUserId,
       effort: params.effort || parentTask?.effort,
-      model: parentTask?.model,
-      priority: parentTask?.priority,
-      workerMode: parentTask?.workerMode,
+      model: params.model || parentTask?.model,
+      scheduleMode: params.scheduleMode || parentTask?.scheduleMode,
     });
   }
 
@@ -343,9 +378,8 @@ export class OrchestratorCoordinator {
   ): RunnerRegistrationTokenResult {
     const res = this.queue.createRegistrationToken(input);
     this.log.info(
-      'Created one-time runner registration token %s (mode=%s, expires=%s)',
+      'Created one-time runner registration token %s (expires=%s)',
       res.id,
-      res.workerMode,
       res.expiresAt
     );
     return res;
@@ -361,10 +395,9 @@ export class OrchestratorCoordinator {
     const result = this.queue.exchangeRegistrationToken(input);
     if (result) {
       this.log.info(
-        'Registered swarm runner "%s" (%s, mode=%s, labels=%s)',
+        'Registered swarm runner "%s" (%s, labels=%s)',
         result.worker.name,
         result.worker.workerId,
-        result.worker.workerMode,
         result.worker.labels.join(',') || 'none'
       );
     }
@@ -378,10 +411,15 @@ export class OrchestratorCoordinator {
   public authenticateRunner(providedToken?: string): {
     authenticated: boolean;
     worker?: SwarmWorkerRecord;
+    viaSharedSecret?: boolean;
     isSharedSecret?: boolean;
   } {
     const resolved = this.configStore.resolveConfig();
-    return this.queue.authenticateRunner(providedToken, resolved.workerSharedSecret);
+    const res = this.queue.authenticateRunner(providedToken, resolved.workerSharedSecret);
+    return {
+      ...res,
+      isSharedSecret: res.viaSharedSecret,
+    };
   }
 
   /**
@@ -395,14 +433,13 @@ export class OrchestratorCoordinator {
       return this.queue.claimNext({
         workerId: pollReq.workerId,
         workerName: pollReq.workerName,
-        workerMode: pollReq.workerMode ?? 'headless',
         labels: pollReq.labels,
         repositories: pollReq.repositories,
         systemInfo: pollReq.systemInfo,
         eligibilityCheck: (candidate) => {
           const elig = this.evaluateEligibility({
             model: candidate.model,
-            priority: candidate.priority,
+            scheduleMode: candidate.scheduleMode,
             allowOverage: candidate.allowOverage,
           });
           return {

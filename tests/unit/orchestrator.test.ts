@@ -36,21 +36,12 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
   /* ==================================================================== */
   describe('1. Explicit Model Selection & Pool-Targeted Quota Math', () => {
     it('resolves explicit model IDs and pool family shorthands without magic auto-routing', () => {
-      assert.equal(resolveConcreteModelId(undefined, 'gemini-4-argon-high'), 'gemini-4-argon-high');
-      assert.equal(resolveConcreteModelId('auto', 'gemini-4-argon-high'), 'gemini-4-argon-high');
-      assert.equal(
-        resolveConcreteModelId('claude-opus-5-5-high', 'gemini-4-argon-high'),
-        'claude-opus-5-5-high'
-      );
-      assert.equal(
-        resolveConcreteModelId('claude', 'gemini-4-argon-high'),
-        'claude-sonnet-5-5-high'
-      );
-      assert.equal(
-        resolveConcreteModelId('gemini-flash', 'gemini-4-argon-high'),
-        'gemini-3.8-flash-high'
-      );
-      assert.equal(CANONICAL_AGY_MODELS.length, 13);
+      assert.equal(resolveConcreteModelId(undefined, 'gemini-4-argon'), 'gemini-4-argon');
+      assert.equal(resolveConcreteModelId('auto', 'gemini-4-argon'), 'gemini-4-argon');
+      assert.equal(resolveConcreteModelId('claude-opus-5-5', 'gemini-4-argon'), 'claude-opus-5-5');
+      assert.equal(resolveConcreteModelId('claude', 'gemini-4-argon'), 'claude-sonnet-5-5');
+      assert.equal(resolveConcreteModelId('gemini-flash', 'gemini-4-argon'), 'gemini-3.8-flash');
+      assert.equal(CANONICAL_AGY_MODELS.length, 5);
     });
 
     it('calculates effectiveHeadroomPercent as min(weekly, 5h shortTerm)', () => {
@@ -140,15 +131,14 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
       const notYetCheck = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-argon-high',
-        priority: 'P2',
+        scheduleMode: 'pre_reset',
         pools: farResetPools,
         quotaBurnMaxHours: 2,
-        quotaBurnMinHeadroomPercent: 30,
       });
       assert.equal(notYetCheck.allowed, false);
       assert.equal(notYetCheck.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
 
-      // When reset is 1.5h away and 65% remains, P2 is released!
+      // When reset is 1.5h away and 65% remains, pre_reset is released!
       const imminentPools: QuotaSnapshot[] = [
         {
           poolId: 'gemini-argon',
@@ -163,98 +153,64 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
       const readyCheck = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-argon-high',
-        priority: 'P2',
+        scheduleMode: 'pre_reset',
         pools: imminentPools,
         quotaBurnMaxHours: 2,
-        quotaBurnMinHeadroomPercent: 30,
       });
       assert.equal(readyCheck.allowed, true);
     });
   });
 
   /* ==================================================================== */
-  /* 2. SQLite Task Queue Priority, Routing & Lease Reaping               */
+  /* 2. SQLite Task Queue Routing & Lease Reaping                         */
   /* ==================================================================== */
-  describe('2. SQLite Task Queue Priority, Routing & Lease Reaping', () => {
-    it('dequeues tasks in strict P0 -> P1 -> P2 priority order and respects workerMode', () => {
+  describe('2. SQLite Task Queue Routing & Lease Reaping', () => {
+    it('enqueues and claims tasks in FIFO order and updates status cleanly', () => {
       const { dir, cleanup } = makeTempDir('orch_queue_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
 
       try {
         const queue = new TaskQueue(db);
 
-        const tP2 = queue.enqueue({
+        const t1 = queue.enqueue({
           repositoryName: 'agylity',
-          prompt: 'Low priority burn task',
-          priority: 'P2',
-          workerMode: 'headless',
-          model: 'gemini-4-argon-high',
-        });
-        const tP1 = queue.enqueue({
-          repositoryName: 'agylity',
-          prompt: 'Scheduled benchmark',
-          priority: 'P1',
-          workerMode: 'headless',
+          prompt: 'First task',
+          scheduleMode: 'immediate',
           model: 'gemini-3.8-flash-high',
         });
-        const tP0Visible = queue.enqueue({
+        const t2 = queue.enqueue({
           repositoryName: 'agylity',
-          prompt: 'Desktop supervised task',
-          priority: 'P0',
-          workerMode: 'visible',
-          model: 'claude-sonnet-5-5-high',
-        });
-        const tP0Headless = queue.enqueue({
-          repositoryName: 'agylity',
-          prompt: 'Urgent headless hotfix',
-          priority: 'P0',
-          workerMode: 'headless',
+          prompt: 'Second task',
+          scheduleMode: 'immediate',
           model: 'gemini-4-argon-high',
         });
 
-        // Headless worker claims P0 headless first (skipping P0 visible)
+        // Worker claims first task
         const claimed1 = queue.claimNext({
           workerId: 'runner-docker-1',
-          workerMode: 'headless',
         });
-        assert.equal(claimed1?.id, tP0Headless.id);
+        assert.equal(claimed1?.id, t1.id);
         assert.equal(claimed1?.status, 'claimed');
 
-        // Next headless claim gets P1
+        // Next claim gets second task
         const claimed2 = queue.claimNext({
           workerId: 'runner-docker-1',
-          workerMode: 'headless',
         });
-        assert.equal(claimed2?.id, tP1.id);
+        assert.equal(claimed2?.id, t2.id);
 
-        // Visible desktop worker claims the P0 visible task
-        const claimedVisible = queue.claimNext({
-          workerId: 'desktop-pc',
-          workerMode: 'visible',
-        });
-        assert.equal(claimedVisible?.id, tP0Visible.id);
-
-        // Next headless claim gets P2
-        const claimed3 = queue.claimNext({
-          workerId: 'runner-docker-1',
-          workerMode: 'headless',
-        });
-        assert.equal(claimed3?.id, tP2.id);
-
-        // Completing a task records it into dispatches history
-        queue.updateTaskStatus(tP0Headless.id, {
+        // Completing a task updates task record
+        queue.updateTaskStatus(t1.id, {
           status: 'completed',
           branchName: 'antigravity/task-hotfix',
           durationMs: 1250,
         });
 
-        const dispatches = db.listDispatches(10);
-        assert.equal(dispatches.length, 1);
-        assert.equal(dispatches[0]?.branch, 'antigravity/task-hotfix');
-        assert.equal(dispatches[0]?.success, true);
+        const finalTask = queue.getTask(t1.id);
+        assert.equal(finalTask?.branchName, 'antigravity/task-hotfix');
+        assert.equal(finalTask?.status, 'completed');
 
         const workers = queue.listWorkers();
-        assert.equal(workers.length, 2);
+        assert.equal(workers.length, 1);
       } finally {
         db.close();
         cleanup();
@@ -378,6 +334,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Test command injection',
+          model: 'gemini-4-argon',
           verifyCommand: 'npm test; rm -rf /',
         });
         const res1 = await executor.execute(task1);
@@ -389,6 +346,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Test unauthorized binary',
+          model: 'gemini-4-argon',
           verifyCommand: 'bash -c whoami',
         });
         const res2 = await executor.execute(task2);
@@ -414,6 +372,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           repositoryPath: repoPath,
           cloneUrl: 'https://github.com/OtterBoops/agylity.git',
           prompt: 'Test remote clone',
+          model: 'gemini-4-argon',
         });
 
         const invocations: Array<{ file: string; args: readonly string[] }> = [];
@@ -479,8 +438,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
         // 1. GET /api/models returns annotated model catalog
         const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
-        assert.equal(modelsRes.defaultModel, 'gemini-4-argon-high');
-        assert.equal(modelsRes.models.length, 13);
+        assert.equal(modelsRes.defaultModel, 'gemini-3.8-flash');
+        assert.equal(modelsRes.models.length, 5);
 
         // 2. Unauthenticated poll is rejected with 401
         await assert.rejects(
@@ -508,15 +467,18 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
         assert.equal(dispRes.success, true);
         assert.equal(dispRes.status, 'queued');
-        assert.equal(dispRes.model, 'gemini-3.8-flash-high');
+        assert.equal(dispRes.model, 'gemini-3.8-flash');
         assert.ok(dispRes.taskId);
 
         // 4. RemoteSwarmWorker polls, claims, executes via mock executor, and reports completion
         const executedTasks: string[] = [];
         const mockExecutor = new TaskExecutor({
           dirExistsFn: () => true,
-          execFileFn: async (file, _args) => {
+          execFileFn: async (file, args) => {
             if (file === 'agy') executedTasks.push(file);
+            if (file === 'git' && args[0] === 'status') {
+              return { stdout: ' M src/index.ts\n', stderr: '' };
+            }
             return { stdout: '', stderr: '' };
           },
         });
@@ -524,7 +486,6 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const worker = new RemoteSwarmWorker({
           coordinatorUrl: baseUrl,
           workerId: 'runner-worker-1',
-          workerMode: 'headless',
           sharedSecret: 'swarm-secret-token-999',
           executor: mockExecutor,
         });
@@ -532,7 +493,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const claimedTask = await worker.pollOnce();
         assert.ok(claimedTask);
         assert.equal(claimedTask?.id, dispRes.taskId);
-        assert.equal(claimedTask?.model, 'gemini-3.8-flash-high');
+        assert.equal(claimedTask?.model, 'gemini-3.8-flash');
         assert.equal(executedTasks.length, 1);
 
         // 5. Verify task is marked completed in GET /api/tasks and GET /api/dispatches
@@ -587,7 +548,6 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           .post(`${baseUrl}/api/workers/registration-token`, {
             json: {
               nameHint: 'linux-runner-1',
-              workerMode: 'headless',
               labels: ['docker', 'linux'],
             },
           })
@@ -598,7 +558,6 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           .post(`${baseUrl}/api/workers/registration-token`, {
             json: {
               nameHint: 'desktop-gpu',
-              workerMode: 'visible',
               labels: ['windows', 'gpu'],
             },
           })
@@ -740,7 +699,6 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.equal(opts.registrationToken, 'agyr_reg_123456');
       assert.equal(opts.runnerToken, undefined);
       assert.equal(opts.workerName, 'runner-node-1');
-      assert.equal(opts.workerMode, 'headless');
       assert.deepEqual(opts.labels, ['docker', 'linux', 'swarm']);
     });
   });
@@ -751,17 +709,17 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
   describe('5. Discord Modal Model/Priority Parsing & Pool Alert Inheritance', () => {
     it('parses Discord model & priority input strings accurately', () => {
       assert.deepEqual(
-        parseDiscordModelPriorityInput('claude-opus-5-5-high P2', 'gemini-4-argon-high'),
+        parseDiscordModelPriorityInput('claude-opus-5-5-high P2', 'gemini-4-argon'),
         {
-          model: 'claude-opus-5-5-high',
-          priority: 'P2',
+          model: 'claude-opus-5-5',
+          scheduleMode: 'pre_reset',
           effort: 'high',
         }
       );
 
-      assert.deepEqual(parseDiscordModelPriorityInput('P1', 'gemini-4-argon-high', 'claude'), {
-        model: 'claude-sonnet-5-5-high',
-        priority: 'P1',
+      assert.deepEqual(parseDiscordModelPriorityInput('P1', 'gemini-4-argon', 'claude'), {
+        model: 'claude-sonnet-5-5',
+        scheduleMode: 'immediate',
         effort: 'high',
       });
     });
@@ -776,14 +734,14 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
       const modal = createDispatchModal('agylity', 'Agylity', {
         includeModelInput: true,
-        defaultModel: 'gemini-4-argon-high',
+        defaultModel: 'gemini-4-argon',
         poolFamily: 'claude',
       });
       const data = modal.toJSON() as any;
       assert.equal(data.custom_id, 'modal_dispatch:agylity:claude');
       assert.equal(data.components.length, 2);
       assert.equal(data.components[1].components[0].custom_id, 'task_model_priority');
-      assert.equal(data.components[1].components[0].value, 'claude-sonnet-5-5-high P0');
+      assert.equal(data.components[1].components[0].value, 'claude-sonnet-5-5 P0');
     });
   });
 
@@ -848,11 +806,11 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         triggeredAt: new Date().toISOString(),
       };
 
-      // 1. Default (discordPingOwner = true): pings owner in both message content and embed description
+      // 1. Default (discordPingOwner = true): pings owner in message content
       await notifier.notifyQuotaAlert(sampleAlert);
       assert.equal(sentPayloads.length, 1);
       assert.equal(sentPayloads[0].content, '<@334455667788990011>');
-      assert.ok(sentPayloads[0].embeds[0].description.startsWith('<@334455667788990011> '));
+      assert.ok(!sentPayloads[0].embeds[0].description.includes('<@334455667788990011>'));
 
       // 2. Toggle off (discordPingOwner = false): omits owner mention from content and embed description
       await notifier.updateConfig({ discordPingOwner: false });
@@ -867,7 +825,9 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const notifier = new DiscordNotifier(
         {
           discordOwnerUserId: 'owner-user-1',
-          repositories: [{ id: 'agylity', name: 'Agylity', path: '/repos/agylity' }],
+          repositories: [
+            { id: 'agylity', name: 'Agylity', path: '/repos/agylity', defaultBranch: 'main' },
+          ],
         },
         {
           onQuotaRequested: async () => [],
@@ -949,7 +909,9 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
     it('enforces TOFU session pinning when discordOwnerUserId is unset and blocks secondary users', async () => {
       const notifier = new DiscordNotifier(
         {
-          repositories: [{ id: 'agylity', name: 'Agylity', path: '/repos/agylity' }],
+          repositories: [
+            { id: 'agylity', name: 'Agylity', path: '/repos/agylity', defaultBranch: 'main' },
+          ],
         },
         {
           onQuotaRequested: async () => [],

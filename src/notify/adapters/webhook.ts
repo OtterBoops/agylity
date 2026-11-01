@@ -162,6 +162,7 @@ export class WebhookNotifier implements Notifier {
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
     this.alerts.push(alert);
+    if (this.alerts.length > 100) this.alerts.shift();
 
     const poolName = alert.pool.displayName || alert.pool.poolId || 'Quota Pool';
     const percent = alert.remainingPercentage;
@@ -205,6 +206,7 @@ export class WebhookNotifier implements Notifier {
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
     this.statuses.push(status);
+    if (this.statuses.length > 100) this.statuses.shift();
 
     const step = status.status ?? (status.step as string) ?? 'executing';
     const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
@@ -315,8 +317,11 @@ export class WebhookNotifier implements Notifier {
     if (!url) return { status: 0 };
 
     const outgoingPayload: any = { ...payload };
+    const isOwnerAlertEvent =
+      outgoingPayload.event === 'quota_alert' || outgoingPayload.event === 'test_ping';
     if (
       isDiscordWebhook(url) &&
+      isOwnerAlertEvent &&
       Array.isArray(outgoingPayload.embeds) &&
       outgoingPayload.embeds.length > 0
     ) {
@@ -334,7 +339,7 @@ export class WebhookNotifier implements Notifier {
     const bodyStr = JSON.stringify(outgoingPayload);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Agylity-Notifier/0.2.0',
+      'User-Agent': 'Agylity-Notifier/0.3.0',
     };
 
     if (this.config.webhookCustomHeaders) {

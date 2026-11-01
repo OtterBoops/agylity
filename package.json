@@ -1,6 +1,6 @@
 {
   "name": "agylity",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Autonomous Quota Sentry & Remote Task Orchestrator for Google Antigravity",
   "type": "module",
@@ -13,15 +13,15 @@
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server",
     "dev:client": "npm --prefix frontend run dev",
-    "dev:server": "tsx watch --env-file-if-exists=.env src/index.ts",
-    "dev": "npm run build:client && tsx watch --env-file-if-exists=.env src/index.ts",
-    "dev:worker": "tsx --env-file-if-exists=.env src/worker-cli.ts",
+    "dev:server": "tsx --no-warnings watch --env-file-if-exists=.env src/index.ts",
+    "dev": "npm run build:client && tsx --no-warnings watch --env-file-if-exists=.env src/index.ts",
+    "dev:worker": "tsx --no-warnings --env-file-if-exists=.env src/worker-cli.ts",
     "start": "node --no-warnings --env-file-if-exists=.env dist/index.js",
     "start:worker": "node --no-warnings --env-file-if-exists=.env dist/worker-cli.js",
     "lint": "prettier --check . && eslint frontend/src",
     "format": "eslint --fix frontend/src && prettier --write .",
     "test": "node --no-warnings --import tsx --test tests/**/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit && npm --prefix frontend run typecheck"
   },
   "dependencies": {
     "discord.js": "^14.27.0",

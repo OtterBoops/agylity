@@ -10,7 +10,6 @@ interface RunnerRegistrationPanelProps {
 
 export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistrationPanelProps) => {
   const [runnerNameHint, setRunnerNameHint] = useState('');
-  const [runnerMode, setRunnerMode] = useState<'headless' | 'visible' | 'any'>('headless');
   const [runnerLabelsInput, setRunnerLabelsInput] = useState('docker, linux');
   const [isGeneratingToken, setIsGeneratingToken] = useState(false);
   const [generatedReg, setGeneratedReg] = useState<RunnerRegistrationTokenResult | null>(null);
@@ -31,7 +30,6 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
         .filter(Boolean);
       const res = await createRegistrationToken({
         nameHint: runnerNameHint.trim() || undefined,
-        workerMode: runnerMode,
         labels,
       });
       setGeneratedReg(res);
@@ -50,16 +48,44 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
     }
   };
 
+  const dockerCoordinatorUrl = coordinatorOrigin.replace(
+    /\/\/(127\.0\.0\.1|localhost)(:\d+)?$/,
+    '//host.docker.internal$2'
+  );
+
+  const labelsArg =
+    generatedReg?.labels && generatedReg.labels.length > 0 ? generatedReg.labels.join(', ') : '';
+
   const dockerCommand = generatedReg
-    ? `docker run -d --name ${generatedReg.nameHint || 'agylity-worker-1'} \\\n  --restart unless-stopped \\\n  -e COORDINATOR_URL=${coordinatorOrigin} \\\n  -e REGISTRATION_TOKEN=${generatedReg.registrationToken} \\\n  -e RUNNER_STATE_PATH=/data/runner.json \\\n  -v agylity-worker-data:/data \\\n  -v ./oauth_creds.json:/home/node/.gemini/oauth_creds.json \\\n  ghcr.io/otterboops/agylity-worker:latest`
+    ? [
+        `docker run -d --name ${generatedReg.nameHint || 'agylity-worker-1'} \\`,
+        `  --restart unless-stopped \\`,
+        `  -e COORDINATOR_URL=${dockerCoordinatorUrl} \\`,
+        `  -e REGISTRATION_TOKEN=${generatedReg.registrationToken} \\`,
+        `  -e RUNNER_STATE_PATH=/data/runner.json \\`,
+        labelsArg ? `  -e WORKER_LABELS="${labelsArg}" \\` : null,
+        `  -v agylity-worker-data:/data \\`,
+        `  -v agylity-gemini:/home/node/.gemini \\`,
+        `  ghcr.io/otterboops/agylity-worker:latest`,
+      ]
+        .filter(Boolean)
+        .join('\n')
     : '';
 
   const cliCommand = generatedReg
-    ? `node dist/worker-cli.js \\\n  --url ${coordinatorOrigin} \\\n  --token ${generatedReg.registrationToken} \\\n  --name ${generatedReg.nameHint || 'desktop-runner'} \\\n  --mode ${generatedReg.workerMode}`
+    ? [
+        `node dist/worker-cli.js \\`,
+        `  --url ${coordinatorOrigin} \\`,
+        `  --token ${generatedReg.registrationToken} \\`,
+        `  --name ${generatedReg.nameHint || 'desktop-runner'}${labelsArg ? ' \\' : ''}`,
+        labelsArg ? `  --labels "${labelsArg}"` : null,
+      ]
+        .filter(Boolean)
+        .join('\n')
     : '';
 
   return (
-    <div class="mt-5 rounded-xl border border-pine-highlight bg-pine-overlay/40 p-4">
+    <div class="rounded-xl border border-pine-highlight bg-pine-overlay/40 p-4">
       <h4 class="text-sm font-semibold text-pine-text">Register New Swarm Runner</h4>
       <p class="mt-0.5 text-xs text-pine-subtle">
         Generate a short-lived one-time registration token (valid for 1 hour). The runner exchanges
@@ -75,7 +101,7 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
 
       <form
         onSubmit={handleGenerateRegistrationToken}
-        class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3"
+        class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2"
       >
         <div class="flex flex-col gap-1">
           <label class="text-xs font-medium text-pine-subtle" for="runner-name-hint">
@@ -92,24 +118,6 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
             value={runnerNameHint}
             onInput={(e) => setRunnerNameHint((e.target as HTMLInputElement).value)}
           />
-        </div>
-
-        <div class="flex flex-col gap-1">
-          <label class="text-xs font-medium text-pine-subtle" for="runner-mode-select">
-            Execution mode
-          </label>
-          <select
-            id="runner-mode-select"
-            class={`${inputClass} cursor-pointer`}
-            value={runnerMode}
-            onChange={(e) =>
-              setRunnerMode((e.target as HTMLSelectElement).value as 'headless' | 'visible' | 'any')
-            }
-          >
-            <option value="headless">Headless (Docker / Unattended)</option>
-            <option value="visible">Visible (Desktop Terminal)</option>
-            <option value="any">Any Mode</option>
-          </select>
         </div>
 
         <div class="flex flex-col gap-1">

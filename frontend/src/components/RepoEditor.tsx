@@ -7,7 +7,6 @@ interface Repo {
   name: string;
   path: string;
   cloneUrl?: string;
-  description?: string;
   defaultBranch?: string;
 }
 
@@ -21,43 +20,85 @@ const inputClass =
 
 export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
   const current: Repo[] = config.resolved?.repositories || [];
-  const [draft, setDraft] = useState<Repo[] | null>(null);
+  const [newRepoInput, setNewRepoInput] = useState('');
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
-  const repos = draft ?? current;
-  const update = (next: Repo[]) => setDraft(next);
-  const patch = (i: number, p: Partial<Repo>) =>
-    update(repos.map((r, idx) => (idx === i ? { ...r, ...p } : r)));
+  const deriveRepo = (input: string): Repo => {
+    const trimmed = input.trim();
+    let derivedId = '';
+    let derivedName = '';
+    let cloneUrl = '';
 
-  const invalid = repos.some((r) => !r.id.trim() || !r.name.trim());
-  const ids = repos.map((r) => r.id.trim());
-  const duplicate = new Set(ids).size !== ids.length;
+    if (
+      trimmed.startsWith('http://') ||
+      trimmed.startsWith('https://') ||
+      trimmed.startsWith('git@')
+    ) {
+      cloneUrl = trimmed;
+      const match = trimmed.match(/([^/:]+)\/([^/]+?)(?:\.git)?$/);
+      if (match && match[2]) {
+        derivedId = match[2];
+        derivedName = `${match[1]}/${match[2]}`;
+      } else {
+        derivedId = trimmed.replace(/[^a-zA-Z0-9_-]/g, '_');
+        derivedName = trimmed;
+      }
+    } else if (trimmed.includes('/')) {
+      const parts = trimmed.split('/');
+      derivedId = parts[1] || parts[0]!;
+      derivedName = trimmed;
+      cloneUrl = `https://github.com/${trimmed}.git`;
+    } else {
+      derivedId = trimmed;
+      derivedName = trimmed;
+    }
 
-  const handleSave = async () => {
+    return {
+      id: derivedId,
+      name: derivedName,
+      path: `/repos/${derivedId}`,
+      cloneUrl: cloneUrl || undefined,
+      defaultBranch: 'main',
+    };
+  };
+
+  const handleAddRepo = async (e: Event) => {
+    e.preventDefault();
+    if (!newRepoInput.trim()) return;
+
+    const newRepo = deriveRepo(newRepoInput);
+    if (current.some((r) => r.id === newRepo.id)) {
+      setToast({ type: 'error', message: `Repository "${newRepo.id}" already exists.` });
+      return;
+    }
+
     setIsSaving(true);
     setToast(null);
 
-    const clean = repos.map((r) => {
-      const id = r.id.trim();
-      const path = r.path?.trim() || (id ? `/repos/${id}` : '/repos');
-      return {
-        id,
-        name: r.name.trim(),
-        path,
-        defaultBranch: r.defaultBranch?.trim() || 'main',
-        ...(r.cloneUrl?.trim() ? { cloneUrl: r.cloneUrl.trim() } : {}),
-        ...(r.description?.trim() ? { description: r.description.trim() } : {}),
-      };
-    });
-
+    const updated = [...current, newRepo];
     try {
-      await updateConfig({ repositories: clean });
-      setDraft(null);
-      setToast({ type: 'success', message: 'Repositories saved.' });
+      await updateConfig({ repositories: updated });
+      setNewRepoInput('');
+      setToast({ type: 'success', message: `Added repository "${newRepo.name}".` });
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to save repositories' });
+      setToast({ type: 'error', message: err.message || 'Failed to add repository' });
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRemoveRepo = async (id: string) => {
+    setIsSaving(true);
+    setToast(null);
+    const updated = current.filter((r) => r.id !== id);
+    try {
+      await updateConfig({ repositories: updated });
+      setToast({ type: 'success', message: 'Repository removed.' });
+      onSaved();
+    } catch (err: any) {
+      setToast({ type: 'error', message: err.message || 'Failed to remove repository' });
     } finally {
       setIsSaving(false);
     }
@@ -68,149 +109,60 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       <div>
         <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
         <p class="mt-0.5 text-xs text-pine-subtle">
-          Target workspaces for Discord and dashboard task dispatch.
+          Connected target repositories for automated worker task execution.
         </p>
       </div>
 
-      {repos.length === 0 && <p class="text-sm text-pine-muted">No repositories configured.</p>}
+      <form onSubmit={handleAddRepo} class="flex gap-2">
+        <input
+          type="text"
+          class={`flex-1 ${inputClass}`}
+          placeholder="e.g. OtterBoops/agylity or https://github.com/OtterBoops/agylity.git"
+          value={newRepoInput}
+          onInput={(e) => setNewRepoInput((e.target as HTMLInputElement).value)}
+        />
+        <button
+          type="submit"
+          disabled={isSaving || !newRepoInput.trim()}
+          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+        >
+          {isSaving ? 'Adding...' : 'Add Repository'}
+        </button>
+      </form>
 
-      <div class="flex flex-col gap-4">
-        {repos.map((r, i) => (
-          <div
-            key={i}
-            class="flex flex-col gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/20 p-4"
-          >
-            <div class="grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1.5fr_1fr_auto]">
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-medium text-pine-subtle">ID</label>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_id_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.id}
-                  placeholder="agylity"
-                  onInput={(e) => {
-                    const nextId = (e.target as HTMLInputElement).value;
-                    const prevAuto = r.id ? `/repos/${r.id}` : '';
-                    const isAuto = !r.path || r.path === prevAuto;
-                    patch(i, {
-                      id: nextId,
-                      path: isAuto ? (nextId ? `/repos/${nextId.trim()}` : '') : r.path,
-                    });
-                  }}
-                />
-              </div>
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-medium text-pine-subtle">Name</label>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_name_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.name}
-                  placeholder="Agylity"
-                  onInput={(e) => patch(i, { name: (e.target as HTMLInputElement).value })}
-                />
-              </div>
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-medium text-pine-subtle">Default Branch</label>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_branch_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.defaultBranch ?? 'main'}
-                  placeholder="main"
-                  onInput={(e) => patch(i, { defaultBranch: (e.target as HTMLInputElement).value })}
-                />
-              </div>
-              <button
-                type="button"
-                class="cursor-pointer rounded-lg border border-pine-love/30 bg-pine-love/15 px-3 py-2 text-xs font-medium text-pine-love transition-colors hover:bg-pine-love hover:text-white"
-                onClick={() => update(repos.filter((_, idx) => idx !== i))}
-              >
-                Remove
-              </button>
-            </div>
-
-            <div class="grid grid-cols-1 items-end gap-3 md:grid-cols-3">
-              <div class="flex flex-col gap-1.5">
+      {current.length === 0 ? (
+        <p class="text-sm text-pine-muted">No repositories configured yet.</p>
+      ) : (
+        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+          {current.map((r) => (
+            <div
+              key={r.id}
+              class="flex flex-col justify-between gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-4"
+            >
+              <div>
                 <div class="flex items-center justify-between">
-                  <label class="text-xs font-medium text-pine-subtle">In-container path</label>
-                  <span class="font-mono text-xs text-pine-muted">
-                    auto: /repos/{r.id.trim() || 'id'}
+                  <h4 class="font-semibold text-pine-text">{r.name}</h4>
+                  <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono text-xs text-pine-muted">
+                    {r.defaultBranch || 'main'}
                   </span>
                 </div>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_path_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.path ?? ''}
-                  placeholder={`/repos/${r.id.trim() || 'id'}`}
-                  onInput={(e) => patch(i, { path: (e.target as HTMLInputElement).value })}
-                />
+                <p class="mt-1 font-mono text-xs text-pine-foam">{r.path}</p>
+                {r.cloneUrl && <p class="mt-0.5 truncate text-xs text-pine-subtle">{r.cloneUrl}</p>}
               </div>
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-medium text-pine-subtle">Clone URL (Remote Swarm)</label>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_clone_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.cloneUrl ?? ''}
-                  placeholder="https://github.com/owner/repo.git"
-                  onInput={(e) => patch(i, { cloneUrl: (e.target as HTMLInputElement).value })}
-                />
-              </div>
-              <div class="flex flex-col gap-1.5">
-                <label class="text-xs font-medium text-pine-subtle">Description</label>
-                <input
-                  class={inputClass}
-                  name={`agylity_repo_desc_${i}`}
-                  autoComplete="off"
-                  data-1p-ignore="true"
-                  data-lpignore="true"
-                  value={r.description ?? ''}
-                  placeholder="Optional notes or repository description"
-                  onInput={(e) => patch(i, { description: (e.target as HTMLInputElement).value })}
-                />
+              <div class="flex justify-end border-t border-pine-highlight/50 pt-2">
+                <button
+                  type="button"
+                  onClick={() => handleRemoveRepo(r.id)}
+                  disabled={isSaving}
+                  class="cursor-pointer rounded-sm border border-pine-love/30 bg-pine-love/10 px-2 py-1 text-xs font-medium text-pine-love hover:bg-pine-love hover:text-white disabled:opacity-50"
+                >
+                  Remove
+                </button>
               </div>
             </div>
-          </div>
-        ))}
-      </div>
-
-      <div class="flex items-center justify-between gap-3">
-        <button
-          type="button"
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
-          onClick={() => update([...repos, { id: '', name: '', path: '' }])}
-        >
-          + Add repository
-        </button>
-        <div class="flex items-center gap-3">
-          {(invalid || duplicate) && draft && (
-            <span class="text-xs text-pine-gold">
-              {duplicate ? 'IDs must be unique' : 'ID and name are required'}
-            </span>
-          )}
-          <button
-            type="button"
-            class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-            disabled={isSaving || !draft || invalid || duplicate}
-            onClick={handleSave}
-          >
-            {isSaving ? 'Saving...' : 'Save repositories'}
-          </button>
+          ))}
         </div>
-      </div>
+      )}
 
       {toast && (
         <div

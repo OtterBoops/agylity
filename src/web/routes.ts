@@ -32,6 +32,10 @@ import {
   handleGetTasks,
   handlePollTasks,
   handleTaskStatus,
+  handleTaskCancel,
+  handleTaskRetry,
+  handleStandingTasks,
+  handleStandingTaskById,
   handleGetWorkers,
   handleCreateRegistrationToken,
   handleRegisterWorker,
@@ -66,11 +70,14 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
 };
 
 const isControlPlaneRoute = (pathname: string, method: string): boolean => {
-  if (pathname === '/api/config' && method === 'POST') return true;
+  if (pathname === '/api/config' && (method === 'GET' || method === 'POST')) return true;
   if (pathname.startsWith('/api/config/') && method === 'DELETE') return true;
   if (pathname === '/api/dispatch' && method === 'POST') return true;
+  if (pathname === '/api/dispatches' && method === 'GET') return true;
   if (pathname === '/api/notify/test' && method === 'POST') return true;
   if (pathname === '/api/logs' && method === 'GET') return true;
+  if (pathname === '/api/tasks' && method === 'GET') return true;
+  if (pathname === '/api/workers' && method === 'GET') return true;
   if (pathname === '/api/workers/registration-token' && method === 'POST') return true;
   if (pathname.startsWith('/api/workers/') && (method === 'PATCH' || method === 'DELETE'))
     return true;
@@ -99,6 +106,18 @@ export const handleRequest = async (
     if (pathname === '/favicon.ico') {
       res.writeHead(204).end();
       return;
+    }
+
+    // Healthcheck probe
+    if (pathname === '/api/health') {
+      if (method !== 'GET') {
+        return methodNotAllowed(res);
+      }
+      return sendJson(res, 200, {
+        status: 'ok',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+      });
     }
 
     // Static Assets (/assets/*, /vendor/*, SVG/images/icons)
@@ -175,6 +194,25 @@ export const handleRequest = async (
     // Swarm Task Status & Completion Callback
     if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) {
       return handleTaskStatus(req, res, options, pathname, method);
+    }
+
+    // Task Cancel / Abort
+    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/cancel')) {
+      return handleTaskCancel(req, res, options, pathname, method);
+    }
+
+    // Task Retry / Re-run
+    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/retry')) {
+      return handleTaskRetry(req, res, options, pathname, method);
+    }
+
+    // Standing Tasks CRUD & Trigger
+    if (pathname === '/api/standing-tasks') {
+      return handleStandingTasks(req, res, options, url, method);
+    }
+
+    if (pathname.startsWith('/api/standing-tasks/')) {
+      return handleStandingTaskById(req, res, options, pathname, method);
     }
 
     // Registered Swarm Workers & Runner Registration Flow

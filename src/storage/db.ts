@@ -23,18 +23,6 @@ export interface DatabaseConnectionOptions {
 
 export type DatabaseOptions = string | DatabaseConnectionOptions;
 
-export interface DispatchRecord {
-  id: number;
-  createdAt: string;
-  repository: string;
-  prompt: string;
-  requestedBy: string;
-  success: boolean;
-  branch?: string;
-  error?: string;
-  durationMs: number;
-}
-
 export class AppDatabase {
   private db: DatabaseSync;
   private dbPath: string;
@@ -45,8 +33,6 @@ export class AppDatabase {
   private upsertStmt: StatementSync;
   private deleteStmt: StatementSync;
   private clearStmt: StatementSync;
-  private insertDispatchStmt: StatementSync;
-  private listDispatchesStmt: StatementSync;
 
   constructor(options: DatabaseOptions = 'data/agylity.db') {
     this.dbPath = typeof options === 'string' ? options : options.path;
@@ -87,12 +73,6 @@ export class AppDatabase {
     );
     this.deleteStmt = this.db.prepare('DELETE FROM settings WHERE key = ?');
     this.clearStmt = this.db.prepare('DELETE FROM settings');
-    this.insertDispatchStmt = this.db.prepare(
-      'INSERT INTO dispatches (repository, prompt, requested_by, success, branch, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)'
-    );
-    this.listDispatchesStmt = this.db.prepare(
-      'SELECT id, created_at, repository, prompt, requested_by, success, branch, error, duration_ms FROM dispatches ORDER BY id DESC LIMIT ?'
-    );
   }
 
   private initPragmas(busyTimeoutMs = 5000): void {
@@ -105,60 +85,12 @@ export class AppDatabase {
 
   private runMigrations(): void {
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS schema_migrations (
-        version INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
-
-      CREATE TABLE IF NOT EXISTS dispatches (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        repository TEXT NOT NULL,
-        prompt TEXT NOT NULL,
-        requested_by TEXT NOT NULL,
-        success INTEGER NOT NULL,
-        branch TEXT,
-        error TEXT,
-        duration_ms INTEGER NOT NULL DEFAULT 0
-      );
     `);
-  }
-
-  public recordDispatch(entry: Omit<DispatchRecord, 'id' | 'createdAt'>): number {
-    const info = this.insertDispatchStmt.run(
-      entry.repository,
-      (entry.prompt ?? '').slice(0, 4000),
-      entry.requestedBy,
-      entry.success ? 1 : 0,
-      entry.branch ?? null,
-      entry.error ?? null,
-      Math.max(0, Math.round(entry.durationMs ?? 0))
-    ) as unknown as { lastInsertRowid?: number | bigint };
-    return Number(info?.lastInsertRowid ?? 0);
-  }
-
-  public listDispatches(limit = 50): DispatchRecord[] {
-    const rows = this.listDispatchesStmt.all(Math.min(Math.max(1, limit), 500)) as Array<
-      Record<string, any>
-    >;
-    return rows.map((r) => ({
-      id: Number(r.id),
-      createdAt: String(r.created_at),
-      repository: String(r.repository),
-      prompt: String(r.prompt),
-      requestedBy: String(r.requested_by),
-      success: r.success === 1,
-      branch: r.branch ?? undefined,
-      error: r.error ?? undefined,
-      durationMs: Number(r.duration_ms),
-    }));
   }
 
   public getRawDb(): DatabaseSync {

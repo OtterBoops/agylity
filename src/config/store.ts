@@ -36,7 +36,6 @@ const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   ORCHESTRATOR_ENABLED: 'orchestratorEnabled',
   DEFAULT_DISPATCH_MODEL: 'defaultDispatchModel',
   DEFAULT_DISPATCH_EFFORT: 'defaultDispatchEffort',
-  DEFAULT_WORKER_MODE: 'defaultWorkerMode',
   WORKER_SHARED_SECRET: 'workerSharedSecret',
   QUOTA_BURN_MAX_HOURS: 'quotaBurnMaxHours',
   QUOTA_BURN_MIN_HEADROOM_PERCENT: 'quotaBurnMinHeadroomPercent',
@@ -120,6 +119,21 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
 
   public getResolvedConfig(): ResolvedConfig {
     return this.resolveConfig();
+  }
+
+  public getSources(): Record<string, 'override' | 'env' | 'default'> {
+    const overrides = this.getAllOverrides();
+    const sources: Record<string, 'override' | 'env' | 'default'> = {};
+    for (const key of Object.keys(this.defaults) as Array<keyof AppConfig>) {
+      if (overrides[key] !== undefined) {
+        sources[key] = 'override';
+      } else if (this.envConfig[key] !== undefined) {
+        sources[key] = 'env';
+      } else {
+        sources[key] = 'default';
+      }
+    }
+    return sources;
   }
 
   public get<T = unknown>(key: string): T | undefined {

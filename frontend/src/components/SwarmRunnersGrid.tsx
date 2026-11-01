@@ -98,9 +98,19 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                 </div>
 
                 <div class="flex flex-wrap items-center gap-1.5 text-xs text-pine-muted">
-                  <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono whitespace-nowrap text-pine-subtle">
-                    mode:{w.workerMode}
-                  </span>
+                  {w.systemInfo?.platform && (
+                    <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono whitespace-nowrap text-pine-subtle">
+                      {w.systemInfo.platform}/{w.systemInfo.arch || 'x64'}
+                    </span>
+                  )}
+                  {w.activeTaskId && (
+                    <a
+                      href="#tasks"
+                      class="rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 font-mono whitespace-nowrap text-pine-gold hover:underline"
+                    >
+                      task:{w.activeTaskId.slice(-6)}
+                    </a>
+                  )}
                   {w.labels?.map((lbl) => (
                     <span
                       key={lbl}

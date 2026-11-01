@@ -36,10 +36,12 @@ export const handleConfigEndpoint = async (
   if (method === 'GET') {
     const resolved = options.configStore.resolveConfig();
     const overrides = options.configStore.getAllOverrides();
+    const sources = options.configStore.getSources?.() ?? {};
     return sendJson(res, 200, {
       resolved: sanitizeConfigForClient(resolved),
       overrides: sanitizeConfigForClient(overrides),
       secretsMeta: getSecretsMeta(resolved),
+      sources,
     });
   }
 
@@ -110,6 +112,7 @@ export const handleConfigEndpoint = async (
       success: true,
       resolved: sanitizeConfigForClient(updatedResolved),
       overrides: sanitizeConfigForClient(updatedOverrides),
+      sources: options.configStore.getSources?.() ?? {},
       secretsMeta: getSecretsMeta(updatedResolved),
     });
   }
@@ -137,6 +140,7 @@ export const handleDeleteConfigOverride = (
     success: true,
     resolved: sanitizeConfigForClient(resolved),
     overrides: sanitizeConfigForClient(overrides),
+    sources: options.configStore.getSources?.() ?? {},
     secretsMeta: getSecretsMeta(resolved),
   });
 };

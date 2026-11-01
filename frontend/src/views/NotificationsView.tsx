@@ -8,7 +8,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useState, useEffect, useMemo } from 'preact/hooks';
 import type { ConfigData, ToastState } from '../types';
-import { updateConfig, testNotification } from '../api';
+import { updateConfig, testNotification, deleteConfigOverride } from '../api';
 import { Icon } from '../components/Icon';
 import { DiscordChannelForm } from '../components/DiscordChannelForm';
 import { WebhookChannelForm } from '../components/WebhookChannelForm';
@@ -183,9 +183,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setEnabledChannels((prev) => {
       const isCurrentlyEnabled = prev.includes(id);
       const next = isCurrentlyEnabled ? prev.filter((c) => c !== id) : [...prev, id];
-      if (!isCurrentlyEnabled) {
-        setExpandedChannels((exp) => ({ ...exp, [id]: true }));
-      }
+      setExpandedChannels((exp) => ({ ...exp, [id]: !isCurrentlyEnabled }));
       return next;
     });
   };
@@ -269,16 +267,35 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
     if (discordToken.trim()) payload.discordToken = discordToken.trim();
     if (discordChannelId !== serverDiscordChannelId) {
-      payload.discordNotificationChannelId = discordChannelId.trim();
+      if (
+        discordChannelId.trim() === '' &&
+        config.overrides?.discordNotificationChannelId !== undefined
+      ) {
+        await deleteConfigOverride('discordNotificationChannelId');
+      } else {
+        payload.discordNotificationChannelId = discordChannelId.trim();
+      }
     }
     if (discordClientId !== serverDiscordClientId) {
-      payload.discordClientId = discordClientId.trim();
+      if (discordClientId.trim() === '' && config.overrides?.discordClientId !== undefined) {
+        await deleteConfigOverride('discordClientId');
+      } else {
+        payload.discordClientId = discordClientId.trim();
+      }
     }
     if (discordGuildId !== serverDiscordGuildId) {
-      payload.discordGuildId = discordGuildId.trim();
+      if (discordGuildId.trim() === '' && config.overrides?.discordGuildId !== undefined) {
+        await deleteConfigOverride('discordGuildId');
+      } else {
+        payload.discordGuildId = discordGuildId.trim();
+      }
     }
     if (discordOwnerUserId !== serverDiscordOwnerUserId) {
-      payload.discordOwnerUserId = discordOwnerUserId.trim();
+      if (discordOwnerUserId.trim() === '' && config.overrides?.discordOwnerUserId !== undefined) {
+        await deleteConfigOverride('discordOwnerUserId');
+      } else {
+        payload.discordOwnerUserId = discordOwnerUserId.trim();
+      }
     }
     if (discordPingOwner !== serverDiscordPingOwner) {
       payload.discordPingOwner = discordPingOwner;
@@ -330,21 +347,25 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       if (webhookSecret.trim()) {
         overrides.webhookSecret = webhookSecret.trim();
       }
-      if (discordOwnerUserId.trim()) {
+      if (discordOwnerUserId.trim() !== serverDiscordOwnerUserId) {
         overrides.discordOwnerUserId = discordOwnerUserId.trim();
       }
-      overrides.discordPingOwner = discordPingOwner;
+      if (discordPingOwner !== serverDiscordPingOwner) {
+        overrides.discordPingOwner = discordPingOwner;
+      }
     } else if (channel === 'discord') {
       if (discordToken.trim()) {
         overrides.discordToken = discordToken.trim();
       }
-      if (discordChannelId.trim()) {
+      if (discordChannelId.trim() !== serverDiscordChannelId) {
         overrides.discordNotificationChannelId = discordChannelId.trim();
       }
-      if (discordOwnerUserId.trim()) {
+      if (discordOwnerUserId.trim() !== serverDiscordOwnerUserId) {
         overrides.discordOwnerUserId = discordOwnerUserId.trim();
       }
-      overrides.discordPingOwner = discordPingOwner;
+      if (discordPingOwner !== serverDiscordPingOwner) {
+        overrides.discordPingOwner = discordPingOwner;
+      }
     }
 
     testNotification(channel, overrides)
@@ -377,51 +398,52 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
   const handleClearWebhook = async () => {
     try {
-      await updateConfig({ notificationWebhookUrl: '' });
+      await deleteConfigOverride('notificationWebhookUrl');
+      await deleteConfigOverride('webhookUrl');
       setToast({
         type: 'success',
-        message: 'Saved webhook URL cleared successfully.',
+        message: 'Saved webhook URL override removed successfully.',
       });
       setWebhookUrl('');
       onSaved();
     } catch (err: any) {
       setToast({
         type: 'error',
-        message: err?.message || 'Failed to clear webhook URL',
+        message: err?.message || 'Failed to clear webhook URL override',
       });
     }
   };
 
   const handleClearWebhookSecret = async () => {
     try {
-      await updateConfig({ webhookSecret: '' });
+      await deleteConfigOverride('webhookSecret');
       setToast({
         type: 'success',
-        message: 'Saved HMAC secret key cleared successfully.',
+        message: 'Saved HMAC secret key override removed successfully.',
       });
       setWebhookSecret('');
       onSaved();
     } catch (err: any) {
       setToast({
         type: 'error',
-        message: err?.message || 'Failed to clear HMAC secret key',
+        message: err?.message || 'Failed to clear HMAC secret key override',
       });
     }
   };
 
   const handleClearDiscordToken = async () => {
     try {
-      await updateConfig({ discordToken: '' });
+      await deleteConfigOverride('discordToken');
       setToast({
         type: 'success',
-        message: 'Saved Discord Bot Token cleared successfully.',
+        message: 'Saved Discord Bot Token override removed successfully.',
       });
       setDiscordToken('');
       onSaved();
     } catch (err: any) {
       setToast({
         type: 'error',
-        message: err?.message || 'Failed to clear Discord Bot Token',
+        message: err?.message || 'Failed to clear Discord Bot Token override',
       });
     }
   };
@@ -482,15 +504,22 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
               <div class="flex items-center justify-between gap-4 p-4 select-none md:p-5">
                 <div
                   class="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleToggleExpand(ch.id);
+                    }
+                  }}
                   onClick={() => handleToggleExpand(ch.id)}
                 >
-                  <button
-                    type="button"
-                    class="cursor-pointer text-pine-muted transition-colors hover:text-pine-text"
-                    aria-label={isExpanded ? `Collapse ${ch.label}` : `Expand ${ch.label}`}
+                  <span
+                    class="text-pine-muted transition-colors hover:text-pine-text"
+                    aria-hidden="true"
                   >
                     <Icon icon={isExpanded ? faChevronDown : faChevronRight} class="size-3.5" />
-                  </button>
+                  </span>
 
                   <div class="flex min-w-0 items-center gap-3">
                     <Icon icon={ch.icon} class={`size-4 shrink-0 ${ch.iconColor}`} />
@@ -507,7 +536,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                           </span>
                         )}
                       </div>
-                      <p class="truncate text-xs text-pine-muted">{ch.description}</p>
+                      <p class="text-xs text-pine-muted">{ch.description}</p>
                     </div>
                   </div>
                 </div>

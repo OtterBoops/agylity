@@ -127,6 +127,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const res = await ky.get(`http://127.0.0.1:${port}/`);
         assert.equal(res.status, 200);
         assert.equal(res.headers.get('content-type'), 'text/html; charset=utf-8');
+        assert.equal(res.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
 
         const body = await res.text();
         assert.ok(body.includes('Agylity Dashboard'));
@@ -141,6 +142,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           scriptRes.headers.get('content-type'),
           'application/javascript; charset=utf-8'
         );
+        assert.equal(scriptRes.headers.get('cache-control'), 'public, max-age=31536000, immutable');
         const scriptBody = await scriptRes.text();
         assert.ok(scriptBody.includes('dispatchModal'));
         assert.ok(scriptBody.includes('repoSelect'));

@@ -6,11 +6,8 @@ import {
   type QuotaSnapshot,
 } from '../sentry/models.js';
 
-export type TaskPriority = 'P0' | 'P1' | 'P2';
-export const TaskPrioritySchema = z.enum(['P0', 'P1', 'P2']).default('P0');
-
-export type WorkerMode = 'headless' | 'visible' | 'any';
-export const WorkerModeSchema = z.enum(['headless', 'visible', 'any']).default('headless');
+export type ScheduleMode = 'immediate' | 'pre_reset';
+export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export const ReasoningEffortSchema = z
@@ -48,89 +45,41 @@ export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
  */
 export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   {
-    id: 'gemini-4-argon-high',
-    label: 'Gemini 4 Argon (High)',
-    family: 'gemini-argon',
-    defaultEffort: 'high',
-  },
-  {
-    id: 'gemini-4-argon-medium',
-    label: 'Gemini 4 Argon (Medium)',
-    family: 'gemini-argon',
-    defaultEffort: 'medium',
-  },
-  {
-    id: 'gemini-4-argon-low',
-    label: 'Gemini 4 Argon (Low)',
-    family: 'gemini-argon',
-    defaultEffort: 'low',
-  },
-  {
-    id: 'gemini-3.8-flash-high',
-    label: 'Gemini 3.8 Flash (High)',
-    family: 'gemini-flash',
-    defaultEffort: 'high',
-  },
-  {
-    id: 'gemini-3.8-flash-medium',
-    label: 'Gemini 3.8 Flash (Medium)',
+    id: 'gemini-3.8-flash',
+    label: 'Gemini 3.8 Flash',
     family: 'gemini-flash',
     defaultEffort: 'medium',
   },
   {
-    id: 'gemini-3.8-flash-low',
-    label: 'Gemini 3.8 Flash (Low)',
-    family: 'gemini-flash',
-    defaultEffort: 'low',
+    id: 'gemini-4-argon',
+    label: 'Gemini 4 Argon',
+    family: 'gemini-argon',
+    defaultEffort: 'high',
   },
   {
-    id: 'claude-sonnet-5-5-high',
-    label: 'Claude Sonnet 5.5 (High)',
+    id: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
     family: 'claude',
     defaultEffort: 'high',
   },
   {
-    id: 'claude-sonnet-5-5-medium',
-    label: 'Claude Sonnet 5.5 (Medium)',
-    family: 'claude',
-    defaultEffort: 'medium',
-  },
-  {
-    id: 'claude-sonnet-5-5-low',
-    label: 'Claude Sonnet 5.5 (Low)',
-    family: 'claude',
-    defaultEffort: 'low',
-  },
-  {
-    id: 'claude-opus-5-5-high',
-    label: 'Claude Opus 5.5 (High)',
+    id: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
     family: 'claude',
     defaultEffort: 'high',
   },
   {
-    id: 'claude-opus-5-5-medium',
-    label: 'Claude Opus 5.5 (Medium)',
-    family: 'claude',
-    defaultEffort: 'medium',
-  },
-  {
-    id: 'claude-opus-5-5-low',
-    label: 'Claude Opus 5.5 (Low)',
-    family: 'claude',
-    defaultEffort: 'low',
-  },
-  {
-    id: 'gpt-oss-120b-medium',
-    label: 'GPT-OSS 120B (Medium)',
+    id: 'gpt-oss-120b',
+    label: 'GPT-OSS 120B',
     family: 'claude',
     defaultEffort: 'medium',
   },
 ] as const;
 
 export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
-  'gemini-argon': 'gemini-4-argon-high',
-  'gemini-flash': 'gemini-3.8-flash-high',
-  claude: 'claude-sonnet-5-5-high',
+  'gemini-argon': 'gemini-4-argon',
+  'gemini-flash': 'gemini-3.8-flash',
+  claude: 'claude-sonnet-5-5',
 };
 
 /**
@@ -153,12 +102,12 @@ export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =
  */
 export const resolveConcreteModelId = (
   requestedModel: string | undefined,
-  defaultModel = 'gemini-4-argon-high'
+  defaultModel = 'gemini-4-argon'
 ): string => {
   const safeDefault =
     defaultModel && defaultModel.trim() !== '' && defaultModel.trim().toLowerCase() !== 'auto'
       ? defaultModel.trim()
-      : 'gemini-4-argon-high';
+      : 'gemini-4-argon';
 
   if (
     !requestedModel ||
@@ -169,20 +118,39 @@ export const resolveConcreteModelId = (
   }
 
   const trimmed = requestedModel.trim().toLowerCase();
-  if (trimmed === 'gemini-argon' || trimmed === 'argon') {
+  if (
+    trimmed === 'gemini-argon' ||
+    trimmed === 'argon' ||
+    trimmed === 'gemini-4-argon' ||
+    trimmed === 'gemini-4-argon-high'
+  ) {
     return DEFAULT_MODEL_BY_FAMILY['gemini-argon'];
   }
-  if (trimmed === 'gemini-flash' || trimmed === 'flash') {
+  if (
+    trimmed === 'gemini-flash' ||
+    trimmed === 'flash' ||
+    trimmed === 'gemini-3.8-flash' ||
+    trimmed === 'gemini-3.8-flash-high'
+  ) {
     return DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
   }
-  if (trimmed === 'claude' || trimmed === 'sonnet') {
+  if (
+    trimmed === 'claude' ||
+    trimmed === 'sonnet' ||
+    trimmed === 'claude-sonnet-5-5' ||
+    trimmed === 'claude-sonnet-5-5-high'
+  ) {
     return DEFAULT_MODEL_BY_FAMILY.claude;
   }
-  if (trimmed === 'opus') {
-    return 'claude-opus-5-5-high';
+  if (trimmed === 'opus' || trimmed === 'claude-opus-5-5' || trimmed === 'claude-opus-5-5-high') {
+    return 'claude-opus-5-5';
+  }
+  if (trimmed === 'gpt-oss' || trimmed === 'gpt-oss-120b' || trimmed === 'gpt-oss-120b-medium') {
+    return 'gpt-oss-120b';
   }
 
-  return requestedModel.trim();
+  // Strip trailing legacy -high, -medium, -low suffixes if present
+  return requestedModel.trim().replace(/-(high|medium|low)$/i, '');
 };
 
 /**
@@ -226,7 +194,7 @@ export const calculateEffectiveHeadroomPercent = (
 export interface ModelEligibilityOptions {
   requestedModel?: string;
   defaultModel?: string;
-  priority?: TaskPriority;
+  scheduleMode?: ScheduleMode;
   pools?: Array<
     Pick<
       QuotaSnapshot,
@@ -244,7 +212,6 @@ export interface ModelEligibilityOptions {
   minDispatchHeadroomPercent?: number;
   allowOverage?: boolean;
   quotaBurnMaxHours?: number;
-  quotaBurnMinHeadroomPercent?: number;
   nowMs?: number;
 }
 
@@ -259,7 +226,7 @@ export interface ModelEligibilityResult {
 }
 
 /**
- * Evaluates whether a task with the given model and priority can safely dispatch/execute
+ * Evaluates whether a task with the given model and scheduleMode can safely dispatch/execute
  * under the current quota pool telemetry and safety floor rules.
  */
 export const evaluateModelDispatchEligibility = (
@@ -267,16 +234,15 @@ export const evaluateModelDispatchEligibility = (
 ): ModelEligibilityResult => {
   const resolvedModel = resolveConcreteModelId(options.requestedModel, options.defaultModel);
   const family = resolvePoolFamilyForModel(resolvedModel);
-  const priority: TaskPriority = options.priority ?? 'P0';
+  const scheduleMode: ScheduleMode = options.scheduleMode ?? 'immediate';
   const minHeadroom = options.minDispatchHeadroomPercent ?? 10;
   const allowOverage = Boolean(options.allowOverage);
   const quotaBurnMaxHours = options.quotaBurnMaxHours ?? 2;
-  const quotaBurnMinHeadroom = options.quotaBurnMinHeadroomPercent ?? 30;
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
 
   if (pools.length === 0) {
-    if (priority === 'P2' && !allowOverage) {
+    if (scheduleMode === 'pre_reset' && !allowOverage) {
       return {
         allowed: false,
         resolvedModel,
@@ -284,7 +250,7 @@ export const evaluateModelDispatchEligibility = (
         effectiveHeadroomPercent: 100,
         hoursUntilReset: null,
         code: 'QUOTA_BURN_CONDITIONS_NOT_MET',
-        reason: `P2 Quota-Burn task queued: waiting for telemetry confirming <${quotaBurnMaxHours}h to reset and >=${quotaBurnMinHeadroom}% headroom.`,
+        reason: `Pre-Reset Quota-Burn task queued: waiting for telemetry confirming <${quotaBurnMaxHours}h to reset and >=${minHeadroom}% headroom.`,
       };
     }
     return {
@@ -321,7 +287,7 @@ export const evaluateModelDispatchEligibility = (
       : calculateHoursUntilReset(targetPool.resetTime, nowMs)
     : null;
 
-  // 1. Safety Floor Check (Applies to all priorities unless allowOverage is true)
+  // 1. Safety Floor Check (Applies to all schedule modes unless allowOverage is true)
   if (effectiveHeadroomPercent < minHeadroom && !allowOverage) {
     return {
       allowed: false,
@@ -334,11 +300,11 @@ export const evaluateModelDispatchEligibility = (
     };
   }
 
-  // 2. P2 Opportunistic Quota-Burn Check (< quotaBurnMaxHours to reset AND >= quotaBurnMinHeadroomPercent)
-  if (priority === 'P2' && !allowOverage) {
+  // 2. Pre-Reset Opportunistic Quota-Burn Check (<= quotaBurnMaxHours to reset AND >= minHeadroom)
+  if (scheduleMode === 'pre_reset' && !allowOverage) {
     const isWindowImminent =
       hoursUntilReset !== null && hoursUntilReset > 0 && hoursUntilReset <= quotaBurnMaxHours;
-    const hasAmpleQuota = effectiveHeadroomPercent >= quotaBurnMinHeadroom;
+    const hasAmpleQuota = effectiveHeadroomPercent >= minHeadroom;
 
     if (!isWindowImminent || !hasAmpleQuota) {
       return {
@@ -348,7 +314,7 @@ export const evaluateModelDispatchEligibility = (
         effectiveHeadroomPercent,
         hoursUntilReset,
         code: 'QUOTA_BURN_CONDITIONS_NOT_MET',
-        reason: `P2 Quota-Burn conditions not yet met for ${family} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${quotaBurnMinHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
+        reason: `Pre-Reset Quota-Burn conditions not yet met for ${family} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${minHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
       };
     }
   }
@@ -408,15 +374,15 @@ export const annotateModelsWithQuota = (
 };
 
 /**
- * Parses the optional Discord modal model/priority input string (e.g. "gemini-4-argon-high P0", "P2", "claude-opus-5-5-high").
+ * Parses the optional Discord modal model/scheduleMode input string (e.g. "gemini-4-argon-high pre_reset", "claude-opus-5-5-high").
  */
 export const parseDiscordModelPriorityInput = (
   rawInput: string | undefined,
-  defaultModel = 'gemini-4-argon-high',
+  defaultModel = 'gemini-3.8-flash',
   fallbackPoolFamily?: string
 ): {
   model: string;
-  priority: TaskPriority;
+  scheduleMode: ScheduleMode;
   effort: ReasoningEffort;
 } => {
   const baseDefault = fallbackPoolFamily
@@ -427,7 +393,7 @@ export const parseDiscordModelPriorityInput = (
     const catalogMatch = CANONICAL_AGY_MODELS.find((m) => m.id === baseDefault);
     return {
       model: baseDefault,
-      priority: 'P0',
+      scheduleMode: 'immediate',
       effort: catalogMatch?.defaultEffort ?? 'high',
     };
   }
@@ -438,15 +404,19 @@ export const parseDiscordModelPriorityInput = (
     .map((t) => t.trim())
     .filter(Boolean);
 
-  let priority: TaskPriority = 'P0';
+  let scheduleMode: ScheduleMode = 'immediate';
   let effort: ReasoningEffort | undefined;
   let modelToken: string | undefined;
 
   for (const token of tokens) {
     const upper = token.toUpperCase();
     const lower = token.toLowerCase();
-    if (upper === 'P0' || upper === 'P1' || upper === 'P2') {
-      priority = upper as TaskPriority;
+    if (lower === 'pre_reset' || lower === 'prereset' || upper === 'P2') {
+      scheduleMode = 'pre_reset';
+      continue;
+    }
+    if (lower === 'immediate' || upper === 'P0' || upper === 'P1') {
+      scheduleMode = 'immediate';
       continue;
     }
     if (['low', 'medium', 'high', 'xhigh', 'max'].includes(lower)) {
@@ -463,7 +433,7 @@ export const parseDiscordModelPriorityInput = (
 
   return {
     model: resolvedModel,
-    priority,
+    scheduleMode,
     effort: effort ?? catalogMatch?.defaultEffort ?? 'high',
   };
 };

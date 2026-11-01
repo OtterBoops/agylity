@@ -109,8 +109,8 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
 
     return decrypted.toString('utf8');
   } catch {
-    // If decryption fails (e.g. key mismatch or corrupted cipher), safely return original
-    return ciphertext;
+    // If decryption fails (e.g. key mismatch or corrupted cipher), return empty string so ciphertext is not treated as a plaintext token
+    return '';
   }
 };
 

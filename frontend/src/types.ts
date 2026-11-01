@@ -17,6 +17,7 @@ export interface QuotaSnapshot {
   hoursUntilReset: number;
   models: string[];
   overageEnabled?: boolean;
+  remainingCredits?: number | null;
   weekly?: QuotaBucket;
   shortTerm?: QuotaBucket;
   buckets?: QuotaBucket[];
@@ -40,6 +41,7 @@ export interface ConfigData {
   resolved: Record<string, any>;
   overrides: Record<string, any>;
   secretsMeta?: Record<string, { isSet: boolean }>;
+  sources?: Record<string, 'override' | 'env' | 'default'>;
 }
 
 export interface ToastState {
@@ -84,7 +86,6 @@ export interface ModelCatalogEntry {
 export interface SwarmWorkerRecord {
   workerId: string;
   name: string;
-  workerMode: 'headless' | 'visible' | 'any';
   labels: string[];
   repositories: string[];
   systemInfo?: {
@@ -104,7 +105,6 @@ export interface RunnerRegistrationTokenResult {
   id: string;
   registrationToken: string;
   nameHint?: string;
-  workerMode: 'headless' | 'visible' | 'any';
   labels: string[];
   repositories: string[];
   expiresAt: string;
@@ -122,15 +122,17 @@ export interface SwarmTask {
   defaultBranch?: string;
   prompt: string;
   requestedBy: string;
-  priority: 'P0' | 'P1' | 'P2';
-  workerMode: 'headless' | 'visible' | 'any';
+  scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
   model: string;
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'failed';
+  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'failed' | 'aborted';
+  workerId?: string;
   claimedByWorkerId?: string;
   branchName?: string;
+  autoCreatePr?: boolean;
+  prUrl?: string;
+  output?: string;
   error?: string;
-  durationMs?: number;
-  dispatchId?: number;
+  durationMs: number;
 }

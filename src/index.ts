@@ -93,6 +93,7 @@ export class AgylityDaemon {
 
   private timer: NodeJS.Timeout | null = null;
   private readonly autoCheckOnStart: boolean;
+  private readonly warnedLowQuotaPools = new Map<string, string>();
 
   constructor(
     configStore: ConfigStore,
@@ -129,7 +130,7 @@ export class AgylityDaemon {
     }
 
     // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
-    this.configStore.on('change', async ({ resolvedConfig }) => {
+    this.configStore.on('change', async ({ key, resolvedConfig }) => {
       try {
         this.logger.info('Configuration update detected, syncing active components...');
         if (resolvedConfig.logLevel) {
@@ -147,7 +148,11 @@ export class AgylityDaemon {
             alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
           });
         }
-        if (this.timer && resolvedConfig.quotaCheckIntervalSeconds) {
+        if (
+          this.timer &&
+          resolvedConfig.quotaCheckIntervalSeconds &&
+          (key === 'quotaCheckIntervalSeconds' || key === '*')
+        ) {
           const newIntervalMs = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds) * 1000;
           this.logger.info(
             'Rescheduling quota sentry timer to %ds interval',
@@ -157,7 +162,6 @@ export class AgylityDaemon {
           this.timer = setInterval(() => {
             void this.checkQuota();
           }, newIntervalMs);
-          this.timer.unref();
         }
       } catch (err: any) {
         this.logger.error('Error syncing updated configuration:', err?.message ?? err);
@@ -196,6 +200,7 @@ export class AgylityDaemon {
         endpointUrl: resolved.antigravityEndpointUrl,
         csrfToken: resolved.antigravityCsrfToken,
         port: resolved.antigravityLsPort,
+        agyBinPath: resolved.agyBinPath,
         minRefreshIntervalMs: 30000,
         logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {
@@ -220,7 +225,8 @@ export class AgylityDaemon {
           return await quotaClient.fetchQuota();
         },
         onOwnerDiscovered: async (ownerId: string): Promise<void> => {
-          if (!resolved.discordOwnerUserId) {
+          const currentConfig = configStore.resolveConfig();
+          if (!currentConfig.discordOwnerUserId) {
             configStore.setOverride('discordOwnerUserId', ownerId);
           }
         },
@@ -235,9 +241,7 @@ export class AgylityDaemon {
             requestedBy: req.requestedBy,
             requestedByUserId: req.requestedByUserId,
             model: req.model,
-            priority: req.priority,
             effort: req.effort,
-            workerMode: req.workerMode,
             requiredLabels: req.requiredLabels,
             allowOverage: req.allowOverage,
             pushBranch: req.pushBranch,
@@ -249,6 +253,9 @@ export class AgylityDaemon {
             branchName: disp.branchName,
             output: disp.output,
             error: disp.error,
+            status: disp.status,
+            scheduleMode: disp.scheduleMode,
+            code: disp.code,
             durationMs: disp.durationMs ?? Date.now() - startedAt,
           };
         },
@@ -261,6 +268,9 @@ export class AgylityDaemon {
             requestedBy: req.requestedBy,
             requestedByUserId: req.requestedByUserId,
             effort: req.effort,
+            repositoryName: req.repositoryName,
+            repositoryId: req.repositoryId,
+            model: req.model,
           });
           return {
             success: disp.success,
@@ -268,6 +278,9 @@ export class AgylityDaemon {
             branchName: disp.branchName,
             output: disp.output,
             error: disp.error,
+            status: disp.status,
+            scheduleMode: disp.scheduleMode,
+            code: disp.code,
             durationMs: disp.durationMs ?? Date.now() - startedAt,
           };
         },
@@ -368,15 +381,20 @@ export class AgylityDaemon {
       this.orchestrator.onQuotaUpdated(snapshots);
       const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
 
-      // Warning when quota is low or approaching safety floor
+      // Warning when quota is low or approaching safety floor (deduplicated per reset cycle)
       for (const s of snapshots) {
         const pct = Math.round(s.remainingFraction * 100);
         if (pct <= 10) {
-          this.logger.warn(
-            'Critical quota warning: %s is down to %d%% remaining',
-            s.displayName || s.family,
-            pct
-          );
+          const poolKey = s.poolId || s.family;
+          const resetKey = s.resetTime || 'no-reset';
+          if (this.warnedLowQuotaPools.get(poolKey) !== resetKey) {
+            this.warnedLowQuotaPools.set(poolKey, resetKey);
+            this.logger.warn(
+              'Critical quota warning: %s is down to %d%% remaining',
+              s.displayName || s.family,
+              pct
+            );
+          }
         }
       }
 
@@ -406,6 +424,8 @@ export class AgylityDaemon {
         // State persistence failure logged without throwing
       }
       return [];
+    } finally {
+      this.orchestrator.reapStaleClaims();
     }
   }
 
@@ -515,7 +535,9 @@ export const main = async (): Promise<AgylityDaemon> => {
 
   // Tee console output into a bounded, secret-redacting ring buffer for the dashboard Logs view
   let daemonRef: AgylityDaemon | undefined;
-  const logBuffer = new LogBuffer(1000, () => {
+  let cachedSecrets: string[] = [];
+
+  const refreshCachedSecrets = () => {
     const c = daemonRef?.configStore.resolveConfig();
     const secrets: Array<string | undefined> = [
       ...(c ? CANONICAL_SECRET_CONFIG_KEYS.map((k) => c[k] as string | undefined) : []),
@@ -527,7 +549,6 @@ export const main = async (): Promise<AgylityDaemon> => {
       ...(c?.webhookCustomHeaders ? Object.values(c.webhookCustomHeaders) : []),
     ];
 
-    // Deconstruct webhook URL to capture individual secret tokens and query values
     if (c?.notificationWebhookUrl) {
       try {
         const u = new URL(c.notificationWebhookUrl);
@@ -548,12 +569,25 @@ export const main = async (): Promise<AgylityDaemon> => {
       }
     }
 
-    return secrets.filter((s): s is string => Boolean(s) && typeof s === 'string' && s.length >= 6);
+    cachedSecrets = secrets.filter(
+      (s): s is string => Boolean(s) && typeof s === 'string' && s.length >= 6
+    );
+  };
+
+  const logBuffer = new LogBuffer(1000, () => {
+    if (cachedSecrets.length === 0) {
+      refreshCachedSecrets();
+    }
+    return cachedSecrets;
   });
   installConsoleTee(logBuffer);
 
   const daemon = await createDaemon({ logBuffer });
   daemonRef = daemon;
+  refreshCachedSecrets();
+  daemon.configStore.on('change', () => {
+    refreshCachedSecrets();
+  });
 
   let shuttingDown = false;
   const handleSignal = async (signal: string) => {

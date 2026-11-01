@@ -5,7 +5,6 @@ import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmTask, SwarmWorkerRecord, TaskStatusPatch } from './queue.js';
-import type { WorkerMode } from './models.js';
 
 export interface TaskExecutorOptions {
   agyBinPath?: string;
@@ -19,15 +18,18 @@ export interface TaskExecutorOptions {
 export interface TaskExecutionResult {
   success: boolean;
   branchName: string;
+  prUrl?: string;
   output: string;
   error?: string;
   durationMs: number;
+  numTurns?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
 }
 
 export interface PersistedRunnerState {
   workerId: string;
   workerName: string;
-  workerMode: WorkerMode;
   labels: string[];
   repositories: string[];
   runnerToken: string;
@@ -39,6 +41,15 @@ export interface PersistedRunnerState {
  * Generates a deterministic, URL-safe Git branch name for an isolated continuation task.
  * Never returns 'main' or 'master'.
  */
+const buildGitAuthArgs = (repoUrl?: string): string[] => {
+  const ghToken = process.env.GITHUB_TOKEN?.trim();
+  if (ghToken && (!repoUrl || repoUrl.startsWith('https://github.com/'))) {
+    const basicAuth = Buffer.from(`x-access-token:${ghToken}`, 'utf8').toString('base64');
+    return ['-c', `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`];
+  }
+  return [];
+};
+
 export const buildContinuationBranchName = (taskId: string, prompt: string): string => {
   const shortId =
     taskId
@@ -108,17 +119,13 @@ export class TaskExecutor {
           });
           mkdirSync(path.dirname(task.repositoryPath), { recursive: true });
           const rawCloneUrl = task.cloneUrl.trim();
-          const ghToken = process.env.GITHUB_TOKEN?.trim();
-          const gitCloneArgs: string[] = [];
-
-          if (ghToken && rawCloneUrl.startsWith('https://github.com/')) {
-            const basicAuth = Buffer.from(`x-access-token:${ghToken}`, 'utf8').toString('base64');
-            gitCloneArgs.push(
-              '-c',
-              `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`
-            );
-          }
-          gitCloneArgs.push('clone', '--', rawCloneUrl, task.repositoryPath);
+          const gitCloneArgs: string[] = [
+            ...buildGitAuthArgs(rawCloneUrl),
+            'clone',
+            '--',
+            rawCloneUrl,
+            task.repositoryPath,
+          ];
 
           await this.execFileFn('git', gitCloneArgs, {
             timeout: 120000,
@@ -172,7 +179,8 @@ export class TaskExecutor {
           timeout: 30000,
         });
         try {
-          await this.execFileFn('git', ['pull', '--ff-only'], {
+          const gitPullArgs = [...buildGitAuthArgs(task.cloneUrl), 'pull', '--ff-only'];
+          await this.execFileFn('git', gitPullArgs, {
             cwd,
             timeout: 30000,
           });
@@ -257,43 +265,154 @@ export class TaskExecutor {
         });
       }
 
-      // 4. Commit and push continuation branch if pushBranch is enabled
+      // 4. Commit changes to continuation branch if working tree is dirty
+      let commitsProduced = false;
+      try {
+        const { stdout: statusOut } = await this.execFileFn('git', ['status', '--porcelain'], {
+          cwd,
+          timeout: 15000,
+        });
+        if (statusOut && statusOut.trim() !== '') {
+          await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
+          const authorName = process.env.GIT_AUTHOR_NAME || 'agylity[bot]';
+          const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'agylity@users.noreply.github.com';
+          await this.execFileFn(
+            'git',
+            ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
+            {
+              cwd,
+              timeout: 30000,
+              env: {
+                ...process.env,
+                GIT_AUTHOR_NAME: authorName,
+                GIT_AUTHOR_EMAIL: authorEmail,
+                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
+                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+              },
+            }
+          );
+          commitsProduced = true;
+        }
+      } catch (commitErr: any) {
+        this.log.warn(
+          'Failed to commit working tree changes on %s: %s',
+          branchName,
+          commitErr?.message ?? commitErr
+        );
+      }
+
+      // Check if any commits exist relative to base branch
+      if (!commitsProduced) {
+        try {
+          const { stdout: revCount } = await this.execFileFn(
+            'git',
+            ['rev-list', '--count', `${baseBranch}..HEAD`],
+            { cwd, timeout: 10000 }
+          );
+          if (parseInt(revCount.trim(), 10) > 0) {
+            commitsProduced = true;
+          }
+        } catch {
+          // Best effort check
+        }
+      }
+
+      // Zero-diff branch cleanup: if no commits were produced, delete untouched branch
+      if (!commitsProduced) {
+        try {
+          await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
+          await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
+          this.log.info(
+            'Zero diff produced for task %s; cleaned up local branch %s',
+            task.id,
+            branchName
+          );
+        } catch {
+          // Cleanup best-effort
+        }
+        return {
+          success: true,
+          branchName: baseBranch,
+          output: combinedOutput,
+          durationMs: Date.now() - startMs,
+        };
+      }
+
+      let prUrl: string | undefined;
+
+      // 5. Push continuation branch to origin if pushBranch is enabled
       if (task.pushBranch) {
         try {
-          const { stdout: statusOut } = await this.execFileFn('git', ['status', '--porcelain'], {
+          const gitPushArgs = [
+            ...buildGitAuthArgs(task.cloneUrl),
+            'push',
+            '-u',
+            'origin',
+            branchName,
+          ];
+          await this.execFileFn('git', gitPushArgs, {
             cwd,
-            timeout: 15000,
+            timeout: 60000,
           });
-          if (statusOut && statusOut.trim() !== '') {
-            await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
-            await this.execFileFn(
-              'git',
-              ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
+        } catch (gitPushErr: any) {
+          let pushErrMsg = gitPushErr?.message ?? String(gitPushErr);
+          const ghToken = process.env.GITHUB_TOKEN?.trim();
+          if (ghToken && ghToken.length >= 6) {
+            const basicAuth = Buffer.from(`x-access-token:${ghToken}`, 'utf8').toString('base64');
+            pushErrMsg = pushErrMsg
+              .split(ghToken)
+              .join('[redacted]')
+              .split(basicAuth)
+              .join('[redacted]');
+          }
+          this.log.error('Git push failed on %s: %s', branchName, pushErrMsg);
+          return {
+            success: false,
+            branchName,
+            output: combinedOutput,
+            error: `Git push to origin/${branchName} failed: ${pushErrMsg}`,
+            durationMs: Date.now() - startMs,
+          };
+        }
+
+        // Automatic PR Creation via native gh CLI if autoCreatePr is enabled
+        if (task.autoCreatePr) {
+          try {
+            const { stdout: prOut } = await this.execFileFn(
+              'gh',
+              [
+                'pr',
+                'create',
+                '--base',
+                baseBranch,
+                '--head',
+                branchName,
+                '--title',
+                `[Agylity] Task ${task.id}: ${task.prompt.slice(0, 70)}`,
+                '--body',
+                `Automated pull request dispatched by Agylity for task \`${task.id}\`.\n\n### Task Prompt\n${task.prompt}`,
+              ],
               {
                 cwd,
                 timeout: 30000,
                 env: {
                   ...process.env,
-                  GIT_AUTHOR_NAME: process.env.GIT_AUTHOR_NAME || 'agylity[bot]',
-                  GIT_AUTHOR_EMAIL:
-                    process.env.GIT_AUTHOR_EMAIL || 'agylity@users.noreply.github.com',
-                  GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || 'agylity[bot]',
-                  GIT_COMMITTER_EMAIL:
-                    process.env.GIT_COMMITTER_EMAIL || 'agylity@users.noreply.github.com',
+                  GITHUB_TOKEN: process.env.GITHUB_TOKEN?.trim() || '',
                 },
               }
             );
+            const match = prOut.match(/https:\/\/github\.com\/[^\s]+/);
+            if (match) {
+              prUrl = match[0].trim();
+              this.log.info('Created pull request for %s: %s', branchName, prUrl);
+            }
+          } catch (prErr: any) {
+            this.log.warn(
+              'Auto PR creation failed for %s: %s',
+              branchName,
+              prErr?.message ?? prErr
+            );
           }
-          await this.execFileFn('git', ['push', '-u', 'origin', branchName], {
-            cwd,
-            timeout: 60000,
-          });
-        } catch (gitPushErr: any) {
-          this.log.debug(
-            'Git commit/push step skipped or non-fatal warning on %s: %s',
-            branchName,
-            gitPushErr?.message ?? gitPushErr
-          );
         }
       }
 
@@ -301,6 +420,7 @@ export class TaskExecutor {
       return {
         success: true,
         branchName,
+        prUrl,
         output: combinedOutput,
         durationMs,
       };
@@ -323,7 +443,6 @@ export interface RemoteSwarmWorkerOptions {
   coordinatorUrl: string;
   workerId?: string;
   workerName?: string;
-  workerMode?: WorkerMode;
   labels?: string[];
   repositories?: string[];
   registrationToken?: string;
@@ -348,10 +467,10 @@ export class RemoteSwarmWorker {
   private readonly log: Logger;
   private workerId: string;
   private workerName: string;
-  private workerMode: WorkerMode;
   private labels: string[];
   private repositories?: string[];
   private runnerToken?: string;
+  private currentExecutingTaskId: string | null = null;
   public isRunning = false;
   private abortController: AbortController | null = null;
 
@@ -359,7 +478,6 @@ export class RemoteSwarmWorker {
     this.options = options;
     this.workerId = options.workerId?.trim() || `runner-${os.hostname()}`;
     this.workerName = options.workerName?.trim() || this.workerId;
-    this.workerMode = options.workerMode ?? 'headless';
     this.labels = options.labels ?? [];
     this.repositories = options.repositories;
     this.runnerToken = options.runnerToken?.trim() || undefined;
@@ -369,6 +487,21 @@ export class RemoteSwarmWorker {
       new TaskExecutor({
         agyBinPath: options.agyBinPath || 'agy',
         logger: this.log,
+        onStatusUpdate: async (status) => {
+          if (this.currentExecutingTaskId) {
+            await this.reportStatus(
+              this.options.coordinatorUrl?.replace(/\/+$/, '') || 'http://127.0.0.1:8484',
+              this.buildAuthHeaders(),
+              this.currentExecutingTaskId,
+              {
+                status: status.status,
+                workerId: this.workerId,
+                branchName: status.branchName,
+                message: status.message,
+              }
+            );
+          }
+        },
       });
 
     this.loadPersistedState();
@@ -397,13 +530,6 @@ export class RemoteSwarmWorker {
       }
       if (parsed.workerName && typeof parsed.workerName === 'string') {
         this.workerName = parsed.workerName;
-      }
-      if (
-        parsed.workerMode === 'headless' ||
-        parsed.workerMode === 'visible' ||
-        parsed.workerMode === 'any'
-      ) {
-        this.workerMode = parsed.workerMode;
       }
       if (
         Array.isArray(parsed.labels) &&
@@ -462,7 +588,6 @@ export class RemoteSwarmWorker {
           registrationToken: regToken,
           workerId: this.options.workerId?.trim(),
           workerName: this.options.workerName?.trim() || undefined,
-          workerMode: this.options.workerMode,
           labels:
             this.options.labels && this.options.labels.length > 0 ? this.options.labels : undefined,
           repositories:
@@ -478,7 +603,6 @@ export class RemoteSwarmWorker {
 
     this.workerId = res.worker.workerId;
     this.workerName = res.worker.name;
-    this.workerMode = res.worker.workerMode;
     this.labels = res.worker.labels;
     if (res.worker.repositories.length > 0) {
       this.repositories = res.worker.repositories;
@@ -488,7 +612,6 @@ export class RemoteSwarmWorker {
     this.savePersistedState({
       workerId: this.workerId,
       workerName: this.workerName,
-      workerMode: this.workerMode,
       labels: this.labels,
       repositories: this.repositories ?? [],
       runnerToken: this.runnerToken,
@@ -497,10 +620,9 @@ export class RemoteSwarmWorker {
     });
 
     this.log.info(
-      'Successfully registered runner "%s" (%s, mode=%s, labels=%s)',
+      'Successfully registered runner "%s" (%s, labels=%s)',
       this.workerName,
       this.workerId,
-      this.workerMode,
       this.labels.join(',') || 'none'
     );
 
@@ -529,7 +651,6 @@ export class RemoteSwarmWorker {
         json: {
           workerId: this.workerId,
           workerName: this.workerName,
-          workerMode: this.workerMode,
           labels: this.labels,
           repositories: this.repositories,
           systemInfo: collectRunnerSystemInfo(),
@@ -558,11 +679,13 @@ export class RemoteSwarmWorker {
     }, 30000);
     heartbeatTimer.unref?.();
 
+    this.currentExecutingTaskId = task.id;
     let result: TaskExecutionResult;
     try {
       result = await this.executor.execute(task);
     } finally {
       clearInterval(heartbeatTimer);
+      this.currentExecutingTaskId = null;
     }
 
     await this.reportStatus(baseUrl, headers, task.id, {
@@ -589,10 +712,9 @@ export class RemoteSwarmWorker {
 
     const idleIntervalMs = this.options.idlePollIntervalMs ?? 2000;
     this.log.info(
-      'Starting outbound swarm runner loop (%s -> %s, mode=%s)',
+      'Starting outbound swarm runner loop (%s -> %s)',
       this.workerId,
-      this.options.coordinatorUrl,
-      this.workerMode
+      this.options.coordinatorUrl
     );
 
     while (this.isRunning && !this.abortController.signal.aborted) {

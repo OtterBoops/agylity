@@ -95,7 +95,11 @@ export const installConsoleTee = (buffer: LogBuffer): (() => void) => {
     originals.set(name, console[name] as (...args: unknown[]) => void);
     (console as any)[name] = (...args: unknown[]) => {
       try {
-        buffer.push(level, format(...args));
+        const msg = format(...args);
+        // Suppress Node runtime experimental feature warnings from polluting UI log buffer as errors
+        if (!msg.includes('ExperimentalWarning: SQLite is an experimental feature')) {
+          buffer.push(level, msg);
+        }
       } catch {
         // never let logging break the process
       }

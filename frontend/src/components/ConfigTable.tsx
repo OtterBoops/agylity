@@ -16,17 +16,23 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
 
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
-  const keys = Object.keys(resolved).sort();
+  const sources = config.sources || {};
+  const keys = Object.keys(resolved)
+    .filter((k) => k !== 'notificationChannel')
+    .sort();
 
   const handleEditRow = (key: string) => {
     const val = resolved[key];
+    const isSecret = Boolean(config.secretsMeta?.[key]);
     setOverrideKey(key);
     setOverrideValue(
-      typeof val === 'object' && val !== null
-        ? JSON.stringify(val)
-        : val !== undefined
-          ? String(val)
-          : ''
+      isSecret
+        ? ''
+        : typeof val === 'object' && val !== null
+          ? JSON.stringify(val)
+          : val !== undefined
+            ? String(val)
+            : ''
     );
     const input = document.getElementById('overrideValInput');
     if (input) {
@@ -89,6 +95,8 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
                   <td class="px-4 py-2.5">
                     {isOverridden ? (
                       <span class="font-mono text-xs text-pine-gold">override</span>
+                    ) : sources[k] === 'env' ? (
+                      <span class="font-mono text-xs text-pine-foam">env</span>
                     ) : (
                       <span class="text-xs text-pine-muted">default</span>
                     )}
@@ -162,8 +170,12 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
         class="flex flex-wrap items-end gap-3 pt-1"
       >
         <div class="flex min-w-[200px] flex-1 flex-col gap-1.5">
-          <label class="text-xs font-medium text-pine-subtle">Setting key</label>
+          <label for="overrideKeyInput" class="text-xs font-medium text-pine-subtle">
+            Setting key
+          </label>
           <input
+            id="overrideKeyInput"
+            name="overrideKey"
             type="text"
             autoComplete="off"
             data-1p-ignore="true"
@@ -175,17 +187,20 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
           />
         </div>
         <div class="flex min-w-[240px] flex-2 flex-col gap-1.5">
-          <label class="text-xs font-medium text-pine-subtle">
+          <label for="overrideValInput" class="text-xs font-medium text-pine-subtle">
             Override value (JSON or string)
           </label>
           <input
             type="text"
             id="overrideValInput"
+            name="overrideValue"
             autoComplete="off"
             data-1p-ignore="true"
             data-lpignore="true"
             class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs text-pine-text transition-colors outline-none focus:border-pine-iris"
-            placeholder="e.g. 35"
+            placeholder={
+              config.secretsMeta?.[overrideKey] ? 'Enter new secret value...' : 'e.g. 35'
+            }
             value={overrideValue}
             onInput={(e) => setOverrideValue((e.target as HTMLInputElement).value)}
           />

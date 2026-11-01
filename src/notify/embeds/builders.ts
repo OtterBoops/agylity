@@ -16,17 +16,16 @@ const formatOwnerMentionPrefix = (options?: EmbedBuildOptions): string => {
 
 export const buildQuotaAlertEmbed = (
   alert: QuotaAlert,
-  options?: EmbedBuildOptions
+  _options?: EmbedBuildOptions
 ): StandardEmbed => {
   const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
   const hours = alert.milestoneHours;
   const fraction = alert.pool.remainingFraction ?? alert.remainingPercentage / 100;
   const resetTimestamp = formatResetWindow(alert.pool.resetTime);
-  const mentionPrefix = formatOwnerMentionPrefix(options);
 
   const embed: StandardEmbed = {
     title: `[Alert] Quota Milestone: ${poolName}`,
-    description: `${mentionPrefix}Milestone threshold: **${hours}h** before quota reset.`,
+    description: `Milestone threshold: **${hours}h** before quota reset.`,
     color: 0xffa500,
     fields: [
       {
@@ -57,7 +56,7 @@ export const buildQuotaAlertEmbed = (
 
 export const buildTestAlertEmbed = (
   samplePool?: Partial<QuotaSnapshot>,
-  options?: EmbedBuildOptions
+  _options?: EmbedBuildOptions
 ): StandardEmbed => {
   const poolName = (samplePool?.displayName || 'Claude & GPT Models').slice(0, 256);
   const modelsList =
@@ -68,11 +67,10 @@ export const buildTestAlertEmbed = (
   const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
   const resetTimestamp = formatResetWindow(resetIso);
   const fraction = samplePool?.remainingFraction ?? 0.25;
-  const mentionPrefix = formatOwnerMentionPrefix(options);
 
   return {
     title: `[Alert] Quota Milestone: ${poolName}`,
-    description: `${mentionPrefix}Milestone threshold: **3h** before quota reset.`,
+    description: `Milestone threshold: **3h** before quota reset.`,
     color: 0xffa500,
     fields: [
       {
@@ -128,18 +126,14 @@ export const buildQuotaStatusEmbed = (pools: QuotaSnapshot[]): StandardEmbed => 
         ? `${pool.hoursUntilReset.toFixed(1)}h`
         : '0h';
     const fieldName = (pool.displayName || pool.poolId || 'Quota Pool').slice(0, 256);
-    const safeFraction = Number.isFinite(pool.remainingFraction) ? pool.remainingFraction : 0;
-    const percent = Math.round(Math.max(0, Math.min(1, safeFraction)) * 100);
-    let fieldValue = `${renderSquareProgressBar(pool.remainingFraction)} **${percent}%**\nReset in: ${hoursText}`;
+    let fieldValue = `${renderSquareProgressBar(pool.remainingFraction)}\nReset in: ${hoursText}`;
 
     if (pool.weekly && pool.shortTerm) {
-      const weeklyPct = Math.round(pool.weekly.remainingFraction * 100);
-      const stPct = Math.round(pool.shortTerm.remainingFraction * 100);
       const wHours = pool.weekly.hoursUntilReset.toFixed(1);
       const stHours = pool.shortTerm.hoursUntilReset.toFixed(1);
       fieldValue =
-        `**Weekly (Eval Target):** ${renderSquareProgressBar(pool.weekly.remainingFraction)} **${weeklyPct}%** (${wHours}h)\n` +
-        `**5-Hour Throttle:** ${renderSquareProgressBar(pool.shortTerm.remainingFraction)} **${stPct}%** (${stHours}h)`;
+        `**Weekly (Eval Target):** ${renderSquareProgressBar(pool.weekly.remainingFraction)} (${wHours}h)\n` +
+        `**5-Hour Throttle:** ${renderSquareProgressBar(pool.shortTerm.remainingFraction)} (${stHours}h)`;
     }
 
     embed.fields.push({

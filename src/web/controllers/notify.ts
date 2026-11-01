@@ -53,35 +53,52 @@ export const handleTestNotify = async (
 
     const rawWebhook = testOverrides.notificationWebhookUrl ?? testOverrides.webhookUrl;
     if (typeof rawWebhook === 'string' && rawWebhook.trim()) {
-      resolved.notificationWebhookUrl = rawWebhook.trim();
-      hasOverrides = true;
+      const clean = rawWebhook.trim();
+      if (clean !== baseResolved.notificationWebhookUrl) {
+        resolved.notificationWebhookUrl = clean;
+        hasOverrides = true;
+      }
     }
 
     if (typeof testOverrides.webhookSecret === 'string' && testOverrides.webhookSecret.trim()) {
-      resolved.webhookSecret = testOverrides.webhookSecret.trim();
-      hasOverrides = true;
+      const clean = testOverrides.webhookSecret.trim();
+      if (clean !== baseResolved.webhookSecret) {
+        resolved.webhookSecret = clean;
+        hasOverrides = true;
+      }
     }
 
     if (typeof testOverrides.discordToken === 'string' && testOverrides.discordToken.trim()) {
-      resolved.discordToken = testOverrides.discordToken.trim();
-      hasOverrides = true;
+      const clean = testOverrides.discordToken.trim();
+      if (clean !== baseResolved.discordToken) {
+        resolved.discordToken = clean;
+        hasOverrides = true;
+      }
     }
 
     const rawDiscordChan =
       testOverrides.discordNotificationChannelId ?? testOverrides.discordChannelId;
     if (typeof rawDiscordChan === 'string' && rawDiscordChan.trim()) {
-      resolved.discordNotificationChannelId = rawDiscordChan.trim();
-      hasOverrides = true;
+      const clean = rawDiscordChan.trim();
+      if (clean !== baseResolved.discordNotificationChannelId) {
+        resolved.discordNotificationChannelId = clean;
+        hasOverrides = true;
+      }
     }
 
     if (typeof testOverrides.discordOwnerUserId === 'string') {
-      resolved.discordOwnerUserId = testOverrides.discordOwnerUserId.trim() || undefined;
-      hasOverrides = true;
+      const clean = testOverrides.discordOwnerUserId.trim() || undefined;
+      if (clean !== baseResolved.discordOwnerUserId) {
+        resolved.discordOwnerUserId = clean;
+        hasOverrides = true;
+      }
     }
 
     if (typeof testOverrides.discordPingOwner === 'boolean') {
-      resolved.discordPingOwner = testOverrides.discordPingOwner;
-      hasOverrides = true;
+      if (testOverrides.discordPingOwner !== baseResolved.discordPingOwner) {
+        resolved.discordPingOwner = testOverrides.discordPingOwner;
+        hasOverrides = true;
+      }
     }
 
     if (!targetChannel && hasOverrides) {

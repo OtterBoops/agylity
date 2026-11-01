@@ -9,6 +9,7 @@ export interface FieldDef {
   hint?: string;
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;
+  colSpan?: 1 | 2;
 }
 
 interface SettingsFormProps {
@@ -42,6 +43,17 @@ const parseValue = (field: FieldDef, raw: string): unknown => {
   return raw;
 };
 
+const normalizeValueForField = (field: FieldDef, rawValue: string): string => {
+  if (field.key === 'defaultDispatchModel' && rawValue) {
+    if (rawValue.startsWith('gemini-4-argon')) return 'gemini-4-argon';
+    if (rawValue.startsWith('gemini-3.8-flash')) return 'gemini-3.8-flash';
+    if (rawValue.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
+    if (rawValue.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
+    if (rawValue.startsWith('gpt-oss-120b')) return 'gpt-oss-120b';
+  }
+  return rawValue;
+};
+
 export const SettingsForm = ({
   title,
   description,
@@ -61,7 +73,8 @@ export const SettingsForm = ({
     if (draft[field.key] !== undefined) return draft[field.key];
     if (field.type === 'password') return '';
     const source = overrides[field.key] ?? resolved[field.key];
-    return toDisplay(source);
+    const raw = toDisplay(source);
+    return normalizeValueForField(field, raw);
   };
 
   const dirtyKeys = fields
@@ -72,7 +85,9 @@ export const SettingsForm = ({
       if (field?.type === 'password') {
         return draft[k].trim() !== '';
       }
-      return draft[k] !== toDisplay(overrides[k] ?? resolved[k]);
+      const rawCurrent = toDisplay(overrides[k] ?? resolved[k]);
+      const current = field ? normalizeValueForField(field, rawCurrent) : rawCurrent;
+      return draft[k] !== current;
     });
 
   const handleReset = () => {
@@ -88,6 +103,7 @@ export const SettingsForm = ({
     setToast(null);
 
     try {
+      const updates: Record<string, unknown> = {};
       for (const key of dirtyKeys) {
         const field = fields.find((f) => f.key === key);
         if (!field) continue;
@@ -95,13 +111,20 @@ export const SettingsForm = ({
         const raw = draft[key];
         if (field.type === 'password') {
           if (raw.trim() !== '') {
-            await updateConfig({ [key]: raw.trim() });
+            updates[key] = raw.trim();
           }
         } else if (raw === '' && overrides[key] !== undefined) {
           await deleteConfigOverride(key);
-        } else {
-          await updateConfig({ [key]: parseValue(field, raw) });
+        } else if (raw !== '') {
+          const val = parseValue(field, raw);
+          if (val !== undefined) {
+            updates[key] = val;
+          }
         }
+      }
+
+      if (Object.keys(updates).length > 0) {
+        await updateConfig(updates);
       }
 
       setToast({
@@ -128,6 +151,8 @@ export const SettingsForm = ({
     >
       {/* Hidden dummy credentials to trap aggressive browser autofill */}
       <input
+        id="autofill-trap-username"
+        name="autofill_trap_username"
         type="text"
         style={{ display: 'none' }}
         tabIndex={-1}
@@ -135,6 +160,8 @@ export const SettingsForm = ({
         autoComplete="off"
       />
       <input
+        id="autofill-trap-password"
+        name="autofill_trap_password"
         type="password"
         style={{ display: 'none' }}
         tabIndex={-1}
@@ -150,19 +177,38 @@ export const SettingsForm = ({
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
         {fields.map((f) => {
           const isSecret = f.type === 'password';
-          const isConfigured = Boolean(resolved[f.key]);
+          const isConfigured = Boolean(config.secretsMeta?.[f.key]?.isSet || resolved[f.key]);
           const placeholder =
             f.placeholder ?? (isSecret && isConfigured ? '•••••••• (Encrypted)' : undefined);
 
           return (
-            <div key={f.key} class="flex flex-col gap-1.5">
+            <div
+              key={f.key}
+              class={`flex flex-col gap-1.5 ${f.colSpan === 2 ? 'md:col-span-2' : ''}`}
+            >
               <label
                 class="flex items-center justify-between text-xs font-medium text-pine-subtle"
                 for={`f-${f.key}`}
               >
                 <span>{f.label}</span>
                 {Object.prototype.hasOwnProperty.call(overrides, f.key) && (
-                  <span class="font-mono text-xs text-pine-gold">override</span>
+                  <span class="flex items-center gap-1.5">
+                    <span class="font-mono text-xs text-pine-gold">override</span>
+                    <button
+                      type="button"
+                      class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love"
+                      onClick={() => {
+                        deleteConfigOverride(f.key).then(() => {
+                          const nextDraft = { ...draft };
+                          delete nextDraft[f.key];
+                          setDraft(nextDraft);
+                          onSaved();
+                        });
+                      }}
+                    >
+                      (reset)
+                    </button>
+                  </span>
                 )}
               </label>
               {f.type === 'select' ? (

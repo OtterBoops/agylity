@@ -137,6 +137,8 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private nextRpcProbeAt: number = 0;
   private fetchFn?: typeof fetch;
   private logger: Logger;
+  private cachedRemainingCredits: number | null = null;
+  private lastCreditsProbeAt: number = 0;
   private execFileFn: (
     file: string,
     args: readonly string[],
@@ -304,10 +306,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
       if (discovered.ports && discovered.ports.length > 0) {
         this.port = Math.max(...discovered.ports);
-        this.fallbackPorts = [...discovered.ports, ...this.fallbackPorts];
+        this.fallbackPorts = Array.from(new Set([...discovered.ports, ...this.fallbackPorts]));
       } else if (discovered.port && discovered.port > 1) {
         this.port = discovered.port;
-        this.fallbackPorts = [discovered.port, ...this.fallbackPorts];
+        this.fallbackPorts = Array.from(new Set([discovered.port, ...this.fallbackPorts]));
       }
       this.logger.info(
         'Discovered local language_server (port: %d, csrf: %s)',
@@ -341,7 +343,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     }
     if (config.antigravityLsPort !== undefined) {
       this.port = config.antigravityLsPort;
-      this.fallbackPorts = [config.antigravityLsPort, ...this.fallbackPorts];
+      this.fallbackPorts = Array.from(new Set([config.antigravityLsPort, ...this.fallbackPorts]));
     }
     if (config.agyBinPath !== undefined && config.agyBinPath.trim() !== '') {
       this.agyBinPath = config.agyBinPath.trim();
@@ -356,6 +358,33 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       this.port,
       this.agyBinPath
     );
+  }
+
+  /**
+   * Probes /credits best-effort via CLI to retrieve exact AI credit balance.
+   * Results are cached for 60 seconds to prevent unnecessary process spawns.
+   */
+  private async getRemainingCredits(): Promise<number | null> {
+    const now = Date.now();
+    if (this.cachedRemainingCredits !== null && now - this.lastCreditsProbeAt < 60000) {
+      return this.cachedRemainingCredits;
+    }
+    try {
+      const { stdout: creditsStdout } = await this.execFileFn(
+        this.agyBinPath,
+        ['--output-format', 'json', '-p', '/credits'],
+        { timeout: 8000, windowsHide: true }
+      );
+      const creditsJson = extractCliJsonPayload(creditsStdout) as any;
+      if (typeof creditsJson?.command?.data?.remaining_credits === 'number') {
+        this.cachedRemainingCredits = creditsJson.command.data.remaining_credits;
+        this.lastCreditsProbeAt = now;
+        return this.cachedRemainingCredits;
+      }
+    } catch {
+      // Best-effort probe
+    }
+    return this.cachedRemainingCredits;
   }
 
   /**
@@ -404,7 +433,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           const rawJson = await response.json();
           const parsed = RetrieveUserQuotaSummaryResponseSchema.safeParse(rawJson);
           if (parsed.success && parsed.data.response?.groups?.length > 0) {
-            const snapshots = aggregateUserQuotaSummary(parsed.data);
+            const remainingCredits = await this.getRemainingCredits();
+            const snapshots = aggregateUserQuotaSummary(parsed.data, Date.now(), {
+              remainingCredits,
+            });
             const summary = snapshots
               .map(
                 (s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`
@@ -456,7 +488,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
         const rawJson = await response.json();
         const parsed = LanguageServerResponseSchema.parse(rawJson);
-        const snapshots = aggregateQuotaPools(parsed.clientModelConfigs);
+        const remainingCredits = await this.getRemainingCredits();
+        const snapshots = aggregateQuotaPools(parsed.clientModelConfigs, Date.now(), {
+          remainingCredits,
+        });
         const summary = snapshots
           .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
           .join(', ');
@@ -479,6 +514,56 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
    * Executes agy CLI models subcommand as fallback.
    */
   async fallbackToCli(): Promise<QuotaSnapshot[]> {
+    // 1. First attempt authoritative agy -p "/usage" (100% parity with Language Server RetrieveUserQuotaSummary)
+    try {
+      const { stdout: usageStdout } = await this.execFileFn(
+        this.agyBinPath,
+        ['--output-format', 'json', '-p', '/usage'],
+        { timeout: 15000, windowsHide: true }
+      );
+
+      const usageJson = extractCliJsonPayload(usageStdout) as any;
+      if (usageJson?.command?.name === 'usage' && usageJson?.command?.data?.groups) {
+        // Query /credits for exact G1 AI credit balance
+        const remainingCredits = await this.getRemainingCredits();
+
+        const groups = usageJson.command.data.groups.map((g: any) => ({
+          displayName: g.name,
+          description: g.description,
+          buckets: (g.buckets || []).map((b: any) => ({
+            bucketId: b.id,
+            displayName: b.name,
+            description: b.description,
+            window: b.window,
+            remainingFraction: b.remaining_fraction,
+            resetTime: b.reset_time,
+          })),
+        }));
+
+        const transformed = {
+          response: {
+            groups,
+            description: usageJson.command.data.description,
+          },
+        };
+
+        const parsed = RetrieveUserQuotaSummaryResponseSchema.safeParse(transformed);
+        if (parsed.success) {
+          const snapshots = aggregateUserQuotaSummary(parsed.data, Date.now(), {
+            remainingCredits,
+          });
+          if (snapshots.length > 0) {
+            return snapshots;
+          }
+        }
+      }
+    } catch (usageErr: unknown) {
+      this.logger.debug(
+        'agy -p "/usage" failed: %s; falling back to agy models',
+        usageErr instanceof Error ? usageErr.message : String(usageErr)
+      );
+    }
+
     const { stdout } = await this.execFileFn(
       this.agyBinPath,
       ['--output-format', 'json', 'models'],
@@ -563,9 +648,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     const result: QuotaSnapshot[] = [];
 
     const order: Record<QuotaFamily, number> = {
-      claude: 0,
+      'gemini-flash': 0,
       'gemini-argon': 1,
-      'gemini-flash': 2,
+      claude: 2,
     };
 
     for (const entry of poolsMap.values()) {
