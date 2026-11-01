@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import ky from 'ky';
 import { z } from 'zod';
 import { logger, type Logger } from '../logs/logger.js';
@@ -117,8 +118,39 @@ const isConnectionRefused = (err: unknown): boolean => {
   );
 };
 
+export const isCliAuthFailure = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('please sign in') ||
+    msg.includes('launch the cli without arguments to sign in') ||
+    msg.includes('not signed in') ||
+    msg.includes('not logged in') ||
+    msg.includes('unauthenticated') ||
+    msg.includes('auth login')
+  );
+};
+
+export const buildCliAuthErrorMessage = (): string => {
+  const isContainer =
+    process.env.DATA_DIR === '/app/data' ||
+    Boolean(process.env.DATABASE_PATH?.startsWith('/app/')) ||
+    (process.platform === 'linux' && existsSync('/.dockerenv'));
+
+  if (isContainer) {
+    return (
+      'Antigravity CLI is not authenticated in this container.\n' +
+      'Run the following command to sign in: docker exec -it agylity agy'
+    );
+  }
+
+  return 'Antigravity CLI is not authenticated. Launch `agy` in your terminal to sign in.';
+};
+
 export class ConnectRpcQuotaClient implements IQuotaClient {
   private static readonly CREDITS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  private static readonly AUTH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes circuit breaker
+  private static readonly PROBE_FAILURE_COOLDOWN_MS = 10 * 1000; // 10 seconds for transient errors
   private endpointUrl?: string;
   private host: string;
   private port: number;
@@ -135,8 +167,12 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
   private activeProvider: 'rpc' | 'cli' | 'unknown' = 'unknown';
-  private lastProbeSource: 'connect_rpc' | 'cli_fallback' = 'connect_rpc';
+  private lastProbeSource: 'connect_rpc' | 'cli' | 'cli_fallback' = 'connect_rpc';
   private nextRpcProbeAt: number = 0;
+  private authBlockedUntil: number = 0;
+  private lastAuthErrorMessage?: string;
+  private lastProbeError?: Error;
+  private lastFailedAt: number = 0;
   private fetchFn?: typeof fetch;
   private logger: Logger;
   private cachedRemainingCredits: number | null = null;
@@ -179,6 +215,27 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
    * Connect-RPC -> Dual-port fallback -> CLI fallback.
    */
   async fetchQuota(force = false): Promise<QuotaSnapshot[]> {
+    if (force) {
+      this.authBlockedUntil = 0;
+      this.lastAuthErrorMessage = undefined;
+      this.lastFailedAt = 0;
+      this.lastProbeError = undefined;
+    }
+
+    // 0a. Circuit breaker: if CLI is unauthenticated, pause retries to prevent infinite spam loops
+    if (!force && Date.now() < this.authBlockedUntil && this.lastAuthErrorMessage) {
+      throw new LanguageServerError(this.lastAuthErrorMessage, 'AUTH_REQUIRED');
+    }
+
+    // 0b. Cooldown: if a previous probe failed within the last 10s, don't thrash processes on rapid web polls
+    if (
+      !force &&
+      this.lastProbeError &&
+      Date.now() - this.lastFailedAt < ConnectRpcQuotaClient.PROBE_FAILURE_COOLDOWN_MS
+    ) {
+      throw this.lastProbeError;
+    }
+
     // Return cached snapshots if called within minimum refresh cooldown window
     if (
       !force &&
@@ -203,13 +260,33 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.lastKnownSnapshots = cliSnapshots;
           this.lastFetchedAt = Date.now();
-          this.lastProbeSource = 'cli_fallback';
+          this.lastProbeSource = 'cli';
+          this.lastFailedAt = 0;
+          this.lastProbeError = undefined;
+          this.authBlockedUntil = 0;
+          this.lastAuthErrorMessage = undefined;
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
         // CLI failed: reset provider to force immediate RPC re-probe
         this.activeProvider = 'unknown';
         this.nextRpcProbeAt = 0;
+        this.lastFailedAt = Date.now();
+        if (isCliAuthFailure(cliErr)) {
+          this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
+          this.lastAuthErrorMessage = buildCliAuthErrorMessage();
+          this.logger.error(
+            '[Error] %s (Pausing CLI queries for 5m to prevent retry loops)',
+            this.lastAuthErrorMessage
+          );
+          const authError = new LanguageServerError(
+            this.lastAuthErrorMessage,
+            'AUTH_REQUIRED',
+            cliErr
+          );
+          this.lastProbeError = authError;
+          throw authError;
+        }
       }
     }
 
@@ -237,6 +314,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         this.lastProbeSource = 'connect_rpc';
         this.lastKnownSnapshots = snapshots;
         this.lastFetchedAt = Date.now();
+        this.lastFailedAt = 0;
+        this.lastProbeError = undefined;
+        this.authBlockedUntil = 0;
+        this.lastAuthErrorMessage = undefined;
         return snapshots;
       }
     } catch (err: unknown) {
@@ -254,6 +335,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
             this.lastProbeSource = 'connect_rpc';
             this.lastKnownSnapshots = snapshots;
             this.lastFetchedAt = Date.now();
+            this.lastFailedAt = 0;
+            this.lastProbeError = undefined;
+            this.authBlockedUntil = 0;
+            this.lastAuthErrorMessage = undefined;
             return snapshots;
           }
         }
@@ -262,39 +347,64 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
     }
 
-    // 3. Fallback to agy CLI if enabled
+    // 3. Query Antigravity CLI if enabled
     if (this.enableCliFallback) {
-      this.logger.info('Attempting fallback to agy CLI models subcommand (%s)...', this.agyBinPath);
+      this.logger.info('Querying Antigravity CLI (/usage & models) via %s...', this.agyBinPath);
       try {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.activeProvider = 'cli';
-          this.lastProbeSource = 'cli_fallback';
+          this.lastProbeSource = 'cli';
           this.nextRpcProbeAt = Date.now() + 15 * 60 * 1000;
-          this.logger.info('Retrieved %d model pools via agy CLI fallback', cliSnapshots.length);
+          this.logger.info('Retrieved %d model pools via Antigravity CLI', cliSnapshots.length);
           this.lastKnownSnapshots = cliSnapshots;
           this.lastFetchedAt = Date.now();
+          this.lastFailedAt = 0;
+          this.lastProbeError = undefined;
+          this.authBlockedUntil = 0;
+          this.lastAuthErrorMessage = undefined;
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
         this.activeProvider = 'unknown';
         this.nextRpcProbeAt = 0;
+        this.lastFailedAt = Date.now();
+
+        if (isCliAuthFailure(cliErr)) {
+          this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
+          this.lastAuthErrorMessage = buildCliAuthErrorMessage();
+          this.logger.error(
+            '[Error] %s (Pausing CLI queries for 5m to prevent retry loops)',
+            this.lastAuthErrorMessage
+          );
+          const authError = new LanguageServerError(
+            this.lastAuthErrorMessage,
+            'AUTH_REQUIRED',
+            cliErr
+          );
+          this.lastProbeError = authError;
+          throw authError;
+        }
+
         const cliError = cliErr instanceof Error ? cliErr : new Error(String(cliErr));
         this.logger.error('CLI fallback failed: %s', cliError.message);
-        throw new LanguageServerError(
+        this.lastProbeError = new LanguageServerError(
           `Language Server Connect-RPC failed (${rpcError?.message ?? 'unknown'}) and CLI fallback failed (${cliError.message})`,
           'LANGUAGE_SERVER_UNAVAILABLE',
           { rpcError, cliError }
         );
+        throw this.lastProbeError;
       }
     }
 
     // 4. If CLI fallback disabled or failed, throw typed error
-    throw new LanguageServerError(
+    this.lastFailedAt = Date.now();
+    this.lastProbeError = new LanguageServerError(
       `Language Server Connect-RPC failed: ${rpcError?.message ?? 'Endpoint unreachable'}`,
       'LANGUAGE_SERVER_UNAVAILABLE',
       rpcError
     );
+    throw this.lastProbeError;
   }
 
   private applyDiscoveredCredentials(discovered: any): boolean {
@@ -327,7 +437,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return this.activeProvider;
   }
 
-  public getLastProbeSource(): 'connect_rpc' | 'cli_fallback' {
+  public getLastProbeSource(): 'connect_rpc' | 'cli' | 'cli_fallback' {
     return this.lastProbeSource;
   }
 
@@ -345,6 +455,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.lastFetchedAt = 0;
     this.activeProvider = 'unknown';
     this.nextRpcProbeAt = 0;
+    this.authBlockedUntil = 0;
+    this.lastAuthErrorMessage = undefined;
+    this.lastFailedAt = 0;
+    this.lastProbeError = undefined;
     this.logger.info(
       'Updated Language Server config (endpoint: %s)',
       this.endpointUrl ?? 'dynamic'
@@ -367,6 +481,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
    */
   public async triggerCreditsRefreshInBackground(force = false): Promise<number | null> {
     const now = Date.now();
+    if (!force && now < this.authBlockedUntil) {
+      return this.cachedRemainingCredits;
+    }
     if (
       !force &&
       this.cachedRemainingCredits !== null &&
@@ -411,6 +528,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         return credits;
       }
     } catch (err: unknown) {
+      if (isCliAuthFailure(err)) {
+        this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
+        this.lastAuthErrorMessage = buildCliAuthErrorMessage();
+      }
       this.logger.debug(
         'Background credits query failed: %s',
         err instanceof Error ? err.message : String(err)
@@ -592,6 +713,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         }
       }
     } catch (usageErr: unknown) {
+      if (isCliAuthFailure(usageErr)) {
+        throw usageErr;
+      }
       this.logger.debug(
         'agy -p "/usage" failed: %s; falling back to agy models',
         usageErr instanceof Error ? usageErr.message : String(usageErr)

@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
+import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
+import { Icon } from './components/Icon';
 import { useHashRoute, type Route } from './router';
 import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme } from './theme';
 import { Sidebar } from './components/Sidebar';
@@ -38,8 +40,9 @@ export const App = () => {
   const [theme, setTheme] = useState<ThemeChoice>(() =>
     normalizeStoredTheme(localStorage.getItem('agylity-theme'))
   );
-  const { quota, alerts } = useStore(quotaStore);
+  const { quota, alerts, error: quotaError } = useStore(quotaStore);
   const { config } = useStore(configStore);
+  const [authCopied, setAuthCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
   const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
@@ -218,6 +221,41 @@ export const App = () => {
             onOpenCommandPalette={() => setCommandPaletteOpen(true)}
             onOpenAuthModal={() => setSessionModalOpen(true)}
           />
+
+          {Boolean(
+            alerts?.lastProbeSource === 'auth_required' ||
+              alerts?.authRequired === true ||
+              quotaError?.toLowerCase().includes('authentication required') ||
+              quotaError?.toLowerCase().includes('sign in')
+          ) && (
+            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 px-4 py-3 text-pine-love shadow-xs">
+              <div class="flex min-w-0 items-center gap-2.5">
+                <span class="rounded bg-pine-love/20 px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider text-pine-love uppercase whitespace-nowrap">
+                  [AUTH REQUIRED]
+                </span>
+                <span class="text-xs font-medium text-pine-text">
+                  Antigravity CLI is not authenticated. Launch the CLI in container to sign in:
+                </span>
+                <code class="hidden rounded border border-pine-highlight bg-pine-base/80 px-2.5 py-1 font-mono text-xs text-pine-text select-all sm:inline">
+                  docker exec -it agylity agy
+                </code>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText('docker exec -it agylity agy');
+                    setAuthCopied(true);
+                    setTimeout(() => setAuthCopied(false), 2000);
+                  } catch {}
+                }}
+                class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/20 px-3 py-1 text-xs font-semibold text-pine-love transition-colors hover:bg-pine-love/30"
+              >
+                <Icon icon={authCopied ? faCheck : faCopy} class="size-3" />
+                <span>{authCopied ? 'Copied' : 'Copy Command'}</span>
+              </button>
+            </div>
+          )}
 
           <main>
             {route === 'overview' && (

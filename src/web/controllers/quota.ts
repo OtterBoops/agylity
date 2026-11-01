@@ -21,7 +21,12 @@ export const handleGetQuota = async (
     }
     return sendJson(res, 200, snapshots);
   } catch (err: any) {
-    return sendJson(res, 500, { error: 'Failed to fetch quota', message: err?.message });
+    const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
+    return sendJson(res, statusCode, {
+      error: err?.code === 'AUTH_REQUIRED' ? 'Authentication Required' : 'Failed to fetch quota',
+      code: err?.code,
+      message: err?.message,
+    });
   }
 };
 

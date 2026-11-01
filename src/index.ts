@@ -94,6 +94,7 @@ export class AgylityDaemon {
   private timer: NodeJS.Timeout | null = null;
   private readonly autoCheckOnStart: boolean;
   private readonly warnedLowQuotaPools = new Map<string, string>();
+  private warnedAuthRequired = false;
 
   constructor(
     configStore: ConfigStore,
@@ -379,7 +380,7 @@ export class AgylityDaemon {
       this.orchestrator.onQuotaUpdated(snapshots);
       const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
 
-      // Warning when quota is low or approaching safety floor (deduplicated per reset cycle)
+      // Informational status when quota is low or pool exhausted (deduplicated per reset cycle)
       for (const s of snapshots) {
         const pct = Math.round(s.remainingFraction * 100);
         if (pct <= 10) {
@@ -387,11 +388,18 @@ export class AgylityDaemon {
           const resetKey = s.resetTime || 'no-reset';
           if (this.warnedLowQuotaPools.get(poolKey) !== resetKey) {
             this.warnedLowQuotaPools.set(poolKey, resetKey);
-            this.logger.warn(
-              'Critical quota warning: %s is down to %d%% remaining',
-              s.displayName || s.family,
-              pct
-            );
+            if (pct === 0) {
+              this.logger.info(
+                '%s quota exhausted (0%% remaining); model pool is currently unusable until reset',
+                s.displayName || s.family
+              );
+            } else {
+              this.logger.info(
+                '%s approaching minimum headroom floor (%d%% remaining)',
+                s.displayName || s.family,
+                pct
+              );
+            }
           }
         }
       }
@@ -411,11 +419,24 @@ export class AgylityDaemon {
           ? (this.quotaClient as any).getLastProbeSource()
           : 'connect_rpc';
       this.sentryState.updateProbe(probeSource);
+      this.warnedAuthRequired = false;
       await this.sentryState.save();
       return alerts;
     } catch (err: any) {
-      this.logger.warn('Quota probe failed; sentry marked unreachable: %s', err?.message ?? err);
-      this.sentryState.updateProbe('unreachable');
+      if (err?.code === 'AUTH_REQUIRED') {
+        if (!this.warnedAuthRequired) {
+          this.warnedAuthRequired = true;
+          this.logger.warn('[Notice] Quota probe paused: %s', err.message);
+        }
+        this.sentryState.updateProbe('auth_required', undefined, {
+          authRequired: true,
+          authErrorMessage: err?.message,
+        });
+      } else {
+        this.warnedAuthRequired = false;
+        this.logger.warn('Quota probe failed; sentry marked unreachable: %s', err?.message ?? err);
+        this.sentryState.updateProbe('unreachable');
+      }
       try {
         await this.sentryState.save();
       } catch {

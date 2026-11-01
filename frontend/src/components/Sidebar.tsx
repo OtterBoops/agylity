@@ -17,6 +17,7 @@ import {
 import type { Route } from '../router';
 import { Icon } from './Icon';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
+import { formatTime, useTimeFormat } from '../utils/time';
 
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
@@ -167,6 +168,8 @@ export const Sidebar = ({
       : []),
   ];
 
+  const [timeFormat] = useTimeFormat();
+
   const handleNav = (r: Route) => {
     onNavigate(r);
     setMobileOpen(false);
@@ -176,14 +179,16 @@ export const Sidebar = ({
     lastProbeSource === 'connect_rpc'
       ? 'Live Connect-RPC'
       : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
-        ? 'CLI Fallback'
-        : 'Offline';
+        ? 'Antigravity CLI'
+        : lastProbeSource === 'auth_required'
+          ? 'Auth Required'
+          : 'Offline';
   const probeColor =
-    lastProbeSource === 'connect_rpc'
+    lastProbeSource === 'connect_rpc' ||
+    lastProbeSource === 'cli' ||
+    lastProbeSource === 'cli_fallback'
       ? 'bg-pine-pine'
-      : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
-        ? 'bg-pine-gold'
-        : 'bg-pine-love';
+      : 'bg-pine-love';
 
   return (
     <>
@@ -300,11 +305,7 @@ export const Sidebar = ({
               </div>
               {lastProbeAt && (
                 <span class="font-mono text-[0.6875rem] text-pine-muted" title={lastProbeAt}>
-                  {new Date(lastProbeAt).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                  })}
+                  {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                 </span>
               )}
             </div>
@@ -483,11 +484,7 @@ export const Sidebar = ({
                 </div>
                 {lastProbeAt && (
                   <span class="shrink-0 font-mono text-[11px] text-pine-muted" title={lastProbeAt}>
-                    {new Date(lastProbeAt).toLocaleTimeString([], {
-                      hour: '2-digit',
-                      minute: '2-digit',
-                      second: '2-digit',
-                    })}
+                    {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                   </span>
                 )}
               </div>

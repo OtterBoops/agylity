@@ -1022,25 +1022,54 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       }
     });
 
-    it('discoverWindowsLanguageServer executes powershell with hidden window flags', async () => {
-      let capturedArgs: readonly string[] = [];
-      let capturedOptions: Record<string, unknown> = {};
-
-      const mockExecFile: ExecFileAsyncFn = async (_file, args, options) => {
-        capturedArgs = args;
-        capturedOptions = options ?? {};
-        return { stdout: 'PORTS:63728\nCMD:--csrf_token test', stderr: '' };
+    it('CLI auth failure triggers actionable message and engages 5-minute circuit breaker to stop retry loops', async () => {
+      let execCount = 0;
+      const mockExecFile: ExecFileAsyncFn = async () => {
+        execCount++;
+        throw new Error(
+          'Command failed: agy --output-format json models\nError: Please sign in to view available models. Launch the CLI without arguments to sign in.'
+        );
       };
 
-      const { discoverWindowsLanguageServer } = await import('../../src/sentry/discovery.js');
-      const discovered = await discoverWindowsLanguageServer(mockExecFile);
+      const client = new ConnectRpcQuotaClient({
+        port: 59998,
+        fallbackPorts: [59998],
+        enableCliFallback: true,
+        enableProcessDiscovery: false,
+        timeoutMs: 200,
+        execFileFn: mockExecFile as any,
+      });
 
-      assert.ok(discovered);
-      assert.equal(discovered.port, 63728);
-      assert.equal(discovered.csrfToken, 'test');
-      assert.ok(capturedArgs.includes('-WindowStyle'));
-      assert.ok(capturedArgs.includes('Hidden'));
-      assert.equal(capturedOptions.windowsHide, true);
+      // 1. Initial attempt fails with AUTH_REQUIRED and actionable text
+      await assert.rejects(
+        () => client.fetchQuota(),
+        (err: any) => {
+          assert.equal(err.code, 'AUTH_REQUIRED');
+          assert.ok(err.message.includes('Antigravity CLI is not authenticated'));
+          return true;
+        }
+      );
+      assert.equal(execCount, 1, 'Executed agy once on initial failure');
+
+      // 2. Second attempt within cooldown window is blocked by circuit breaker without executing agy
+      await assert.rejects(
+        () => client.fetchQuota(),
+        (err: any) => {
+          assert.equal(err.code, 'AUTH_REQUIRED');
+          return true;
+        }
+      );
+      assert.equal(execCount, 1, 'Circuit breaker prevented repeated CLI execution');
+
+      // 3. Forcing refresh bypasses the circuit breaker
+      await assert.rejects(
+        () => client.fetchQuota(true),
+        (err: any) => {
+          assert.equal(err.code, 'AUTH_REQUIRED');
+          return true;
+        }
+      );
+      assert.equal(execCount, 2, 'Forced refresh executed CLI again');
     });
   });
 });

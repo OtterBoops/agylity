@@ -100,16 +100,20 @@ export const api = ky.create({
     beforeError: [
       async ({ error }) => {
         if (isHTTPError(error) && error.response) {
-          if (typeof window !== 'undefined' && error.response.status === 401) {
-            window.dispatchEvent(new CustomEvent('agylity:unauthorized'));
-          }
+          let isCliAuth = false;
           try {
-            const body: any = await error.response.json();
+            const body: any = await error.response.clone().json();
             if (body && typeof body.error === 'string') {
               error.message = body.error;
             }
+            if (body?.code === 'AUTH_REQUIRED') {
+              isCliAuth = true;
+            }
           } catch {
             // keep default error.message
+          }
+          if (typeof window !== 'undefined' && error.response.status === 401 && !isCliAuth) {
+            window.dispatchEvent(new CustomEvent('agylity:unauthorized'));
           }
         }
         return error;

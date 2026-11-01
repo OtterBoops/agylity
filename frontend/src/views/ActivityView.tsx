@@ -4,6 +4,7 @@ import type { DispatchRecord, SentryAlertState, SwarmTask } from '../types';
 import { AlertsTable } from '../components/AlertsTable';
 import { getDispatches, getTasks } from '../api';
 import { Icon } from '../components/Icon';
+import { formatDateTime, formatTime, useTimeFormat } from '../utils/time';
 
 interface ActivityViewProps {
   alerts: SentryAlertState | null;
@@ -16,6 +17,7 @@ const formatDuration = (ms: number): string => {
 };
 
 export const ActivityView = ({ alerts }: ActivityViewProps) => {
+  const [timeFormat] = useTimeFormat();
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [tasks, setTasks] = useState<SwarmTask[]>([]);
   const [selectedDispatch, setSelectedDispatch] = useState<DispatchRecord | null>(null);
@@ -106,7 +108,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       </td>
                       <td class="px-4 py-3 whitespace-nowrap">
                         <span
-                          class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
                             t.status === 'queued'
                               ? 'border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
                               : 'border-pine-foam/40 bg-pine-foam/15 text-pine-foam'
@@ -165,7 +167,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       title="Click to inspect task details"
                     >
                       <td class="px-4 py-3.5 text-xs whitespace-nowrap text-pine-subtle sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
-                        {new Date(d.createdAt).toLocaleString()}
+                        {formatDateTime(d.createdAt, { timeFormat })}
                       </td>
                       <td class="px-4 py-3.5 font-mono text-xs text-pine-iris sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
                         {d.repository}
@@ -181,10 +183,10 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       </td>
                       <td class="px-4 py-3.5 2xl:px-5 2xl:py-4">
                         <span
-                          class={`rounded-sm border px-2.5 py-0.5 text-xs font-bold tracking-wider uppercase sm:text-sm 2xl:text-base ${
+                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
                             d.success
-                              ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-                              : 'border-pine-love bg-pine-love/20 text-pine-love'
+                              ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
+                              : 'border-pine-love/40 bg-pine-love/15 text-pine-love'
                           }`}
                         >
                           {d.success ? 'Done' : 'Failed'}
@@ -234,10 +236,10 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
               <div class="flex items-center gap-3">
                 <h3 class="text-lg font-bold text-pine-text">Task #{selectedDispatch.id}</h3>
                 <span
-                  class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                  class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
                     selectedDispatch.success
-                      ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-                      : 'border-pine-love bg-pine-love/20 text-pine-love'
+                      ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
+                      : 'border-pine-love/40 bg-pine-love/15 text-pine-love'
                   }`}
                 >
                   {selectedDispatch.success ? 'Done' : 'Failed'}
@@ -277,7 +279,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                 <div>
                   <span class="text-pine-muted">Timestamp</span>
                   <div class="mt-0.5 font-mono text-xs text-pine-text">
-                    {new Date(selectedDispatch.createdAt).toLocaleTimeString()}
+                    {formatTime(selectedDispatch.createdAt, { includeSeconds: true, timeFormat })}
                   </div>
                 </div>
               </div>

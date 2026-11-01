@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
+import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmTask, SwarmWorkerRecord, TaskStatusPatch } from './queue.js';
 
@@ -72,6 +73,68 @@ export const collectRunnerSystemInfo = (): RunnerSystemInfo => ({
   platform: process.platform,
   arch: process.arch,
 });
+
+export interface TaskExecutionTelemetry {
+  conversationId?: string;
+  numTurns?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+}
+
+/**
+ * Gracefully parses NDJSON and JSON telemetry lines from `agy` stdout.
+ * Falls back cleanly to empty metadata if stdout contains only plain text.
+ */
+export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
+  if (!stdout || !stdout.trim()) return {};
+  const telemetry: TaskExecutionTelemetry = {};
+
+  const lines = stdout.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed.conversation_id && !telemetry.conversationId) {
+        telemetry.conversationId = String(parsed.conversation_id);
+      }
+      if (parsed.num_turns !== undefined && telemetry.numTurns === undefined) {
+        telemetry.numTurns = Number(parsed.num_turns);
+      } else if (parsed.turns !== undefined && telemetry.numTurns === undefined) {
+        telemetry.numTurns = Number(parsed.turns);
+      }
+
+      const usage = parsed.usage || parsed.token_usage;
+      if (usage && typeof usage === 'object') {
+        if (usage.input_tokens !== undefined && telemetry.inputTokens === undefined) {
+          telemetry.inputTokens = Number(usage.input_tokens);
+        }
+        if (usage.output_tokens !== undefined && telemetry.outputTokens === undefined) {
+          telemetry.outputTokens = Number(usage.output_tokens);
+        }
+        if (usage.thinking_tokens !== undefined && telemetry.thinkingTokens === undefined) {
+          telemetry.thinkingTokens = Number(usage.thinking_tokens);
+        }
+        if (usage.total_tokens !== undefined && telemetry.totalTokens === undefined) {
+          telemetry.totalTokens = Number(usage.total_tokens);
+        }
+      }
+      if (parsed.total_tokens !== undefined && telemetry.totalTokens === undefined) {
+        telemetry.totalTokens = Number(parsed.total_tokens);
+      }
+    } catch {
+      // Ignore unparseable non-JSON lines
+    }
+  }
+
+  if (telemetry.totalTokens === undefined && telemetry.inputTokens !== undefined) {
+    telemetry.totalTokens = (telemetry.inputTokens || 0) + (telemetry.outputTokens || 0);
+  }
+
+  return telemetry;
+};
 
 /**
  * Executes a single SwarmTask using Git branch isolation and the official `agy` CLI binary.
@@ -417,23 +480,31 @@ export class TaskExecutor {
       }
 
       const durationMs = Date.now() - startMs;
+      const telemetry = parseAgyTelemetry(agyStdout);
       return {
         success: true,
         branchName,
         prUrl,
         output: combinedOutput,
         durationMs,
+        numTurns: telemetry.numTurns,
+        totalTokens: telemetry.totalTokens,
+        thinkingTokens: telemetry.thinkingTokens,
       };
     } catch (err: any) {
       const durationMs = Date.now() - startMs;
       const errMessage = err?.stderr?.trim() || err?.message || String(err);
       this.log.error('Task %s execution failed: %s', task.id, errMessage);
+      const telemetry = parseAgyTelemetry(err?.stdout);
       return {
         success: false,
         branchName,
         output: err?.stdout?.trim() || '',
         error: errMessage,
         durationMs,
+        numTurns: telemetry.numTurns,
+        totalTokens: telemetry.totalTokens,
+        thinkingTokens: telemetry.thinkingTokens,
       };
     }
   }
@@ -450,6 +521,7 @@ export interface RemoteSwarmWorkerOptions {
   sharedSecret?: string;
   runnerStatePath?: string;
   agyBinPath?: string;
+  execFileFn?: ExecFileAsyncFn;
   pollTimeoutMs?: number;
   idlePollIntervalMs?: number;
   executor?: TaskExecutor;
@@ -473,6 +545,9 @@ export class RemoteSwarmWorker {
   private currentExecutingTaskId: string | null = null;
   public isRunning = false;
   private abortController: AbortController | null = null;
+  private authOkUntil = 0;
+  private authBlockedUntil = 0;
+  private warnedAuthRequired = false;
 
   constructor(options: RemoteSwarmWorkerOptions) {
     this.options = options;
@@ -486,6 +561,7 @@ export class RemoteSwarmWorker {
       options.executor ??
       new TaskExecutor({
         agyBinPath: options.agyBinPath || 'agy',
+        execFileFn: options.execFileFn,
         logger: this.log,
         onStatusUpdate: async (status) => {
           if (this.currentExecutingTaskId) {
@@ -505,6 +581,45 @@ export class RemoteSwarmWorker {
       });
 
     this.loadPersistedState();
+  }
+
+  public async checkAuthPreClaim(): Promise<boolean> {
+    const now = Date.now();
+    if (now < this.authBlockedUntil) {
+      return false;
+    }
+    if (now < this.authOkUntil) {
+      return true;
+    }
+
+    try {
+      const execFile = this.options.execFileFn ?? defaultExecFileAsync;
+      const agyBin = this.options.agyBinPath || 'agy';
+      await execFile(agyBin, ['--output-format', 'json', 'models'], {
+        timeout: 10000,
+        windowsHide: true,
+      });
+      this.authOkUntil = now + 5 * 60 * 1000;
+      this.authBlockedUntil = 0;
+      if (this.warnedAuthRequired) {
+        this.log.info('Antigravity CLI authenticated; resuming swarm task polling');
+        this.warnedAuthRequired = false;
+      }
+      return true;
+    } catch (err: unknown) {
+      if (isCliAuthFailure(err)) {
+        this.authBlockedUntil = now + 30 * 1000;
+        this.authOkUntil = 0;
+        if (!this.warnedAuthRequired) {
+          this.warnedAuthRequired = true;
+          this.log.warn(
+            '[Blocked] Antigravity CLI is unauthenticated. Pausing swarm task polling until signed in (run: docker exec -it agylity agy)'
+          );
+        }
+        return false;
+      }
+      return true;
+    }
   }
 
   public getWorkerId(): string {
@@ -640,6 +755,11 @@ export class RemoteSwarmWorker {
   }
 
   public async pollOnce(): Promise<SwarmTask | null> {
+    const isAuthed = await this.checkAuthPreClaim();
+    if (!isAuthed) {
+      return null;
+    }
+
     await this.registerIfNeeded();
 
     const baseUrl = this.options.coordinatorUrl.replace(/\/+$/, '');
@@ -695,6 +815,9 @@ export class RemoteSwarmWorker {
       output: result.output,
       error: result.error,
       durationMs: result.durationMs,
+      numTurns: result.numTurns,
+      totalTokens: result.totalTokens,
+      thinkingTokens: result.thinkingTokens,
     });
 
     return task;

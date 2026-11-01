@@ -33,7 +33,9 @@ export interface SentryPoolState {
 export interface SentryAlertState {
   version: number;
   lastProbeAt: string;
-  lastProbeSource: 'connect_rpc' | 'cli_fallback' | 'unreachable';
+  lastProbeSource: 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required';
+  authRequired?: boolean;
+  authErrorMessage?: string;
   pools: Record<string, SentryPoolState>;
 }
 

@@ -21,6 +21,7 @@ services:
 
     volumes:
       - agylity-data:/app/data
+      - agylity-gemini:/home/node/.gemini
 
     environment:
       - NODE_ENV=production

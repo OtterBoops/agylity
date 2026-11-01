@@ -10,6 +10,7 @@ import { NotificationsView } from './NotificationsView';
 import { RunnerRegistrationPanel } from '../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../components/SwarmRunnersGrid';
 import { PoolPoliciesCard } from '../components/PoolPoliciesCard';
+import { GeneralSettingsCard } from '../components/GeneralSettingsCard';
 import { ORCHESTRATOR_FIELDS, SENTRY_FIELDS } from '../config/fields';
 
 interface SettingsViewProps {
@@ -193,6 +194,8 @@ export const SettingsView = ({ route, config, onChanged }: SettingsViewProps) =>
     case 'settings/advanced':
       return (
         <div class="flex flex-col gap-6">
+          <GeneralSettingsCard />
+
           <PoolPoliciesCard config={config} onSaved={onChanged} />
 
           <SettingsForm

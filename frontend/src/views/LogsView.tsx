@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { LogEntry, LogLevel } from '../types';
 import { getLogs } from '../api';
 import { Icon } from '../components/Icon';
+import { formatTime, useTimeFormat } from '../utils/time';
 
 const MAX_LINES = 1000;
 
@@ -23,6 +24,7 @@ const FACET_KEYWORDS: Record<Exclude<NamespaceFacet, 'all'>, string[]> = {
 };
 
 export const LogsView = () => {
+  const [timeFormat] = useTimeFormat();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [enabled, setEnabled] = useState(true);
   const [level, setLevel] = useState<LogLevel>('info');
@@ -234,7 +236,7 @@ export const LogsView = () => {
         ) : (
           visible.map((e) => (
             <div key={e.id} class="flex gap-3 hover:bg-white/3">
-              <span class="shrink-0 text-pine-muted">{new Date(e.ts).toLocaleTimeString()}</span>
+              <span class="shrink-0 text-pine-muted font-mono">{formatTime(e.ts, { includeSeconds: true, timeFormat })}</span>
               <span class={`w-12 shrink-0 font-bold uppercase ${LEVEL_STYLE[e.level]}`}>
                 {e.level}
               </span>

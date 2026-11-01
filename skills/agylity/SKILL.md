@@ -33,10 +33,13 @@ description: >-
 - **Single-Post Webhook Invariant:**
   - Discord and generic webhooks render clean rich embeds without duplicating text content (`delete outgoingPayload.content`).
   - Intermediate runner progress heartbeats (`executing`, polling) are suppressed from webhooks, delivering discrete initial dispatch and final completion embeds with elapsed duration metrics.
-- **Container-Native Storage Posture:**
-  - In containerized deployments (Docker / daemon), coordinator requires only a single named volume for database state (`agylity-data:/app/data`).
-  - Target repositories do NOT require mandatory host bind mounts. Workers support dynamic on-the-fly git cloning (via `cloneUrl` and optional `GITHUB_TOKEN`) with ephemeral container storage, while also supporting pre-cloned local directories or mounted named volumes.
-  - Authentication credentials (`oauth_creds.json`) are mounted as a single read-only file (`./oauth_creds.json:/home/node/.gemini/oauth_creds.json`) avoiding entire home directory bind mounts.
+- **Self-Contained Container Swarm Architecture:**
+  - **Baked Container Binaries:** Coordinator and worker images bake their required toolchains (`agy`, Node 24, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
+  - **Coordinator Isolation:** The coordinator operates as a control plane with baked telemetry binaries and requires only its persistent data volume (`agylity-data:/app/data`). It does not run task loops, git commands, or agent processes, and requires zero runner or host credential mounts.
+  - **Worker as an Extra Container:** On container hosts (e.g. homelab Docker / Arcane), the worker is simply an extra container (`agylity-worker:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `WORKER_SHARED_SECRET` in `.env`.
+  - **Zero Host Credential Mounts:** Workers execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never bind-mount user host credentials (`~/.gemini` or host `~/.gitconfig`) into containers.
+  - **Host Diagnostics:** Probing host processes and listening ports (e.g. sniffing local IDE Connect-RPC tokens/ports on developer workstations) is supported for host/desktop runners, but containers rely on explicit environment variables and internal network resolution.
+  - **Lightweight Healthcheck:** Container healthchecks must strictly use native `curl -fsS http://127.0.0.1:8484/api/health`. Never spawn Node.js or Python runtime processes inside container healthchecks.
 - **Responsive Dashboard Architecture:**
   - Layout is strictly mobile-first: 1-column on mobile, 2-column on tablet/laptop (`md:grid-cols-2`), scaling to 3-column on desktop (`xl:grid-cols-3`).
   - Sticky mobile header `< md` with collapsible navigation drawer; fixed/sticky sidebar on `md+`.

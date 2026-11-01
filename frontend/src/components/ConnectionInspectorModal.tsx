@@ -8,6 +8,7 @@ import {
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
+import { formatTime, useTimeFormat } from '../utils/time';
 
 interface ConnectionInspectorModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export const ConnectionInspectorModal = ({
   orchestratorEnabled = false,
   minHeadroomPercent = 10,
 }: ConnectionInspectorModalProps) => {
+  const [timeFormat] = useTimeFormat();
   const [copied, setCopied] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{
     hasUpdate: boolean;
@@ -66,14 +68,16 @@ export const ConnectionInspectorModal = ({
     lastProbeSource === 'connect_rpc'
       ? 'Live Connect-RPC'
       : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
-        ? 'CLI Fallback'
-        : 'Offline';
+        ? 'Antigravity CLI'
+        : lastProbeSource === 'auth_required'
+          ? 'Auth Required'
+          : 'Offline';
   const probeColor =
-    lastProbeSource === 'connect_rpc'
+    lastProbeSource === 'connect_rpc' ||
+    lastProbeSource === 'cli' ||
+    lastProbeSource === 'cli_fallback'
       ? 'bg-pine-pine'
-      : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
-        ? 'bg-pine-gold'
-        : 'bg-pine-love';
+      : 'bg-pine-love';
 
   const handleCopyDiagnostics = async () => {
     const diag = {
@@ -138,7 +142,7 @@ export const ConnectionInspectorModal = ({
       <div class="mt-4 flex flex-col gap-3">
         <div class="grid grid-cols-2 gap-3 text-xs">
           <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Language Server RPC</span>
+            <span class="text-pine-muted">Telemetry Probe Source</span>
             <div class="mt-0.5 flex items-center gap-2 font-medium text-pine-text">
               <span class={`size-2 rounded-full ${probeColor}`}></span>
               <span>{probeStatus}</span>
@@ -153,7 +157,7 @@ export const ConnectionInspectorModal = ({
           <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
             <span class="text-pine-muted">Last Telemetry Probe</span>
             <div class="mt-0.5 font-mono text-xs text-pine-text">
-              {lastProbeAt ? new Date(lastProbeAt).toLocaleTimeString() : 'Pending'}
+              {lastProbeAt ? formatTime(lastProbeAt, { includeSeconds: true, timeFormat }) : 'Pending'}
             </div>
           </div>
 

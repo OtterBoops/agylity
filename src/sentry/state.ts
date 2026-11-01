@@ -17,7 +17,9 @@ export type PoolState = z.infer<typeof PoolStateSchema>;
 export const SentryStateSchema = z.object({
   version: z.literal(1),
   lastProbeAt: z.string(),
-  lastProbeSource: z.enum(['connect_rpc', 'cli_fallback', 'unreachable']),
+  lastProbeSource: z.enum(['connect_rpc', 'cli', 'cli_fallback', 'unreachable', 'auth_required']),
+  authRequired: z.boolean().optional(),
+  authErrorMessage: z.string().optional(),
   pools: z.record(z.string(), PoolStateSchema),
 });
 
@@ -131,11 +133,21 @@ export class SentryStateManager {
    * Updates last probe metadata.
    */
   updateProbe(
-    source: 'connect_rpc' | 'cli_fallback' | 'unreachable',
-    at: string = new Date().toISOString()
+    source: 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required',
+    at: string = new Date().toISOString(),
+    authInfo?: { authRequired?: boolean; authErrorMessage?: string }
   ): void {
     this.state.lastProbeAt = at;
     this.state.lastProbeSource = source;
+    if (authInfo) {
+      this.state.authRequired = authInfo.authRequired;
+      this.state.authErrorMessage = authInfo.authErrorMessage;
+    } else if (source === 'auth_required') {
+      this.state.authRequired = true;
+    } else if (source === 'connect_rpc' || source === 'cli' || source === 'cli_fallback') {
+      this.state.authRequired = false;
+      this.state.authErrorMessage = undefined;
+    }
   }
 
   /**

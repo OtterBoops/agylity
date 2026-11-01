@@ -1035,5 +1035,60 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.deepEqual(evaluator.milestoneHours, [48, 6, 1]);
       assert.equal(evaluator.alertThresholdPercent, 40);
     });
+
+    it('parseAgyTelemetry extracts NDJSON and JSON tokens, turns, and conversationId while gracefully falling back to plain text', async () => {
+      const { parseAgyTelemetry } = await import('../../src/orchestrator/worker.js');
+
+      // 1. Plain text returns empty telemetry object
+      assert.deepEqual(parseAgyTelemetry('Task completed cleanly'), {});
+      assert.deepEqual(parseAgyTelemetry(''), {});
+      assert.deepEqual(parseAgyTelemetry(undefined), {});
+
+      // 2. NDJSON stream parses usage and turns
+      const ndjson = [
+        'Starting task run...',
+        '{"type":"init","conversation_id":"conv-abc-123"}',
+        'Working on branch...',
+        '{"type":"turn","num_turns":4,"usage":{"input_tokens":1200,"output_tokens":350,"thinking_tokens":120,"total_tokens":1670}}',
+        'Done!',
+      ].join('\n');
+
+      const parsed = parseAgyTelemetry(ndjson);
+      assert.equal(parsed.conversationId, 'conv-abc-123');
+      assert.equal(parsed.numTurns, 4);
+      assert.equal(parsed.inputTokens, 1200);
+      assert.equal(parsed.outputTokens, 350);
+      assert.equal(parsed.thinkingTokens, 120);
+      assert.equal(parsed.totalTokens, 1670);
+    });
+
+    it('RemoteSwarmWorker pre-claim auth guard pauses polling without claiming or failing tasks when unauthenticated', async () => {
+      let execCalls = 0;
+      const worker = new RemoteSwarmWorker({
+        coordinatorUrl: 'http://127.0.0.1:8484',
+        workerId: 'guard-test-worker',
+        execFileFn: async (file, args) => {
+          execCalls++;
+          if (file === 'agy' && args.includes('models')) {
+            throw new Error('Error: Please sign in to view available models.');
+          }
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      // 1. Pre-claim check detects auth failure
+      const isAuthed = await worker.checkAuthPreClaim();
+      assert.equal(isAuthed, false);
+      assert.equal(execCalls, 1);
+
+      // 2. Immediate second call is throttled by cooldown without executing CLI again
+      const isAuthedSecond = await worker.checkAuthPreClaim();
+      assert.equal(isAuthedSecond, false);
+      assert.equal(execCalls, 1, 'Should not re-spawn CLI command during cooldown');
+
+      // 3. pollOnce returns null immediately without attempting network poll
+      const task = await worker.pollOnce();
+      assert.equal(task, null);
+    });
   });
 });

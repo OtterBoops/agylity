@@ -2,6 +2,7 @@ import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import type { SwarmWorkerRecord } from '../types';
 import { Icon } from './Icon';
+import { formatTime, useTimeFormat } from '../utils/time';
 
 interface SwarmRunnersGridProps {
   workers: SwarmWorkerRecord[];
@@ -10,6 +11,7 @@ interface SwarmRunnersGridProps {
 }
 
 export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRunnersGridProps) => {
+  const [timeFormat] = useTimeFormat();
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,17 +81,17 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
 
                   <div class="flex items-center gap-1.5">
                     {!w.enabled && (
-                      <span class="rounded-sm border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap text-pine-muted uppercase">
+                      <span class="inline-flex items-center rounded-md border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap text-pine-muted uppercase">
                         Paused
                       </span>
                     )}
                     <span
-                      class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
                         w.status === 'busy'
-                          ? 'border-pine-gold bg-pine-gold/20 text-pine-gold'
+                          ? 'border-pine-gold/40 bg-pine-gold/20 text-pine-gold'
                           : w.status === 'offline'
                             ? 'border-pine-love/40 bg-pine-love/15 text-pine-love'
-                            : 'border-pine-pine bg-pine-pine/20 text-pine-foam'
+                            : 'border-pine-pine/40 bg-pine-pine/20 text-pine-foam'
                       }`}
                     >
                       {w.status}
@@ -122,8 +124,8 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                 </div>
 
                 <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2.5">
-                  <span class="text-xs text-pine-muted">
-                    Seen {new Date(w.lastSeenAt).toLocaleTimeString()}
+                  <span class="text-xs text-pine-muted font-mono">
+                    Seen {formatTime(w.lastSeenAt, { includeSeconds: true, timeFormat })}
                   </span>
 
                   <div class="flex items-center gap-1.5">

@@ -153,14 +153,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 >
                   <td class="p-3.5 2xl:p-4.5">
                     <span
-                      class={`rounded-sm px-2.5 py-0.5 text-xs font-bold tracking-wider uppercase 2xl:text-sm ${
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
                         t.status === 'completed'
-                          ? 'border border-pine-pine bg-pine-pine/20 text-pine-foam'
+                          ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
                           : t.status === 'failed' || t.status === 'aborted'
-                            ? 'border border-pine-love bg-pine-love/20 text-pine-love'
+                            ? 'border-pine-love/40 bg-pine-love/15 text-pine-love'
                             : t.status === 'executing'
-                              ? 'animate-pulse border border-pine-gold bg-pine-gold/20 text-pine-gold'
-                              : 'border border-pine-highlight bg-pine-overlay text-pine-subtle'
+                              ? 'animate-pulse border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
+                              : 'border-pine-highlight bg-pine-overlay/60 text-pine-subtle'
                       }`}
                     >
                       {t.status}
