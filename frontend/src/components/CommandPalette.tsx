@@ -202,10 +202,24 @@ export const CommandPalette = ({
 
   if (!isOpen) return null;
 
+  const handleDialogClick = (e: MouseEvent) => {
+    if (!dialogRef.current) return;
+    const rect = dialogRef.current.getBoundingClientRect();
+    const isInDialog =
+      rect.top <= e.clientY &&
+      e.clientY <= rect.top + rect.height &&
+      rect.left <= e.clientX &&
+      e.clientX <= rect.left + rect.width;
+    if (!isInDialog) {
+      onClose();
+    }
+  };
+
   return (
     <dialog
       ref={dialogRef}
       onClose={onClose}
+      onClick={handleDialogClick}
       class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
     >
       {/* Search Input Bar */}

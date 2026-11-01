@@ -187,11 +187,25 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     );
   }
 
+  const handleDialogClick = (e: MouseEvent) => {
+    if (!dialogRef.current) return;
+    const rect = dialogRef.current.getBoundingClientRect();
+    const isInDialog =
+      rect.top <= e.clientY &&
+      e.clientY <= rect.top + rect.height &&
+      rect.left <= e.clientX &&
+      e.clientX <= rect.left + rect.width;
+    if (!isInDialog) {
+      onClose();
+    }
+  };
+
   return (
     <dialog
       id="dispatchModal"
       ref={dialogRef}
       onClose={onClose}
+      onClick={handleDialogClick}
       class="fixed inset-0 m-auto flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm"
     >
       <div class="flex flex-col gap-4">

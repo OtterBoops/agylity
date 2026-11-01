@@ -223,6 +223,18 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         <dialog
           ref={dialogRef}
           onClose={() => setSelectedTask(null)}
+          onClick={(e) => {
+            if (!dialogRef.current) return;
+            const rect = dialogRef.current.getBoundingClientRect();
+            const isInDialog =
+              rect.top <= e.clientY &&
+              e.clientY <= rect.top + rect.height &&
+              rect.left <= e.clientX &&
+              e.clientX <= rect.left + rect.width;
+            if (!isInDialog) {
+              setSelectedTask(null);
+            }
+          }}
           class="fixed inset-0 m-auto w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
