@@ -28,19 +28,20 @@ export const GeneralSettingsCard = () => {
 
       <div class="flex flex-col gap-4 border-t border-pine-highlight pt-4">
         <div class="flex flex-wrap items-center justify-between gap-4 rounded-lg border border-pine-highlight/60 bg-pine-overlay/20 p-4">
-          <div class="flex items-start gap-3 min-w-0">
+          <div class="flex min-w-0 items-start gap-3">
             <div class="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border border-pine-highlight bg-pine-overlay/60 text-pine-foam">
               <Icon icon={faClock} class="size-4" />
             </div>
             <div>
               <div class="flex items-center gap-2">
                 <span class="text-sm font-semibold text-pine-text">Clock Time Format</span>
-                <span class="rounded bg-pine-overlay px-2 py-0.5 font-mono text-[11px] font-semibold text-pine-muted">
+                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-[11px] font-semibold text-pine-muted">
                   Preview: {formatTime(now, { includeSeconds: true, timeFormat })}
                 </span>
               </div>
               <p class="mt-0.5 text-xs text-pine-subtle">
-                Format timestamps across logs, sentry telemetry, runner heartbeats, and dispatch history.
+                Format timestamps across logs, sentry telemetry, runner heartbeats, and dispatch
+                history.
               </p>
             </div>
           </div>

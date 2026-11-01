@@ -48,9 +48,7 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
                 firedEvents.map((ev) => (
                   <tr key={ev.poolId} class="transition-colors hover:bg-white/2">
                     <td class="px-4 py-3 text-xs text-pine-subtle sm:text-sm">
-                      {ev.lastAlertSentAt
-                        ? formatTime(ev.lastAlertSentAt, { timeFormat })
-                        : 'N/A'}
+                      {ev.lastAlertSentAt ? formatTime(ev.lastAlertSentAt, { timeFormat }) : 'N/A'}
                     </td>
                     <td class="px-4 py-3 font-mono text-xs text-pine-iris sm:text-sm">
                       {ev.poolId}

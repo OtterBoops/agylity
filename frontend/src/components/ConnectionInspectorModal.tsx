@@ -157,7 +157,9 @@ export const ConnectionInspectorModal = ({
           <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
             <span class="text-pine-muted">Last Telemetry Probe</span>
             <div class="mt-0.5 font-mono text-xs text-pine-text">
-              {lastProbeAt ? formatTime(lastProbeAt, { includeSeconds: true, timeFormat }) : 'Pending'}
+              {lastProbeAt
+                ? formatTime(lastProbeAt, { includeSeconds: true, timeFormat })
+                : 'Pending'}
             </div>
           </div>
 

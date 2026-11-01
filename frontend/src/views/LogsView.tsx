@@ -236,7 +236,9 @@ export const LogsView = () => {
         ) : (
           visible.map((e) => (
             <div key={e.id} class="flex gap-3 hover:bg-white/3">
-              <span class="shrink-0 text-pine-muted font-mono">{formatTime(e.ts, { includeSeconds: true, timeFormat })}</span>
+              <span class="shrink-0 font-mono text-pine-muted">
+                {formatTime(e.ts, { includeSeconds: true, timeFormat })}
+              </span>
               <span class={`w-12 shrink-0 font-bold uppercase ${LEVEL_STYLE[e.level]}`}>
                 {e.level}
               </span>

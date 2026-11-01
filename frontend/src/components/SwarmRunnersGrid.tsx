@@ -124,7 +124,7 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                 </div>
 
                 <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2.5">
-                  <span class="text-xs text-pine-muted font-mono">
+                  <span class="font-mono text-xs text-pine-muted">
                     Seen {formatTime(w.lastSeenAt, { includeSeconds: true, timeFormat })}
                   </span>
 
