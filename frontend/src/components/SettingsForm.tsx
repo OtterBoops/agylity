@@ -25,7 +25,11 @@ const toDisplay = (value: unknown): string => {
 };
 
 const parseValue = (field: FieldDef, raw: string): unknown => {
-  if (field.type === 'number') return Number(raw);
+  if (field.type === 'number') {
+    if (raw === '' || raw === undefined) return undefined;
+    const num = Number(raw);
+    return Number.isFinite(num) ? num : undefined;
+  }
   if (field.type === 'list') {
     return raw
       .split(',')
@@ -188,7 +192,7 @@ export const SettingsForm = ({
                     data-lpignore="true"
                     data-form-type="other"
                     data-bwignore="true"
-                    class={`${inputClass} w-full pr-14`}
+                    class={`${inputClass} w-full pr-24`}
                     placeholder={
                       f.placeholder ??
                       (isConfigured
@@ -200,14 +204,34 @@ export const SettingsForm = ({
                       setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })
                     }
                   />
-                  <button
-                    type="button"
-                    tabIndex={-1}
-                    class="absolute right-2 cursor-pointer px-2 py-1 text-xs text-pine-subtle transition-colors hover:text-pine-text"
-                    onClick={() => setShowSecrets({ ...showSecrets, [f.key]: !showSecrets[f.key] })}
-                  >
-                    {showSecrets[f.key] ? 'Hide' : 'Show'}
-                  </button>
+                  <div class="absolute right-2 flex items-center gap-1">
+                    {isConfigured && (
+                      <button
+                        type="button"
+                        class="cursor-pointer px-1.5 py-0.5 text-xs text-pine-love/80 transition-colors hover:text-pine-love"
+                        onClick={async () => {
+                          try {
+                            await deleteConfigOverride(f.key);
+                            onSaved();
+                          } catch (err: any) {
+                            setToast({ type: 'error', message: err?.message || 'Failed to clear' });
+                          }
+                        }}
+                      >
+                        Clear
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      tabIndex={-1}
+                      class="cursor-pointer px-1.5 py-0.5 text-xs text-pine-subtle transition-colors hover:text-pine-text"
+                      onClick={() =>
+                        setShowSecrets({ ...showSecrets, [f.key]: !showSecrets[f.key] })
+                      }
+                    >
+                      {showSecrets[f.key] ? 'Hide' : 'Show'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <input

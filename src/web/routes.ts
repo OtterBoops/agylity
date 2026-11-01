@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import {
   MAX_BODY_BYTES,
@@ -50,6 +51,32 @@ export {
   getSecretsMeta,
 };
 
+const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+  const token = authHeader.slice(7).trim();
+  const tokenBuf = Buffer.from(token);
+  const expectedBuf = Buffer.from(expectedToken);
+  if (tokenBuf.length !== expectedBuf.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(tokenBuf, expectedBuf);
+};
+
+const isControlPlaneRoute = (pathname: string, method: string): boolean => {
+  if (pathname === '/api/config' && method === 'POST') return true;
+  if (pathname.startsWith('/api/config/') && method === 'DELETE') return true;
+  if (pathname === '/api/dispatch' && method === 'POST') return true;
+  if (pathname === '/api/notify/test' && method === 'POST') return true;
+  if (pathname === '/api/logs' && method === 'GET') return true;
+  if (pathname === '/api/workers/registration-token' && method === 'POST') return true;
+  if (pathname.startsWith('/api/workers/') && (method === 'PATCH' || method === 'DELETE'))
+    return true;
+  return false;
+};
+
 export const handleRequest = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -60,6 +87,14 @@ export const handleRequest = async (
     const url = new URL(req.url ?? '/', `http://${host}`);
     const { pathname } = url;
     const method = req.method ?? 'GET';
+
+    const expectedToken =
+      options.configStore?.resolveConfig().webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
+    if (expectedToken && isControlPlaneRoute(pathname, method)) {
+      if (!isAuthorized(req, expectedToken)) {
+        return sendJson(res, 401, { error: 'Unauthorized: Invalid or missing Bearer token' });
+      }
+    }
 
     if (pathname === '/favicon.ico') {
       res.writeHead(204).end();

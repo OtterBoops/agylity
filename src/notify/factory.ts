@@ -92,3 +92,51 @@ export const createNotifier = async (
 
   return new CompositeNotifier(instantiatedNotifiers, options);
 };
+
+/**
+ * Creates a CompositeNotifier specifically for the daemon lifecycle.
+ * Always wraps active notifiers in a CompositeNotifier (even with 0 or 1 channel),
+ * guaranteeing that dynamic updateConfig() can activate or deactivate channels at runtime.
+ */
+export const createDaemonNotifier = async (
+  config: ResolvedConfig,
+  options?: NotifierOptions
+): Promise<CompositeNotifier> => {
+  const channels: string[] = [];
+  if (Array.isArray(config.notificationChannels) && config.notificationChannels.length > 0) {
+    for (const c of config.notificationChannels) {
+      const s = String(c).trim().toLowerCase();
+      if (s && s !== 'none') channels.push(s);
+    }
+  } else if (config.notificationChannel) {
+    const s = String(config.notificationChannel).trim().toLowerCase();
+    if (s && s !== 'none') channels.push(s);
+  }
+
+  const uniqueChannels = Array.from(new Set(channels));
+  const instantiated: Notifier[] = [];
+
+  for (const ch of uniqueChannels) {
+    switch (ch) {
+      case 'console': {
+        const { ConsoleNotifier } = await import('./adapters/console.js');
+        instantiated.push(new ConsoleNotifier(config, options));
+        break;
+      }
+      case 'webhook': {
+        const { WebhookNotifier } = await import('./adapters/webhook.js');
+        instantiated.push(new WebhookNotifier(config, options));
+        break;
+      }
+      case 'discord': {
+        const { DiscordNotifier } = await import('./adapters/discord.js');
+        instantiated.push(new DiscordNotifier(config, options));
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  return new CompositeNotifier(instantiated, options, config);
+};

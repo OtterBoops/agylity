@@ -67,14 +67,6 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
   return val;
 }, z.array(RepositorySchema).default([]));
 
-// MAC address validator
-export const MacAddressSchema = z
-  .string()
-  .regex(
-    /^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/,
-    'Invalid MAC address format (expected AA:BB:CC:DD:EE:FF)'
-  );
-
 // Notification channels
 export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);
 export type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
@@ -116,7 +108,7 @@ export const RawEnvSchema = z.object({
   ANTIGRAVITY_ENDPOINT_URL: z.string().url().optional().or(z.literal('')),
   ANTIGRAVITY_CSRF_TOKEN: z.string().optional(),
   ANTIGRAVITY_LS_PORT: z.coerce.number().int().positive().optional(),
-  QUOTA_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(10).optional(),
+  QUOTA_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(30).optional(),
   QUOTA_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(0).max(100).optional(),
   QUOTA_MILESTONE_HOURS: z.string().optional(),
   QUOTA_STATE_FILE_PATH: z.string().optional(),
@@ -142,6 +134,7 @@ export const RawEnvSchema = z.object({
   WEB_UI_ENABLED: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
+  WEB_UI_AUTH_TOKEN: z.string().optional(),
 
   /* Logging */
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
@@ -187,6 +180,7 @@ export interface AppConfig {
   webUiEnabled: boolean;
   webUiPort: number;
   webUiHost: string;
+  webUiAuthToken?: string;
 
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -199,6 +193,7 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'notificationWebhookUrl',
   'webhookSecret',
   'workerSharedSecret',
+  'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];
 
 export type SecretConfigKey = (typeof CANONICAL_SECRET_CONFIG_KEYS)[number];
@@ -241,9 +236,13 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   webUiEnabled: false,
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
+  webUiAuthToken: undefined,
 
   logLevel: 'info',
 };
+
+export const isTemplatePlaceholder = (val: string | undefined): boolean =>
+  typeof val === 'string' && /^your_[a-z0-9_]+_here$/i.test(val.trim());
 
 export const parseRawEnv = (env: Record<string, string | undefined>): Partial<AppConfig> => {
   const parsed = RawEnvSchema.parse(env);
@@ -258,10 +257,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
       parsed.NOTIFICATION_CHANNEL !== 'none' ? [parsed.NOTIFICATION_CHANNEL] : [];
   }
 
-  if (parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL) {
-    result.notificationWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL;
+  const rawWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL;
+  if (rawWebhookUrl && !isTemplatePlaceholder(rawWebhookUrl)) {
+    result.notificationWebhookUrl = rawWebhookUrl;
   }
-  if (parsed.WEBHOOK_SECRET) {
+  if (parsed.WEBHOOK_SECRET && !isTemplatePlaceholder(parsed.WEBHOOK_SECRET)) {
     result.webhookSecret = parsed.WEBHOOK_SECRET;
   }
   if (parsed.WEBHOOK_CUSTOM_HEADERS) {
@@ -272,20 +272,38 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     }
   }
 
-  if (parsed.DISCORD_TOKEN) result.discordToken = parsed.DISCORD_TOKEN;
-  if (parsed.DISCORD_CLIENT_ID) result.discordClientId = parsed.DISCORD_CLIENT_ID;
-  if (parsed.DISCORD_GUILD_ID) result.discordGuildId = parsed.DISCORD_GUILD_ID;
-  if (parsed.DISCORD_NOTIFICATION_CHANNEL_ID)
+  if (parsed.DISCORD_TOKEN && !isTemplatePlaceholder(parsed.DISCORD_TOKEN)) {
+    result.discordToken = parsed.DISCORD_TOKEN;
+  }
+  if (parsed.DISCORD_CLIENT_ID && !isTemplatePlaceholder(parsed.DISCORD_CLIENT_ID)) {
+    result.discordClientId = parsed.DISCORD_CLIENT_ID;
+  }
+  if (parsed.DISCORD_GUILD_ID && !isTemplatePlaceholder(parsed.DISCORD_GUILD_ID)) {
+    result.discordGuildId = parsed.DISCORD_GUILD_ID;
+  }
+  if (
+    parsed.DISCORD_NOTIFICATION_CHANNEL_ID &&
+    !isTemplatePlaceholder(parsed.DISCORD_NOTIFICATION_CHANNEL_ID)
+  ) {
     result.discordNotificationChannelId = parsed.DISCORD_NOTIFICATION_CHANNEL_ID;
-  if (parsed.DISCORD_OWNER_USER_ID && parsed.DISCORD_OWNER_USER_ID.trim() !== '')
+  }
+  if (
+    parsed.DISCORD_OWNER_USER_ID &&
+    parsed.DISCORD_OWNER_USER_ID.trim() !== '' &&
+    !isTemplatePlaceholder(parsed.DISCORD_OWNER_USER_ID)
+  ) {
     result.discordOwnerUserId = parsed.DISCORD_OWNER_USER_ID.trim();
+  }
   if (parsed.DISCORD_PING_OWNER !== undefined && parsed.DISCORD_PING_OWNER.trim() !== '') {
     result.discordPingOwner = booleanEnv.parse(parsed.DISCORD_PING_OWNER);
   }
 
-  if (parsed.ANTIGRAVITY_ENDPOINT_URL)
+  if (parsed.ANTIGRAVITY_ENDPOINT_URL && !isTemplatePlaceholder(parsed.ANTIGRAVITY_ENDPOINT_URL)) {
     result.antigravityEndpointUrl = parsed.ANTIGRAVITY_ENDPOINT_URL;
-  if (parsed.ANTIGRAVITY_CSRF_TOKEN) result.antigravityCsrfToken = parsed.ANTIGRAVITY_CSRF_TOKEN;
+  }
+  if (parsed.ANTIGRAVITY_CSRF_TOKEN && !isTemplatePlaceholder(parsed.ANTIGRAVITY_CSRF_TOKEN)) {
+    result.antigravityCsrfToken = parsed.ANTIGRAVITY_CSRF_TOKEN;
+  }
   if (parsed.ANTIGRAVITY_LS_PORT !== undefined)
     result.antigravityLsPort = parsed.ANTIGRAVITY_LS_PORT;
   if (parsed.QUOTA_CHECK_INTERVAL_SECONDS !== undefined)
@@ -317,7 +335,7 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.DEFAULT_WORKER_MODE) {
     result.defaultWorkerMode = parsed.DEFAULT_WORKER_MODE;
   }
-  if (parsed.WORKER_SHARED_SECRET) {
+  if (parsed.WORKER_SHARED_SECRET && !isTemplatePlaceholder(parsed.WORKER_SHARED_SECRET)) {
     result.workerSharedSecret = parsed.WORKER_SHARED_SECRET;
   }
   if (parsed.QUOTA_BURN_MAX_HOURS !== undefined) {
@@ -335,8 +353,76 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   }
   if (parsed.WEB_UI_PORT !== undefined) result.webUiPort = parsed.WEB_UI_PORT;
   if (parsed.WEB_UI_HOST) result.webUiHost = parsed.WEB_UI_HOST;
+  if (parsed.WEB_UI_AUTH_TOKEN && !isTemplatePlaceholder(parsed.WEB_UI_AUTH_TOKEN)) {
+    result.webUiAuthToken = parsed.WEB_UI_AUTH_TOKEN;
+  }
 
   if (parsed.LOG_LEVEL) result.logLevel = parsed.LOG_LEVEL;
 
   return result;
+};
+
+const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
+  notificationChannel: NotificationChannelEnum,
+  notificationChannels: z.array(NotificationChannelEnum),
+  notificationWebhookUrl: z.string().url().or(z.literal('')).optional(),
+  webhookSecret: z.string().optional(),
+  webhookCustomHeaders: z.record(z.string(), z.string()).optional(),
+  discordToken: z.string().optional(),
+  discordClientId: z.string().optional(),
+  discordGuildId: z.string().optional(),
+  discordNotificationChannelId: z.string().optional(),
+  discordOwnerUserId: z.string().optional(),
+  discordPingOwner: z.boolean(),
+  antigravityEndpointUrl: z.string().url().or(z.literal('')).optional(),
+  antigravityCsrfToken: z.string().optional(),
+  antigravityLsPort: z.number().int().positive().optional(),
+  quotaCheckIntervalSeconds: z.number().int().min(30),
+  quotaAlertThresholdPercent: z.number().min(0).max(100),
+  quotaMilestoneHours: z.array(z.number().positive()),
+  quotaStateFilePath: z.string(),
+  minDispatchHeadroomPercent: z.number().min(0).max(100),
+  repositories: z.array(RepositorySchema),
+  databasePath: z.string(),
+  orchestratorEnabled: z.boolean(),
+  defaultDispatchModel: z.string(),
+  defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+  defaultWorkerMode: z.enum(['headless', 'visible', 'any']),
+  workerSharedSecret: z.string().optional(),
+  quotaBurnMaxHours: z.number().positive(),
+  quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
+  agyBinPath: z
+    .string()
+    .min(1)
+    .refine((val) => !/[;&|`$><\r\n\s]/.test(val), {
+      message: 'agyBinPath must not contain spaces or shell metacharacters',
+    }),
+  webUiEnabled: z.boolean(),
+  webUiPort: z.number().int().positive(),
+  webUiHost: z.string(),
+  webUiAuthToken: z.string().optional(),
+  logLevel: z.enum(['debug', 'info', 'warn', 'error']),
+};
+
+const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+export const validateConfigOverridePatch = (
+  patch: Record<string, unknown>
+): Record<string, unknown> => {
+  if (typeof patch !== 'object' || patch === null || Array.isArray(patch)) {
+    throw new Error('Config patch must be an object');
+  }
+
+  const validated: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (FORBIDDEN_CONFIG_KEYS.has(key)) {
+      throw new Error(`Forbidden configuration key: ${key}`);
+    }
+    if (!(key in CONFIG_FIELD_SCHEMAS)) {
+      throw new Error(`Unknown configuration key: ${key}`);
+    }
+    const schema = CONFIG_FIELD_SCHEMAS[key as keyof AppConfig];
+    validated[key] = schema.parse(value);
+  }
+  return validated;
 };

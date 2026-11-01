@@ -44,10 +44,18 @@ const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   WEB_UI_ENABLED: 'webUiEnabled',
   WEB_UI_PORT: 'webUiPort',
   WEB_UI_HOST: 'webUiHost',
+  WEB_UI_AUTH_TOKEN: 'webUiAuthToken',
   LOG_LEVEL: 'logLevel',
 };
 
-const normalizeKey = (key: string): keyof AppConfig | string => ENV_TO_CONFIG_KEY[key] ?? key;
+const FORBIDDEN_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+const normalizeKey = (key: string): keyof AppConfig | string => {
+  if (typeof key !== 'string' || FORBIDDEN_PROTOTYPE_KEYS.has(key)) {
+    throw new Error(`Invalid or dangerous configuration key: ${String(key)}`);
+  }
+  return ENV_TO_CONFIG_KEY[key] ?? key;
+};
 
 export class ConfigStore extends EventEmitter implements IConfigStore {
   private database: AppDatabase;

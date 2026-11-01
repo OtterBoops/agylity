@@ -5,6 +5,7 @@ import { logger } from '../../logs/logger.js';
 export class CompositeNotifier implements Notifier {
   public readonly notifiers: Notifier[];
   private readonly options?: NotifierOptions;
+  private lastConfig: Partial<ResolvedConfig> = {};
 
   get channelName(): string {
     if (this.notifiers.length === 0) return 'none';
@@ -12,9 +13,16 @@ export class CompositeNotifier implements Notifier {
     return 'composite';
   }
 
-  constructor(notifiers: Notifier[] = [], options?: NotifierOptions) {
+  constructor(
+    notifiers: Notifier[] = [],
+    options?: NotifierOptions,
+    initialConfig?: Partial<ResolvedConfig>
+  ) {
     this.notifiers = notifiers;
     this.options = options;
+    if (initialConfig) {
+      this.lastConfig = { ...initialConfig };
+    }
   }
 
   public getNotifiers(): Notifier[] {
@@ -69,6 +77,7 @@ export class CompositeNotifier implements Notifier {
   }
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
+    this.lastConfig = { ...this.lastConfig, ...newConfig };
     const rawChannels =
       newConfig.notificationChannels !== undefined
         ? newConfig.notificationChannels
@@ -111,7 +120,11 @@ export class CompositeNotifier implements Notifier {
         if (!currentNames.includes(ch)) {
           try {
             const { createNotifier } = await import('../factory.js');
-            const newNotifier = await createNotifier(ch, newConfig as ResolvedConfig, this.options);
+            const newNotifier = await createNotifier(
+              ch,
+              this.lastConfig as ResolvedConfig,
+              this.options
+            );
             await newNotifier.initialize();
             this.notifiers.push(newNotifier);
           } catch (err: any) {

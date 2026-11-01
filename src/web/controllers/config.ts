@@ -2,6 +2,7 @@ import type http from 'node:http';
 import { sendJson, methodNotAllowed, readBody } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { isSecretKey, maskSecret } from '../../storage/crypto.js';
+import { validateConfigOverridePatch } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
 export const sanitizeConfigForClient = (config: Record<string, any>): Record<string, any> => {
@@ -57,6 +58,33 @@ export const handleConfigEndpoint = async (
       return sendJson(res, 400, { error: 'Payload must be a JSON object' });
     }
 
+    const patchToValidate: Record<string, unknown> = {};
+    if (
+      typeof payload.key === 'string' &&
+      'value' in payload &&
+      Object.keys(payload).length === 2
+    ) {
+      patchToValidate[payload.key] = payload.value;
+    } else {
+      Object.assign(patchToValidate, payload);
+    }
+
+    const keysToValidate: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(patchToValidate)) {
+      if (isSecretKey(k) && (v === '••••••••' || v === '********' || v === null || v === '')) {
+        continue;
+      }
+      keysToValidate[k] = v;
+    }
+
+    try {
+      if (Object.keys(keysToValidate).length > 0) {
+        validateConfigOverridePatch(keysToValidate);
+      }
+    } catch (err: any) {
+      return sendJson(res, 400, { error: err.message });
+    }
+
     const handleSet = (key: string, value: unknown) => {
       if (isSecretKey(key)) {
         if (value === '••••••••' || value === '********') {
@@ -70,16 +98,8 @@ export const handleConfigEndpoint = async (
       options.configStore.setOverride(key, value);
     };
 
-    if (
-      typeof payload.key === 'string' &&
-      'value' in payload &&
-      Object.keys(payload).length === 2
-    ) {
-      handleSet(payload.key, payload.value);
-    } else {
-      for (const [k, v] of Object.entries(payload)) {
-        handleSet(k, v);
-      }
+    for (const [k, v] of Object.entries(patchToValidate)) {
+      handleSet(k, v);
     }
 
     const updatedResolved = options.configStore.resolveConfig();

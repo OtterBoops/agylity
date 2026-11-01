@@ -8,7 +8,26 @@ import type {
   ModelCatalogEntry,
   SwarmWorkerRecord,
   RunnerRegistrationTokenResult,
+  SwarmTask,
 } from './types';
+
+export const getAuthToken = (): string | null => {
+  try {
+    return localStorage.getItem('agylity_auth_token');
+  } catch {
+    return null;
+  }
+};
+
+export const setAuthToken = (token: string | null): void => {
+  try {
+    if (token) {
+      localStorage.setItem('agylity_auth_token', token);
+    } else {
+      localStorage.removeItem('agylity_auth_token');
+    }
+  } catch {}
+};
 
 export const api = ky.create({
   prefix: '/api',
@@ -16,6 +35,14 @@ export const api = ky.create({
     limit: 1,
   },
   hooks: {
+    beforeRequest: [
+      ({ request }) => {
+        const token = getAuthToken();
+        if (token) {
+          request.headers.set('Authorization', `Bearer ${token}`);
+        }
+      },
+    ],
     beforeError: [
       async ({ error }) => {
         if (isHTTPError(error) && error.response) {
@@ -54,11 +81,17 @@ export const getConfig = (): Promise<ConfigData> =>
 
 export const updateConfig = (
   overrides: Record<string, unknown>
-): Promise<{ success: boolean; config?: ConfigData }> =>
-  api.post('config', { json: overrides }).json<{ success: boolean; config?: ConfigData }>();
+): Promise<ConfigData & { success: boolean }> =>
+  api.post('config', { json: overrides }).json<ConfigData & { success: boolean }>();
 
 export const deleteConfigOverride = (key: string): Promise<{ success: boolean }> =>
   api.delete(`config/${encodeURIComponent(key)}`).json<{ success: boolean }>();
+
+export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
+  api
+    .get(`tasks?limit=${limit}`)
+    .json<SwarmTask[]>()
+    .catch(() => []);
 
 export const triggerDispatch = (payload: {
   repositoryName: string;
@@ -133,5 +166,7 @@ export const getDispatches = (limit = 50): Promise<DispatchRecord[]> =>
 export const getLogs = (
   since = 0,
   level = 'debug'
-): Promise<{ enabled: boolean; entries: LogEntry[] }> =>
-  api.get(`logs?since=${since}&level=${level}`).json<{ enabled: boolean; entries: LogEntry[] }>();
+): Promise<{ enabled: boolean; latestId?: number; entries: LogEntry[] }> =>
+  api
+    .get(`logs?since=${since}&level=${level}`)
+    .json<{ enabled: boolean; latestId?: number; entries: LogEntry[] }>();

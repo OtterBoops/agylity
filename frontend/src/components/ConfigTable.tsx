@@ -11,6 +11,8 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
   const [overrideKey, setOverrideKey] = useState('');
   const [overrideValue, setOverrideValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [confirmDeleteKey, setConfirmDeleteKey] = useState<string | null>(null);
 
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
@@ -33,23 +35,21 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
     }
   };
 
-  const handleDeleteOverride = (key: string) => {
-    if (!confirm(`Reset setting "${key}" back to environment variable or built-in default?`))
-      return;
-    deleteConfigOverride(key)
-      .then(() => onUpdated())
-      .catch((err) => alert('Failed to delete override: ' + err.message));
-  };
-
   const handleSaveOverride = (e: Event) => {
     e.preventDefault();
     if (!overrideKey.trim()) return;
 
     setIsSubmitting(true);
+    setErrorMessage(null);
     let parsed: any = overrideValue.trim();
-    try {
-      parsed = JSON.parse(overrideValue.trim());
-    } catch {}
+    // Guard against Snowflake IEEE-754 precision loss on Discord IDs (16+ digits)
+    if (/^\d{16,}$/.test(overrideValue.trim())) {
+      parsed = overrideValue.trim();
+    } else {
+      try {
+        parsed = JSON.parse(overrideValue.trim());
+      } catch {}
+    }
 
     updateConfig({ [overrideKey.trim()]: parsed })
       .then(() => {
@@ -57,7 +57,7 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
         setOverrideValue('');
         onUpdated();
       })
-      .catch((err) => alert('Failed to save override: ' + err.message))
+      .catch((err) => setErrorMessage('Failed to save override: ' + (err.message || String(err))))
       .finally(() => setIsSubmitting(false));
   };
 
@@ -102,15 +102,44 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
                       >
                         Edit
                       </button>
-                      {isOverridden && (
-                        <button
-                          type="button"
-                          class="cursor-pointer font-medium text-pine-love transition-colors hover:underline"
-                          onClick={() => handleDeleteOverride(k)}
-                        >
-                          Reset
-                        </button>
-                      )}
+                      {isOverridden &&
+                        (confirmDeleteKey === k ? (
+                          <div class="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              class="cursor-pointer font-medium text-pine-love hover:underline"
+                              onClick={() => {
+                                deleteConfigOverride(k)
+                                  .then(() => {
+                                    setConfirmDeleteKey(null);
+                                    onUpdated();
+                                  })
+                                  .catch((err) =>
+                                    setErrorMessage(
+                                      'Failed to delete override: ' + (err.message || String(err))
+                                    )
+                                  );
+                              }}
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              type="button"
+                              class="cursor-pointer text-pine-subtle hover:text-pine-text"
+                              onClick={() => setConfirmDeleteKey(null)}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            class="cursor-pointer font-medium text-pine-love transition-colors hover:underline"
+                            onClick={() => setConfirmDeleteKey(k)}
+                          >
+                            Reset
+                          </button>
+                        ))}
                     </div>
                   </td>
                 </tr>
@@ -119,6 +148,12 @@ export const ConfigTable = ({ config, onUpdated }: ConfigTableProps) => {
           </tbody>
         </table>
       </div>
+
+      {errorMessage && (
+        <div class="rounded-lg border border-pine-love/40 bg-pine-love/10 px-3 py-2 text-xs text-pine-love">
+          {errorMessage}
+        </div>
+      )}
 
       {/* Edit / Add Override Form */}
       <form

@@ -7,6 +7,9 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  REST,
+  Routes,
+  SlashCommandBuilder,
   type Interaction,
   type ChatInputCommandInteraction,
   type StringSelectMenuInteraction,
@@ -198,6 +201,7 @@ export const createDispatchModal = (
 
 export interface DiscordNotifierOptions extends NotifierOptions {
   client?: Client | any;
+  onContinueRequested?: (req: any) => Promise<DispatchResult>;
 }
 
 export class DiscordNotifier implements Notifier {
@@ -309,12 +313,70 @@ export class DiscordNotifier implements Notifier {
         await this.client.login(this.config.discordToken);
         logger.child('notify:discord').info('Discord client connected.');
         await this.autoDiscoverOwnerUserId();
+        await this.registerSlashCommands();
       } catch (err: any) {
         logger.child('notify:discord').error('Client login failed: %s', err.message);
       }
     }
 
     this.initialized = true;
+  }
+
+  private async registerSlashCommands(): Promise<void> {
+    if (!this.config.discordToken || !this.config.discordClientId) return;
+    try {
+      const rest = new REST({ version: '10' }).setToken(this.config.discordToken);
+      const commands = [
+        new SlashCommandBuilder()
+          .setName('quota')
+          .setDescription('Check remaining Antigravity model quota headroom')
+          .toJSON(),
+        new SlashCommandBuilder()
+          .setName('dispatch')
+          .setDescription('Dispatch a background continuation task to Antigravity swarm')
+          .addStringOption((opt) =>
+            opt
+              .setName('repository')
+              .setDescription('Target repository ID or name')
+              .setRequired(true)
+          )
+          .addStringOption((opt) =>
+            opt.setName('prompt').setDescription('Task prompt or instructions').setRequired(true)
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName('model')
+              .setDescription('Model override (e.g. gemini-4-argon-high, claude-opus-5-5-high)')
+              .setRequired(false)
+          )
+          .addStringOption((opt) =>
+            opt.setName('priority').setDescription('Task priority (P0, P1, P2)').setRequired(false)
+          )
+          .addStringOption((opt) =>
+            opt
+              .setName('effort')
+              .setDescription('Reasoning effort (low, medium, high, xhigh, max)')
+              .setRequired(false)
+          )
+          .toJSON(),
+      ];
+
+      if (this.config.discordGuildId) {
+        await rest.put(
+          Routes.applicationGuildCommands(this.config.discordClientId, this.config.discordGuildId),
+          { body: commands }
+        );
+      } else {
+        await rest.put(Routes.applicationCommands(this.config.discordClientId), {
+          body: commands,
+        });
+      }
+      logger
+        .child('notify:discord')
+        .info('Registered Discord application commands (/quota, /dispatch).');
+    } catch (err: any) {
+      logger.child('notify:discord').warn('Failed to register Discord commands: %s', err.message);
+    }
   }
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
@@ -335,6 +397,7 @@ export class DiscordNotifier implements Notifier {
         await this.client.login(this.config.discordToken);
         logger.child('notify:discord').info('Discord client connected via updated configuration.');
         await this.autoDiscoverOwnerUserId();
+        await this.registerSlashCommands();
       } catch (err: any) {
         logger
           .child('notify:discord')
@@ -354,6 +417,8 @@ export class DiscordNotifier implements Notifier {
     if (interaction.isChatInputCommand && interaction.isChatInputCommand()) {
       if (interaction.commandName === 'quota') {
         await this.handleQuotaCommand(interaction);
+      } else if (interaction.commandName === 'dispatch') {
+        await this.handleDispatchCommand(interaction);
       }
       return;
     }
@@ -382,23 +447,124 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
+  private async handleDispatchCommand(interaction: any): Promise<void> {
+    const ownerCheck = this.verifyOwnerBinding(interaction);
+    if (!ownerCheck.allowed) {
+      if (typeof interaction.reply === 'function') {
+        await interaction.reply({
+          content: ownerCheck.reason,
+          ephemeral: true,
+        });
+      }
+      return;
+    }
+
+    const canDefer = typeof interaction.deferReply === 'function';
+    if (canDefer) {
+      try {
+        await interaction.deferReply({ ephemeral: true });
+      } catch {
+        // Safe catch on defer
+      }
+    }
+
+    const repositoryName = interaction.options?.getString?.('repository') ?? '';
+    const prompt = interaction.options?.getString?.('prompt') ?? '';
+    const model = interaction.options?.getString?.('model') || undefined;
+    const rawPriority = interaction.options?.getString?.('priority');
+    const priority =
+      rawPriority && ['P0', 'P1', 'P2'].includes(rawPriority.toUpperCase())
+        ? (rawPriority.toUpperCase() as 'P0' | 'P1' | 'P2')
+        : undefined;
+    const effort = interaction.options?.getString?.('effort') || undefined;
+
+    if (!prompt.trim()) {
+      const errReply = { content: '[Error] Task prompt cannot be empty.' };
+      if (canDefer && typeof interaction.editReply === 'function') {
+        await interaction.editReply(errReply);
+      } else if (typeof interaction.reply === 'function') {
+        await interaction.reply({ ...errReply, ephemeral: true });
+      }
+      return;
+    }
+
+    const onContinue =
+      this.options.onContinueRequested || (this.options as any).onDispatchRequested;
+    if (!onContinue) {
+      const errReply = { content: '[Error] Orchestrator continuation callback is not registered.' };
+      if (canDefer && typeof interaction.editReply === 'function') {
+        await interaction.editReply(errReply);
+      } else if (typeof interaction.reply === 'function') {
+        await interaction.reply({ ...errReply, ephemeral: true });
+      }
+      return;
+    }
+
+    const requestedBy = interaction.user?.tag || interaction.user?.username || 'Discord User';
+    try {
+      const result = await onContinue({
+        repositoryName,
+        prompt: prompt.trim(),
+        requestedBy,
+        model,
+        priority,
+        effort,
+      });
+
+      let content = '';
+      if (!result.success) {
+        content = `[Error] Dispatch failed: ${result.error ?? 'Unknown error'}`;
+      } else if (result.taskId && !result.branchName) {
+        content = `[Notice] Continuation task \`#${result.taskId.slice(0, 8)}\` (${result.priority ?? priority ?? 'P1'}) queued for \`${repositoryName}\` — waiting for swarm runner...`;
+      } else {
+        content = `[Success] Antigravity continuation complete on branch \`${result.branchName ?? 'main'}\`.`;
+      }
+
+      if (canDefer && typeof interaction.editReply === 'function') {
+        await interaction.editReply({ content });
+      } else if (typeof interaction.reply === 'function') {
+        await interaction.reply({ content, ephemeral: true });
+      }
+    } catch (err: any) {
+      const content = `[Error] Dispatch invocation failed: ${err.message}`;
+      if (canDefer && typeof interaction.editReply === 'function') {
+        await interaction.editReply({ content });
+      } else if (typeof interaction.reply === 'function') {
+        await interaction.reply({ content, ephemeral: true });
+      }
+    }
+  }
+
   private async handleQuotaCommand(interaction: any): Promise<void> {
     const ownerCheck = this.verifyOwnerBinding(interaction);
     if (!ownerCheck.allowed) {
-      await interaction.reply({
-        content: ownerCheck.reason,
-        ephemeral: true,
-      });
+      if (typeof interaction.reply === 'function') {
+        await interaction.reply({
+          content: ownerCheck.reason,
+          ephemeral: true,
+        });
+      }
       return;
     }
 
     const allowedChannelId = this.config.discordNotificationChannelId;
     if (allowedChannelId && interaction.channelId && interaction.channelId !== allowedChannelId) {
-      await interaction.reply({
-        content: 'You do not have permission to run /quota in this channel.',
-        ephemeral: true,
-      });
+      if (typeof interaction.reply === 'function') {
+        await interaction.reply({
+          content: 'You do not have permission to run /quota in this channel.',
+          ephemeral: true,
+        });
+      }
       return;
+    }
+
+    const canDefer = typeof interaction.deferReply === 'function';
+    if (canDefer) {
+      try {
+        await interaction.deferReply();
+      } catch {
+        // Safe catch on interaction defer
+      }
     }
 
     let snapshots: QuotaSnapshot[] = [];
@@ -413,10 +579,17 @@ export class DiscordNotifier implements Notifier {
     const embed = renderQuotaEmbed(snapshots);
     const actionRow = createRepoSelectMenu(this.config.repositories);
 
-    await interaction.reply({
-      embeds: [embed],
-      components: [actionRow],
-    });
+    if (canDefer && typeof interaction.editReply === 'function') {
+      await interaction.editReply({
+        embeds: [embed],
+        components: [actionRow],
+      });
+    } else if (typeof interaction.reply === 'function') {
+      await interaction.reply({
+        embeds: [embed],
+        components: [actionRow],
+      });
+    }
   }
 
   private async handleRepoSelect(interaction: any): Promise<void> {
@@ -519,6 +692,7 @@ export class DiscordNotifier implements Notifier {
     const repoName = repo?.name ?? rawRepoId;
     const repoPath = repo?.path ?? '';
 
+    let result: DispatchResult | undefined;
     try {
       const rawPrompt = interaction.fields?.getTextInputValue?.('task_prompt') ?? '';
       let rawModelInput = '';
@@ -530,7 +704,7 @@ export class DiscordNotifier implements Notifier {
       const parseResult = TaskPromptSchema.safeParse(rawPrompt);
       if (!parseResult.success) {
         const errorMsg =
-          `[Error] Invalid prompt: ${parseResult.error.errors[0]?.message ?? 'Prompt is required'}`.slice(
+          `[Error] Invalid prompt: ${parseResult.error.issues[0]?.message ?? 'Prompt is required'}`.slice(
             0,
             2000
           );
@@ -569,14 +743,22 @@ export class DiscordNotifier implements Notifier {
           }
         }
 
-        const result = await this.options.onDispatchRequested(dispatchPayload);
+        result = await this.options.onDispatchRequested(dispatchPayload);
 
         if (result.success) {
-          const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
-          const msg = `[Success] Antigravity continuation complete${branch}`.slice(0, 2000);
-          await interaction.editReply({
-            content: msg,
-          });
+          if (result.taskId && !result.branchName) {
+            const p = result.priority ?? dispatchPayload.priority ?? 'P1';
+            const msg = `[Notice] Continuation task \`#${result.taskId.slice(0, 8)}\` (${p}) queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
+            await interaction.editReply({
+              content: msg,
+            });
+          } else {
+            const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
+            const msg = `[Success] Antigravity continuation complete${branch}`.slice(0, 2000);
+            await interaction.editReply({
+              content: msg,
+            });
+          }
         } else {
           const errMsg = result.error ? `: ${result.error}` : ': Execution aborted.';
           const msg = `[Blocked] Zero-Clobber Guardrail${errMsg}`.slice(0, 2000);
@@ -605,8 +787,18 @@ export class DiscordNotifier implements Notifier {
       }
     } finally {
       this.activeSubmissions.delete(submissionKey);
-      if (repoId) this.activeInteractions.delete(repoId);
-      if (repoName) this.activeInteractions.delete(repoName);
+      if (result?.taskId && !result.branchName) {
+        setTimeout(
+          () => {
+            if (repoId) this.activeInteractions.delete(repoId);
+            if (repoName) this.activeInteractions.delete(repoName);
+          },
+          30 * 60 * 1000
+        ).unref?.();
+      } else {
+        if (repoId) this.activeInteractions.delete(repoId);
+        if (repoName) this.activeInteractions.delete(repoName);
+      }
     }
   }
 
@@ -736,6 +928,10 @@ export class DiscordNotifier implements Notifier {
         await interaction.editReply({ content: msg });
       } catch {
         // Safe catch on interaction update
+      }
+      const st = String(status.status || status.step || '').toLowerCase();
+      if (['completed', 'failed', 'aborted'].includes(st)) {
+        this.activeInteractions.delete(repoKey);
       }
     }
 

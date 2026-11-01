@@ -2,6 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { AppDatabase, type SettingRecord } from '../../src/storage/db.js';
 
 describe('AppDatabase (node:sqlite Native Storage)', () => {
@@ -36,7 +37,10 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
   });
 
   it('auto-creates parent directories and enables WAL mode on disk files', () => {
-    const testDir = join('data', 'test_sandbox_db_' + Date.now());
+    const testDir = join(
+      tmpdir(),
+      'test_sandbox_db_' + Date.now() + '_' + Math.random().toString(36).slice(2)
+    );
     const dbPath = join(testDir, 'nested', 'test.db');
 
     try {
@@ -137,5 +141,34 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     memDb.set('k', 'v');
     assert.equal(memDb.get('k'), 'v');
     memDb.close();
+  });
+
+  it('sets busyTimeoutMs pragma and recordDispatch returns lastInsertRowid', () => {
+    const busyDb = new AppDatabase({ path: ':memory:', busyTimeoutMs: 2500 });
+    const pragma = busyDb.getRawDb().prepare('PRAGMA busy_timeout;').get() as { timeout: number };
+    assert.equal(pragma.timeout, 2500);
+
+    const id1 = busyDb.recordDispatch({
+      repository: 'test-repo',
+      prompt: 'Fix memory leak',
+      requestedBy: 'user-1',
+      success: true,
+      branch: 'main',
+      durationMs: 120,
+    });
+    assert.equal(typeof id1, 'number');
+    assert.ok(id1 > 0);
+
+    const id2 = busyDb.recordDispatch({
+      repository: 'test-repo-2',
+      prompt: 'Refactor types',
+      requestedBy: 'user-2',
+      success: false,
+      error: 'Build failed',
+      durationMs: 450,
+    });
+    assert.equal(id2, id1 + 1);
+
+    busyDb.close();
   });
 });

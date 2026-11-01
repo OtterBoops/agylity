@@ -5,8 +5,8 @@ import {
   booleanEnv,
   milestoneHoursEnv,
   RepositoriesJsonSchema,
-  MacAddressSchema,
   parseRawEnv,
+  validateConfigOverridePatch,
   BUILTIN_DEFAULTS,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
@@ -19,6 +19,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       QUOTA_ALERT_THRESHOLD_PERCENT: '30',
       WEB_UI_PORT: '8080',
       MIN_DISPATCH_HEADROOM_PERCENT: '15',
+      WEB_UI_AUTH_TOKEN: 'secret-token-123',
     };
     const parsed = RawEnvSchema.parse(raw);
     assert.equal(parsed.NOTIFICATION_CHANNEL, 'discord');
@@ -26,11 +27,53 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.equal(parsed.QUOTA_ALERT_THRESHOLD_PERCENT, 30);
     assert.equal(parsed.WEB_UI_PORT, 8080);
     assert.equal(parsed.MIN_DISPATCH_HEADROOM_PERCENT, 15);
+    assert.equal(parsed.WEB_UI_AUTH_TOKEN, 'secret-token-123');
   });
 
-  it('fails on invalid MAC address format', () => {
-    assert.throws(() => MacAddressSchema.parse('invalid-mac-format'), /Invalid MAC address format/);
-    assert.throws(() => MacAddressSchema.parse('00:11:22:33:44'), /Invalid MAC address format/);
+  it('filters out your_*_here template placeholder credentials in parseRawEnv', () => {
+    const env = {
+      DISCORD_TOKEN: 'your_discord_bot_token_here',
+      DISCORD_OWNER_USER_ID: 'your_discord_user_id_here',
+      WEBHOOK_SECRET: 'your_webhook_secret_here',
+      WEB_UI_AUTH_TOKEN: 'your_web_ui_auth_token_here',
+      ANTIGRAVITY_CSRF_TOKEN: 'your_csrf_token_here',
+      WORKER_SHARED_SECRET: 'your_worker_shared_secret_here',
+    };
+    const parsed = parseRawEnv(env);
+    assert.equal(parsed.discordToken, undefined);
+    assert.equal(parsed.discordOwnerUserId, undefined);
+    assert.equal(parsed.webhookSecret, undefined);
+    assert.equal(parsed.webUiAuthToken, undefined);
+    assert.equal(parsed.antigravityCsrfToken, undefined);
+    assert.equal(parsed.workerSharedSecret, undefined);
+  });
+
+  it('validates config patches and rejects unknown, invalid or prototype keys', () => {
+    const valid = validateConfigOverridePatch({
+      quotaCheckIntervalSeconds: 45,
+      logLevel: 'debug',
+      agyBinPath: 'custom-agy',
+    });
+    assert.equal(valid.quotaCheckIntervalSeconds, 45);
+    assert.equal(valid.logLevel, 'debug');
+    assert.equal(valid.agyBinPath, 'custom-agy');
+
+    assert.throws(
+      () => validateConfigOverridePatch({ unknownKey: 123 }),
+      /Unknown configuration key/
+    );
+    assert.throws(
+      () => validateConfigOverridePatch(JSON.parse('{"__proto__": {"admin": true}}')),
+      /Forbidden configuration key/
+    );
+    assert.throws(
+      () => validateConfigOverridePatch({ constructor: 'dangerous' }),
+      /Forbidden configuration key/
+    );
+    assert.throws(
+      () => validateConfigOverridePatch({ agyBinPath: 'agy; rm -rf /' }),
+      /agyBinPath must not contain spaces or shell metacharacters/
+    );
   });
 
   it('fails on invalid NOTIFICATION_CHANNEL enum value', () => {

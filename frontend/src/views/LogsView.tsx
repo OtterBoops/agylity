@@ -42,6 +42,15 @@ export const LogsView = () => {
         .then((data) => {
           if (cancelled) return;
           setEnabled(data.enabled);
+          if (data.latestId !== undefined && data.latestId < lastId.current) {
+            // Daemon restarted: auto-reset ring buffer pointer and state
+            lastId.current = 0;
+            setEntries(data.entries.slice(-MAX_LINES));
+            if (data.entries.length > 0) {
+              lastId.current = data.entries[data.entries.length - 1]!.id;
+            }
+            return;
+          }
           if (data.entries.length > 0) {
             lastId.current = data.entries[data.entries.length - 1]!.id;
             setEntries((prev) => [...prev, ...data.entries].slice(-MAX_LINES));

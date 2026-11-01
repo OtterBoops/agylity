@@ -107,19 +107,31 @@ export class TaskExecutor {
             message: `Cloning repository from ${task.cloneUrl} into ${task.repositoryPath}`,
           });
           mkdirSync(path.dirname(task.repositoryPath), { recursive: true });
-          let authCloneUrl = task.cloneUrl.trim();
+          const rawCloneUrl = task.cloneUrl.trim();
           const ghToken = process.env.GITHUB_TOKEN?.trim();
-          if (ghToken && authCloneUrl.startsWith('https://github.com/')) {
-            authCloneUrl = authCloneUrl.replace(
-              'https://github.com/',
-              `https://x-access-token:${ghToken}@github.com/`
+          const gitCloneArgs: string[] = [];
+
+          if (ghToken && rawCloneUrl.startsWith('https://github.com/')) {
+            const basicAuth = Buffer.from(`x-access-token:${ghToken}`, 'utf8').toString('base64');
+            gitCloneArgs.push(
+              '-c',
+              `http.https://github.com/.extraheader=AUTHORIZATION: basic ${basicAuth}`
             );
           }
-          await this.execFileFn('git', ['clone', authCloneUrl, task.repositoryPath], {
+          gitCloneArgs.push('clone', '--', rawCloneUrl, task.repositoryPath);
+
+          await this.execFileFn('git', gitCloneArgs, {
             timeout: 120000,
           });
         } catch (cloneErr: any) {
-          const errMsg = `Failed to clone repository from ${task.cloneUrl}: ${cloneErr?.message || cloneErr}`;
+          let errStr = cloneErr?.message || String(cloneErr);
+          const ghToken = process.env.GITHUB_TOKEN?.trim();
+          if (ghToken && ghToken.length >= 6) {
+            errStr = errStr.split(ghToken).join('[redacted]');
+            const basicAuth = Buffer.from(`x-access-token:${ghToken}`, 'utf8').toString('base64');
+            errStr = errStr.split(basicAuth).join('[redacted]');
+          }
+          const errMsg = `Failed to clone repository from ${task.cloneUrl}: ${errStr}`;
           this.log.error(errMsg);
           return {
             success: false,
@@ -217,9 +229,28 @@ export class TaskExecutor {
 
       // 3. Optional verification command (e.g. "npm test")
       if (task.verifyCommand && task.verifyCommand.trim() !== '') {
-        const parts = task.verifyCommand.trim().split(/\s+/);
+        const trimmed = task.verifyCommand.trim();
+        if (/[;&|`$><\r\n]/.test(trimmed)) {
+          throw new Error('Verification command contains illegal shell metacharacters');
+        }
+        const parts = trimmed.split(/\s+/);
         const cmd = parts[0]!;
         const cmdArgs = parts.slice(1);
+        const ALLOWED_TEST_RUNNERS = new Set([
+          'npm',
+          'pnpm',
+          'yarn',
+          'npx',
+          'node',
+          'pytest',
+          'cargo',
+          'go',
+        ]);
+        if (!ALLOWED_TEST_RUNNERS.has(cmd)) {
+          throw new Error(
+            `Verification command '${cmd}' is not in approved test runner allowlist (${Array.from(ALLOWED_TEST_RUNNERS).join(', ')})`
+          );
+        }
         await this.execFileFn(cmd, cmdArgs, {
           cwd,
           timeout: 10 * 60 * 1000,

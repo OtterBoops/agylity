@@ -32,7 +32,7 @@ export interface SentryPoolState {
 export interface SentryAlertState {
   version: number;
   lastProbeAt: string;
-  lastProbeSource: string;
+  lastProbeSource: 'connect_rpc' | 'cli_fallback' | 'unreachable';
   pools: Record<string, SentryPoolState>;
 }
 
@@ -109,4 +109,28 @@ export interface RunnerRegistrationTokenResult {
   repositories: string[];
   expiresAt: string;
   createdAt: string;
+}
+
+export interface SwarmTask {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  repositoryId?: string;
+  repositoryName: string;
+  repositoryPath?: string;
+  cloneUrl?: string;
+  defaultBranch?: string;
+  prompt: string;
+  requestedBy: string;
+  priority: 'P0' | 'P1' | 'P2';
+  workerMode: 'headless' | 'visible' | 'any';
+  requiredLabels: string[];
+  model: string;
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'failed';
+  claimedByWorkerId?: string;
+  branchName?: string;
+  error?: string;
+  durationMs?: number;
+  dispatchId?: number;
 }

@@ -22,7 +22,7 @@ export const LanguageServerModelConfigSchema = z.object({
   allowedTiers: z.array(z.string()).optional(),
   quotaInfo: QuotaInfoSchema.optional().nullable(),
   tagTitle: z.string().optional(),
-  supportedMimeTypes: z.record(z.boolean()).optional(),
+  supportedMimeTypes: z.record(z.string(), z.boolean()).optional(),
 });
 
 export type LanguageServerModelConfig = z.infer<typeof LanguageServerModelConfigSchema>;
@@ -41,7 +41,7 @@ export type ClientModelSort = z.infer<typeof ClientModelSortSchema>;
 export const LanguageServerResponseSchema = z.object({
   clientModelConfigs: z.array(LanguageServerModelConfigSchema),
   clientModelSorts: z.array(ClientModelSortSchema).optional(),
-  defaultOverrideModelConfig: z.record(z.unknown()).optional(),
+  defaultOverrideModelConfig: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type LanguageServerResponse = z.infer<typeof LanguageServerResponseSchema>;
@@ -436,4 +436,75 @@ export const aggregateQuotaPools = (
   };
 
   return result.sort((a, b) => order[a.family] - order[b.family]);
+};
+
+export interface QuotaStatePoolLike {
+  resetTime: string;
+  remainingFraction: number;
+  firedMilestones?: string[];
+  lastAlertSentAt?: string | null;
+}
+
+export interface QuotaStateLike {
+  pools: Record<string, QuotaStatePoolLike>;
+}
+
+export const snapshotsFromSentryState = (
+  state: QuotaStateLike,
+  nowMs: number = Date.now()
+): QuotaSnapshot[] => {
+  const snapshots: QuotaSnapshot[] = [];
+  for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
+    const rawId = poolId.toLowerCase().trim();
+    const family: QuotaFamily =
+      rawId === 'claude' || rawId === 'sonnet' || rawId === '3p'
+        ? 'claude'
+        : rawId === 'gemini-flash' || rawId === 'flash'
+          ? 'gemini-flash'
+          : 'gemini-argon';
+
+    const displayName =
+      family === 'claude'
+        ? 'Claude 5.5 / Opus'
+        : family === 'gemini-argon'
+          ? 'Gemini 4 Argon'
+          : 'Gemini 3.8 Flash / Pro';
+
+    const defaultModels =
+      family === 'claude'
+        ? ['claude-sonnet-5-5-high', 'claude-opus-5-5-high']
+        : family === 'gemini-argon'
+          ? ['gemini-4-argon-high']
+          : ['gemini-3.8-flash-high'];
+
+    const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
+    const weeklyBucket: QuotaBucket = {
+      bucketId: `${family}-weekly`,
+      displayName: 'Weekly Limit',
+      window: 'weekly',
+      remainingFraction: pool.remainingFraction,
+      resetTime: pool.resetTime,
+      hoursUntilReset,
+    };
+
+    snapshots.push({
+      poolId,
+      family,
+      displayName,
+      remainingFraction: pool.remainingFraction,
+      resetTime: pool.resetTime,
+      hoursUntilReset,
+      models: defaultModels,
+      weekly: weeklyBucket,
+      buckets: [weeklyBucket],
+    });
+  }
+
+  const order: Record<QuotaFamily, number> = {
+    claude: 0,
+    'gemini-argon': 1,
+    'gemini-flash': 2,
+  };
+
+  return snapshots.sort((a, b) => order[a.family] - order[b.family]);
 };

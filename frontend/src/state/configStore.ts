@@ -42,13 +42,17 @@ export const refreshConfig = async (): Promise<ConfigData> => {
 
 export const saveConfigOverrides = async (
   overrides: Record<string, unknown>
-): Promise<{ success: boolean; config?: ConfigData }> => {
+): Promise<ConfigData & { success: boolean }> => {
   configStore.setState((prev) => ({ ...prev, saving: true, error: null }));
   try {
     const res = await updateConfig(overrides);
-    if (res.config) {
+    if (res.resolved && res.overrides) {
       configStore.setState({
-        config: res.config,
+        config: {
+          resolved: res.resolved,
+          overrides: res.overrides,
+          secretsMeta: res.secretsMeta,
+        },
         loading: false,
         saving: false,
         error: null,

@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { SentryStateManager } from '../sentry/state.js';
-import type { QuotaSnapshot } from '../sentry/models.js';
+import { snapshotsFromSentryState, type QuotaSnapshot } from '../sentry/models.js';
 import type { Notifier } from '../notify/types.js';
 import { logger, type Logger } from '../logs/logger.js';
 import {
@@ -109,20 +109,9 @@ export class OrchestratorCoordinator {
     if (this.latestSnapshots.length > 0) {
       return this.latestSnapshots;
     }
-    const statePools = this.sentryState?.getState()?.pools;
-    if (!statePools) return [];
-
-    return Object.entries(statePools).map(([poolId, p]) => ({
-      poolId,
-      family: (poolId === 'claude' || poolId === 'gemini-argon' || poolId === 'gemini-flash'
-        ? poolId
-        : 'claude') as any,
-      displayName: poolId,
-      remainingFraction: p.remainingFraction ?? 0,
-      resetTime: p.resetTime,
-      hoursUntilReset: 0,
-      models: [],
-    }));
+    const state = this.sentryState?.getState();
+    if (!state) return [];
+    return snapshotsFromSentryState(state);
   }
 
   public onQuotaUpdated(snapshots: QuotaSnapshot[]): void {
@@ -320,6 +309,30 @@ export class OrchestratorCoordinator {
       workerMode,
       requiredLabels: task.requiredLabels,
     };
+  }
+
+  public async dispatchContinuation(params: {
+    taskId?: string;
+    branchName?: string;
+    prompt: string;
+    requestedBy?: string;
+    requestedByUserId?: string;
+    effort?: ReasoningEffort;
+  }): Promise<DispatchTaskResponse> {
+    const parentTask = params.taskId ? this.queue.getTask(params.taskId) : null;
+    return this.dispatch({
+      repositoryId: parentTask?.repositoryId,
+      repositoryName: parentTask?.repositoryName || 'unknown',
+      repositoryPath: parentTask?.repositoryPath,
+      cloneUrl: parentTask?.cloneUrl,
+      prompt: params.prompt,
+      requestedBy: params.requestedBy || parentTask?.requestedBy,
+      requestedByUserId: params.requestedByUserId,
+      effort: params.effort || parentTask?.effort,
+      model: parentTask?.model,
+      priority: parentTask?.priority,
+      workerMode: parentTask?.workerMode,
+    });
   }
 
   /**

@@ -11,8 +11,9 @@ import {
   type QuotaAlert,
   type QuotaSnapshot,
   type QuotaClient as IQuotaClient,
+  snapshotsFromSentryState,
 } from './sentry/models.js';
-import { createNotifier } from './notify/factory.js';
+import { createNotifier, createDaemonNotifier } from './notify/factory.js';
 import { type Notifier } from './notify/types.js';
 import { LogBuffer, installConsoleTee } from './logs/buffer.js';
 import { logger, createLogger, type Logger } from './logs/logger.js';
@@ -146,6 +147,18 @@ export class AgylityDaemon {
             alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
           });
         }
+        if (this.timer && resolvedConfig.quotaCheckIntervalSeconds) {
+          const newIntervalMs = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds) * 1000;
+          this.logger.info(
+            'Rescheduling quota sentry timer to %ds interval',
+            Math.round(newIntervalMs / 1000)
+          );
+          clearInterval(this.timer);
+          this.timer = setInterval(() => {
+            void this.checkQuota();
+          }, newIntervalMs);
+          this.timer.unref();
+        }
       } catch (err: any) {
         this.logger.error('Error syncing updated configuration:', err?.message ?? err);
       }
@@ -186,20 +199,7 @@ export class AgylityDaemon {
         minRefreshIntervalMs: 30000,
         logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {
-          const state = sentryState.getState();
-          const list: QuotaSnapshot[] = [];
-          for (const [poolId, pool] of Object.entries(state.pools)) {
-            list.push({
-              poolId,
-              family: poolId as any,
-              displayName: poolId,
-              remainingFraction: pool.remainingFraction,
-              resetTime: pool.resetTime,
-              hoursUntilReset: 0,
-              models: [],
-            });
-          }
-          return list;
+          return snapshotsFromSentryState(sentryState.getState());
         },
       });
 
@@ -215,7 +215,7 @@ export class AgylityDaemon {
 
     const notifier =
       options.notifier ??
-      (await createNotifier(resolved, {
+      (await createDaemonNotifier(resolved, {
         onQuotaRequested: async (): Promise<QuotaSnapshot[]> => {
           return await quotaClient.fetchQuota();
         },
@@ -230,6 +230,7 @@ export class AgylityDaemon {
             repositoryId: req.repositoryId,
             repositoryName: req.repositoryName,
             repositoryPath: req.repositoryPath,
+            cloneUrl: req.cloneUrl,
             prompt: req.prompt,
             requestedBy: req.requestedBy,
             requestedByUserId: req.requestedByUserId,
@@ -237,9 +238,33 @@ export class AgylityDaemon {
             priority: req.priority,
             effort: req.effort,
             workerMode: req.workerMode,
+            requiredLabels: req.requiredLabels,
+            allowOverage: req.allowOverage,
+            pushBranch: req.pushBranch,
+            verifyCommand: req.verifyCommand,
           });
           return {
             success: disp.success,
+            taskId: disp.taskId,
+            branchName: disp.branchName,
+            output: disp.output,
+            error: disp.error,
+            durationMs: disp.durationMs ?? Date.now() - startedAt,
+          };
+        },
+        onContinueRequested: async (req) => {
+          const startedAt = Date.now();
+          const disp = await orchestrator.dispatchContinuation({
+            taskId: req.taskId,
+            branchName: req.branchName,
+            prompt: req.prompt,
+            requestedBy: req.requestedBy,
+            requestedByUserId: req.requestedByUserId,
+            effort: req.effort,
+          });
+          return {
+            success: disp.success,
+            taskId: disp.taskId,
             branchName: disp.branchName,
             output: disp.output,
             error: disp.error,
@@ -365,7 +390,11 @@ export class AgylityDaemon {
         await this.notifier.notifyQuotaAlert(alert);
       }
 
-      this.sentryState.updateProbe('connect_rpc');
+      const probeSource =
+        typeof (this.quotaClient as any).getLastProbeSource === 'function'
+          ? (this.quotaClient as any).getLastProbeSource()
+          : 'connect_rpc';
+      this.sentryState.updateProbe(probeSource);
       await this.sentryState.save();
       return alerts;
     } catch (err: any) {
@@ -490,6 +519,9 @@ export const main = async (): Promise<AgylityDaemon> => {
     const c = daemonRef?.configStore.resolveConfig();
     const secrets: Array<string | undefined> = [
       ...(c ? CANONICAL_SECRET_CONFIG_KEYS.map((k) => c[k] as string | undefined) : []),
+      c?.webUiAuthToken,
+      process.env.WEB_UI_AUTH_TOKEN,
+      process.env.GITHUB_TOKEN,
       process.env.AGYLITY_SECRET_KEY,
       process.env.ENCRYPTION_KEY,
       ...(c?.webhookCustomHeaders ? Object.values(c.webhookCustomHeaders) : []),

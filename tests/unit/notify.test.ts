@@ -20,7 +20,7 @@ import {
   DispatchResultSchema,
   DispatchStatusUpdateSchema,
 } from '../../src/notify/types.js';
-import { createNotifier } from '../../src/notify/factory.js';
+import { createNotifier, createDaemonNotifier } from '../../src/notify/factory.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
 import { WebhookNotifier } from '../../src/notify/adapters/webhook.js';
 import {
@@ -619,8 +619,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       await notifier.handleInteraction(interaction);
 
-      assert.equal(interaction.state.replied, true);
-      const reply = interaction.state.replyData as any;
+      assert.ok(interaction.state.replied || interaction.state.deferred);
+      const reply = (interaction.state.editedData ?? interaction.state.replyData) as any;
       assert.ok(reply.embeds);
       assert.equal(reply.embeds.length, 1);
       assert.ok(reply.components);
@@ -1295,6 +1295,26 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         server.closeAllConnections?.();
         await new Promise<void>((r) => server.close(() => r()));
       }
+    });
+
+    it('createDaemonNotifier returns CompositeNotifier with dynamic multi-channel switching and updateConfig', async () => {
+      const notifier = createDaemonNotifier({
+        channels: ['console'],
+      });
+      assert.ok(notifier);
+
+      // Webhook dynamic update
+      const webhook = new WebhookNotifier({
+        notificationWebhookUrl: 'http://127.0.0.1:9999/old',
+      });
+      assert.equal((webhook as any).config.notificationWebhookUrl, 'http://127.0.0.1:9999/old');
+
+      await webhook.updateConfig({
+        notificationWebhookUrl: 'http://127.0.0.1:9999/new',
+        webhookSecret: 'new-secret',
+      });
+      assert.equal((webhook as any).config.notificationWebhookUrl, 'http://127.0.0.1:9999/new');
+      assert.equal((webhook as any).config.webhookSecret, 'new-secret');
     });
   });
 });

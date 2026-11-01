@@ -2,6 +2,7 @@ import type http from 'node:http';
 import { sendJson, methodNotAllowed } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
+import { snapshotsFromSentryState } from '../../sentry/models.js';
 
 export const handleGetQuota = async (
   req: http.IncomingMessage,
@@ -16,36 +17,7 @@ export const handleGetQuota = async (
     if (options.quotaClient) {
       snapshots = await options.quotaClient.fetchQuota();
     } else if (options.sentryState) {
-      const pools = options.sentryState.getState().pools ?? {};
-      snapshots = Object.entries(pools).map(([poolId, pool]) => {
-        const resetDate = new Date(pool.resetTime);
-        const hoursUntil = Math.max(
-          0,
-          Math.round(((resetDate.getTime() - Date.now()) / 3600000) * 10) / 10
-        );
-        const family = poolId.includes('flash')
-          ? 'gemini-flash'
-          : poolId.includes('argon') || poolId.includes('pro')
-            ? 'gemini-argon'
-            : 'claude';
-        const displayName =
-          family === 'gemini-flash'
-            ? 'Gemini Flash'
-            : family === 'gemini-argon'
-              ? 'Gemini Argon'
-              : 'Claude Sonnet';
-
-        return {
-          poolId,
-          family,
-          displayName,
-          remainingFraction: pool.remainingFraction,
-          resetTime: pool.resetTime,
-          hoursUntilReset: hoursUntil,
-          overageEnabled: false,
-          models: [],
-        };
-      });
+      snapshots = snapshotsFromSentryState(options.sentryState.getState());
     }
     return sendJson(res, 200, snapshots);
   } catch (err: any) {

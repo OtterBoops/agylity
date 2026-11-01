@@ -7,3 +7,8 @@ data
 *.log
 tests
 coverage
+.agylity.key
+*.db*
+.agents
+*.tsbuildinfo
+docs/

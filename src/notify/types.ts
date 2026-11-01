@@ -45,13 +45,14 @@ export const DispatchStatusUpdateSchema = z.object({
   durationMs: z.number().optional(),
   requestedBy: z.string().optional(),
   timestamp: z.string().optional(),
-  details: z.record(z.unknown()).optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
   taskId: z.string().optional(),
 });
 
 export interface DispatchRequest {
   repositoryName: string;
-  repositoryPath: string;
+  repositoryPath?: string;
+  cloneUrl?: string;
   prompt: string;
   requestedBy: string;
   requestedByUserId?: string;
@@ -61,11 +62,16 @@ export interface DispatchRequest {
   effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   workerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
+  requiredLabels?: string[];
+  allowOverage?: boolean;
+  pushBranch?: boolean;
+  verifyCommand?: string;
 }
 
 export const DispatchRequestSchema = z.object({
   repositoryName: z.string().min(1),
-  repositoryPath: z.string().min(1),
+  repositoryPath: z.string().optional(),
+  cloneUrl: z.string().url().optional(),
   prompt: z.string().min(1).max(4000),
   requestedBy: z.string().min(1),
   requestedByUserId: z.string().optional(),
@@ -75,6 +81,10 @@ export const DispatchRequestSchema = z.object({
   effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
   workerMode: z.enum(['headless', 'visible', 'any']).optional(),
   poolFamily: z.string().optional(),
+  requiredLabels: z.array(z.string()).optional(),
+  allowOverage: z.boolean().optional(),
+  pushBranch: z.boolean().optional(),
+  verifyCommand: z.string().optional(),
 });
 
 export interface DispatchResult {
@@ -83,6 +93,8 @@ export interface DispatchResult {
   output?: string;
   error?: string;
   durationMs: number;
+  taskId?: string;
+  priority?: 'P0' | 'P1' | 'P2';
 }
 
 export const DispatchResultSchema = z.object({
@@ -91,6 +103,8 @@ export const DispatchResultSchema = z.object({
   output: z.string().optional(),
   error: z.string().optional(),
   durationMs: z.number().nonnegative(),
+  taskId: z.string().optional(),
+  priority: z.enum(['P0', 'P1', 'P2']).optional(),
 });
 
 export interface Notifier {
@@ -110,6 +124,7 @@ export interface Notifier {
 
 export interface NotifierOptions {
   onDispatchRequested?: (req: DispatchRequest) => Promise<DispatchResult>;
+  onContinueRequested?: (req: any) => Promise<DispatchResult>;
   onQuotaRequested?: () => Promise<QuotaSnapshot[]>;
   onOwnerDiscovered?: (ownerUserId: string) => void | Promise<void>;
 }

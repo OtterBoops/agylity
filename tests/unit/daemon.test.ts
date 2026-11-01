@@ -281,5 +281,35 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       cleanup();
     });
+
+    it('dynamically reschedules sentry timer when quotaCheckIntervalSeconds override changes', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_resched_');
+      const dbPath = path.join(dir, 'test.db');
+      const statePath = path.join(dir, 'state.json');
+
+      const daemon = await startDaemon({
+        dbPath,
+        statePath,
+        autoCheckOnStart: false,
+        config: {
+          webUiEnabled: false,
+          quotaCheckIntervalSeconds: 120,
+        },
+      });
+
+      assert.equal(daemon.isRunning, true);
+      const timerBefore = (daemon as any).timer;
+      assert.ok(timerBefore);
+
+      // Mutate interval override to 45 seconds
+      daemon.configStore.setOverride('quotaCheckIntervalSeconds', 45);
+      await new Promise((r) => setTimeout(r, 50));
+      const timerAfter = (daemon as any).timer;
+      assert.ok(timerAfter);
+      assert.notEqual(timerBefore, timerAfter);
+
+      await daemon.shutdown();
+      cleanup();
+    });
   });
 });

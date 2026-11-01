@@ -18,7 +18,7 @@ export const SentryStateSchema = z.object({
   version: z.literal(1),
   lastProbeAt: z.string(),
   lastProbeSource: z.enum(['connect_rpc', 'cli_fallback', 'unreachable']),
-  pools: z.record(PoolStateSchema),
+  pools: z.record(z.string(), PoolStateSchema),
 });
 
 export type SentryState = z.infer<typeof SentryStateSchema>;

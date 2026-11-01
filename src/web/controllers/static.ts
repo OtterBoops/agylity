@@ -6,24 +6,37 @@ import { sendJson, methodNotAllowed } from '../http.js';
 import { MIME_TYPES } from '../types.js';
 
 export const resolvePublicFilePath = (relative: string): string | null => {
+  if (relative.includes('\0')) {
+    return null;
+  }
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [
+  const candidateRoots = [
     // 1. Production bundle: dist/web/public (when running compiled dist/web/controllers/static.js)
-    path.resolve(currentDir, '..', 'public', relative),
+    path.resolve(currentDir, '..', 'public'),
     // 2. Dev mode with tsx: <root>/dist/web/public (relative to src/web/controllers/static.ts)
-    path.resolve(currentDir, '..', '..', '..', 'dist', 'web', 'public', relative),
+    path.resolve(currentDir, '..', '..', '..', 'dist', 'web', 'public'),
     // 3. Process CWD fallback
-    path.resolve(process.cwd(), 'dist', 'web', 'public', relative),
+    path.resolve(process.cwd(), 'dist', 'web', 'public'),
   ];
-  return candidates.find(existsSync) ?? null;
+
+  for (const root of candidateRoots) {
+    const candidate = path.resolve(root, relative);
+    if ((candidate === root || candidate.startsWith(root + path.sep)) && existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 };
 
-export const resolveIndexHtmlPath = (): string =>
-  resolvePublicFilePath('index.html') ??
-  path.resolve(process.cwd(), 'dist', 'web', 'public', 'index.html');
+export const resolveIndexHtmlPath = (): string | null => resolvePublicFilePath('index.html');
 
-export const loadIndexHtml = async (): Promise<string> =>
-  fs.readFile(resolveIndexHtmlPath(), 'utf-8');
+export const loadIndexHtml = async (): Promise<string | null> => {
+  const p = resolveIndexHtmlPath();
+  if (!p) {
+    return null;
+  }
+  return fs.readFile(p, 'utf-8');
+};
 
 export const handleStaticAsset = async (
   req: http.IncomingMessage,
@@ -62,6 +75,9 @@ export const handleIndexHtml = async (
 
   try {
     const html = await loadIndexHtml();
+    if (html === null) {
+      return sendJson(res, 503, { error: 'Frontend bundle not built. Run npm run build:client.' });
+    }
     res
       .writeHead(200, {
         'Content-Type': 'text/html; charset=utf-8',
@@ -69,8 +85,6 @@ export const handleIndexHtml = async (
       })
       .end(html);
   } catch (err: any) {
-    res
-      .writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
-      .end(`Failed to load dashboard: ${err?.message}`);
+    return sendJson(res, 503, { error: 'Frontend bundle not built. Run npm run build:client.' });
   }
 };

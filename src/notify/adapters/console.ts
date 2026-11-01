@@ -92,4 +92,8 @@ export class ConsoleNotifier implements Notifier {
   async shutdown(): Promise<void> {
     this.initialized = false;
   }
+
+  async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
+    this.config = { ...this.config, ...newConfig };
+  }
 }

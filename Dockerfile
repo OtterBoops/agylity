@@ -57,8 +57,10 @@ COPY package*.json ./
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
-RUN mkdir -p /home/node/.gemini /repos && \
-    chown -R node:node /home/node /repos
+RUN mkdir -p /home/node/.gemini /repos /data && \
+    chown -R node:node /home/node /repos /data /app
+
+USER node
 
 ENV NODE_ENV=production \
     COORDINATOR_URL=http://agylity:8484
@@ -89,7 +91,15 @@ COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 
 # Create persistent state directory for SQLite database (agylity.db)
-RUN mkdir -p /app/data
+RUN mkdir -p /app/data && \
+    chown -R node:node /app/data /app
+
+# Switch to non-root node user
+USER node
+
+# Healthcheck for coordinator web service
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:' + (process.env.WEB_UI_PORT || 8484) + '/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 # Default production environment configuration
 ENV NODE_ENV=production \

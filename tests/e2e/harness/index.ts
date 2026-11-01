@@ -1,6 +1,5 @@
 import http from 'node:http';
 import net from 'node:net';
-import dgram from 'node:dgram';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -22,6 +21,20 @@ export const tryImport = async <T>(specifier: string): Promise<T | null> => {
     }
     throw err;
   }
+};
+
+/**
+ * Allocates an ephemeral unused TCP port on localhost.
+ */
+export const getFreePort = async (): Promise<number> => {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as net.AddressInfo).port;
+      srv.close((err) => (err ? reject(err) : resolve(port)));
+    });
+    srv.on('error', reject);
+  });
 };
 
 /**
@@ -255,61 +268,6 @@ export const createMockWebhookServer = async (
       });
     },
   };
-};
-
-/**
- * Creates a mock UDP socket listener to verify Wake-on-LAN Magic Packets.
- */
-export const createMockUdpListener = async (
-  port = 0
-): Promise<{
-  socket: dgram.Socket;
-  port: number;
-  packets: Buffer[];
-  close: () => Promise<void>;
-}> => {
-  const socket = dgram.createSocket('udp4');
-  const packets: Buffer[] = [];
-
-  socket.on('message', (msg) => {
-    packets.push(Buffer.from(msg));
-  });
-
-  await new Promise<void>((resolve) => socket.bind(port, '127.0.0.1', () => resolve()));
-  const addr = socket.address();
-
-  return {
-    socket,
-    port: addr.port,
-    packets,
-    close: () => new Promise<void>((resolve) => socket.close(() => resolve())),
-  };
-};
-
-/**
- * Validates whether a buffer is a compliant magic packet frame.
- */
-export const isValidMagicPacket = (buf: Buffer, expectedMac: string): boolean => {
-  if (buf.length !== 102) return false;
-
-  // First 6 bytes must be 0xFF
-  for (let i = 0; i < 6; i++) {
-    if (buf[i] !== 0xff) return false;
-  }
-
-  // Normalize MAC into 6 bytes
-  const stripped = expectedMac.replace(/[:-]/g, '').trim().toLowerCase();
-  if (stripped.length !== 12) return false;
-  const macBytes = Buffer.from(stripped, 'hex');
-
-  // Verify 16 consecutive repetitions of the 6-byte MAC address
-  for (let rep = 0; rep < 16; rep++) {
-    for (let b = 0; b < 6; b++) {
-      if (buf[6 + rep * 6 + b] !== macBytes[b]) return false;
-    }
-  }
-
-  return true;
 };
 
 /**

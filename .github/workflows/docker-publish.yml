@@ -39,6 +39,9 @@ jobs:
           npm ci
           npm --prefix frontend ci
 
+      - name: Audit Production Dependencies
+        run: npm audit --omit=dev
+
       - name: Lint & Tailwind Canonicalization Check
         run: npm run lint
 
@@ -50,6 +53,34 @@ jobs:
 
       - name: Run Full Deterministic Test Suite
         run: npm test
+
+  verify-docker:
+    name: Verify Docker Build (Dry Run)
+    needs: test
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Coordinator (Dry Run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: coordinator
+          push: false
+          cache-from: type=gha,scope=coordinator
+
+      - name: Build Worker (Dry Run)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: worker
+          push: false
+          cache-from: type=gha,scope=worker
 
   publish:
     name: Build & Publish Container Image (GHCR)
@@ -81,14 +112,11 @@ jobs:
           flavor: |
             latest=false
           tags: |
-            # Release tags: semver and 'latest' for stable releases
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-beta') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') }}
-            # Main branch pushes: tag as 'edge' and 'main' (never 'latest')
             type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
             type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
-            # Git commit SHA for all builds
             type=sha,format=short
 
       - name: Build and Push Coordinator Image (agylity)
@@ -99,8 +127,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
+          cache-from: type=gha,scope=coordinator
+          cache-to: type=gha,mode=min,scope=coordinator
 
       - name: Extract Worker Runner Docker Metadata
         id: meta_worker
@@ -125,5 +153,5 @@ jobs:
           push: true
           tags: ${{ steps.meta_worker.outputs.tags }}
           labels: ${{ steps.meta_worker.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=min
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,mode=min,scope=worker

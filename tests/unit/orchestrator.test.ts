@@ -361,6 +361,92 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         cleanup();
       }
     });
+
+    it('rejects disallowed verifyCommand binaries and shell metacharacters', async () => {
+      const { dir, cleanup } = makeTempDir('orch_verify_guard_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const executor = new TaskExecutor({
+          dirExistsFn: () => true,
+          execFileFn: async () => ({ stdout: 'M file.ts\n', stderr: '' }),
+        });
+
+        // Shell metacharacter rejection
+        const task1 = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Test command injection',
+          verifyCommand: 'npm test; rm -rf /',
+        });
+        const res1 = await executor.execute(task1);
+        assert.equal(res1.success, false);
+        assert.ok(res1.error?.includes('metacharacters'));
+
+        // Non-allowlisted binary rejection
+        const task2 = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Test unauthorized binary',
+          verifyCommand: 'bash -c whoami',
+        });
+        const res2 = await executor.execute(task2);
+        assert.equal(res2.success, false);
+        assert.ok(res2.error?.includes('allowlist'));
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('passes GITHUB_TOKEN via extraheader during clone and redacts token on failure', async () => {
+      const { dir, cleanup } = makeTempDir('orch_clone_guard_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      const oldToken = process.env.GITHUB_TOKEN;
+      process.env.GITHUB_TOKEN = 'ghp_secret_dummy_token_99999';
+
+      try {
+        const queue = new TaskQueue(db);
+        const repoPath = path.join(dir, 'agylity');
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: repoPath,
+          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+          prompt: 'Test remote clone',
+        });
+
+        const invocations: Array<{ file: string; args: readonly string[] }> = [];
+        const executor = new TaskExecutor({
+          dirExistsFn: () => false,
+          execFileFn: async (file, args) => {
+            invocations.push({ file, args });
+            if (file === 'git' && args[0] === '-c') {
+              throw new Error(
+                'fatal: could not read Username for ghp_secret_dummy_token_99999@github.com'
+              );
+            }
+            return { stdout: '', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, false);
+        // Verify extraheader format was used
+        assert.equal(invocations[0]?.file, 'git');
+        assert.ok(invocations[0]?.args[0] === '-c');
+        assert.ok(invocations[0]?.args[1]?.includes('extraheader=AUTHORIZATION: basic'));
+        // Verify URL did not embed token
+        assert.ok(!invocations[0]?.args.some((a) => a.includes('ghp_secret_dummy_token_99999@')));
+        // Verify token was redacted in error output
+        assert.ok(!res.error?.includes('ghp_secret_dummy_token_99999'));
+        assert.ok(res.error?.includes('[redacted]'));
+      } finally {
+        process.env.GITHUB_TOKEN = oldToken;
+        db.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

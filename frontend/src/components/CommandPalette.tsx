@@ -46,6 +46,7 @@ export const CommandPalette = ({
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   const commands: CommandItem[] = [
     {
@@ -152,10 +153,15 @@ export const CommandPalette = ({
   );
 
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
     if (isOpen) {
+      if (!dialog.open) dialog.showModal();
       setQuery('');
       setSelectedIndex(0);
       setTimeout(() => inputRef.current?.focus(), 50);
+    } else {
+      if (dialog.open) dialog.close();
     }
   }, [isOpen]);
 
@@ -166,10 +172,7 @@ export const CommandPalette = ({
   useEffect(() => {
     if (!isOpen) return;
     const onWindowKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
-      } else if (e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown') {
         e.preventDefault();
         setSelectedIndex((prev) => (prev + 1) % Math.max(1, filtered.length));
       } else if (e.key === 'ArrowUp') {
@@ -184,104 +187,100 @@ export const CommandPalette = ({
     };
     window.addEventListener('keydown', onWindowKey);
     return () => window.removeEventListener('keydown', onWindowKey);
-  }, [isOpen, filtered, selectedIndex, onClose]);
+  }, [isOpen, filtered, selectedIndex]);
 
   if (!isOpen) return null;
 
   return (
-    <div
-      class="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-20 backdrop-blur-xs"
-      onClick={onClose}
+    <dialog
+      ref={dialogRef}
+      onClose={onClose}
+      class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
     >
-      <div
-        class="animate-in fade-in zoom-in-95 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-2xl duration-100"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Search Input Bar */}
-        <div class="flex items-center gap-3 border-b border-pine-highlight px-4 py-3">
-          <Icon icon={faSearch} class="size-4 text-pine-muted" />
-          <input
-            ref={inputRef}
-            type="text"
-            autoComplete="off"
-            data-1p-ignore="true"
-            data-lpignore="true"
-            class="flex-1 bg-transparent text-sm text-pine-text outline-none placeholder:text-pine-muted"
-            placeholder="Type a command or navigate views..."
-            value={query}
-            onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
-          />
-          <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
-            Esc
-          </kbd>
-        </div>
-
-        {/* Command list */}
-        <div class="max-h-80 overflow-y-auto p-2">
-          {filtered.length === 0 ? (
-            <div class="px-4 py-8 text-center text-xs text-pine-muted">
-              No commands matching &quot;{query}&quot;
-            </div>
-          ) : (
-            filtered.map((cmd, idx) => {
-              const isSelected = idx === selectedIndex;
-              return (
-                <button
-                  key={cmd.id}
-                  type="button"
-                  onClick={() => cmd.action()}
-                  onMouseEnter={() => setSelectedIndex(idx)}
-                  class={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors ${
-                    isSelected
-                      ? 'bg-pine-iris/15 font-medium text-pine-iris'
-                      : 'text-pine-text hover:bg-pine-overlay'
-                  }`}
-                >
-                  <div class="flex items-center gap-3">
-                    <div
-                      class={`flex size-6 items-center justify-center rounded-md border ${
-                        isSelected
-                          ? 'border-pine-iris/40 bg-pine-iris/20 text-pine-iris'
-                          : 'border-pine-highlight bg-pine-overlay text-pine-muted'
-                      }`}
-                    >
-                      <Icon icon={cmd.icon} class="size-3" />
-                    </div>
-                    <span>{cmd.title}</span>
-                  </div>
-
-                  <div class="flex items-center gap-2">
-                    <span class="rounded-sm bg-pine-overlay/60 px-1.5 py-0.5 text-xs text-pine-muted">
-                      {cmd.category}
-                    </span>
-                    {cmd.shortcut && (
-                      <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
-                        {cmd.shortcut}
-                      </kbd>
-                    )}
-                  </div>
-                </button>
-              );
-            })
-          )}
-        </div>
-
-        {/* Footer shortcuts hint */}
-        <div class="flex items-center justify-between border-t border-pine-highlight bg-pine-overlay/30 px-3 py-2 text-xs text-pine-muted">
-          <div class="flex items-center gap-3">
-            <span>
-              <kbd class="font-mono text-xs text-pine-subtle">↑↓</kbd> navigate
-            </span>
-            <span>
-              <kbd class="font-mono text-xs text-pine-subtle">Enter</kbd> select
-            </span>
-            <span>
-              <kbd class="font-mono text-xs text-pine-subtle">Esc</kbd> close
-            </span>
-          </div>
-          <span>Agylity Command Palette</span>
-        </div>
+      {/* Search Input Bar */}
+      <div class="flex items-center gap-3 border-b border-pine-highlight px-4 py-3">
+        <Icon icon={faSearch} class="size-4 text-pine-muted" />
+        <input
+          ref={inputRef}
+          type="text"
+          autoComplete="off"
+          data-1p-ignore="true"
+          data-lpignore="true"
+          class="flex-1 bg-transparent text-sm text-pine-text outline-none placeholder:text-pine-muted"
+          placeholder="Type a command or navigate views..."
+          value={query}
+          onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+        />
+        <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
+          Esc
+        </kbd>
       </div>
-    </div>
+
+      {/* Command list */}
+      <div class="max-h-80 overflow-y-auto p-2">
+        {filtered.length === 0 ? (
+          <div class="px-4 py-8 text-center text-xs text-pine-muted">
+            No commands matching &quot;{query}&quot;
+          </div>
+        ) : (
+          filtered.map((cmd, idx) => {
+            const isSelected = idx === selectedIndex;
+            return (
+              <button
+                key={cmd.id}
+                type="button"
+                onClick={() => cmd.action()}
+                onMouseEnter={() => setSelectedIndex(idx)}
+                class={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors ${
+                  isSelected
+                    ? 'bg-pine-iris/15 font-medium text-pine-iris'
+                    : 'text-pine-text hover:bg-pine-overlay'
+                }`}
+              >
+                <div class="flex items-center gap-3">
+                  <div
+                    class={`flex size-6 items-center justify-center rounded-md border ${
+                      isSelected
+                        ? 'border-pine-iris/40 bg-pine-iris/20 text-pine-iris'
+                        : 'border-pine-highlight bg-pine-overlay text-pine-muted'
+                    }`}
+                  >
+                    <Icon icon={cmd.icon} class="size-3" />
+                  </div>
+                  <span>{cmd.title}</span>
+                </div>
+
+                <div class="flex items-center gap-2">
+                  <span class="rounded-sm bg-pine-overlay/60 px-1.5 py-0.5 text-xs text-pine-muted">
+                    {cmd.category}
+                  </span>
+                  {cmd.shortcut && (
+                    <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-muted">
+                      {cmd.shortcut}
+                    </kbd>
+                  )}
+                </div>
+              </button>
+            );
+          })
+        )}
+      </div>
+
+      {/* Footer shortcuts hint */}
+      <div class="flex items-center justify-between border-t border-pine-highlight bg-pine-overlay/30 px-3 py-2 text-xs text-pine-muted">
+        <div class="flex items-center gap-3">
+          <span>
+            <kbd class="font-mono text-xs text-pine-subtle">↑↓</kbd> navigate
+          </span>
+          <span>
+            <kbd class="font-mono text-xs text-pine-subtle">Enter</kbd> select
+          </span>
+          <span>
+            <kbd class="font-mono text-xs text-pine-subtle">Esc</kbd> close
+          </span>
+        </div>
+        <span>Agylity Command Palette</span>
+      </div>
+    </dialog>
   );
 };

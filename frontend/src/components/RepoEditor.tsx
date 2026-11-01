@@ -51,16 +51,16 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       };
     });
 
-    updateConfig({ repositories: clean })
-      .then(() => {
-        setDraft(null);
-        setToast({ type: 'success', message: 'Repositories saved.' });
-        onSaved();
-      })
-      .catch((err) =>
-        setToast({ type: 'error', message: err.message || 'Failed to save repositories' })
-      )
-      .finally(() => setIsSaving(false));
+    try {
+      await updateConfig({ repositories: clean });
+      setDraft(null);
+      setToast({ type: 'success', message: 'Repositories saved.' });
+      onSaved();
+    } catch (err: any) {
+      setToast({ type: 'error', message: err.message || 'Failed to save repositories' });
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -74,71 +74,115 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
 
       {repos.length === 0 && <p class="text-sm text-pine-muted">No repositories configured.</p>}
 
-      <div class="flex flex-col gap-3">
+      <div class="flex flex-col gap-4">
         {repos.map((r, i) => (
           <div
             key={i}
-            class="grid grid-cols-1 items-end gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/20 p-3 md:grid-cols-[1fr_1fr_2fr_auto]"
+            class="flex flex-col gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/20 p-4"
           >
-            <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-pine-subtle">ID</label>
-              <input
-                class={inputClass}
-                name={`agylity_repo_id_${i}`}
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                value={r.id}
-                placeholder="agylity"
-                onInput={(e) => {
-                  const nextId = (e.target as HTMLInputElement).value;
-                  const prevAuto = r.id ? `/repos/${r.id}` : '';
-                  const isAuto = !r.path || r.path === prevAuto;
-                  patch(i, {
-                    id: nextId,
-                    path: isAuto ? (nextId ? `/repos/${nextId.trim()}` : '') : r.path,
-                  });
-                }}
-              />
-            </div>
-            <div class="flex flex-col gap-1.5">
-              <label class="text-xs font-medium text-pine-subtle">Name</label>
-              <input
-                class={inputClass}
-                name={`agylity_repo_name_${i}`}
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                value={r.name}
-                placeholder="Agylity"
-                onInput={(e) => patch(i, { name: (e.target as HTMLInputElement).value })}
-              />
-            </div>
-            <div class="flex flex-col gap-1.5">
-              <div class="flex items-center justify-between">
-                <label class="text-xs font-medium text-pine-subtle">In-container path</label>
-                <span class="font-mono text-xs text-pine-muted">
-                  auto: /repos/{r.id.trim() || 'id'}
-                </span>
+            <div class="grid grid-cols-1 items-end gap-3 md:grid-cols-[1fr_1.5fr_1fr_auto]">
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-medium text-pine-subtle">ID</label>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_id_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.id}
+                  placeholder="agylity"
+                  onInput={(e) => {
+                    const nextId = (e.target as HTMLInputElement).value;
+                    const prevAuto = r.id ? `/repos/${r.id}` : '';
+                    const isAuto = !r.path || r.path === prevAuto;
+                    patch(i, {
+                      id: nextId,
+                      path: isAuto ? (nextId ? `/repos/${nextId.trim()}` : '') : r.path,
+                    });
+                  }}
+                />
               </div>
-              <input
-                class={inputClass}
-                name={`agylity_repo_path_${i}`}
-                autoComplete="off"
-                data-1p-ignore="true"
-                data-lpignore="true"
-                value={r.path || (r.id.trim() ? `/repos/${r.id.trim()}` : '')}
-                placeholder={`/repos/${r.id.trim() || 'id'}`}
-                onInput={(e) => patch(i, { path: (e.target as HTMLInputElement).value })}
-              />
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-medium text-pine-subtle">Name</label>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_name_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.name}
+                  placeholder="Agylity"
+                  onInput={(e) => patch(i, { name: (e.target as HTMLInputElement).value })}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-medium text-pine-subtle">Default Branch</label>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_branch_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.defaultBranch ?? 'main'}
+                  placeholder="main"
+                  onInput={(e) => patch(i, { defaultBranch: (e.target as HTMLInputElement).value })}
+                />
+              </div>
+              <button
+                type="button"
+                class="cursor-pointer rounded-lg border border-pine-love/30 bg-pine-love/15 px-3 py-2 text-xs font-medium text-pine-love transition-colors hover:bg-pine-love hover:text-white"
+                onClick={() => update(repos.filter((_, idx) => idx !== i))}
+              >
+                Remove
+              </button>
             </div>
-            <button
-              type="button"
-              class="cursor-pointer rounded-lg border border-pine-love/30 bg-pine-love/15 px-3 py-2 text-xs font-medium text-pine-love transition-colors hover:bg-pine-love hover:text-white"
-              onClick={() => update(repos.filter((_, idx) => idx !== i))}
-            >
-              Remove
-            </button>
+
+            <div class="grid grid-cols-1 items-end gap-3 md:grid-cols-3">
+              <div class="flex flex-col gap-1.5">
+                <div class="flex items-center justify-between">
+                  <label class="text-xs font-medium text-pine-subtle">In-container path</label>
+                  <span class="font-mono text-xs text-pine-muted">
+                    auto: /repos/{r.id.trim() || 'id'}
+                  </span>
+                </div>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_path_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.path ?? ''}
+                  placeholder={`/repos/${r.id.trim() || 'id'}`}
+                  onInput={(e) => patch(i, { path: (e.target as HTMLInputElement).value })}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-medium text-pine-subtle">Clone URL (Remote Swarm)</label>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_clone_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.cloneUrl ?? ''}
+                  placeholder="https://github.com/owner/repo.git"
+                  onInput={(e) => patch(i, { cloneUrl: (e.target as HTMLInputElement).value })}
+                />
+              </div>
+              <div class="flex flex-col gap-1.5">
+                <label class="text-xs font-medium text-pine-subtle">Description</label>
+                <input
+                  class={inputClass}
+                  name={`agylity_repo_desc_${i}`}
+                  autoComplete="off"
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  value={r.description ?? ''}
+                  placeholder="Optional notes or repository description"
+                  onInput={(e) => patch(i, { description: (e.target as HTMLInputElement).value })}
+                />
+              </div>
+            </div>
           </div>
         ))}
       </div>

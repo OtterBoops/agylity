@@ -133,6 +133,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
   private activeProvider: 'rpc' | 'cli' | 'unknown' = 'unknown';
+  private lastProbeSource: 'connect_rpc' | 'cli_fallback' = 'connect_rpc';
   private nextRpcProbeAt: number = 0;
   private fetchFn?: typeof fetch;
   private logger: Logger;
@@ -198,6 +199,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.lastKnownSnapshots = cliSnapshots;
           this.lastFetchedAt = Date.now();
+          this.lastProbeSource = 'cli_fallback';
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
@@ -228,6 +230,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       const snapshots = await this.tryConnectRpc();
       if (snapshots && snapshots.length > 0) {
         this.activeProvider = 'rpc';
+        this.lastProbeSource = 'connect_rpc';
         this.lastKnownSnapshots = snapshots;
         this.lastFetchedAt = Date.now();
         return snapshots;
@@ -244,6 +247,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           const snapshots = await this.tryConnectRpc();
           if (snapshots && snapshots.length > 0) {
             this.activeProvider = 'rpc';
+            this.lastProbeSource = 'connect_rpc';
             this.lastKnownSnapshots = snapshots;
             this.lastFetchedAt = Date.now();
             return snapshots;
@@ -261,6 +265,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.activeProvider = 'cli';
+          this.lastProbeSource = 'cli_fallback';
           this.nextRpcProbeAt = Date.now() + 15 * 60 * 1000;
           this.logger.info('Retrieved %d model pools via agy CLI fallback', cliSnapshots.length);
           this.lastKnownSnapshots = cliSnapshots;
@@ -314,10 +319,19 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return false;
   }
 
+  public getActiveProvider(): 'rpc' | 'cli' | 'unknown' {
+    return this.activeProvider;
+  }
+
+  public getLastProbeSource(): 'connect_rpc' | 'cli_fallback' {
+    return this.lastProbeSource;
+  }
+
   public updateConfig(config: {
     antigravityEndpointUrl?: string;
     antigravityCsrfToken?: string;
     antigravityLsPort?: number;
+    agyBinPath?: string;
   }): void {
     if (config.antigravityEndpointUrl !== undefined) {
       this.endpointUrl = config.antigravityEndpointUrl;
@@ -329,14 +343,18 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       this.port = config.antigravityLsPort;
       this.fallbackPorts = [config.antigravityLsPort, ...this.fallbackPorts];
     }
+    if (config.agyBinPath !== undefined && config.agyBinPath.trim() !== '') {
+      this.agyBinPath = config.agyBinPath.trim();
+    }
     // Invalidate cached snapshots and reset active provider so next fetch immediately uses updated endpoint
     this.lastFetchedAt = 0;
     this.activeProvider = 'unknown';
     this.nextRpcProbeAt = 0;
     this.logger.info(
-      'Updated Language Server config (endpoint: %s, port: %d)',
+      'Updated Language Server config (endpoint: %s, port: %d, agyBinPath: %s)',
       this.endpointUrl ?? 'dynamic',
-      this.port
+      this.port,
+      this.agyBinPath
     );
   }
 
@@ -372,6 +390,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const response = await kyInstance.post(summaryUrl, {
           headers: {
             'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
             'x-codeium-csrf-token': this.csrfToken,
           },
           json: {},
@@ -417,6 +436,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const response = await kyInstance.post(cascadeUrl, {
           headers: {
             'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
             'x-codeium-csrf-token': this.csrfToken,
           },
           json: {},
@@ -485,10 +505,33 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     const cached = this.cachedSnapshotProvider?.() ?? this.lastKnownSnapshots;
     if (cached && cached.length > 0) {
       const now = Date.now();
-      return cached.map((s) => ({
-        ...s,
-        hoursUntilReset: calculateHoursUntilReset(s.resetTime, now),
-      }));
+      const modelsByFamily = new Map<QuotaFamily, string[]>();
+      for (const m of rawModels) {
+        const resolved = resolveModelFamily({ modelId: m.id, label: m.label || m.id });
+        if (!resolved) continue;
+        const list = modelsByFamily.get(resolved.family) ?? [];
+        list.push(m.label || m.id);
+        modelsByFamily.set(resolved.family, list);
+      }
+
+      return cached.map((s) => {
+        const hoursUntilReset = calculateHoursUntilReset(s.resetTime, now);
+        const remainingFraction = hoursUntilReset > 0 ? s.remainingFraction : 1.0;
+        const cliModels = modelsByFamily.get(s.family);
+        const models =
+          s.models && s.models.length > 0
+            ? s.models
+            : cliModels && cliModels.length > 0
+              ? [...cliModels].sort()
+              : s.models;
+
+        return {
+          ...s,
+          remainingFraction,
+          hoursUntilReset: Math.max(0, hoursUntilReset),
+          models,
+        };
+      });
     }
 
     // 2. Synthesize baseline snapshots for detected model families

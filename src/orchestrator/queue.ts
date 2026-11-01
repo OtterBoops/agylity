@@ -150,6 +150,22 @@ export class TaskQueue {
     this.initSchema();
   }
 
+  private inTransaction<T>(fn: () => T): T {
+    this.rawDb.exec('BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      this.rawDb.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        this.rawDb.exec('ROLLBACK');
+      } catch {
+        // Rollback best-effort
+      }
+      throw err;
+    }
+  }
+
   private initSchema(): void {
     this.rawDb.exec(`
       CREATE TABLE IF NOT EXISTS swarm_tasks (
@@ -296,106 +312,108 @@ export class TaskQueue {
     input: ExchangeRegistrationTokenInput,
     nowMs = Date.now()
   ): { worker: SwarmWorkerRecord; runnerToken: string } {
-    const rawToken = input.registrationToken?.trim();
-    if (!rawToken) {
-      throw new Error('Registration token is required');
-    }
+    return this.inTransaction(() => {
+      const rawToken = input.registrationToken?.trim();
+      if (!rawToken) {
+        throw new Error('Registration token is required');
+      }
 
-    const tokenHash = hashRunnerToken(rawToken);
-    const regRow = this.rawDb
-      .prepare('SELECT * FROM swarm_runner_registrations WHERE token_hash = ?')
-      .get(tokenHash) as Record<string, any> | undefined;
+      const tokenHash = hashRunnerToken(rawToken);
+      const regRow = this.rawDb
+        .prepare('SELECT * FROM swarm_runner_registrations WHERE token_hash = ?')
+        .get(tokenHash) as Record<string, any> | undefined;
 
-    if (!regRow) {
-      throw new Error('Invalid runner registration token');
-    }
+      if (!regRow) {
+        throw new Error('Invalid runner registration token');
+      }
 
-    if (regRow.consumed_by_worker_id) {
-      throw new Error('Runner registration token has already been used');
-    }
+      if (regRow.consumed_by_worker_id) {
+        throw new Error('Runner registration token has already been used');
+      }
 
-    const expiresEpoch = new Date(String(regRow.expires_at)).getTime();
-    if (Number.isNaN(expiresEpoch) || nowMs > expiresEpoch) {
-      throw new Error('Runner registration token has expired');
-    }
+      const expiresEpoch = new Date(String(regRow.expires_at)).getTime();
+      if (Number.isNaN(expiresEpoch) || nowMs > expiresEpoch) {
+        throw new Error('Runner registration token has expired');
+      }
 
-    let defaultLabels: string[] = [];
-    let defaultRepos: string[] = [];
-    try {
-      defaultLabels = JSON.parse(String(regRow.labels_json || '[]'));
-    } catch {}
-    try {
-      defaultRepos = JSON.parse(String(regRow.repositories_json || '[]'));
-    } catch {}
+      let defaultLabels: string[] = [];
+      let defaultRepos: string[] = [];
+      try {
+        defaultLabels = JSON.parse(String(regRow.labels_json || '[]'));
+      } catch {}
+      try {
+        defaultRepos = JSON.parse(String(regRow.repositories_json || '[]'));
+      } catch {}
 
-    const workerId = input.workerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
-    const workerName =
-      input.workerName?.trim() ||
-      (regRow.name_hint ? String(regRow.name_hint) : undefined) ||
-      workerId;
-    const workerMode: WorkerMode =
-      input.workerMode ?? ((regRow.worker_mode as WorkerMode) || 'headless');
-    const labels = Array.from(
-      new Set(
-        (input.labels && input.labels.length > 0 ? input.labels : defaultLabels)
-          .map((l) => l.trim().toLowerCase())
-          .filter(Boolean)
-      )
-    );
-    const repositories = Array.from(
-      new Set(
-        (input.repositories && input.repositories.length > 0 ? input.repositories : defaultRepos)
-          .map((r) => r.trim())
-          .filter(Boolean)
-      )
-    );
-    const systemInfo: RunnerSystemInfo = input.systemInfo ?? {};
-
-    const runnerToken = `agyr_run_${randomBytes(32).toString('hex')}`;
-    const runnerTokenHash = hashRunnerToken(runnerToken);
-    const nowIso = new Date(nowMs).toISOString();
-
-    this.rawDb
-      .prepare(
-        `UPDATE swarm_runner_registrations
-         SET consumed_by_worker_id = ?, consumed_at = ?
-         WHERE id = ?`
-      )
-      .run(workerId, nowIso, String(regRow.id));
-
-    this.rawDb
-      .prepare(
-        `INSERT INTO swarm_workers (
-          worker_id, name, token_hash, worker_mode, labels_json, repositories_json,
-          system_info_json, enabled, active_task_id, status, registered_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, 'idle', ?, ?)
-        ON CONFLICT(worker_id) DO UPDATE SET
-          name = excluded.name,
-          token_hash = excluded.token_hash,
-          worker_mode = excluded.worker_mode,
-          labels_json = excluded.labels_json,
-          repositories_json = excluded.repositories_json,
-          system_info_json = excluded.system_info_json,
-          enabled = 1,
-          status = 'idle',
-          last_seen_at = excluded.last_seen_at`
-      )
-      .run(
-        workerId,
-        workerName,
-        runnerTokenHash,
-        workerMode,
-        JSON.stringify(labels),
-        JSON.stringify(repositories),
-        JSON.stringify(systemInfo),
-        nowIso,
-        nowIso
+      const workerId = input.workerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
+      const workerName =
+        input.workerName?.trim() ||
+        (regRow.name_hint ? String(regRow.name_hint) : undefined) ||
+        workerId;
+      const workerMode: WorkerMode =
+        input.workerMode ?? ((regRow.worker_mode as WorkerMode) || 'headless');
+      const labels = Array.from(
+        new Set(
+          (input.labels && input.labels.length > 0 ? input.labels : defaultLabels)
+            .map((l) => l.trim().toLowerCase())
+            .filter(Boolean)
+        )
       );
+      const repositories = Array.from(
+        new Set(
+          (input.repositories && input.repositories.length > 0 ? input.repositories : defaultRepos)
+            .map((r) => r.trim())
+            .filter(Boolean)
+        )
+      );
+      const systemInfo: RunnerSystemInfo = input.systemInfo ?? {};
 
-    return {
-      worker: this.getWorker(workerId)!,
-      runnerToken,
-    };
+      const runnerToken = `agyr_run_${randomBytes(32).toString('hex')}`;
+      const runnerTokenHash = hashRunnerToken(runnerToken);
+      const nowIso = new Date(nowMs).toISOString();
+
+      this.rawDb
+        .prepare(
+          `UPDATE swarm_runner_registrations
+           SET consumed_by_worker_id = ?, consumed_at = ?
+           WHERE id = ?`
+        )
+        .run(workerId, nowIso, String(regRow.id));
+
+      this.rawDb
+        .prepare(
+          `INSERT INTO swarm_workers (
+            worker_id, name, token_hash, worker_mode, labels_json, repositories_json,
+            system_info_json, enabled, active_task_id, status, registered_at, last_seen_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, 'idle', ?, ?)
+          ON CONFLICT(worker_id) DO UPDATE SET
+            name = excluded.name,
+            token_hash = excluded.token_hash,
+            worker_mode = excluded.worker_mode,
+            labels_json = excluded.labels_json,
+            repositories_json = excluded.repositories_json,
+            system_info_json = excluded.system_info_json,
+            enabled = 1,
+            status = 'idle',
+            last_seen_at = excluded.last_seen_at`
+        )
+        .run(
+          workerId,
+          workerName,
+          runnerTokenHash,
+          workerMode,
+          JSON.stringify(labels),
+          JSON.stringify(repositories),
+          JSON.stringify(systemInfo),
+          nowIso,
+          nowIso
+        );
+
+      return {
+        worker: this.getWorker(workerId)!,
+        runnerToken,
+      };
+    });
   }
 
   /**
@@ -463,24 +481,26 @@ export class TaskQueue {
    * Any in-flight task claimed by this runner is returned to `'queued'` status.
    */
   public revokeWorker(workerId: string): boolean {
-    const existing = this.getWorker(workerId);
-    if (!existing) return false;
+    return this.inTransaction(() => {
+      const existing = this.getWorker(workerId);
+      if (!existing) return false;
 
-    const now = new Date().toISOString();
-    this.rawDb
-      .prepare(
-        `UPDATE swarm_tasks
-         SET status = 'queued',
-             worker_id = NULL,
-             claimed_at = NULL,
-             heartbeat_at = NULL,
-             updated_at = ?
-         WHERE worker_id = ? AND status IN ('claimed', 'executing')`
-      )
-      .run(now, workerId);
+      const now = new Date().toISOString();
+      this.rawDb
+        .prepare(
+          `UPDATE swarm_tasks
+           SET status = 'queued',
+               worker_id = NULL,
+               claimed_at = NULL,
+               heartbeat_at = NULL,
+               updated_at = ?
+           WHERE worker_id = ? AND status IN ('claimed', 'executing')`
+        )
+        .run(now, workerId);
 
-    this.rawDb.prepare('DELETE FROM swarm_workers WHERE worker_id = ?').run(workerId);
-    return true;
+      this.rawDb.prepare('DELETE FROM swarm_workers WHERE worker_id = ?').run(workerId);
+      return true;
+    });
   }
 
   public enqueue(input: EnqueueTaskInput): SwarmTask {
@@ -498,7 +518,7 @@ export class TaskQueue {
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
     );
-    const model = input.model.trim();
+    const model = (input.model ?? 'gemini-4-argon-high').trim();
     const poolFamily = resolvePoolFamilyForModel(model);
     const effort: ReasoningEffort = input.effort ?? 'high';
     const allowOverage = Boolean(input.allowOverage);
@@ -568,128 +588,132 @@ export class TaskQueue {
    * workerMode, required labels, repository match, and optional live quota eligibility.
    */
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
-    const existingWorker = this.getWorker(options.workerId);
-    if (existingWorker && !existingWorker.enabled) {
+    return this.inTransaction(() => {
+      const existingWorker = this.getWorker(options.workerId);
+      if (existingWorker && !existingWorker.enabled) {
+        this.registerWorkerHeartbeat({
+          workerId: options.workerId,
+          name: options.workerName,
+          workerMode: options.workerMode,
+          labels: options.labels,
+          repositories: options.repositories,
+          systemInfo: options.systemInfo,
+          status: 'idle',
+        });
+        return null;
+      }
+
+      const workerMode = options.workerMode ?? existingWorker?.workerMode ?? 'headless';
+      const effectiveLabels =
+        options.labels && options.labels.length > 0
+          ? options.labels
+          : (existingWorker?.labels ?? []);
+      const workerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
+
+      const effectiveRepos =
+        options.repositories && options.repositories.length > 0
+          ? options.repositories
+          : (existingWorker?.repositories ?? []);
+      const repoFilter =
+        effectiveRepos.length > 0 ? new Set(effectiveRepos.map((r) => r.toLowerCase())) : null;
+
+      const candidates = this.rawDb
+        .prepare(
+          `SELECT * FROM swarm_tasks
+           WHERE status = 'queued'
+           ORDER BY priority_rank ASC, created_at ASC, rowid ASC`
+        )
+        .all() as Array<Record<string, any>>;
+
+      for (const row of candidates) {
+        const task = this.mapRowToTask(row);
+
+        // 1. Check workerMode compatibility
+        if (task.workerMode !== 'any' && workerMode !== 'any' && task.workerMode !== workerMode) {
+          continue;
+        }
+
+        // 2. Check required labels (if task specifies labels, worker must have all of them)
+        if (task.requiredLabels.length > 0) {
+          const hasAllLabels = task.requiredLabels.every((reqLabel) =>
+            workerLabelSet.has(reqLabel.toLowerCase())
+          );
+          if (!hasAllLabels) {
+            continue;
+          }
+        }
+
+        // 3. Check repository capability filter if worker specified a subset
+        if (
+          repoFilter &&
+          !repoFilter.has(task.repositoryId.toLowerCase()) &&
+          !repoFilter.has(task.repositoryName.toLowerCase())
+        ) {
+          continue;
+        }
+
+        // 4. Check live quota / P2 burn eligibility
+        let updatedModel = task.model;
+        if (options.eligibilityCheck) {
+          const check = options.eligibilityCheck(task);
+          if (!check.allowed) {
+            continue;
+          }
+          if (check.resolvedModel) {
+            updatedModel = check.resolvedModel;
+          }
+        }
+
+        const now = new Date().toISOString();
+        const updateResult = this.rawDb
+          .prepare(
+            `UPDATE swarm_tasks
+             SET status = 'claimed',
+                 worker_id = ?,
+                 model = ?,
+                 pool_family = ?,
+                 claimed_at = ?,
+                 heartbeat_at = ?,
+                 updated_at = ?
+             WHERE id = ? AND status = 'queued'`
+          )
+          .run(
+            options.workerId,
+            updatedModel,
+            resolvePoolFamilyForModel(updatedModel),
+            now,
+            now,
+            now,
+            task.id
+          ) as unknown as { changes?: number };
+
+        if ((updateResult?.changes ?? 0) > 0) {
+          this.registerWorkerHeartbeat({
+            workerId: options.workerId,
+            name: options.workerName,
+            workerMode,
+            labels: options.labels,
+            repositories: options.repositories,
+            systemInfo: options.systemInfo,
+            activeTaskId: task.id,
+            status: 'busy',
+          });
+          return this.getTask(task.id) ?? null;
+        }
+      }
+
       this.registerWorkerHeartbeat({
         workerId: options.workerId,
         name: options.workerName,
-        workerMode: options.workerMode,
+        workerMode,
         labels: options.labels,
         repositories: options.repositories,
         systemInfo: options.systemInfo,
         status: 'idle',
       });
+
       return null;
-    }
-
-    const workerMode = options.workerMode ?? existingWorker?.workerMode ?? 'headless';
-    const effectiveLabels =
-      options.labels && options.labels.length > 0 ? options.labels : (existingWorker?.labels ?? []);
-    const workerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
-
-    const effectiveRepos =
-      options.repositories && options.repositories.length > 0
-        ? options.repositories
-        : (existingWorker?.repositories ?? []);
-    const repoFilter =
-      effectiveRepos.length > 0 ? new Set(effectiveRepos.map((r) => r.toLowerCase())) : null;
-
-    const candidates = this.rawDb
-      .prepare(
-        `SELECT * FROM swarm_tasks
-         WHERE status = 'queued'
-         ORDER BY priority_rank ASC, created_at ASC, rowid ASC`
-      )
-      .all() as Array<Record<string, any>>;
-
-    for (const row of candidates) {
-      const task = this.mapRowToTask(row);
-
-      // 1. Check workerMode compatibility
-      if (task.workerMode !== 'any' && workerMode !== 'any' && task.workerMode !== workerMode) {
-        continue;
-      }
-
-      // 2. Check required labels (if task specifies labels, worker must have all of them)
-      if (task.requiredLabels.length > 0) {
-        const hasAllLabels = task.requiredLabels.every((reqLabel) =>
-          workerLabelSet.has(reqLabel.toLowerCase())
-        );
-        if (!hasAllLabels) {
-          continue;
-        }
-      }
-
-      // 3. Check repository capability filter if worker specified a subset
-      if (
-        repoFilter &&
-        !repoFilter.has(task.repositoryId.toLowerCase()) &&
-        !repoFilter.has(task.repositoryName.toLowerCase())
-      ) {
-        continue;
-      }
-
-      // 4. Check live quota / P2 burn eligibility
-      let updatedModel = task.model;
-      if (options.eligibilityCheck) {
-        const check = options.eligibilityCheck(task);
-        if (!check.allowed) {
-          continue;
-        }
-        if (check.resolvedModel) {
-          updatedModel = check.resolvedModel;
-        }
-      }
-
-      const now = new Date().toISOString();
-      const updateResult = this.rawDb
-        .prepare(
-          `UPDATE swarm_tasks
-           SET status = 'claimed',
-               worker_id = ?,
-               model = ?,
-               pool_family = ?,
-               claimed_at = ?,
-               heartbeat_at = ?,
-               updated_at = ?
-           WHERE id = ? AND status = 'queued'`
-        )
-        .run(
-          options.workerId,
-          updatedModel,
-          resolvePoolFamilyForModel(updatedModel),
-          now,
-          now,
-          now,
-          task.id
-        ) as unknown as { changes?: number };
-
-      if ((updateResult?.changes ?? 0) > 0) {
-        this.registerWorkerHeartbeat({
-          workerId: options.workerId,
-          name: options.workerName,
-          workerMode,
-          labels: options.labels,
-          repositories: options.repositories,
-          systemInfo: options.systemInfo,
-          activeTaskId: task.id,
-          status: 'busy',
-        });
-        return this.getTask(task.id) ?? null;
-      }
-    }
-
-    this.registerWorkerHeartbeat({
-      workerId: options.workerId,
-      name: options.workerName,
-      workerMode,
-      labels: options.labels,
-      repositories: options.repositories,
-      systemInfo: options.systemInfo,
-      status: 'idle',
     });
-
-    return null;
   }
 
   public updateTaskStatus(taskId: string, patch: TaskStatusPatch): SwarmTask | undefined {
@@ -741,7 +765,7 @@ export class TaskQueue {
       );
 
     if (isTerminal && existing.dispatchId === undefined) {
-      this.appDb.recordDispatch({
+      const dispatchId = this.appDb.recordDispatch({
         repository: existing.repositoryName,
         prompt: existing.prompt,
         requestedBy: existing.requestedBy,
@@ -750,15 +774,14 @@ export class TaskQueue {
         error: error ?? undefined,
         durationMs,
       });
-      const lastDispatch = this.appDb.listDispatches(1)[0];
-      if (lastDispatch) {
+      if (dispatchId) {
         this.rawDb
           .prepare('UPDATE swarm_tasks SET dispatch_id = ? WHERE id = ?')
-          .run(lastDispatch.id, taskId);
+          .run(dispatchId, taskId);
       }
     }
 
-    if (workerId) {
+    if (workerId && this.getWorker(workerId)) {
       this.registerWorkerHeartbeat({
         workerId,
         activeTaskId: isTerminal ? null : taskId,

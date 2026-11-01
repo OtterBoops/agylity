@@ -13,10 +13,16 @@ description: >-
 - **Repository Location:** `D:/Code/OtterBoops/agylity`
 - **Runtime:** Pure TypeScript targeting Node 24 (`node:24-slim`).
 - **Zero-CVE Minimal Dependency Surface:**
-  - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^3.24.0`.
-  - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode.
+  - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^4.6.7`.
+  - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode with `PRAGMA busy_timeout = 5000;`.
   - Process Execution: Native `node:child_process.execFile` with array arguments.
+- **Zod v4 API Invariant:**
+  - Validation error collections in Zod v4 must strictly be accessed via `result.error.issues` (`result.error.errors` does not exist in Zod v4).
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
+- **Native Modal Invariant:**
+  - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
+- **Web UI & Control-Plane Security:**
+  - Optional `WEB_UI_AUTH_TOKEN`: When configured, control-plane mutation endpoints (`/api/config`, `/api/dispatch`, `/api/notify/test`, `/api/workers/*`) enforce constant-time Bearer token verification (`crypto.timingSafeEqual`). Runner communication endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`) use dedicated runner authentication tokens.
 - **Container-Native Storage Posture:**
   - In containerized deployments (Docker / daemon), coordinator requires only a single named volume for database state (`agylity-data:/app/data`).
   - Target repositories do NOT require mandatory host bind mounts. Workers support dynamic on-the-fly git cloning (via `cloneUrl` and optional `GITHUB_TOKEN`) with ephemeral container storage, while also supporting pre-cloned local directories or mounted named volumes.
@@ -39,50 +45,37 @@ Antigravity IDE runs a companion binary (`language_server.exe` on Windows, `lang
 
 Agylity is designed to be **cross-platform and container-native** (Linux, macOS, Windows, Docker).
 
-#### 1. Container & Production Deployment (Platform-Agnostic Default)
+#### 1. Container & Remote Sentry Deployment
 
-In containerized environments (Docker, Kubernetes, homelab server, cloud VPS) or headless servers, Agylity eliminates host dependency by running `language_server` as an internal companion daemon:
+When running in Docker or headless server environments, configure explicit connection parameters via environment variables:
 
-```bash
-language_server -standalone -headless -http_server_port=60643 -gemini_dir=/home/node/.gemini
-```
+- `ANTIGRAVITY_ENDPOINT_URL`: Explicit Connect-RPC base URL (e.g. `http://host.docker.internal:60643` or `http://192.168.1.100:60643`).
+- `ANTIGRAVITY_LS_PORT`: Explicit port override (default: 60643, fallback: 60642).
+- `ANTIGRAVITY_CSRF_TOKEN`: Explicit session CSRF token (`x-codeium-csrf-token`).
 
-- **Port:** Fixed internal loopback port (`http://127.0.0.1:60643`).
-- **Auth:** Standard read-only single-file mount for OAuth credentials (`./oauth_creds.json:/home/node/.gemini/oauth_creds.json`).
-- **Isolation:** 100% self-contained in the container network namespace across any host OS.
+#### 2. Best-Effort Local IDE Process Discovery (Host Workstations)
 
-#### 2. Environment Configuration Precedence (12-Factor Standard)
+When running directly on a developer workstation alongside an active Antigravity IDE (where ephemeral ports and dynamic tokens are generated), Agylity sniffs the local runtime using native OS primitives:
 
-Explicit environment variables take precedence over dynamic discovery on all operating systems:
+- **Linux / POSIX:** Uses `pgrep -a language_server` combined with `ss -tlpn` or `lsof -iTCP -sTCP:LISTEN` to map PID to active listening loopback ports.
+- **macOS (Darwin):** Uses `pgrep` and `lsof -nP -iTCP -sTCP:LISTEN | grep language_server` to discover local listener sockets.
+- **Windows:** Uses PowerShell `Get-NetTCPConnection` and `Win32_Process` to extract dynamic ports and parse `--csrf_token` from process arguments.
 
-- `ANTIGRAVITY_ENDPOINT_URL`: Explicit Connect-RPC base URL (e.g. `http://127.0.0.1:60643`).
-- `ANTIGRAVITY_LS_PORT`: Explicit port override.
-- `ANTIGRAVITY_CSRF_TOKEN`: Explicit session CSRF token.
+### Connect-RPC Endpoints & Headers
 
-#### 3. Best-Effort Local IDE Process Discovery (Host Workstations)
+Every request to the Language Server Connect-RPC endpoints must provide:
 
-When running directly on a developer workstation alongside an active Antigravity IDE (where `--https_server_port 0` dynamically assigns ephemeral ports), Agylity sniffs the local runtime using native OS primitives:
-
-- **Linux / POSIX:**
-  Uses `pgrep -a language_server` combined with `ss -tlpn` or `lsof -iTCP -sTCP:LISTEN` to map PID to active listening loopback ports.
-- **macOS (Darwin):**
-  Uses `pgrep` and `lsof -nP -iTCP -sTCP:LISTEN | grep language_server` to discover local listener sockets.
-- **Windows:**
-  Uses PowerShell `Get-NetTCPConnection` and `Win32_Process` to extract dynamic ports and parse `--csrf_token` from process arguments.
-
-### Connect-RPC Endpoints
+- Header: `x-codeium-csrf-token: <csrf_token>`
+- Header: `Connect-Protocol-Version: 1`
+- Header: `Content-Type: application/json`
 
 - **Primary Quota Telemetry:**
   `POST /exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`
-  - Header: `x-codeium-csrf-token: <csrf_token>`
   - Body: `{}`
   - Returns: Grouped quota pools (Gemini Weekly & 5h, Claude & GPT Weekly & 5h, Gemini 4 Argon) with `remainingFraction` (0.0 to 1.0) and ISO `resetTime`.
-- **User Plan & Flex Credit Telemetry:**
-  `POST /exa.language_server_pb.LanguageServerService/GetUserStatus`
-  - Body: `{}`
-  - Returns: `planStatus.planInfo` (`teamsTier`, `monthlyFlexCreditPurchaseAmount`, `canBuyMoreCredits`, `availablePromptCredits`, `availableFlowCredits`).
 - **Legacy Fallback Endpoint:**
   `POST /exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData`
+  - Returns: `clientModelConfigs` containing model configuration list and availability.
 
 ---
 
@@ -110,14 +103,14 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 - Evaluates quota pools every 60 seconds by default (`QUOTA_CHECK_INTERVAL_SECONDS=60`, minimum clamp 30s).
 - Milestones: Alerts at configurable intervals (default: 24h, 12h, 3h before reset) if quota headroom exceeds threshold (`>25%` remaining).
 - Deduplication: State persisted in `data/state.json` via `SentryStateManager` across daemon restarts.
-- Notification: Rich Discord embeds showing reset countdowns (`"1d 21h"`, `"3h 15m"`) matching native IDE formatting.
+- Notification: Clean textual bracketed alerts (`[Alert]`, `[Notice]`, `[Success]`) and rich embeds showing reset countdowns (`"1d 21h"`, `"3h 15m"`).
 
 ### Use Case 2: AI Overcharge & Flex Credit Protection
 
 - Protobuf schema `OverageInfo { bool enabled = 1; }` under `RetrieveUserQuotaSummaryResponse.overage_info`.
 - **Hard Capped Accounts (`enabled: false`):** 0% quota results in harmless 429 throttling until reset.
 - **Flex Overages Active (`enabled: true`):** 0% quota begins billing monetary charges for tokens.
-- **Safety Floor Rule:** Agylity enforces `minDispatchHeadroomPercent` (default: 10%). Dispatches are automatically blocked/alerted when headroom drops below the floor to prevent billable overcharges.
+- **Safety Floor Rule:** Agylity enforces `minDispatchHeadroomPercent` (default: 10%). Dispatches are automatically blocked/alerted when headroom drops below the floor to prevent billable overcharges unless explicitly overridden with `allowOverage`.
 
 ### Use Case 3: Autonomous Task Dispatching via Official CLI
 
@@ -133,24 +126,46 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ---
 
-## 5. Swarm & Task Poller Architecture (Roadmap)
+## 5. Swarm & Task Orchestrator Architecture
 
-Legacy direct SSH push and Wake-on-LAN have been scrapped in favor of a **Pull-Based Worker Swarm**:
+Agylity implements a pull-based worker swarm designed for zero inbound firewall ports:
 
 ```
 Coordinator (Homelab / Cloud)
   ├── SQLite Task Queue (P0 Urgent, P1 Scheduled, P2 Quota-Burn)
-  ├── Discord Bot (/dispatch modal)
-  └── REST API (/api/tasks/poll)
+  ├── Discord Bot (/dispatch modal & /quota commands)
+  ├── Web Control Plane (/api/dispatch & /api/workers)
+  └── Runner API (/api/tasks/poll, /api/workers/register)
         ▲
-        │ (Outbound HTTPS Long-Poll)
-        ├── Headless Worker (Docker on server) -> Unattended tasks
-        └── Visible Worker (Home Desktop PC)   -> Supervised tasks in active terminal
+        │ (Outbound HTTPS Long-Poll via ky)
+        ├── Container Runner (agylity-worker:latest) -> Unattended tasks
+        └── Host / Desktop Runner (dist/worker-cli.js) -> Supervised desktop tasks
 ```
 
-- **Outbound Polling:** Workers poll outbound; zero inbound firewall ports needed.
-- **Worker Routing:** Tasks can target `worker_mode: 'headless'` or `worker_mode: 'visible'`.
-- **Opportunistic Quota Burning (P2):** Low-priority background tasks only dispatch when remaining time to reset is short (`< 2h`) and headroom is healthy (`> 30%`), utilizing free allowance before it expires.
+### 1. Runner Token Lifecycle
+
+- **Registration Token (`agyr_reg_...`)**: Short-lived (1-hour expiration) token generated via Web UI or API.
+- **Exchange**: On first boot, worker POSTs to `/api/workers/register` exchanging the registration token for a permanent runner credential (`agyr_run_...`).
+- **Persistence**: Runner credential persisted to `runner.json` (or `/data/runner.json` in containers via volume mount).
+
+### 2. Isolated Git Checkout & Subprocess Credential Hygiene
+
+- **Zero Token in URL**: Tokens are never embedded in git clone URLs.
+- **Extraheader Injection**: Authenticated clones pass authorization headers via git configuration:
+  ```bash
+  git -c http.https://github.com/.extraheader="AUTHORIZATION: basic <base64>" clone -- <url> <path>
+  ```
+- **Redaction**: Captured stderr/stdout runs through regex redaction (`basic\s+[A-Za-z0-9+/=]+` and token values) before logging or returning to clients.
+
+### 3. Verification Sandbox (`verifyCommand`)
+
+- **Metacharacter Rejection**: Verifications reject shell operators: `/[;&|`$><\r\n]/`.
+- **Executable Allowlist**: Only sanctioned toolchains may execute:
+  `['npm', 'pnpm', 'yarn', 'npx', 'node', 'pytest', 'cargo', 'go']`.
+
+### 4. Opportunistic Quota Burning (P2)
+
+- Low-priority background tasks only dispatch when remaining time to reset is short (`< 2h`) and headroom is healthy (`> 30%`), utilizing free allowance before it expires.
 
 ---
 
@@ -174,12 +189,14 @@ Antigravity models do not consume a single monolithic quota counter; they are pa
 
 Agylity uses zero external database dependencies, relying exclusively on Node 24 native `node:sqlite`:
 
-- **Database Path:** `data/agylity.db` (enforces `PRAGMA journal_mode = WAL;`).
+- **Database Path:** `data/agylity.db` (enforces `PRAGMA journal_mode = WAL;` and `PRAGMA busy_timeout = 5000;`).
 - **Configuration Hierarchy:**
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
 - **Key Tables & State:**
   - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
   - `swarm_tasks`: `(id TEXT PRIMARY KEY, title TEXT, prompt TEXT, repository_name TEXT, repository_id TEXT, repository_path TEXT, clone_url TEXT, branch_name TEXT, status TEXT, ...)` - stores swarm task queue and execution lifecycle.
+  - `swarm_workers`: `(worker_id TEXT PRIMARY KEY, name TEXT, worker_mode TEXT, labels TEXT, enabled INTEGER, status TEXT, last_seen_at TEXT, ...)` - tracks registered runner nodes and heartbeat telemetry.
+  - `dispatches`: `(id INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT, prompt TEXT, requested_by TEXT, success INTEGER, branch TEXT, error TEXT, duration_ms INTEGER, created_at TEXT)` - stores task execution records.
   - Sentry Alert State: `data/state.json` tracks deduplicated milestone firings per pool across restarts.
   - Log Buffer: In-memory ring buffer (`LogBuffer`) for recent operations, broadcast to subscribers via SSE.
 
@@ -204,4 +221,7 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
 
 - **Full Compilation:** `npm run build` (builds Preact client via Vite into `dist/web/public` and compiles TypeScript daemon via `tsc`).
 - **Test Suite Execution:** `npm test` runs Node 24 native test runner (`node --no-warnings --import tsx --test tests/**/*.test.ts`).
-- **Test Runner Handle Hygiene:** Any test binding an HTTP server, child process, or socket must guarantee unbinding inside `try ... finally` or `t.after()` to prevent unclosed handles from silently hanging the test runner.
+- **Test Suite Handle Hygiene & Isolation:**
+  - Any test binding an HTTP server, child process, daemon, or database MUST guarantee teardown inside `try ... finally` or `t.after()`.
+  - Tests must NEVER write into repository `./data/` directories; strictly allocate temporary directories with `os.tmpdir()` and clean up on teardown.
+  - Zero real wall-clock multi-second sleeps in unit tests (total test runtime must finish in < 5s).

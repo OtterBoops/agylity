@@ -43,6 +43,9 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
   error: 3,
 };
 
+let defaultConsoleSinks: LogSink[] | undefined;
+const getDefaultConsoleSinks = (): LogSink[] => (defaultConsoleSinks ??= [createConsoleSink()]);
+
 export class DefaultLogger implements Logger {
   public readonly namespace?: string;
   private minLevel?: LogLevel;
@@ -73,7 +76,7 @@ export class DefaultLogger implements Logger {
   public getSinks(): LogSink[] {
     if (this.customSinks) return this.customSinks;
     if (this.parent) return this.parent.getSinks();
-    return [createConsoleSink()];
+    return getDefaultConsoleSinks();
   }
 
   public addSink(sink: LogSink): () => void {

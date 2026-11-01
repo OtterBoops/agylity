@@ -156,6 +156,10 @@ export class WebhookNotifier implements Notifier {
     this.initialized = false;
   }
 
+  async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
+    this.config = { ...this.config, ...newConfig };
+  }
+
   async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
     this.alerts.push(alert);
 

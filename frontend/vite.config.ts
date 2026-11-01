@@ -2,9 +2,17 @@ import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import tailwindcss from '@tailwindcss/vite';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
+
+const rootPkg = JSON.parse(
+  readFileSync(path.resolve(import.meta.dirname, '../package.json'), 'utf8')
+);
 
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __APP_VERSION__: JSON.stringify(rootPkg.version || '0.2.0'),
+  },
   plugins: [preact(), tailwindcss()],
   build: {
     outDir: path.resolve(import.meta.dirname, '../dist/web/public'),

@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { faCheck, faCopy, faTimes } from '@fortawesome/free-solid-svg-icons';
-import type { DispatchRecord, SentryAlertState } from '../types';
+import type { DispatchRecord, SentryAlertState, SwarmTask } from '../types';
 import { AlertsTable } from '../components/AlertsTable';
-import { getDispatches } from '../api';
+import { getDispatches, getTasks } from '../api';
 import { Icon } from '../components/Icon';
 
 interface ActivityViewProps {
@@ -17,19 +17,32 @@ const formatDuration = (ms: number): string => {
 
 export const ActivityView = ({ alerts }: ActivityViewProps) => {
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
+  const [tasks, setTasks] = useState<SwarmTask[]>([]);
   const [selectedDispatch, setSelectedDispatch] = useState<DispatchRecord | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (selectedDispatch) {
+      if (!dialog.open) dialog.showModal();
+    } else {
+      if (dialog.open) dialog.close();
+    }
+  }, [selectedDispatch]);
 
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      getDispatches(50)
-        .then((records) => {
-          if (!cancelled) setDispatches(records);
+      Promise.all([getDispatches(50), getTasks(20)])
+        .then(([records, taskList]) => {
+          if (!cancelled) {
+            setDispatches(records);
+            setTasks(taskList);
+          }
         })
-        .catch(() => {
-          // retry on next tick
-        });
+        .catch(() => {});
     };
     load();
     const timer = setInterval(load, 10000);
@@ -50,8 +63,67 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
     }
   };
 
+  const activeTasks = tasks.filter(
+    (t) => t.status === 'queued' || t.status === 'claimed' || t.status === 'executing'
+  );
+
   return (
     <div class="flex flex-col gap-2">
+      {activeTasks.length > 0 && (
+        <div class="mb-6">
+          <div class="mb-3 flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-pine-text sm:text-xl">Active & Queued Tasks</h2>
+            <span class="text-xs text-pine-muted">
+              {activeTasks.length} in-flight / queued task{activeTasks.length === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
+            <div class="overflow-x-auto">
+              <table class="w-full border-collapse text-left text-sm">
+                <thead>
+                  <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm">
+                    <th class="px-4 py-3">Task ID</th>
+                    <th class="px-4 py-3">Repository</th>
+                    <th class="px-4 py-3">Prompt</th>
+                    <th class="px-4 py-3">Priority / Model</th>
+                    <th class="px-4 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-pine-highlight">
+                  {activeTasks.map((t) => (
+                    <tr key={t.id} class="align-top">
+                      <td class="px-4 py-3 font-mono text-xs whitespace-nowrap text-pine-iris">
+                        {t.id.slice(0, 16)}...
+                      </td>
+                      <td class="px-4 py-3 font-mono text-xs text-pine-subtle">
+                        {t.repositoryName}
+                      </td>
+                      <td class="max-w-sm truncate px-4 py-3 text-pine-text" title={t.prompt}>
+                        {t.prompt}
+                      </td>
+                      <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle">
+                        <span class="font-bold text-pine-gold">{t.priority}</span> • {t.model}
+                      </td>
+                      <td class="px-4 py-3 whitespace-nowrap">
+                        <span
+                          class={`rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wider uppercase ${
+                            t.status === 'queued'
+                              ? 'border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
+                              : 'border-pine-foam/40 bg-pine-foam/15 text-pine-foam'
+                          }`}
+                        >
+                          {t.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div class="mb-8">
         <div class="mb-4 flex items-center justify-between">
           <h2 class="text-xl font-semibold text-pine-text sm:text-2xl">Dispatch History</h2>
@@ -129,15 +201,13 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
       <AlertsTable alerts={alerts} />
 
       {/* Dispatch Detail Modal Inspector */}
-      {selectedDispatch && (
-        <div
-          class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs"
-          onClick={() => setSelectedDispatch(null)}
-        >
-          <div
-            class="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
+      <dialog
+        ref={dialogRef}
+        onClose={() => setSelectedDispatch(null)}
+        class="fixed inset-0 m-auto max-h-[85vh] w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+      >
+        {selectedDispatch && (
+          <div class="flex flex-col">
             {/* Modal Header */}
             <div class="flex items-center justify-between border-b border-pine-highlight pb-4">
               <div class="flex items-center gap-3">
@@ -244,8 +314,8 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
               </button>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </dialog>
     </div>
   );
 };

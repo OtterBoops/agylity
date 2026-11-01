@@ -18,6 +18,7 @@ export interface SettingRecord {
 export interface DatabaseConnectionOptions {
   path: string;
   keyPath?: string;
+  busyTimeoutMs?: number;
 }
 
 export type DatabaseOptions = string | DatabaseConnectionOptions;
@@ -44,6 +45,8 @@ export class AppDatabase {
   private upsertStmt: StatementSync;
   private deleteStmt: StatementSync;
   private clearStmt: StatementSync;
+  private insertDispatchStmt: StatementSync;
+  private listDispatchesStmt: StatementSync;
 
   constructor(options: DatabaseOptions = 'data/agylity.db') {
     this.dbPath = typeof options === 'string' ? options : options.path;
@@ -63,8 +66,13 @@ export class AppDatabase {
       }
     }
 
+    const busyTimeoutMs =
+      typeof options === 'object' && options.busyTimeoutMs !== undefined
+        ? options.busyTimeoutMs
+        : 5000;
+
     this.db = new DatabaseSync(this.dbPath);
-    this.initPragmas();
+    this.initPragmas(busyTimeoutMs);
     this.runMigrations();
 
     // Prepare cached SQL statements for fast CRUD operations
@@ -79,13 +87,20 @@ export class AppDatabase {
     );
     this.deleteStmt = this.db.prepare('DELETE FROM settings WHERE key = ?');
     this.clearStmt = this.db.prepare('DELETE FROM settings');
+    this.insertDispatchStmt = this.db.prepare(
+      'INSERT INTO dispatches (repository, prompt, requested_by, success, branch, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    this.listDispatchesStmt = this.db.prepare(
+      'SELECT id, created_at, repository, prompt, requested_by, success, branch, error, duration_ms FROM dispatches ORDER BY id DESC LIMIT ?'
+    );
   }
 
-  private initPragmas(): void {
+  private initPragmas(busyTimeoutMs = 5000): void {
     // Enable WAL mode for high concurrency
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
+    this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))};`);
   }
 
   private runMigrations(): void {
@@ -116,28 +131,23 @@ export class AppDatabase {
     `);
   }
 
-  public recordDispatch(entry: Omit<DispatchRecord, 'id' | 'createdAt'>): void {
-    this.db
-      .prepare(
-        'INSERT INTO dispatches (repository, prompt, requested_by, success, branch, error, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run(
-        entry.repository,
-        entry.prompt.slice(0, 4000),
-        entry.requestedBy,
-        entry.success ? 1 : 0,
-        entry.branch ?? null,
-        entry.error ?? null,
-        Math.max(0, Math.round(entry.durationMs))
-      );
+  public recordDispatch(entry: Omit<DispatchRecord, 'id' | 'createdAt'>): number {
+    const info = this.insertDispatchStmt.run(
+      entry.repository,
+      (entry.prompt ?? '').slice(0, 4000),
+      entry.requestedBy,
+      entry.success ? 1 : 0,
+      entry.branch ?? null,
+      entry.error ?? null,
+      Math.max(0, Math.round(entry.durationMs ?? 0))
+    ) as unknown as { lastInsertRowid?: number | bigint };
+    return Number(info?.lastInsertRowid ?? 0);
   }
 
   public listDispatches(limit = 50): DispatchRecord[] {
-    const rows = this.db
-      .prepare(
-        'SELECT id, created_at, repository, prompt, requested_by, success, branch, error, duration_ms FROM dispatches ORDER BY id DESC LIMIT ?'
-      )
-      .all(Math.min(Math.max(1, limit), 500)) as Array<Record<string, any>>;
+    const rows = this.listDispatchesStmt.all(Math.min(Math.max(1, limit), 500)) as Array<
+      Record<string, any>
+    >;
     return rows.map((r) => ({
       id: Number(r.id),
       createdAt: String(r.created_at),

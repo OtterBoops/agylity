@@ -27,7 +27,7 @@ export const handleGetLogs = (
   return sendJson(
     res,
     200,
-    { enabled: Boolean(options.logBuffer), entries },
+    { enabled: Boolean(options.logBuffer), latestId: options.logBuffer?.latestId ?? 0, entries },
     { 'Cache-Control': 'no-store' }
   );
 };

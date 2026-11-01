@@ -458,6 +458,61 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('enforces timing-safe Bearer auth when WEB_UI_AUTH_TOKEN is configured', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_bearer_auth_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        webUiAuthToken: 'secret-auth-token-12345',
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // Missing auth -> 401
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              json: { logLevel: 'info' },
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 401
+        );
+
+        // Invalid auth -> 401
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              headers: { Authorization: 'Bearer wrong-token' },
+              json: { logLevel: 'info' },
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 401
+        );
+
+        // Valid auth -> 200
+        const successRes = await ky
+          .post(`http://127.0.0.1:${started.port}/api/config`, {
+            headers: { Authorization: 'Bearer secret-auth-token-12345' },
+            json: { logLevel: 'info' },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(successRes.success, true);
+        assert.equal(store.get('logLevel'), 'info');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

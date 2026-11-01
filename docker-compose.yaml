@@ -46,6 +46,19 @@ services:
       # URL to local/remote Antigravity Language Server (or empty for local autodiscovery)
       - ANTIGRAVITY_ENDPOINT_URL=${ANTIGRAVITY_ENDPOINT_URL}
 
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8484/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
     logging:
       driver: 'json-file'
       options:
@@ -85,7 +98,8 @@ services:
       - GIT_COMMITTER_EMAIL=agylity@users.noreply.github.com
 
     depends_on:
-      - agylity
+      agylity:
+        condition: service_healthy
 
     logging:
       driver: 'json-file'

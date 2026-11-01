@@ -1,7 +1,13 @@
 import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
 import { getModels, triggerDispatch } from '../api';
+import {
+  EFFORT_OPTIONS,
+  MODEL_OPTIONS,
+  PRIORITY_OPTIONS,
+  WORKER_MODE_OPTIONS,
+} from '../config/fields';
 import { Icon } from './Icon';
 
 interface DispatchModalProps {
@@ -11,25 +17,14 @@ interface DispatchModalProps {
   quota?: QuotaSnapshot[];
 }
 
-const FALLBACK_MODELS: Array<{
-  id: string;
-  label: string;
-  family: 'claude' | 'gemini-argon' | 'gemini-flash';
-}> = [
-  { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)', family: 'gemini-argon' },
-  { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)', family: 'gemini-argon' },
-  { id: 'gemini-4-argon-low', label: 'Gemini 4 Argon (Low)', family: 'gemini-argon' },
-  { id: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash (High)', family: 'gemini-flash' },
-  { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)', family: 'gemini-flash' },
-  { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)', family: 'gemini-flash' },
-  { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)', family: 'claude' },
-  { id: 'claude-sonnet-5-5-medium', label: 'Claude Sonnet 5.5 (Medium)', family: 'claude' },
-  { id: 'claude-sonnet-5-5-low', label: 'Claude Sonnet 5.5 (Low)', family: 'claude' },
-  { id: 'claude-opus-5-5-high', label: 'Claude Opus 5.5 (High)', family: 'claude' },
-  { id: 'claude-opus-5-5-medium', label: 'Claude Opus 5.5 (Medium)', family: 'claude' },
-  { id: 'claude-opus-5-5-low', label: 'Claude Opus 5.5 (Low)', family: 'claude' },
-  { id: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)', family: 'claude' },
-];
+const FALLBACK_MODELS = MODEL_OPTIONS.map((m) => {
+  const family: 'claude' | 'gemini-argon' | 'gemini-flash' = m.value.includes('flash')
+    ? 'gemini-flash'
+    : m.value.includes('argon')
+      ? 'gemini-argon'
+      : 'claude';
+  return { id: m.value, label: m.label, family };
+});
 
 const computePoolHeadroomPct = (pool?: QuotaSnapshot): number | null => {
   if (!pool) return null;
@@ -42,10 +37,14 @@ const computePoolHeadroomPct = (pool?: QuotaSnapshot): number | null => {
 export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
   const configuredDefaultModel = config.resolved?.defaultDispatchModel || 'gemini-4-argon-high';
   const configuredDefaultMode = config.resolved?.defaultWorkerMode || 'headless';
+  const configuredDefaultEffort = (config.resolved?.defaultDispatchEffort as any) || 'high';
 
   const [selectedRepo, setSelectedRepo] = useState('');
   const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
   const [priority, setPriority] = useState<'P0' | 'P1' | 'P2'>('P0');
+  const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(
+    configuredDefaultEffort
+  );
   const [workerMode, setWorkerMode] = useState<'headless' | 'visible' | 'any'>(
     configuredDefaultMode
   );
@@ -55,11 +54,33 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   const [isDispatching, setIsDispatching] = useState(false);
   const [status, setStatus] = useState<ToastState | null>(null);
   const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>([]);
+  const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
     setSelectedModel(config.resolved?.defaultDispatchModel || 'gemini-4-argon-high');
     setWorkerMode(config.resolved?.defaultWorkerMode || 'headless');
-  }, [config.resolved?.defaultDispatchModel, config.resolved?.defaultWorkerMode]);
+    setEffort((config.resolved?.defaultDispatchEffort as any) || 'high');
+  }, [
+    config.resolved?.defaultDispatchModel,
+    config.resolved?.defaultWorkerMode,
+    config.resolved?.defaultDispatchEffort,
+  ]);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    if (isOpen) {
+      if (!dialog.open) dialog.showModal();
+      setAllowOverage(false);
+    } else {
+      if (dialog.open) dialog.close();
+      setAllowOverage(false);
+    }
+  }, [isOpen]);
+
+  useEffect(() => {
+    setAllowOverage(false);
+  }, [selectedModel]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -125,6 +146,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       requestedBy: requestedBy.trim() || 'web-ui',
       model: selectedModel,
       priority,
+      effort,
       workerMode,
       allowOverage,
     })
@@ -146,6 +168,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
           message: label,
         });
         setTaskPrompt('');
+        setAllowOverage(false);
         setTimeout(() => {
           onClose();
           setStatus(null);
@@ -170,10 +193,11 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   return (
     <dialog
       id="dispatchModal"
-      open
-      class="fixed inset-0 z-50 m-0 flex h-screen max-h-none w-screen max-w-none items-center justify-center border-none bg-black/65 p-4 backdrop-blur-sm"
+      ref={dialogRef}
+      onClose={onClose}
+      class="fixed inset-0 m-auto flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm"
     >
-      <div class="flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl">
+      <div class="flex flex-col gap-4">
         <div class="flex items-center justify-between border-b border-pine-highlight pb-2">
           <h3 class="flex items-center gap-2 text-lg font-semibold text-pine-text">
             <Icon icon={faBolt} class="size-4 text-pine-iris" />
@@ -262,14 +286,40 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
                   setPriority((e.target as HTMLSelectElement).value as 'P0' | 'P1' | 'P2')
                 }
               >
-                <option value="P0">P0 — Urgent</option>
-                <option value="P1">P1 — Scheduled</option>
-                <option value="P2">P2 — Quota-Burn</option>
+                {PRIORITY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
 
-          <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div class="flex flex-col gap-1.5">
+              <label for="effortSelect" class="text-xs font-medium text-pine-subtle">
+                Reasoning Effort (--effort)
+              </label>
+              <select
+                id="effortSelect"
+                name="effort"
+                class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                value={effort}
+                onChange={(e) =>
+                  setEffort(
+                    (e.target as HTMLSelectElement).value as
+                      'low' | 'medium' | 'high' | 'xhigh' | 'max'
+                  )
+                }
+              >
+                {EFFORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div class="flex flex-col gap-1.5">
               <label for="workerModeSelect" class="text-xs font-medium text-pine-subtle">
                 Worker Routing
@@ -285,9 +335,11 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
                   )
                 }
               >
-                <option value="headless">Headless Worker</option>
-                <option value="visible">Visible Desktop Worker</option>
-                <option value="any">Any Available Worker</option>
+                {WORKER_MODE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
 

@@ -131,13 +131,13 @@ export const Sidebar = ({
   const probeStatus =
     lastProbeSource === 'connect_rpc'
       ? 'Live Connect-RPC'
-      : lastProbeSource === 'cli'
+      : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
         ? 'CLI Fallback'
         : 'Offline';
   const probeColor =
     lastProbeSource === 'connect_rpc'
       ? 'bg-pine-pine'
-      : lastProbeSource === 'cli'
+      : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
         ? 'bg-pine-gold'
         : 'bg-pine-love';
 
@@ -240,7 +240,10 @@ export const Sidebar = ({
           </nav>
 
           {/* Mobile Telemetry & Version Footer */}
-          <div class="mt-4 flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-base/40 p-3 text-xs">
+          <div
+            onClick={() => setInspectorOpen(true)}
+            class="mt-4 flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-base/40 p-3 text-xs transition-colors hover:border-pine-iris/50"
+          >
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
                 <span class="relative flex size-2 shrink-0">

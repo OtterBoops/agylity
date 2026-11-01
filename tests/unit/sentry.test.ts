@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import { existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
@@ -278,7 +279,10 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
   // 2. Sentry State Manager
   // ==========================================
   describe('2. Sentry State Manager & Persistence', () => {
-    const testDir = join('data', 'test_sentry_state_' + Date.now());
+    const testDir = join(
+      tmpdir(),
+      'test_sentry_state_' + Date.now() + '_' + Math.random().toString(36).slice(2)
+    );
     const stateFile = join(testDir, 'state.json');
 
     beforeEach(() => {

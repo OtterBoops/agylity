@@ -78,11 +78,17 @@ export const App = () => {
       console.error('[agylity] Fetch error:', err);
     });
 
+  const checkIntervalMs =
+    Math.max(30, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
+
   useEffect(() => {
     refreshConfig();
-    const stopPolling = startQuotaPolling(60000);
-    return () => stopPolling();
   }, []);
+
+  useEffect(() => {
+    const stopPolling = startQuotaPolling(checkIntervalMs);
+    return () => stopPolling();
+  }, [checkIntervalMs]);
 
   const handleManualRefresh = () => {
     if (refreshCooldown > 0 || isRefreshing) return;

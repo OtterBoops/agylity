@@ -41,19 +41,21 @@ export const refreshQuota = async (): Promise<void> => {
   }
 };
 
-let pollingIntervalId: ReturnType<typeof setInterval> | null = null;
+let activePollingId: ReturnType<typeof setInterval> | null = null;
 
 export const startQuotaPolling = (intervalMs = 60000): (() => void) => {
-  if (pollingIntervalId) {
-    clearInterval(pollingIntervalId);
+  if (activePollingId) {
+    clearInterval(activePollingId);
+    activePollingId = null;
   }
   refreshQuota();
-  pollingIntervalId = setInterval(refreshQuota, intervalMs);
+  const id = setInterval(refreshQuota, intervalMs);
+  activePollingId = id;
 
   return () => {
-    if (pollingIntervalId) {
-      clearInterval(pollingIntervalId);
-      pollingIntervalId = null;
+    clearInterval(id);
+    if (activePollingId === id) {
+      activePollingId = null;
     }
   };
 };

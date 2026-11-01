@@ -67,6 +67,10 @@ export class LogBuffer {
     return this.entries.length;
   }
 
+  get latestId(): number {
+    return this.nextId - 1;
+  }
+
   clear(): void {
     this.entries = [];
   }
