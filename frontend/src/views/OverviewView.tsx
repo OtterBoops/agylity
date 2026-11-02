@@ -8,11 +8,7 @@ interface OverviewViewProps {
   minHeadroomPercent?: number;
 }
 
-export const OverviewView = ({
-  quota,
-  alerts,
-  minHeadroomPercent = 10,
-}: OverviewViewProps) => (
+export const OverviewView = ({ quota, alerts, minHeadroomPercent = 10 }: OverviewViewProps) => (
   <div>
     <QuotaGrid quota={quota} minHeadroomPercent={minHeadroomPercent} />
     <ActivityView alerts={alerts} />

@@ -191,7 +191,7 @@ export const App = () => {
 
   if (isCheckingAuth) {
     return (
-      <div class="flex min-h-dvh min-h-screen w-full items-center justify-center bg-pine-base text-pine-muted">
+      <div class="flex min-h-dvh w-full items-center justify-center bg-pine-base text-pine-muted">
         <div class="flex items-center gap-3">
           <div class="size-4 animate-spin rounded-full border-2 border-pine-iris border-t-transparent" />
           <span class="font-mono text-xs">Connecting to Agylity...</span>
@@ -212,7 +212,7 @@ export const App = () => {
   }
 
   return (
-    <div class="min-h-dvh min-h-screen bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
+    <div class="min-h-dvh bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
         orchestratorEnabled={isOrchestratorEnabled}
         lastProbeSource={alerts?.lastProbeSource}

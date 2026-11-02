@@ -43,7 +43,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
   };
 
   return (
-    <div class="flex min-h-dvh min-h-screen w-full items-center justify-center bg-pine-base p-4 selection:bg-pine-iris/20 selection:text-pine-iris sm:p-6">
+    <div class="flex min-h-dvh w-full items-center justify-center bg-pine-base p-4 selection:bg-pine-iris/20 selection:text-pine-iris sm:p-6">
       <div class="w-full max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-6 shadow-2xl sm:p-8">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-4">
           <div class="flex items-center gap-2.5">

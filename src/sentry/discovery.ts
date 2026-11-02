@@ -49,11 +49,10 @@ export const discoverWindowsLanguageServer = async (
 
       // Netstat to find listening loopback ports for the PID
       try {
-        const { stdout: netstatOut } = await execFileFn(
-          'netstat',
-          ['-ano', '-p', 'tcp'],
-          { windowsHide: true, timeout: 3000 }
-        );
+        const { stdout: netstatOut } = await execFileFn('netstat', ['-ano', '-p', 'tcp'], {
+          windowsHide: true,
+          timeout: 3000,
+        });
         for (const line of netstatOut.split('\n')) {
           if (line.includes('LISTENING') && line.includes(pid)) {
             const m = /127\.0\.0\.1:(\d+)/.exec(line);
