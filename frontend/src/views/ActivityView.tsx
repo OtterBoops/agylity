@@ -84,14 +84,14 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
           </div>
           <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <div class="overflow-x-auto">
-              <table class="w-full border-collapse text-left text-sm">
+              <table class="w-full min-w-[640px] border-collapse text-left text-sm">
                 <thead>
                   <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm">
-                    <th class="px-4 py-3">Task ID</th>
-                    <th class="px-4 py-3">Repository</th>
-                    <th class="px-4 py-3">Prompt</th>
-                    <th class="px-4 py-3">Priority / Model</th>
-                    <th class="px-4 py-3">Status</th>
+                    <th class="px-4 py-3 whitespace-nowrap">Task ID</th>
+                    <th class="px-4 py-3 whitespace-nowrap">Repository</th>
+                    <th class="px-4 py-3 whitespace-nowrap">Prompt</th>
+                    <th class="px-4 py-3 whitespace-nowrap">Priority / Model</th>
+                    <th class="px-4 py-3 whitespace-nowrap">Status</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-pine-highlight">
@@ -136,15 +136,15 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
         </div>
         <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
           <div class="overflow-x-auto">
-            <table class="w-full border-collapse text-left text-sm 2xl:text-base">
+            <table class="w-full min-w-[700px] border-collapse text-left text-sm 2xl:text-base">
               <thead>
                 <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm 2xl:text-base">
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">When</th>
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Repository</th>
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Prompt</th>
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">By</th>
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Result</th>
-                  <th class="px-4 py-3 2xl:px-5 2xl:py-4">Took</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">When</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">Repository</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">Prompt</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">By</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">Result</th>
+                  <th class="px-4 py-3 whitespace-nowrap 2xl:px-5 2xl:py-4">Took</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-pine-highlight">
@@ -219,7 +219,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
         ref={dialogRef}
         onClose={() => setSelectedDispatch(null)}
         onClick={handleDialogClick}
-        class="fixed inset-0 m-auto max-h-[85vh] w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+        class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
       >
         {selectedDispatch && (
           <div class="flex flex-col">

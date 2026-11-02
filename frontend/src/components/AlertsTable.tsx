@@ -28,13 +28,13 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
 
       <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
         <div class="overflow-x-auto">
-          <table class="w-full border-collapse text-left text-sm">
+          <table class="w-full min-w-[540px] border-collapse text-left text-sm">
             <thead>
               <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm">
-                <th class="px-4 py-3">Time</th>
-                <th class="px-4 py-3">Model Pool</th>
-                <th class="px-4 py-3">Milestone</th>
-                <th class="px-4 py-3 text-right">Headroom at Alert</th>
+                <th class="px-4 py-3 whitespace-nowrap">Time</th>
+                <th class="px-4 py-3 whitespace-nowrap">Model Pool</th>
+                <th class="px-4 py-3 whitespace-nowrap">Milestone</th>
+                <th class="px-4 py-3 text-right whitespace-nowrap">Headroom at Alert</th>
               </tr>
             </thead>
             <tbody id="alertsTableBody" class="divide-y divide-pine-highlight/40">
@@ -47,18 +47,18 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
               ) : (
                 firedEvents.map((ev) => (
                   <tr key={ev.poolId} class="transition-colors hover:bg-white/2">
-                    <td class="px-4 py-3 text-xs text-pine-subtle sm:text-sm">
+                    <td class="px-4 py-3 text-xs whitespace-nowrap text-pine-subtle sm:text-sm">
                       {ev.lastAlertSentAt ? formatTime(ev.lastAlertSentAt, { timeFormat }) : 'N/A'}
                     </td>
-                    <td class="px-4 py-3 font-mono text-xs text-pine-iris sm:text-sm">
+                    <td class="px-4 py-3 font-mono text-xs whitespace-nowrap text-pine-iris sm:text-sm">
                       {ev.poolId}
                     </td>
-                    <td class="px-4 py-3">
+                    <td class="px-4 py-3 whitespace-nowrap">
                       <span class="font-mono text-xs text-pine-gold sm:text-sm">
                         {(ev.firedMilestones ?? []).join(', ') || 'N/A'}
                       </span>
                     </td>
-                    <td class="px-4 py-3 text-right text-xs font-semibold text-pine-text sm:text-sm">
+                    <td class="px-4 py-3 text-right text-xs font-semibold whitespace-nowrap text-pine-text sm:text-sm">
                       {Math.round(ev.remainingFraction * 100)}%
                     </td>
                   </tr>
