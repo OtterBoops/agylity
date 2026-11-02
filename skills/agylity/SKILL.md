@@ -11,7 +11,7 @@ description: >-
 ## 1. System Topology & Strict Dependency Posture
 
 - **Repository Location:** `D:/Code/OtterBoops/agylity`
-- **Runtime:** Pure TypeScript targeting Node 24 (`node:24-slim`).
+- **Runtime:** Pure TypeScript targeting Node 26 (`node:26-slim`).
 - **Zero-CVE Minimal Dependency Surface:**
   - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^4.6.7`.
   - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode with `PRAGMA busy_timeout = 5000;`.
@@ -34,7 +34,7 @@ description: >-
   - Discord and generic webhooks render clean rich embeds without duplicating text content (`delete outgoingPayload.content`).
   - Intermediate runner progress heartbeats (`executing`, polling) are suppressed from webhooks, delivering discrete initial dispatch and final completion embeds with elapsed duration metrics.
 - **Self-Contained Container Swarm Architecture:**
-  - **Baked Container Binaries:** Coordinator and worker images bake their required toolchains (`agy`, Node 24, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
+  - **Baked Container Binaries:** Coordinator and worker images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
   - **Coordinator Isolation:** The coordinator operates as a control plane with baked telemetry binaries and requires only its persistent data volume (`agylity-data:/app/data`). It does not run task loops, git commands, or agent processes, and requires zero runner or host credential mounts.
   - **Worker as an Extra Container:** On container hosts (e.g. homelab Docker / Arcane), the worker is simply an extra container (`agylity-worker:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `WORKER_SHARED_SECRET` in `.env`.
   - **Zero Host Credential Mounts:** Workers execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never bind-mount user host credentials (`~/.gemini` or host `~/.gitconfig`) into containers.
@@ -209,7 +209,7 @@ Antigravity models do not consume a single monolithic quota counter; they are pa
 
 ## 7. Storage Engine & Fallback Precedence
 
-Agylity uses zero external database dependencies, relying exclusively on Node 24 native `node:sqlite`:
+Agylity uses zero external database dependencies, relying exclusively on Node 26 native `node:sqlite`:
 
 - **Database Path:** `data/agylity.db` (enforces `PRAGMA journal_mode = WAL;` and `PRAGMA busy_timeout = 5000;`).
 - **Configuration Hierarchy:**
@@ -252,7 +252,7 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
 ## 9. Verification Commands & Test Invariants
 
 - **Full Compilation:** `npm run build` (builds Preact client via Vite into `dist/web/public` and compiles TypeScript daemon via `tsc`).
-- **Test Suite Execution:** `npm test` runs Node 24 native test runner (`node --no-warnings --import tsx --test tests/**/*.test.ts`).
+- **Test Suite Execution:** `npm test` runs Node 26 native test runner (`node --no-warnings --import tsx --test tests/**/*.test.ts`).
 - **Test Suite Handle Hygiene & Isolation:**
   - Any test binding an HTTP server, child process, daemon, or database MUST guarantee teardown inside `try ... finally` or `t.after()`.
   - Tests must NEVER write into repository `./data/` directories; strictly allocate temporary directories with `os.tmpdir()` and clean up on teardown.

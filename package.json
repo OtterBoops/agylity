@@ -6,15 +6,15 @@
   "type": "module",
   "main": "dist/index.js",
   "engines": {
-    "node": ">=24.0.0"
+    "node": ">=26.0.0"
   },
   "scripts": {
     "build:client": "npm --prefix frontend run build",
     "build:server": "tsc",
     "build": "npm run build:client && npm run build:server",
     "dev:client": "npm --prefix frontend run dev",
-    "dev:server": "tsx --no-warnings watch --env-file-if-exists=.env src/index.ts",
-    "dev": "npm run build:client && tsx --no-warnings watch --env-file-if-exists=.env src/index.ts",
+    "dev:server": "tsx watch --no-warnings --env-file-if-exists=.env src/index.ts",
+    "dev": "npm run build:client && tsx watch --no-warnings --env-file-if-exists=.env src/index.ts",
     "dev:worker": "tsx --no-warnings --env-file-if-exists=.env src/worker-cli.ts",
     "start": "node --no-warnings --env-file-if-exists=.env dist/index.js",
     "start:worker": "node --no-warnings --env-file-if-exists=.env dist/worker-cli.js",
@@ -29,7 +29,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2",
+    "@types/node": "^26.6.6",
     "@typescript-eslint/parser": "^8.72.1",
     "eslint": "^10.13.0",
     "eslint-plugin-better-tailwindcss": "^4.10.0",

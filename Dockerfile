@@ -1,12 +1,12 @@
 # ==============================================================================
 # agylity - Multi-Stage Production Dockerfile
-# Base: node:24-slim with zero-CVE minimal footprint
+# Base: node:26-slim with zero-CVE minimal footprint
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
 # Stage 1: Production Dependencies (Built in parallel with builder)
 # ------------------------------------------------------------------------------
-FROM node:24-slim AS prod-deps
+FROM node:26-slim AS prod-deps
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ RUN --mount=type=cache,target=/root/.npm \
 # ------------------------------------------------------------------------------
 # Stage 2: Build & Compile TypeScript + Vite Client
 # ------------------------------------------------------------------------------
-FROM node:24-slim AS builder
+FROM node:26-slim AS builder
 
 WORKDIR /app
 
@@ -42,7 +42,7 @@ RUN npm run build
 # Stage 3: Swarm Runner Runtime (Target: worker -> ghcr.io/otterboops/agylity-worker)
 # Includes git, openssh-client, curl, gh CLI, and agy CLI
 # ------------------------------------------------------------------------------
-FROM node:24-slim AS worker
+FROM node:26-slim AS worker
 
 WORKDIR /app
 
@@ -77,7 +77,7 @@ CMD ["node", "--no-warnings", "dist/worker-cli.js"]
 # Stage 4: Coordinator & Sentry Runtime (Default Target: coordinator -> ghcr.io/otterboops/agylity)
 # Lean control plane + Quota Sentry + baked agy CLI for authoritative /usage polling
 # ------------------------------------------------------------------------------
-FROM node:24-slim AS coordinator
+FROM node:26-slim AS coordinator
 
 WORKDIR /app
 
