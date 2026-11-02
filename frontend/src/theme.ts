@@ -85,4 +85,3 @@ export const applyDocumentTheme = (
     metaThemeColor.setAttribute('content', meta.bg);
   }
 };
-

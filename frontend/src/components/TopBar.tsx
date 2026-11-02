@@ -12,7 +12,7 @@ import { type ThemeChoice, THEME_OPTIONS, getThemeDisplayLabel } from '../theme'
 
 interface TopBarProps {
   title: string;
-  subtitle: string;
+  subtitle?: string;
   isRefreshing: boolean;
   refreshCooldown: number;
   orchestratorEnabled?: boolean;

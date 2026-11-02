@@ -2,7 +2,12 @@ import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
 import { getModels, triggerDispatch } from '../api';
-import { EFFORT_OPTIONS, MODEL_OPTIONS } from '../config/fields';
+import {
+  EFFORT_OPTIONS,
+  MODEL_DEFAULT_EFFORT,
+  MODEL_OPTIONS,
+  MODEL_SUPPORTED_EFFORTS,
+} from '../config/fields';
 import { Icon } from './Icon';
 
 interface DispatchModalProps {
@@ -11,6 +16,26 @@ interface DispatchModalProps {
   config: ConfigData;
   quota?: QuotaSnapshot[];
 }
+
+let cachedCatalogModels: ModelCatalogEntry[] = [];
+let modelsFetchPromise: Promise<ModelCatalogEntry[]> | null = null;
+
+export const loadModelCatalog = async (): Promise<ModelCatalogEntry[]> => {
+  if (cachedCatalogModels.length > 0) return cachedCatalogModels;
+  if (!modelsFetchPromise) {
+    modelsFetchPromise = getModels()
+      .then((res) => {
+        if (res.models && res.models.length > 0) {
+          cachedCatalogModels = res.models;
+        }
+        return cachedCatalogModels;
+      })
+      .finally(() => {
+        modelsFetchPromise = null;
+      });
+  }
+  return modelsFetchPromise;
+};
 
 const FALLBACK_MODELS = MODEL_OPTIONS.map((m) => {
   const family: 'claude' | 'gemini-argon' | 'gemini-flash' = m.value.includes('flash')
@@ -39,29 +64,57 @@ const normalizeBaseModel = (raw?: string): string => {
   return raw;
 };
 
-export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
-  const configuredDefaultModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
-  const configuredDefaultEffort = (config.resolved?.defaultDispatchEffort as any) || 'high';
+interface RepoItem {
+  id?: string;
+  name: string;
+  path?: string;
+  cloneUrl?: string;
+}
 
-  const [selectedRepo, setSelectedRepo] = useState('');
+const EMPTY_REPOS: RepoItem[] = [];
+
+export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
+  const repos: RepoItem[] = (config.resolved?.repositories as unknown as RepoItem[]) || EMPTY_REPOS;
+  const defaultRepo = repos.length === 1 ? repos[0]!.name : '';
+
+  const configuredDefaultModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
+  const supportedEffortsForDefault =
+    MODEL_SUPPORTED_EFFORTS[configuredDefaultModel] || (['low', 'medium', 'high'] as const);
+  const rawEffort = config.resolved?.defaultDispatchEffort as any;
+  const configuredDefaultEffort = supportedEffortsForDefault.includes(rawEffort)
+    ? rawEffort
+    : MODEL_DEFAULT_EFFORT[configuredDefaultModel] || 'medium';
+
+  const [selectedRepo, setSelectedRepo] = useState(defaultRepo);
   const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
   const [scheduleMode, setScheduleMode] = useState<'immediate' | 'pre_reset'>('immediate');
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high' | 'xhigh' | 'max'>(
-    configuredDefaultEffort
-  );
+  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>(configuredDefaultEffort);
   const [autoCreatePr, setAutoCreatePr] = useState(true);
   const [taskPrompt, setTaskPrompt] = useState('');
   const [requestedBy, setRequestedBy] = useState('web-ui');
   const [allowOverage, setAllowOverage] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [status, setStatus] = useState<ToastState | null>(null);
-  const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>([]);
+  const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>(cachedCatalogModels);
   const dialogRef = useRef<HTMLDialogElement>(null);
 
+  const handleModelChange = (newModel: string) => {
+    setSelectedModel(newModel);
+    setAllowOverage(false);
+    const supported = MODEL_SUPPORTED_EFFORTS[newModel] || (['low', 'medium', 'high'] as const);
+    if (!supported.includes(effort)) {
+      setEffort(MODEL_DEFAULT_EFFORT[newModel] || 'medium');
+    }
+  };
+
   useEffect(() => {
-    setSelectedModel(normalizeBaseModel(config.resolved?.defaultDispatchModel));
-    setEffort((config.resolved?.defaultDispatchEffort as any) || 'high');
-  }, [config.resolved?.defaultDispatchModel, config.resolved?.defaultDispatchEffort]);
+    if (isOpen) return;
+    const nextModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
+    setSelectedModel(nextModel);
+    const supported = MODEL_SUPPORTED_EFFORTS[nextModel] || (['low', 'medium', 'high'] as const);
+    const raw = config.resolved?.defaultDispatchEffort as any;
+    setEffort(supported.includes(raw) ? raw : MODEL_DEFAULT_EFFORT[nextModel] || 'medium');
+  }, [isOpen, config.resolved?.defaultDispatchModel, config.resolved?.defaultDispatchEffort]);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -69,6 +122,9 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     if (isOpen) {
       if (!dialog.open) dialog.showModal();
       setAllowOverage(false);
+      if (repos.length === 1 && repos[0]) {
+        setSelectedRepo(repos[0].name);
+      }
     } else {
       if (dialog.open) dialog.close();
       setAllowOverage(false);
@@ -76,20 +132,14 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   }, [isOpen]);
 
   useEffect(() => {
-    setAllowOverage(false);
-  }, [selectedModel]);
-
-  useEffect(() => {
     if (!isOpen) return;
-    let cancelled = false;
-    getModels().then((res) => {
-      if (!cancelled && res.models.length > 0) {
-        setCatalogModels(res.models);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
+    if (cachedCatalogModels.length === 0) {
+      loadModelCatalog().then((models) => {
+        if (models.length > 0) {
+          setCatalogModels(models);
+        }
+      });
+    }
   }, [isOpen]);
 
   const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
@@ -112,9 +162,6 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       (activeModelMeta as ModelCatalogEntry).effectiveHeadroomPercent !== undefined) &&
     selectedPoolHeadroomPct !== null &&
     selectedPoolHeadroomPct < minHeadroom;
-
-  const repos: Array<{ id?: string; name: string; path?: string; cloneUrl?: string }> =
-    config.resolved?.repositories || [];
 
   const handleDispatch = (e: Event) => {
     e.preventDefault();
@@ -179,14 +226,6 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       });
   };
 
-  if (!isOpen) {
-    return (
-      <dialog id="dispatchModal" class="hidden">
-        <select id="repoSelect" class="hidden" />
-      </dialog>
-    );
-  }
-
   const handleDialogClick = (e: MouseEvent) => {
     if (!dialogRef.current) return;
     const rect = dialogRef.current.getBoundingClientRect();
@@ -206,7 +245,9 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm"
+      class={`fixed inset-0 m-auto flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm ${
+        !isOpen ? 'hidden' : ''
+      }`}
     >
       <div class="flex flex-col gap-4">
         <div class="flex items-center justify-between border-b border-pine-highlight pb-2">
@@ -267,7 +308,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
                 name="model"
                 class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                 value={selectedModel}
-                onChange={(e) => setSelectedModel((e.target as HTMLSelectElement).value)}
+                onChange={(e) => handleModelChange((e.target as HTMLSelectElement).value)}
               >
                 {FALLBACK_MODELS.map((m) => {
                   const live = catalogModels.find((c) => c.id === m.id);
@@ -316,13 +357,14 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
                 class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
                 value={effort}
                 onChange={(e) =>
-                  setEffort(
-                    (e.target as HTMLSelectElement).value as
-                      'low' | 'medium' | 'high' | 'xhigh' | 'max'
-                  )
+                  setEffort((e.target as HTMLSelectElement).value as 'low' | 'medium' | 'high')
                 }
               >
-                {EFFORT_OPTIONS.map((o) => (
+                {EFFORT_OPTIONS.filter((o) =>
+                  (MODEL_SUPPORTED_EFFORTS[selectedModel] || ['low', 'medium', 'high']).includes(
+                    o.value
+                  )
+                ).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
                   </option>

@@ -9,10 +9,8 @@ import {
 export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
-export const ReasoningEffortSchema = z
-  .enum(['low', 'medium', 'high', 'xhigh', 'max'])
-  .default('high');
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high']).default('high');
 
 export type TaskStatus = 'queued' | 'claimed' | 'executing' | 'completed' | 'failed' | 'aborted';
 export const TaskStatusSchema = z.enum([
@@ -29,6 +27,7 @@ export interface AgyModelCatalogEntry {
   label: string;
   family: QuotaFamily;
   defaultEffort: ReasoningEffort;
+  supportedEfforts?: readonly ReasoningEffort[];
 }
 
 export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
@@ -49,32 +48,60 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     label: 'Gemini 3.8 Flash',
     family: 'gemini-flash',
     defaultEffort: 'medium',
+    supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'gemini-4-argon',
     label: 'Gemini 4 Argon',
     family: 'gemini-argon',
     defaultEffort: 'high',
+    supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'claude-sonnet-5-5',
     label: 'Claude Sonnet 5.5',
     family: 'claude',
     defaultEffort: 'high',
+    supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'claude-opus-5-5',
     label: 'Claude Opus 5.5',
     family: 'claude',
     defaultEffort: 'high',
+    supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'gpt-oss-120b',
     label: 'GPT-OSS 120B',
     family: 'claude',
     defaultEffort: 'medium',
+    supportedEfforts: ['medium'],
   },
 ] as const;
+
+export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> = {
+  'gemini-4-argon': ['low', 'medium', 'high'],
+  'gemini-3.8-flash': ['low', 'medium', 'high'],
+  'claude-sonnet-5-5': ['low', 'medium', 'high'],
+  'claude-opus-5-5': ['low', 'medium', 'high'],
+  'gpt-oss-120b': ['medium'],
+};
+
+export const resolveReasoningEffortForModel = (
+  model: string | undefined,
+  requestedEffort: string | undefined
+): ReasoningEffort => {
+  const concreteModel = resolveConcreteModelId(model);
+  const catalogEntry = CANONICAL_AGY_MODELS.find((m) => m.id === concreteModel);
+  const supported = MODEL_SUPPORTED_EFFORTS[concreteModel] || ['low', 'medium', 'high'];
+  const defaultEffort = catalogEntry?.defaultEffort || 'medium';
+
+  if (!requestedEffort) return defaultEffort;
+
+  const normalized = requestedEffort.trim().toLowerCase() as ReasoningEffort;
+  return supported.includes(normalized) ? normalized : defaultEffort;
+};
 
 export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
   'gemini-argon': 'gemini-4-argon',
@@ -419,7 +446,7 @@ export const parseDiscordModelPriorityInput = (
       scheduleMode = 'immediate';
       continue;
     }
-    if (['low', 'medium', 'high', 'xhigh', 'max'].includes(lower)) {
+    if (['low', 'medium', 'high'].includes(lower)) {
       effort = lower as ReasoningEffort;
       continue;
     }
@@ -434,6 +461,6 @@ export const parseDiscordModelPriorityInput = (
   return {
     model: resolvedModel,
     scheduleMode,
-    effort: effort ?? catalogMatch?.defaultEffort ?? 'high',
+    effort: resolveReasoningEffortForModel(resolvedModel, effort ?? catalogMatch?.defaultEffort),
   };
 };

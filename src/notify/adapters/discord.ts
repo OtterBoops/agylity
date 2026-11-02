@@ -388,7 +388,7 @@ export class DiscordNotifier implements Notifier {
           .addStringOption((opt) =>
             opt
               .setName('effort')
-              .setDescription('Reasoning effort (low, medium, high, xhigh, max)')
+              .setDescription('Reasoning effort (low, medium, high)')
               .setRequired(false)
           )
           .toJSON(),

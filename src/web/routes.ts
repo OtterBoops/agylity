@@ -226,8 +226,16 @@ export const handleRequest = async (
       return handleStaticAsset(req, res, pathname, method);
     }
 
-    // Root SPA Dashboard
-    if (pathname === '/') {
+    // Client-side SPA routes (preact-router HTML5 history navigation)
+    const isSpaRoute =
+      pathname === '/' ||
+      pathname === '/overview' ||
+      pathname === '/tasks' ||
+      pathname === '/logs' ||
+      pathname === '/settings' ||
+      pathname.startsWith('/settings/');
+
+    if (isSpaRoute) {
       return handleIndexHtml(req, res, method);
     }
 

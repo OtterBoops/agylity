@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { route } from 'preact-router';
 import {
   faBell,
   faBolt,
@@ -13,7 +14,6 @@ import {
   faTerminal,
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
-import type { Route } from '../router';
 import { Icon } from './Icon';
 
 interface CommandItem {
@@ -28,7 +28,6 @@ interface CommandItem {
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
-  onNavigate: (route: Route) => void;
   onRefresh: () => void;
   onOpenDispatch: () => void;
   onToggleTheme: () => void;
@@ -38,7 +37,6 @@ interface CommandPaletteProps {
 export const CommandPalette = ({
   isOpen,
   onClose,
-  onNavigate,
   onRefresh,
   onOpenDispatch,
   onToggleTheme,
@@ -56,7 +54,7 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faChartPie,
       action: () => {
-        onNavigate('overview');
+        route('/overview');
         onClose();
       },
     },
@@ -66,7 +64,7 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faTerminal,
       action: () => {
-        onNavigate('logs');
+        route('/logs');
         onClose();
       },
     },
@@ -76,7 +74,7 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faBell,
       action: () => {
-        onNavigate('settings/notifications');
+        route('/settings/notifications');
         onClose();
       },
     },
@@ -86,7 +84,7 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faNetworkWired,
       action: () => {
-        onNavigate('settings/orchestrator');
+        route('/settings/orchestrator');
         onClose();
       },
     },
@@ -98,7 +96,7 @@ export const CommandPalette = ({
             category: 'Navigation' as const,
             icon: faCheckToSlot,
             action: () => {
-              onNavigate('tasks');
+              route('/tasks');
               onClose();
             },
           },
@@ -108,7 +106,7 @@ export const CommandPalette = ({
             category: 'Navigation' as const,
             icon: faCodeBranch,
             action: () => {
-              onNavigate('settings/repositories');
+              route('/settings/repositories');
               onClose();
             },
           },
@@ -131,7 +129,7 @@ export const CommandPalette = ({
       category: 'Navigation',
       icon: faSliders,
       action: () => {
-        onNavigate('settings/advanced');
+        route('/settings/advanced');
         onClose();
       },
     },

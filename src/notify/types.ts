@@ -65,7 +65,7 @@ export interface DispatchRequest {
   repositoryId?: string;
   model?: string;
   priority?: 'P0' | 'P1' | 'P2';
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort?: 'low' | 'medium' | 'high';
   workerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
   requiredLabels?: string[];
@@ -84,7 +84,7 @@ export const DispatchRequestSchema = z.object({
   repositoryId: z.string().optional(),
   model: z.string().optional(),
   priority: z.enum(['P0', 'P1', 'P2']).optional(),
-  effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  effort: z.enum(['low', 'medium', 'high']).optional(),
   workerMode: z.enum(['headless', 'visible', 'any']).optional(),
   poolFamily: z.string().optional(),
   requiredLabels: z.array(z.string()).optional(),

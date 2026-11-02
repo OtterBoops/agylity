@@ -6,6 +6,7 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmTask, SwarmWorkerRecord, TaskStatusPatch } from './queue.js';
+import { resolveReasoningEffortForModel } from './models.js';
 
 export interface TaskExecutorOptions {
   agyBinPath?: string;
@@ -266,6 +267,7 @@ export class TaskExecutor {
       });
 
       // 2. Dispatch prompt via official `agy` CLI binary with explicit model & effort
+      const safeEffort = resolveReasoningEffortForModel(task.model, task.effort);
       const agyArgs: string[] = [
         '-p',
         task.prompt,
@@ -275,7 +277,7 @@ export class TaskExecutor {
         '--model',
         task.model,
         '--effort',
-        task.effort || 'high',
+        safeEffort,
       ];
 
       this.log.info(
@@ -284,7 +286,7 @@ export class TaskExecutor {
         cwd,
         branchName,
         task.model,
-        task.effort || 'high'
+        safeEffort
       );
 
       const { stdout: agyStdout, stderr: agyStderr } = await this.execFileFn(

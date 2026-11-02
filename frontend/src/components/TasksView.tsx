@@ -29,7 +29,6 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     getTasks(100)
       .then((res) => {
         setTasks(res);
-        onRefresh?.();
       })
       .catch(() => {});
   };
@@ -55,6 +54,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     try {
       await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
       loadTasks();
+      onRefresh?.();
       setSelectedTask(null);
     } catch {
     } finally {
@@ -67,6 +67,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     try {
       await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
       loadTasks();
+      onRefresh?.();
       setSelectedTask(null);
     } catch {
     } finally {

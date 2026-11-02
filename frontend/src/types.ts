@@ -1,3 +1,23 @@
+import type * as preact from 'preact';
+
+declare module 'preact' {
+  namespace JSX {
+    interface IntrinsicAttributes {
+      path?: string;
+      default?: boolean;
+    }
+  }
+}
+
+declare module 'preact-router/match' {
+  export interface LinkProps extends preact.JSX.HTMLAttributes<HTMLAnchorElement> {
+    href?: string;
+    activeClassName?: string;
+    children?: preact.ComponentChildren;
+  }
+  export function Link(props: LinkProps & { href?: string }): preact.VNode;
+}
+
 export interface QuotaBucket {
   bucketId: string;
   displayName: string;
@@ -76,7 +96,7 @@ export interface ModelCatalogEntry {
   id: string;
   label: string;
   family: 'claude' | 'gemini-argon' | 'gemini-flash';
-  defaultEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  defaultEffort: 'low' | 'medium' | 'high';
   effectiveHeadroomPercent: number | null;
   weeklyRemainingPercent: number | null;
   shortTermRemainingPercent: number | null;
@@ -127,7 +147,7 @@ export interface SwarmTask {
   scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
   model: string;
-  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort: 'low' | 'medium' | 'high';
   status: 'queued' | 'claimed' | 'executing' | 'completed' | 'failed' | 'aborted';
   workerId?: string;
   claimedByWorkerId?: string;

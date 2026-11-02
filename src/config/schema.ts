@@ -183,7 +183,7 @@ export const RawEnvSchema = z.object({
   /* Optional Orchestrator */
   ORCHESTRATOR_ENABLED: z.string().optional(),
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
-  DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).optional(),
+  DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
   WORKER_SHARED_SECRET: z.string().optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
@@ -230,7 +230,7 @@ export interface AppConfig {
 
   orchestratorEnabled: boolean;
   defaultDispatchModel: string;
-  defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  defaultDispatchEffort: 'low' | 'medium' | 'high';
   workerSharedSecret?: string;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
@@ -450,7 +450,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   repositories: z.array(RepositorySchema),
   orchestratorEnabled: z.boolean(),
   defaultDispatchModel: z.string(),
-  defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']),
+  defaultDispatchEffort: z.enum(['low', 'medium', 'high']),
   workerSharedSecret: z.string().optional(),
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),

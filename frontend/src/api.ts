@@ -163,7 +163,7 @@ export const triggerDispatch = (payload: {
   requestedBy?: string;
   model?: string;
   scheduleMode?: 'immediate' | 'pre_reset';
-  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  effort?: 'low' | 'medium' | 'high';
   autoCreatePr?: boolean;
   allowOverage?: boolean;
 }): Promise<{

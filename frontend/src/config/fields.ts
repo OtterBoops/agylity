@@ -9,15 +9,29 @@ export const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 export const EFFORT_OPTIONS: Array<{
-  value: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  value: 'low' | 'medium' | 'high';
   label: string;
 }> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'X-High' },
-  { value: 'max', label: 'Max' },
 ];
+
+export const MODEL_SUPPORTED_EFFORTS: Record<string, Array<'low' | 'medium' | 'high'>> = {
+  'gemini-4-argon': ['low', 'medium', 'high'],
+  'gemini-3.8-flash': ['low', 'medium', 'high'],
+  'claude-sonnet-5-5': ['low', 'medium', 'high'],
+  'claude-opus-5-5': ['low', 'medium', 'high'],
+  'gpt-oss-120b': ['medium'],
+};
+
+export const MODEL_DEFAULT_EFFORT: Record<string, 'low' | 'medium' | 'high'> = {
+  'gemini-4-argon': 'high',
+  'gemini-3.8-flash': 'medium',
+  'claude-sonnet-5-5': 'high',
+  'claude-opus-5-5': 'high',
+  'gpt-oss-120b': 'medium',
+};
 
 export const SCHEDULE_MODE_OPTIONS: Array<{
   value: 'immediate' | 'pre_reset';

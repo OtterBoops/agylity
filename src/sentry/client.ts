@@ -91,6 +91,7 @@ export interface ConnectRpcQuotaClientOptions {
   enableCliFallback?: boolean;
   enableProcessDiscovery?: boolean;
   cachedSnapshotProvider?: () => QuotaSnapshot[];
+  minRefreshIntervalMs?: number;
   logger?: Logger;
   fetchFn?: typeof fetch;
   execFileFn?: (
@@ -204,7 +205,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       options.minRefreshIntervalMs ??
       (process.env.QUOTA_MIN_REFRESH_INTERVAL_MS
         ? Number(process.env.QUOTA_MIN_REFRESH_INTERVAL_MS)
-        : 0);
+        : 3000);
     this.fetchFn = options.fetchFn;
     this.execFileFn = options.execFileFn ?? (defaultExecFileAsync as any);
   }
@@ -497,23 +498,12 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.isCreditsProbing = true;
 
     try {
-      let stdout: string;
-      if (process.platform === 'win32') {
-        const script = `& '${this.agyBinPath.replace(/'/g, "''")}' --output-format json -p /credits`;
-        const res = await this.execFileFn(
-          'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', script],
-          { timeout: 15000, windowsHide: true }
-        );
-        stdout = res.stdout;
-      } else {
-        const res = await this.execFileFn(
-          this.agyBinPath,
-          ['--output-format', 'json', '-p', '/credits'],
-          { timeout: 15000, windowsHide: true }
-        );
-        stdout = res.stdout;
-      }
+      const res = await this.execFileFn(
+        this.agyBinPath,
+        ['--output-format', 'json', '-p', '/credits'],
+        { timeout: 15000, windowsHide: true }
+      );
+      const stdout = res.stdout;
 
       const creditsJson = extractCliJsonPayload(stdout) as any;
       if (typeof creditsJson?.command?.data?.remaining_credits === 'number') {

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import { Link } from 'preact-router/match';
 import {
   faAnglesLeft,
   faAnglesRight,
@@ -14,16 +15,12 @@ import {
   faXmark,
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
-import type { Route } from '../router';
 import { Icon } from './Icon';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
-
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
 interface SidebarProps {
-  route: Route;
-  onNavigate: (route: Route) => void;
   orchestratorEnabled?: boolean;
   lastProbeSource?: string;
   lastProbeAt?: string;
@@ -31,77 +28,20 @@ interface SidebarProps {
 }
 
 interface NavItem {
-  route: Route;
+  href: string;
   label: string;
   icon: IconDefinition;
   badge?: string;
 }
 
-const MONITOR: NavItem[] = [{ route: 'overview', label: 'Overview', icon: faChartPie }];
+const MONITOR: NavItem[] = [{ href: '/overview', label: 'Overview', icon: faChartPie }];
 
 const SYSTEM: NavItem[] = [
-  { route: 'logs', label: 'Logs', icon: faList },
-  { route: 'settings/advanced', label: 'Advanced', icon: faSliders },
+  { href: '/logs', label: 'Logs', icon: faList },
+  { href: '/settings/advanced', label: 'Advanced', icon: faSliders },
 ];
 
-const NavButton = ({
-  item,
-  active,
-  collapsed = false,
-  onClick,
-}: {
-  item: NavItem;
-  active: boolean;
-  collapsed?: boolean;
-  onClick: () => void;
-}) => (
-  <button
-    type="button"
-    onClick={onClick}
-    aria-current={active ? 'page' : undefined}
-    title={collapsed ? item.label : undefined}
-    class={`group relative flex w-full cursor-pointer items-center rounded-xl transition-all duration-150 ${
-      collapsed
-        ? 'justify-center px-1 py-2'
-        : 'gap-3 px-3 py-2 text-left text-sm font-medium whitespace-nowrap'
-    } ${
-      active
-        ? 'bg-pine-iris/15 font-semibold text-pine-iris'
-        : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
-    }`}
-  >
-    {active && (
-      <span
-        class={`absolute rounded-full bg-pine-iris transition-all ${
-          collapsed ? 'left-0.5 h-5 w-1' : '-left-1 h-5 w-1.5'
-        }`}
-      />
-    )}
-    <div
-      class={`flex size-8 shrink-0 items-center justify-center rounded-lg border transition-colors ${
-        active
-          ? 'border-pine-iris/30 bg-pine-iris/20 text-pine-iris shadow-xs'
-          : 'border-pine-highlight bg-pine-overlay/40 text-pine-subtle group-hover:bg-pine-overlay group-hover:text-pine-text'
-      }`}
-    >
-      <Icon icon={item.icon} class="size-4" />
-    </div>
-    {!collapsed && (
-      <>
-        <span class="shrink-0 whitespace-nowrap">{item.label}</span>
-        {item.badge && (
-          <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-[11px] font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
-            {item.badge}
-          </span>
-        )}
-      </>
-    )}
-  </button>
-);
-
 export const Sidebar = ({
-  route,
-  onNavigate,
   orchestratorEnabled = false,
   lastProbeSource,
   lastProbeAt,
@@ -153,27 +93,22 @@ export const Sidebar = ({
   }, []);
 
   const configurationItems: NavItem[] = [
-    { route: 'settings/notifications' as Route, label: 'Notifications', icon: faBell },
+    { href: '/settings/notifications', label: 'Notifications', icon: faBell },
     {
-      route: 'settings/orchestrator' as Route,
+      href: '/settings/orchestrator',
       label: 'Orchestrator',
       icon: faNetworkWired,
       badge: orchestratorEnabled ? 'Active' : undefined,
     },
     ...(orchestratorEnabled
       ? [
-          { route: 'tasks' as Route, label: 'Tasks', icon: faCheckToSlot },
-          { route: 'settings/repositories' as Route, label: 'Repositories', icon: faCodeBranch },
+          { href: '/tasks', label: 'Tasks', icon: faCheckToSlot },
+          { href: '/settings/repositories', label: 'Repositories', icon: faCodeBranch },
         ]
       : []),
   ];
 
   const [timeFormat] = useTimeFormat();
-
-  const handleNav = (r: Route) => {
-    onNavigate(r);
-    setMobileOpen(false);
-  };
 
   const probeStatus =
     lastProbeSource === 'connect_rpc'
@@ -190,11 +125,61 @@ export const Sidebar = ({
       ? 'bg-pine-pine'
       : 'bg-pine-love';
 
+  const renderNavSection = (
+    title: string,
+    items: NavItem[],
+    collapsed = false,
+    onLinkClick?: () => void
+  ) => (
+    <div class="flex flex-col gap-1">
+      {!collapsed ? (
+        <div class="flex items-center gap-2 px-2 py-0.5">
+          <span class="text-[11px] font-bold tracking-widest text-pine-muted uppercase">
+            {title}
+          </span>
+          <span class="h-px flex-1 bg-pine-highlight/30" />
+        </div>
+      ) : (
+        <div class="my-1 h-px w-full bg-pine-highlight/30" title={title} />
+      )}
+      <div class="flex flex-col gap-0.5">
+        {items.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            onClick={onLinkClick}
+            activeClassName="bg-pine-iris/15 font-semibold text-pine-iris"
+            title={collapsed ? item.label : undefined}
+            class={`group relative flex w-full cursor-pointer items-center rounded-xl text-pine-subtle transition-all duration-150 hover:bg-pine-overlay/60 hover:text-pine-text ${
+              collapsed
+                ? 'justify-center px-1 py-2'
+                : 'gap-3 px-3 py-2 text-left text-sm font-medium whitespace-nowrap'
+            }`}
+          >
+            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-subtle transition-colors group-hover:bg-pine-overlay group-hover:text-pine-text">
+              <Icon icon={item.icon} class="size-4" />
+            </div>
+            {!collapsed && (
+              <>
+                <span class="shrink-0 whitespace-nowrap">{item.label}</span>
+                {item.badge && (
+                  <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-[11px] font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
+                    {item.badge}
+                  </span>
+                )}
+              </>
+            )}
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+
   return (
     <>
       {/* Mobile Sticky Header Bar */}
       <div class="sticky top-0 z-40 flex h-14 w-full items-center justify-between border-b border-pine-highlight bg-pine-surface px-4 md:hidden">
-        <div class="flex items-center gap-2.5">
+        <Link href="/overview" class="flex items-center gap-2.5">
           <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay shadow-xs">
             <svg viewBox="0 0 24 24" fill="none" class="size-4.5 text-pine-iris" aria-hidden="true">
               <path
@@ -214,7 +199,7 @@ export const Sidebar = ({
             />
             <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
           </span>
-        </div>
+        </Link>
         <button
           type="button"
           onClick={() => setMobileOpen(!mobileOpen)}
@@ -230,62 +215,11 @@ export const Sidebar = ({
       {mobileOpen && (
         <div class="border-b border-pine-highlight bg-pine-surface p-4 md:hidden">
           <nav class="flex flex-col gap-4">
-            <div class="flex flex-col gap-1">
-              <div class="flex items-center gap-2 px-2 py-0.5">
-                <span class="text-[9px] font-bold tracking-widest text-pine-muted uppercase">
-                  Monitor
-                </span>
-                <span class="h-px flex-1 bg-pine-highlight/30" />
-              </div>
-              <div class="flex flex-col gap-0.5">
-                {MONITOR.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    onClick={() => handleNav(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-1">
-              <div class="flex items-center gap-2 px-2 py-0.5">
-                <span class="text-[9px] font-bold tracking-widest text-pine-muted uppercase">
-                  Configuration
-                </span>
-                <span class="h-px flex-1 bg-pine-highlight/30" />
-              </div>
-              <div class="flex flex-col gap-0.5">
-                {configurationItems.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    onClick={() => handleNav(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-1">
-              <div class="flex items-center gap-2 px-2 py-0.5">
-                <span class="text-[9px] font-bold tracking-widest text-pine-muted uppercase">
-                  System
-                </span>
-                <span class="h-px flex-1 bg-pine-highlight/30" />
-              </div>
-              <div class="flex flex-col gap-0.5">
-                {SYSTEM.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    onClick={() => handleNav(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
+            {renderNavSection('Monitor', MONITOR, false, () => setMobileOpen(false))}
+            {renderNavSection('Configuration', configurationItems, false, () =>
+              setMobileOpen(false)
+            )}
+            {renderNavSection('System', SYSTEM, false, () => setMobileOpen(false))}
           </nav>
 
           {/* Mobile Telemetry & Version Footer */}
@@ -309,7 +243,11 @@ export const Sidebar = ({
                 </span>
               )}
             </div>
-            <div class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-muted">
+
+            <div
+              class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-[11px] text-pine-muted"
+              onClick={(e) => e.stopPropagation()}
+            >
               <a
                 href="https://github.com/OtterBoops/agylity/releases"
                 target="_blank"
@@ -325,7 +263,7 @@ export const Sidebar = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  class="flex items-center gap-1 rounded bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
                   <span>Update v{updateInfo.latestVersion}</span>
                   <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
@@ -351,9 +289,9 @@ export const Sidebar = ({
               isCollapsed ? 'flex-col justify-center gap-2 px-0' : 'justify-between px-1'
             }`}
           >
-            <div
+            <Link
+              href="/overview"
               class="flex cursor-pointer items-center gap-2.5"
-              onClick={() => handleNav('overview')}
               title="Agylity Dashboard"
             >
               <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay shadow-xs">
@@ -376,7 +314,7 @@ export const Sidebar = ({
                   Agylity
                 </span>
               )}
-            </div>
+            </Link>
 
             <button
               type="button"
@@ -390,77 +328,9 @@ export const Sidebar = ({
           </div>
 
           <nav class="flex flex-col gap-4">
-            <div class="flex flex-col gap-1">
-              {!isCollapsed ? (
-                <div class="flex items-center gap-2 px-2 py-0.5">
-                  <span class="text-[11px] font-bold tracking-widest text-pine-muted uppercase">
-                    Monitor
-                  </span>
-                  <span class="h-px flex-1 bg-pine-highlight/30" />
-                </div>
-              ) : (
-                <div class="my-1 h-px w-full bg-pine-highlight/30" title="Monitor" />
-              )}
-              <div class="flex flex-col gap-0.5">
-                {MONITOR.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    collapsed={isCollapsed}
-                    onClick={() => onNavigate(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-1">
-              {!isCollapsed ? (
-                <div class="flex items-center gap-2 px-2 py-0.5">
-                  <span class="text-[11px] font-bold tracking-widest text-pine-muted uppercase">
-                    Configuration
-                  </span>
-                  <span class="h-px flex-1 bg-pine-highlight/30" />
-                </div>
-              ) : (
-                <div class="my-1 h-px w-full bg-pine-highlight/30" title="Configuration" />
-              )}
-              <div class="flex flex-col gap-0.5">
-                {configurationItems.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    collapsed={isCollapsed}
-                    onClick={() => onNavigate(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div class="flex flex-col gap-1">
-              {!isCollapsed ? (
-                <div class="flex items-center gap-2 px-2 py-0.5">
-                  <span class="text-[11px] font-bold tracking-widest text-pine-muted uppercase">
-                    System
-                  </span>
-                  <span class="h-px flex-1 bg-pine-highlight/30" />
-                </div>
-              ) : (
-                <div class="my-1 h-px w-full bg-pine-highlight/30" title="System" />
-              )}
-              <div class="flex flex-col gap-0.5">
-                {SYSTEM.map((item) => (
-                  <NavButton
-                    key={item.route}
-                    item={item}
-                    active={route === item.route}
-                    collapsed={isCollapsed}
-                    onClick={() => onNavigate(item.route)}
-                  />
-                ))}
-              </div>
-            </div>
+            {renderNavSection('Monitor', MONITOR, isCollapsed)}
+            {renderNavSection('Configuration', configurationItems, isCollapsed)}
+            {renderNavSection('System', SYSTEM, isCollapsed)}
           </nav>
         </div>
 

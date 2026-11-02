@@ -1010,12 +1010,9 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         assert.equal(credits, 717);
         assert.equal(await client.getRemainingCredits(), 717);
 
-        // 3. Verify Windows/Linux execution hygiene
-        if (process.platform === 'win32') {
-          assert.equal(capturedCmd, 'powershell.exe');
-          assert.ok(capturedArgs.includes('-WindowStyle'));
-          assert.ok(capturedArgs.includes('Hidden'));
-        }
+        // 3. Verify execution hygiene: direct binary execution with windowsHide to prevent terminal windows from popping up
+        assert.equal(capturedCmd, 'agy');
+        assert.deepEqual(capturedArgs, ['--output-format', 'json', '-p', '/credits']);
         assert.equal(capturedOptions.windowsHide, true);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));

@@ -54,20 +54,10 @@ const CHANNELS: ChannelDef[] = [
 ];
 
 const getInitialChannels = (resolved: Record<string, unknown>): ChannelId[] => {
-  if (Array.isArray(resolved.notificationChannels) && resolved.notificationChannels.length > 0) {
+  if (Array.isArray(resolved.notificationChannels)) {
     return resolved.notificationChannels
       .map((c) => String(c).trim().toLowerCase() as ChannelId)
       .filter((c): c is ChannelId => c === 'discord' || c === 'webhook' || c === 'console');
-  }
-  if (
-    typeof resolved.notificationChannel === 'string' &&
-    resolved.notificationChannel.trim() &&
-    resolved.notificationChannel.trim().toLowerCase() !== 'none'
-  ) {
-    const single = resolved.notificationChannel.trim().toLowerCase() as ChannelId;
-    if (single === 'discord' || single === 'webhook' || single === 'console') {
-      return [single];
-    }
   }
   return [];
 };

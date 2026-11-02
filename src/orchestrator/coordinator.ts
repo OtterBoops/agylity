@@ -7,6 +7,7 @@ import { logger, type Logger } from '../logs/logger.js';
 import {
   evaluateModelDispatchEligibility,
   resolveConcreteModelId,
+  resolveReasoningEffortForModel,
   type ModelEligibilityResult,
   type ReasoningEffort,
   type ScheduleMode,
@@ -263,7 +264,10 @@ export class OrchestratorCoordinator {
     const defaultBranch = matchedRepo?.defaultBranch || 'main';
 
     const concreteModel = resolveConcreteModelId(req.model, resolved.defaultDispatchModel);
-    const effort: ReasoningEffort = req.effort ?? resolved.defaultDispatchEffort ?? 'high';
+    const effort: ReasoningEffort = resolveReasoningEffortForModel(
+      concreteModel,
+      req.effort ?? resolved.defaultDispatchEffort
+    );
     const requiredLabels = req.requiredLabels ?? [];
 
     // 4. Enqueue task in SQLite swarm_tasks queue

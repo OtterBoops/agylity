@@ -1,19 +1,26 @@
 import { useState, useEffect } from 'preact/hooks';
+import Router, { type RouterOnChangeArgs } from 'preact-router';
 import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './components/Icon';
-import { useHashRoute, type Route } from './router';
-import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme, applyDocumentTheme } from './theme';
+import {
+  type ThemeChoice,
+  normalizeStoredTheme,
+  resolveEffectiveTheme,
+  applyDocumentTheme,
+} from './theme';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { QuotaGrid } from './components/QuotaGrid';
-import { DispatchModal } from './components/DispatchModal';
+import { DispatchModal, loadModelCatalog } from './components/DispatchModal';
 import { ControlPlaneGate } from './components/ControlPlaneGate';
 import { SessionModal } from './components/SessionModal';
 import { CommandPalette } from './components/CommandPalette';
 import { TasksView } from './components/TasksView';
-import { ActivityView } from './views/ActivityView';
+import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
-import { SettingsView } from './views/SettingsView';
+import { NotificationsView } from './views/NotificationsView';
+import { OrchestratorView } from './views/settings/OrchestratorView';
+import { RepositoriesView } from './views/settings/RepositoriesView';
+import { AdvancedView } from './views/settings/AdvancedView';
 import { checkHealth, getAuthToken } from './api';
 import {
   useStore,
@@ -24,19 +31,26 @@ import {
   startQuotaPolling,
 } from './state';
 
-const TITLES: Record<Route, [string, string]> = {
-  overview: ['Overview', ''],
-  tasks: ['Tasks', ''],
-  logs: ['Logs', ''],
-  'settings/notifications': ['Notifications', ''],
-  'settings/orchestrator': ['Orchestrator', ''],
-  'settings/remote': ['Orchestrator', ''],
-  'settings/repositories': ['Repositories', ''],
-  'settings/advanced': ['Advanced', ''],
+const TITLES: Record<string, string> = {
+  '/': 'Overview',
+  '/overview': 'Overview',
+  '/tasks': 'Tasks',
+  '/logs': 'Logs',
+  '/settings': 'Orchestrator',
+  '/settings/orchestrator': 'Orchestrator',
+  '/settings/notifications': 'Notifications',
+  '/settings/repositories': 'Repositories',
+  '/settings/advanced': 'Advanced',
 };
 
 export const App = () => {
-  const [route, navigate] = useHashRoute();
+  const [currentUrl, setCurrentUrl] = useState(() =>
+    typeof window !== 'undefined' ? window.location.pathname : '/'
+  );
+
+  const handleRouteChange = (e: RouterOnChangeArgs) => {
+    setCurrentUrl(e.url);
+  };
   const [theme, setTheme] = useState<ThemeChoice>(() =>
     normalizeStoredTheme(localStorage.getItem('agylity-theme'))
   );
@@ -140,9 +154,11 @@ export const App = () => {
   }, [theme]);
 
   const fetchAll = () =>
-    Promise.all([refreshQuota(), refreshConfig()]).catch((err) => {
-      console.error('[agylity] Fetch error:', err);
-    });
+    Promise.all([refreshQuota(), refreshConfig(), loadModelCatalog().catch(() => [])]).catch(
+      (err) => {
+        console.error('[agylity] Fetch error:', err);
+      }
+    );
 
   const checkIntervalMs =
     Math.max(30, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
@@ -168,14 +184,14 @@ export const App = () => {
     return () => clearInterval(timer);
   }, [refreshCooldown]);
 
-  const [title, subtitle] = TITLES[route];
+  const title = TITLES[currentUrl] || 'Overview';
   const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
   const remainingCredits =
     quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;
 
   if (isCheckingAuth) {
     return (
-      <div class="flex min-h-screen min-h-dvh w-full items-center justify-center bg-pine-base text-pine-muted">
+      <div class="flex min-h-dvh min-h-screen w-full items-center justify-center bg-pine-base text-pine-muted">
         <div class="flex items-center gap-3">
           <div class="size-4 animate-spin rounded-full border-2 border-pine-iris border-t-transparent" />
           <span class="font-mono text-xs">Connecting to Agylity...</span>
@@ -196,10 +212,8 @@ export const App = () => {
   }
 
   return (
-    <div class="min-h-screen min-h-dvh bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
+    <div class="min-h-dvh min-h-screen bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
-        route={route}
-        onNavigate={navigate}
         orchestratorEnabled={isOrchestratorEnabled}
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
@@ -210,7 +224,6 @@ export const App = () => {
         <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
           <TopBar
             title={title}
-            subtitle={subtitle}
             isRefreshing={isRefreshing}
             refreshCooldown={refreshCooldown}
             orchestratorEnabled={isOrchestratorEnabled}
@@ -258,22 +271,43 @@ export const App = () => {
           )}
 
           <main>
-            {route === 'overview' && (
-              <>
-                <QuotaGrid
-                  quota={quota}
-                  minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
-                />
-                <ActivityView alerts={alerts} />
-              </>
-            )}
-            {route === 'tasks' && (
-              <TasksView onRefresh={fetchAll} onOpenDispatch={() => setDispatchModalOpen(true)} />
-            )}
-            {route === 'logs' && <LogsView />}
-            {route.startsWith('settings/') && (
-              <SettingsView route={route} config={config} onChanged={fetchAll} />
-            )}
+            <Router onChange={handleRouteChange}>
+              <OverviewView
+                path="/"
+                quota={quota}
+                alerts={alerts}
+                minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+              />
+              <OverviewView
+                path="/overview"
+                quota={quota}
+                alerts={alerts}
+                minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+              />
+              <TasksView
+                path="/tasks"
+                onRefresh={fetchAll}
+                onOpenDispatch={() => setDispatchModalOpen(true)}
+              />
+              <LogsView path="/logs" />
+              <OrchestratorView path="/settings" config={config} onChanged={fetchAll} />
+              <OrchestratorView
+                path="/settings/orchestrator"
+                config={config}
+                onChanged={fetchAll}
+              />
+              <NotificationsView
+                path="/settings/notifications"
+                config={config}
+                onSaved={fetchAll}
+              />
+              <RepositoriesView
+                path="/settings/repositories"
+                config={config}
+                onChanged={fetchAll}
+              />
+              <AdvancedView path="/settings/advanced" config={config} onChanged={fetchAll} />
+            </Router>
           </main>
         </div>
       </div>
@@ -298,7 +332,6 @@ export const App = () => {
       <CommandPalette
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
-        onNavigate={navigate}
         onRefresh={handleManualRefresh}
         onOpenDispatch={() => setDispatchModalOpen(true)}
         onToggleTheme={handleToggleTheme}

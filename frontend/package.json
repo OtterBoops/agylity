@@ -1,7 +1,7 @@
 {
   "name": "frontend",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,8 @@
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^7.3.1",
     "ky": "^2.2.0",
-    "preact": "^10.29.8"
+    "preact": "^10.29.8",
+    "preact-router": "^4.1.2"
   },
   "devDependencies": {
     "@preact/preset-vite": "^2.10.6",
