@@ -19,16 +19,11 @@ import {
   type LanguageServerModelConfig,
   type LanguageServerResponse,
 } from '../../src/sentry/models.js';
-import {
-  SentryStateManager,
-  normalizeMilestoneKey,
-  createInitialState,
-} from '../../src/sentry/state.js';
+import { SentryStateManager, normalizeMilestoneKey } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import {
   ConnectRpcQuotaClient,
   LanguageServerError,
-  RPC_PATH,
   QUOTA_SUMMARY_RPC_PATH,
   USER_STATUS_RPC_PATH,
 } from '../../src/sentry/client.js';

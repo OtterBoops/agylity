@@ -20,10 +20,13 @@ const initialState: QuotaState = {
 
 export const quotaStore = createStore<QuotaState>(initialState);
 
-export const refreshQuota = async (): Promise<void> => {
+export const refreshQuota = async (options?: { force?: boolean }): Promise<void> => {
   quotaStore.setState((prev) => ({ ...prev, loading: true, error: null }));
   try {
-    const [quotaRes, alertsRes] = await Promise.all([getQuota(), getAlerts()]);
+    const [quotaRes, alertsRes] = await Promise.all([
+      getQuota(options?.force ?? false),
+      getAlerts(),
+    ]);
     quotaStore.setState({
       quota: quotaRes,
       alerts: alertsRes,

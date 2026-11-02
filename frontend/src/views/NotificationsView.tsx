@@ -1,33 +1,24 @@
-import {
-  faChevronDown,
-  faChevronRight,
-  faLink,
-  faRobot,
-  faTerminal,
-  type IconDefinition,
-} from '@fortawesome/free-solid-svg-icons';
+import { faLink, faRobot, faTerminal } from '@fortawesome/free-solid-svg-icons';
 import { useState, useEffect, useMemo } from 'preact/hooks';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig, testNotification, deleteConfigOverride } from '../api';
-import { Icon } from '../components/Icon';
 import { DiscordChannelForm } from '../components/DiscordChannelForm';
 import { WebhookChannelForm } from '../components/WebhookChannelForm';
 import { ConsoleChannelForm } from '../components/ConsoleChannelForm';
+import {
+  NotificationChannelCard,
+  type ChannelDef,
+  type ChannelId,
+} from '../components/NotificationChannelCard';
+import { NotificationActionBar } from '../components/NotificationActionBar';
+import { StatusBanner } from '../components/StatusBanner';
 
 interface NotificationsViewProps {
   config: ConfigData;
   onSaved: () => void;
 }
 
-export type ChannelId = 'discord' | 'webhook' | 'console';
-
-interface ChannelDef {
-  id: ChannelId;
-  label: string;
-  description: string;
-  icon: IconDefinition;
-  iconColor: string;
-}
+export type { ChannelId };
 
 const CHANNELS: ChannelDef[] = [
   {
@@ -486,192 +477,87 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           const isExpanded = expandedChannels[ch.id];
 
           return (
-            <div
+            <NotificationChannelCard
               key={ch.id}
-              class={`overflow-hidden rounded-xl border transition-all ${
-                isEnabled
-                  ? 'border-pine-iris/50 bg-pine-surface shadow-xs'
-                  : 'border-pine-highlight bg-pine-surface/50 hover:border-pine-iris/50'
-              }`}
+              channel={ch}
+              isEnabled={isEnabled}
+              isExpanded={isExpanded}
+              onToggleExpand={() => handleToggleExpand(ch.id)}
+              onToggleChannel={() => handleToggleChannel(ch.id)}
             >
-              {/* Card Header Row: Expand trigger + Icon/Label + Badges + Toggle Switch */}
-              <div class="flex items-center justify-between gap-4 p-4 select-none md:p-5">
-                <div
-                  class="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5"
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      handleToggleExpand(ch.id);
-                    }
+              {ch.id === 'discord' && (
+                <DiscordChannelForm
+                  token={discordToken}
+                  onTokenChange={(val) => {
+                    setDiscordToken(val);
+                    if (val.length > 0) ensureChannelEnabled('discord');
                   }}
-                  onClick={() => handleToggleExpand(ch.id)}
-                >
-                  <span
-                    class="text-pine-muted transition-colors hover:text-pine-text"
-                    aria-hidden="true"
-                  >
-                    <Icon icon={isExpanded ? faChevronDown : faChevronRight} class="size-3.5" />
-                  </span>
-
-                  <div class="flex min-w-0 items-center gap-3">
-                    <Icon icon={ch.icon} class={`size-4 shrink-0 ${ch.iconColor}`} />
-                    <div class="min-w-0">
-                      <div class="flex items-center gap-2">
-                        <span class="text-sm font-semibold text-pine-text">{ch.label}</span>
-                        {isEnabled ? (
-                          <span class="rounded-sm bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
-                            Enabled
-                          </span>
-                        ) : (
-                          <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted uppercase">
-                            Off
-                          </span>
-                        )}
-                      </div>
-                      <p class="text-xs text-pine-muted">{ch.description}</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right-aligned Toggle Switch */}
-                <div class="flex shrink-0 items-center gap-3">
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={isEnabled}
-                    onClick={() => handleToggleChannel(ch.id)}
-                    class={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                      isEnabled ? 'bg-pine-iris' : 'border-pine-highlight bg-pine-overlay'
-                    }`}
-                    title={isEnabled ? `Disable ${ch.label}` : `Enable ${ch.label}`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      class={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                        isEnabled ? 'translate-x-5' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
-                </div>
-              </div>
-
-              {/* Nested Config Section: Expanded configuration */}
-              {isExpanded && (
-                <div class="border-t border-pine-highlight bg-pine-overlay/20 p-4 md:p-6">
-                  {ch.id === 'discord' && (
-                    <DiscordChannelForm
-                      token={discordToken}
-                      onTokenChange={(val) => {
-                        setDiscordToken(val);
-                        if (val.length > 0) ensureChannelEnabled('discord');
-                      }}
-                      isTokenSet={isDiscordTokenSet}
-                      onClearToken={handleClearDiscordToken}
-                      clientId={discordClientId}
-                      onClientIdChange={(val) => {
-                        setDiscordClientId(val);
-                        if (val.length > 0) ensureChannelEnabled('discord');
-                      }}
-                      channelId={discordChannelId}
-                      onChannelIdChange={(val) => {
-                        setDiscordChannelId(val);
-                        if (val.length > 0) ensureChannelEnabled('discord');
-                      }}
-                      guildId={discordGuildId}
-                      onGuildIdChange={(val) => {
-                        setDiscordGuildId(val);
-                        if (val.length > 0) ensureChannelEnabled('discord');
-                      }}
-                      ownerUserId={discordOwnerUserId}
-                      onOwnerUserIdChange={(val) => {
-                        setDiscordOwnerUserId(val);
-                        if (val.length > 0) ensureChannelEnabled('discord');
-                      }}
-                      pingOwner={discordPingOwner}
-                      onPingOwnerChange={setDiscordPingOwner}
-                      onSendTest={() => handleSendTest('discord')}
-                      isTesting={testingChannel === 'discord'}
-                      diagnostics={testDiagnostics?.channel === 'discord' ? testDiagnostics : null}
-                    />
-                  )}
-
-                  {ch.id === 'webhook' && (
-                    <WebhookChannelForm
-                      url={webhookUrl}
-                      onUrlChange={(val) => {
-                        setWebhookUrl(val);
-                        if (val.length > 0) ensureChannelEnabled('webhook');
-                      }}
-                      isUrlSet={isWebhookConfigured}
-                      onClearUrl={handleClearWebhook}
-                      secret={webhookSecret}
-                      onSecretChange={(val) => {
-                        setWebhookSecret(val);
-                        if (val.length > 0) ensureChannelEnabled('webhook');
-                      }}
-                      isSecretSet={isWebhookSecretSet}
-                      onClearSecret={handleClearWebhookSecret}
-                      onSendTest={() => handleSendTest('webhook')}
-                      isTesting={testingChannel === 'webhook'}
-                      diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
-                    />
-                  )}
-
-                  {ch.id === 'console' && (
-                    <ConsoleChannelForm
-                      onSendTest={() => handleSendTest('console')}
-                      isTesting={testingChannel === 'console'}
-                    />
-                  )}
-                </div>
+                  isTokenSet={isDiscordTokenSet}
+                  onClearToken={handleClearDiscordToken}
+                  clientId={discordClientId}
+                  onClientIdChange={(val) => {
+                    setDiscordClientId(val);
+                    if (val.length > 0) ensureChannelEnabled('discord');
+                  }}
+                  channelId={discordChannelId}
+                  onChannelIdChange={(val) => {
+                    setDiscordChannelId(val);
+                    if (val.length > 0) ensureChannelEnabled('discord');
+                  }}
+                  guildId={discordGuildId}
+                  onGuildIdChange={(val) => {
+                    setDiscordGuildId(val);
+                    if (val.length > 0) ensureChannelEnabled('discord');
+                  }}
+                  ownerUserId={discordOwnerUserId}
+                  onOwnerUserIdChange={(val) => {
+                    setDiscordOwnerUserId(val);
+                    if (val.length > 0) ensureChannelEnabled('discord');
+                  }}
+                  pingOwner={discordPingOwner}
+                  onPingOwnerChange={setDiscordPingOwner}
+                  onSendTest={() => handleSendTest('discord')}
+                  isTesting={testingChannel === 'discord'}
+                  diagnostics={testDiagnostics?.channel === 'discord' ? testDiagnostics : null}
+                />
               )}
-            </div>
+
+              {ch.id === 'webhook' && (
+                <WebhookChannelForm
+                  url={webhookUrl}
+                  onUrlChange={(val) => {
+                    setWebhookUrl(val);
+                    if (val.length > 0) ensureChannelEnabled('webhook');
+                  }}
+                  isUrlSet={isWebhookConfigured}
+                  onClearUrl={handleClearWebhook}
+                  secret={webhookSecret}
+                  onSecretChange={(val) => {
+                    setWebhookSecret(val);
+                    if (val.length > 0) ensureChannelEnabled('webhook');
+                  }}
+                  isSecretSet={isWebhookSecretSet}
+                  onClearSecret={handleClearWebhookSecret}
+                  onSendTest={() => handleSendTest('webhook')}
+                  isTesting={testingChannel === 'webhook'}
+                  diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
+                />
+              )}
+
+              {ch.id === 'console' && (
+                <ConsoleChannelForm
+                  onSendTest={() => handleSendTest('console')}
+                  isTesting={testingChannel === 'console'}
+                />
+              )}
+            </NotificationChannelCard>
           );
         })}
 
         {/* Bottom Action Bar */}
-        <div class="mt-2 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm">
-          <div>
-            {isDirty ? (
-              <span class="text-xs font-medium text-pine-gold">Unsaved changes</span>
-            ) : (
-              <span class="text-xs text-pine-muted">Settings saved</span>
-            )}
-          </div>
+        <NotificationActionBar isDirty={isDirty} isSaving={isSaving} onReset={handleReset} />
 
-          <div class="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={handleReset}
-              disabled={!isDirty || isSaving}
-              class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Reset
-            </button>
-
-            <button
-              type="submit"
-              disabled={!isDirty || isSaving}
-              class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSaving ? 'Saving...' : 'Save changes'}
-            </button>
-          </div>
-        </div>
-
-        {toast && (
-          <div
-            class={`rounded-lg border p-3 text-xs font-medium ${
-              toast.type === 'success'
-                ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-                : 'border-pine-love bg-pine-love/20 text-pine-love'
-            }`}
-          >
-            {toast.message}
-          </div>
-        )}
+        {toast && <StatusBanner status={toast} />}
       </form>
     </div>
   );

@@ -97,6 +97,7 @@ export interface ModelCatalogEntry {
   label: string;
   family: 'claude' | 'gemini-argon' | 'gemini-flash';
   defaultEffort: 'low' | 'medium' | 'high';
+  supportedEfforts: ('low' | 'medium' | 'high')[];
   effectiveHeadroomPercent: number | null;
   weeklyRemainingPercent: number | null;
   shortTermRemainingPercent: number | null;

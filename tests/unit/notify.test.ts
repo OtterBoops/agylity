@@ -266,7 +266,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       `;
 
       const projectRoot = path.resolve(__dirname, '../..');
-      const { stdout, stderr } = await execFileAsync(
+      const { stderr } = await execFileAsync(
         process.execPath,
         ['--no-warnings', '--import', 'tsx', '--input-type=module', '-e', testCode],
         { cwd: projectRoot, timeout: 5000 }
@@ -467,7 +467,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       );
 
       // Launch both submissions concurrently
-      const [res1, res2] = await Promise.all([
+      await Promise.all([
         notifier.handleInteraction(interaction1),
         notifier.handleInteraction(interaction2),
       ]);
@@ -945,7 +945,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
 
     it('testNotification masks sensitive webhook URL secrets and parameters in returned messages', async () => {
-      const server = http.createServer((req, res) => {
+      const server = http.createServer((_req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true }));
       });
@@ -982,7 +982,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
 
     it('testNotification masks sensitive URL and secrets in error message on HTTP failure', async () => {
-      const server = http.createServer((req, res) => {
+      const server = http.createServer((_req, res) => {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ message: 'Not found' }));
       });

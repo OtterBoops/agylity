@@ -1,6 +1,12 @@
 import { EventEmitter } from 'node:events';
 import { AppDatabase } from '../storage/db.js';
-import { BUILTIN_DEFAULTS, parseRawEnv, type AppConfig, type ResolvedConfig } from './schema.js';
+import {
+  BUILTIN_DEFAULTS,
+  ENV_TO_CONFIG_KEY,
+  parseRawEnv,
+  type AppConfig,
+  type ResolvedConfig,
+} from './schema.js';
 
 export interface IConfigStore {
   get<T>(key: string): T | undefined;
@@ -9,41 +15,6 @@ export interface IConfigStore {
   getAll(): Record<string, unknown>;
   resolveConfig(): ResolvedConfig;
 }
-
-const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
-  NOTIFICATION_CHANNELS: 'notificationChannels',
-  NOTIFICATION_CHANNEL: 'notificationChannel',
-  NOTIFICATION_WEBHOOK_URL: 'notificationWebhookUrl',
-  WEBHOOK_URL: 'notificationWebhookUrl',
-  WEBHOOK_SECRET: 'webhookSecret',
-  WEBHOOK_CUSTOM_HEADERS: 'webhookCustomHeaders',
-  DISCORD_TOKEN: 'discordToken',
-  DISCORD_CLIENT_ID: 'discordClientId',
-  DISCORD_GUILD_ID: 'discordGuildId',
-  DISCORD_NOTIFICATION_CHANNEL_ID: 'discordNotificationChannelId',
-  DISCORD_OWNER_USER_ID: 'discordOwnerUserId',
-  DISCORD_PING_OWNER: 'discordPingOwner',
-  ANTIGRAVITY_ENDPOINT_URL: 'antigravityEndpointUrl',
-  ANTIGRAVITY_CSRF_TOKEN: 'antigravityCsrfToken',
-  QUOTA_CHECK_INTERVAL_SECONDS: 'quotaCheckIntervalSeconds',
-  QUOTA_ALERT_THRESHOLD_PERCENT: 'quotaAlertThresholdPercent',
-  QUOTA_MILESTONE_HOURS: 'quotaMilestoneHours',
-  MIN_DISPATCH_HEADROOM_PERCENT: 'minDispatchHeadroomPercent',
-  REPOSITORIES_JSON: 'repositories',
-  ORCHESTRATOR_ENABLED: 'orchestratorEnabled',
-  DEFAULT_DISPATCH_MODEL: 'defaultDispatchModel',
-  DEFAULT_DISPATCH_EFFORT: 'defaultDispatchEffort',
-  WORKER_SHARED_SECRET: 'workerSharedSecret',
-  QUOTA_BURN_MAX_HOURS: 'quotaBurnMaxHours',
-  QUOTA_BURN_MIN_HEADROOM_PERCENT: 'quotaBurnMinHeadroomPercent',
-  WEB_UI_ENABLED: 'webUiEnabled',
-  WEB_UI_PORT: 'webUiPort',
-  WEB_UI_HOST: 'webUiHost',
-  WEB_UI_AUTH_TOKEN: 'webUiAuthToken',
-  ALLOWED_IP_RANGES: 'allowedIpRanges',
-  TRUSTED_PROXIES: 'trustedProxies',
-  LOG_LEVEL: 'logLevel',
-};
 
 const FORBIDDEN_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 

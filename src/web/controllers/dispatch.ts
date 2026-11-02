@@ -1,5 +1,13 @@
 import type http from 'node:http';
-import { sendJson, methodNotAllowed, readBody } from '../http.js';
+import {
+  sendJson,
+  methodNotAllowed,
+  readJsonBody,
+  toStringOrUndefined,
+  toTrimmedStringOrUndefined,
+  toStringArray,
+  toFiniteNumberOrUndefined,
+} from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
 import { OrchestratorCoordinator } from '../../orchestrator/coordinator.js';
@@ -46,7 +54,7 @@ const extractRunnerToken = (req: http.IncomingMessage): string | undefined => {
 };
 
 export const handleGetDispatches = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   url: URL,
@@ -67,7 +75,7 @@ export const handleGetDispatches = (
 };
 
 export const handleGetModels = async (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
@@ -106,15 +114,9 @@ export const handlePostDispatch = async (
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
-  const body = await readBody(req, res);
-  if (!body.trim()) return sendJson(res, 400, { error: 'Request body cannot be empty' });
-
-  let payload: any;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    return sendJson(res, 400, { error: 'Malformed JSON payload' });
-  }
+  const parsed = await readJsonBody(req, res);
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
 
   if (!payload || typeof payload !== 'object' || !payload.repositoryName) {
     return sendJson(res, 400, { error: 'repositoryName is required' });
@@ -144,28 +146,26 @@ export const handlePostDispatch = async (
       : undefined
     : undefined;
 
-  const requiredLabels = Array.isArray(payload.requiredLabels)
-    ? payload.requiredLabels.map((l: unknown) => String(l).trim()).filter(Boolean)
-    : undefined;
+  const requiredLabels = toStringArray(payload.requiredLabels);
 
   const orchestrator = resolveOrchestrator(options);
   const result = await orchestrator.dispatch({
-    repositoryId: typeof payload.repositoryId === 'string' ? payload.repositoryId : undefined,
+    repositoryId: toStringOrUndefined(payload.repositoryId),
     repositoryName,
-    repositoryPath: typeof payload.repositoryPath === 'string' ? payload.repositoryPath : undefined,
+    repositoryPath: toStringOrUndefined(payload.repositoryPath),
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,
-    requestedBy: typeof payload.requestedBy === 'string' ? payload.requestedBy : 'web-ui',
+    requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
     scheduleMode,
     requiredLabels,
-    model: typeof payload.model === 'string' ? payload.model : undefined,
+    model: toStringOrUndefined(payload.model),
     effort,
     allowOverage: Boolean(payload.allowOverage),
     pushBranch: typeof payload.pushBranch === 'boolean' ? payload.pushBranch : true,
     autoCreatePr: typeof payload.autoCreatePr === 'boolean' ? payload.autoCreatePr : true,
-    expiresAt: typeof payload.expiresAt === 'string' ? payload.expiresAt : undefined,
-    standingTaskId: typeof payload.standingTaskId === 'string' ? payload.standingTaskId : undefined,
-    verifyCommand: typeof payload.verifyCommand === 'string' ? payload.verifyCommand : undefined,
+    expiresAt: toStringOrUndefined(payload.expiresAt),
+    standingTaskId: toStringOrUndefined(payload.standingTaskId),
+    verifyCommand: toStringOrUndefined(payload.verifyCommand),
   });
 
   if (!result.success && result.code === 'OVERAGE_PROTECTION_TRIGGERED') {
@@ -176,7 +176,7 @@ export const handlePostDispatch = async (
 };
 
 export const handleGetTasks = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   url: URL,
@@ -215,39 +215,20 @@ export const handlePollTasks = async (
     return sendJson(res, 200, { task: null, orchestratorEnabled: false });
   }
 
-  const body = await readBody(req, res);
-  let payload: any = {};
-  if (body.trim()) {
-    try {
-      payload = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
-  }
+  const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
 
   // If authenticated via a per-runner token, bind identity strictly to the registered worker record
   const workerId =
-    auth.worker?.workerId ??
-    (typeof payload?.workerId === 'string' && payload.workerId.trim() !== ''
-      ? payload.workerId.trim()
-      : 'worker-default');
+    auth.worker?.workerId ?? toTrimmedStringOrUndefined(payload?.workerId) ?? 'worker-default';
   const workerName =
-    auth.worker?.name ??
-    (typeof payload?.workerName === 'string' && payload.workerName.trim() !== ''
-      ? payload.workerName.trim()
-      : workerId);
-  const labels = Array.isArray(payload?.labels)
-    ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
-    : auth.worker?.labels;
-  const repositories = Array.isArray(payload?.repositories)
-    ? payload.repositories.map((r: unknown) => String(r).trim()).filter(Boolean)
-    : auth.worker?.repositories;
+    auth.worker?.name ?? toTrimmedStringOrUndefined(payload?.workerName) ?? workerId;
+  const labels = toStringArray(payload?.labels) ?? auth.worker?.labels;
+  const repositories = toStringArray(payload?.repositories) ?? auth.worker?.repositories;
   const systemInfo =
     payload?.systemInfo && typeof payload.systemInfo === 'object' ? payload.systemInfo : undefined;
-  const timeoutMs =
-    typeof payload?.timeoutMs === 'number' && Number.isFinite(payload.timeoutMs)
-      ? payload.timeoutMs
-      : 0;
+  const timeoutMs = toFiniteNumberOrUndefined(payload?.timeoutMs) ?? 0;
 
   const abortController = new AbortController();
   const onClose = () => abortController.abort();
@@ -295,15 +276,9 @@ export const handleTaskStatus = async (
     return sendJson(res, 400, { error: 'taskId is required' });
   }
 
-  const body = await readBody(req, res);
-  if (!body.trim()) return sendJson(res, 400, { error: 'Request body cannot be empty' });
-
-  let payload: any;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    return sendJson(res, 400, { error: 'Malformed JSON payload' });
-  }
+  const parsed = await readJsonBody(req, res);
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
 
   const statusParse = TaskStatusSchema.safeParse(payload?.status);
   if (!statusParse.success) {
@@ -312,26 +287,15 @@ export const handleTaskStatus = async (
 
   const result = await orchestrator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
-    workerId:
-      auth.worker?.workerId ??
-      (typeof payload.workerId === 'string' ? payload.workerId : undefined),
-    branchName: typeof payload.branchName === 'string' ? payload.branchName : undefined,
-    output: typeof payload.output === 'string' ? payload.output : undefined,
-    error: typeof payload.error === 'string' ? payload.error : undefined,
+    workerId: auth.worker?.workerId ?? toStringOrUndefined(payload.workerId),
+    branchName: toStringOrUndefined(payload.branchName),
+    output: toStringOrUndefined(payload.output),
+    error: toStringOrUndefined(payload.error),
     durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
-    numTurns:
-      typeof payload.numTurns === 'number' && Number.isFinite(payload.numTurns)
-        ? payload.numTurns
-        : undefined,
-    totalTokens:
-      typeof payload.totalTokens === 'number' && Number.isFinite(payload.totalTokens)
-        ? payload.totalTokens
-        : undefined,
-    thinkingTokens:
-      typeof payload.thinkingTokens === 'number' && Number.isFinite(payload.thinkingTokens)
-        ? payload.thinkingTokens
-        : undefined,
-    message: typeof payload.message === 'string' ? payload.message : undefined,
+    numTurns: toFiniteNumberOrUndefined(payload.numTurns),
+    totalTokens: toFiniteNumberOrUndefined(payload.totalTokens),
+    thinkingTokens: toFiniteNumberOrUndefined(payload.thinkingTokens),
+    message: toStringOrUndefined(payload.message),
   });
 
   if (!result) {
@@ -355,7 +319,7 @@ export const handleTaskStatus = async (
 };
 
 export const handleTaskCancel = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,
@@ -378,7 +342,7 @@ export const handleTaskCancel = (
 };
 
 export const handleTaskRetry = async (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,
@@ -416,7 +380,7 @@ export const handleStandingTasks = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
-  url: URL,
+  _url: URL,
   method: string
 ): Promise<void> => {
   const orchestrator = resolveOrchestrator(options);
@@ -427,13 +391,9 @@ export const handleStandingTasks = async (
   }
 
   if (method === 'POST') {
-    const body = await readBody(req, res);
-    let payload: any;
-    try {
-      payload = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
+    const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
+    if (!parsed.ok) return;
+    const payload: any = parsed.body;
     if (!payload?.title || !payload?.prompt || !payload?.repositoryId || !payload?.model) {
       return sendJson(res, 400, {
         error: 'title, prompt, repositoryId, and model are required for standing task',
@@ -478,13 +438,9 @@ export const handleStandingTaskById = async (
   }
 
   if (method === 'PATCH') {
-    const body = await readBody(req, res);
-    let patch: any;
-    try {
-      patch = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
+    const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
+    if (!parsed.ok) return;
+    const patch: any = parsed.body;
     const updated = orchestrator.queue.updateStandingTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Standing task ${id} not found` });
     return sendJson(res, 200, updated);
@@ -500,7 +456,7 @@ export const handleStandingTaskById = async (
 };
 
 export const handleGetWorkers = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
@@ -519,30 +475,14 @@ export const handleCreateRegistrationToken = async (
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
-  const body = await readBody(req, res);
-  let payload: any = {};
-  if (body.trim()) {
-    try {
-      payload = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
-  }
+  const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
 
-  const labels = Array.isArray(payload?.labels)
-    ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
-    : [];
-  const repositories = Array.isArray(payload?.repositories)
-    ? payload.repositories.map((r: unknown) => String(r).trim()).filter(Boolean)
-    : [];
-  const nameHint =
-    typeof payload?.nameHint === 'string' && payload.nameHint.trim() !== ''
-      ? payload.nameHint.trim()
-      : undefined;
-  const ttlMs =
-    typeof payload?.ttlMs === 'number' && Number.isFinite(payload.ttlMs)
-      ? payload.ttlMs
-      : undefined;
+  const labels = toStringArray(payload?.labels) ?? [];
+  const repositories = toStringArray(payload?.repositories) ?? [];
+  const nameHint = toTrimmedStringOrUndefined(payload?.nameHint);
+  const ttlMs = toFiniteNumberOrUndefined(payload?.ttlMs);
 
   const orchestrator = resolveOrchestrator(options);
   const result = orchestrator.createRegistrationToken({
@@ -563,15 +503,9 @@ export const handleRegisterWorker = async (
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
-  const body = await readBody(req, res);
-  if (!body.trim()) return sendJson(res, 400, { error: 'Request body cannot be empty' });
-
-  let payload: any;
-  try {
-    payload = JSON.parse(body);
-  } catch {
-    return sendJson(res, 400, { error: 'Malformed JSON payload' });
-  }
+  const parsed = await readJsonBody(req, res);
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
 
   const registrationToken =
     typeof payload?.registrationToken === 'string' ? payload.registrationToken.trim() : '';
@@ -579,12 +513,8 @@ export const handleRegisterWorker = async (
     return sendJson(res, 400, { error: 'registrationToken is required' });
   }
 
-  const labels = Array.isArray(payload?.labels)
-    ? payload.labels.map((l: unknown) => String(l).trim()).filter(Boolean)
-    : undefined;
-  const repositories = Array.isArray(payload?.repositories)
-    ? payload.repositories.map((r: unknown) => String(r).trim()).filter(Boolean)
-    : undefined;
+  const labels = toStringArray(payload?.labels);
+  const repositories = toStringArray(payload?.repositories);
   const systemInfo =
     payload?.systemInfo && typeof payload.systemInfo === 'object' ? payload.systemInfo : undefined;
 
@@ -592,8 +522,8 @@ export const handleRegisterWorker = async (
   try {
     const registered = orchestrator.registerRunner({
       registrationToken,
-      workerId: typeof payload?.workerId === 'string' ? payload.workerId : undefined,
-      workerName: typeof payload?.workerName === 'string' ? payload.workerName : undefined,
+      workerId: toStringOrUndefined(payload?.workerId),
+      workerName: toStringOrUndefined(payload?.workerName),
       labels,
       repositories,
       systemInfo,
@@ -646,15 +576,9 @@ export const handleManageWorkerById = async (
   }
 
   if (method === 'PATCH') {
-    const body = await readBody(req, res);
-    if (!body.trim()) return sendJson(res, 400, { error: 'Request body cannot be empty' });
-
-    let payload: any;
-    try {
-      payload = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
+    const parsed = await readJsonBody(req, res);
+    if (!parsed.ok) return;
+    const payload: any = parsed.body;
 
     if (typeof payload?.enabled !== 'boolean') {
       return sendJson(res, 400, { error: 'enabled (boolean) is required' });

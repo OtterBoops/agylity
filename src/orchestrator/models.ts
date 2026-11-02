@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   calculateHoursUntilReset,
+  FAMILY_ALIASES,
   resolveModelFamily,
   type QuotaFamily,
   type QuotaSnapshot,
@@ -28,6 +29,8 @@ export interface AgyModelCatalogEntry {
   family: QuotaFamily;
   defaultEffort: ReasoningEffort;
   supportedEfforts?: readonly ReasoningEffort[];
+  /** Exactly one catalog entry per family is that pool's default dispatch target. */
+  defaultForFamily?: boolean;
 }
 
 export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
@@ -49,6 +52,7 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     family: 'gemini-flash',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high'],
+    defaultForFamily: true,
   },
   {
     id: 'gemini-4-argon',
@@ -56,6 +60,7 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     family: 'gemini-argon',
     defaultEffort: 'high',
     supportedEfforts: ['low', 'medium', 'high'],
+    defaultForFamily: true,
   },
   {
     id: 'claude-sonnet-5-5',
@@ -63,6 +68,7 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     family: 'claude',
     defaultEffort: 'high',
     supportedEfforts: ['low', 'medium', 'high'],
+    defaultForFamily: true,
   },
   {
     id: 'claude-opus-5-5',
@@ -80,12 +86,25 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   },
 ] as const;
 
-export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> = {
-  'gemini-4-argon': ['low', 'medium', 'high'],
-  'gemini-3.8-flash': ['low', 'medium', 'high'],
-  'claude-sonnet-5-5': ['low', 'medium', 'high'],
-  'claude-opus-5-5': ['low', 'medium', 'high'],
-  'gpt-oss-120b': ['medium'],
+const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
+
+const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
+
+/** Derived from the catalog, so a model's efforts are declared exactly once. */
+export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> =
+  Object.fromEntries(CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS]));
+
+const defaultModelFor = (family: QuotaFamily): string => {
+  const entry = CANONICAL_AGY_MODELS.find((m) => m.family === family && m.defaultForFamily);
+  if (!entry) throw new Error(`No default model declared for pool family '${family}'`);
+  return entry.id;
+};
+
+/** Derived from the catalog's defaultForFamily marker, not a second hand-kept table. */
+export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
+  'gemini-argon': defaultModelFor('gemini-argon'),
+  'gemini-flash': defaultModelFor('gemini-flash'),
+  claude: defaultModelFor('claude'),
 };
 
 export const resolveReasoningEffortForModel = (
@@ -93,20 +112,13 @@ export const resolveReasoningEffortForModel = (
   requestedEffort: string | undefined
 ): ReasoningEffort => {
   const concreteModel = resolveConcreteModelId(model);
-  const catalogEntry = CANONICAL_AGY_MODELS.find((m) => m.id === concreteModel);
-  const supported = MODEL_SUPPORTED_EFFORTS[concreteModel] || ['low', 'medium', 'high'];
-  const defaultEffort = catalogEntry?.defaultEffort || 'medium';
+  const supported = MODEL_SUPPORTED_EFFORTS[concreteModel] ?? ALL_EFFORTS;
+  const defaultEffort = CATALOG_BY_ID.get(concreteModel)?.defaultEffort ?? 'medium';
 
   if (!requestedEffort) return defaultEffort;
 
   const normalized = requestedEffort.trim().toLowerCase() as ReasoningEffort;
   return supported.includes(normalized) ? normalized : defaultEffort;
-};
-
-export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
-  'gemini-argon': 'gemini-4-argon',
-  'gemini-flash': 'gemini-3.8-flash',
-  claude: 'claude-sonnet-5-5',
 };
 
 /**
@@ -115,9 +127,8 @@ export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
 export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily => {
   if (!modelOrFamily) return 'gemini-argon';
   const normalized = modelOrFamily.trim().toLowerCase();
-  if (normalized === 'gemini-argon' || normalized === 'argon') return 'gemini-argon';
-  if (normalized === 'gemini-flash' || normalized === 'flash') return 'gemini-flash';
-  if (normalized === 'claude' || normalized === '3p') return 'claude';
+  const alias = FAMILY_ALIASES[normalized];
+  if (alias) return alias;
 
   const resolved = resolveModelFamily({ modelId: normalized, label: normalized });
   return resolved?.family ?? 'gemini-argon';
@@ -429,7 +440,7 @@ export const parseDiscordModelPriorityInput = (
     : resolveConcreteModelId(undefined, defaultModel);
 
   if (!rawInput || !rawInput.trim()) {
-    const catalogMatch = CANONICAL_AGY_MODELS.find((m) => m.id === baseDefault);
+    const catalogMatch = CATALOG_BY_ID.get(baseDefault);
     return {
       model: baseDefault,
       scheduleMode: 'immediate',
@@ -468,7 +479,7 @@ export const parseDiscordModelPriorityInput = (
   }
 
   const resolvedModel = resolveConcreteModelId(modelToken, baseDefault);
-  const catalogMatch = CANONICAL_AGY_MODELS.find((m) => m.id === resolvedModel);
+  const catalogMatch = CATALOG_BY_ID.get(resolvedModel);
 
   return {
     model: resolvedModel,

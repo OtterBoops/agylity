@@ -7,8 +7,6 @@ export const QuotaInfoSchema = z.object({
   resetTime: z.string(),
 });
 
-export type QuotaInfo = z.infer<typeof QuotaInfoSchema>;
-
 export const LanguageServerModelConfigSchema = z.object({
   label: z.string(),
   modelId: z.string(),
@@ -35,8 +33,6 @@ export const ClientModelSortSchema = z.object({
     })
   ),
 });
-
-export type ClientModelSort = z.infer<typeof ClientModelSortSchema>;
 
 export const LanguageServerResponseSchema = z.object({
   clientModelConfigs: z.array(LanguageServerModelConfigSchema),
@@ -93,22 +89,16 @@ export const RawQuotaBucketSchema = z.object({
   resetTime: z.string(),
 });
 
-export type RawQuotaBucket = z.infer<typeof RawQuotaBucketSchema>;
-
 export const RawQuotaGroupSchema = z.object({
   displayName: z.string(),
   description: z.string().optional(),
   buckets: z.array(RawQuotaBucketSchema),
 });
 
-export type RawQuotaGroup = z.infer<typeof RawQuotaGroupSchema>;
-
 // The server does not currently emit overageInfo; retained only as a secondary signal.
 export const OverageInfoSchema = z.object({
   enabled: z.boolean().optional(),
 });
-
-export type OverageInfo = z.infer<typeof OverageInfoSchema>;
 
 export const RetrieveUserQuotaSummaryResponseSchema = z.object({
   response: z.object({
@@ -133,8 +123,6 @@ export const UserPlanInfoSchema = z.object({
   monthlyFlexCreditPurchaseAmount: z.number().optional(),
   canBuyMoreCredits: z.boolean().optional(),
 });
-
-export type UserPlanInfo = z.infer<typeof UserPlanInfoSchema>;
 
 export const GetUserStatusResponseSchema = z.object({
   userStatus: z
@@ -226,6 +214,68 @@ export const formatResetTimeHuman = (hours: number): string => {
   return `${h}h ${m}m`;
 };
 
+/** Canonical pool ordering, shared by every aggregator. */
+export const FAMILY_ORDER: Record<QuotaFamily, number> = {
+  'gemini-flash': 0,
+  'gemini-argon': 1,
+  claude: 2,
+};
+
+/** Accepted pool shorthands, in one place so every resolver agrees on them. */
+export const FAMILY_ALIASES: Record<string, QuotaFamily> = {
+  'gemini-argon': 'gemini-argon',
+  argon: 'gemini-argon',
+  'gemini-flash': 'gemini-flash',
+  flash: 'gemini-flash',
+  claude: 'claude',
+  sonnet: 'claude',
+  '3p': 'claude',
+};
+
+/** User-facing pool names, so no resolver carries its own copy. */
+export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
+  'gemini-flash': 'Gemini Flash',
+  'gemini-argon': 'Gemini Argon',
+  claude: 'Claude and GPT models',
+};
+
+/** Credits and overage travel together; each aggregator supplies its own overage fallback. */
+const resolveCredits = (
+  extraCredits: { remainingCredits?: number | null; overageEnabled?: boolean } | undefined,
+  overageFallback: boolean | undefined
+): { remainingCredits: number | null; overageEnabled: boolean | undefined } => ({
+  remainingCredits: extraCredits?.remainingCredits ?? null,
+  overageEnabled: extraCredits?.overageEnabled ?? overageFallback,
+});
+
+/** Single place that knows the QuotaSnapshot shape; every aggregator funnels through it. */
+export const toSnapshot = (input: {
+  family: QuotaFamily;
+  remainingFraction: number;
+  resetTime: string;
+  hoursUntilReset: number;
+  models: string[];
+  buckets?: QuotaBucket[];
+  weekly?: QuotaBucket;
+  shortTerm?: QuotaBucket;
+  overageEnabled?: boolean;
+  remainingCredits?: number | null;
+  poolId?: string;
+}): QuotaSnapshot => ({
+  poolId: input.poolId ?? input.family,
+  family: input.family,
+  displayName: FAMILY_DISPLAY_NAMES[input.family],
+  remainingFraction: input.remainingFraction,
+  resetTime: input.resetTime,
+  hoursUntilReset: input.hoursUntilReset,
+  models: input.models,
+  overageEnabled: input.overageEnabled,
+  remainingCredits: input.remainingCredits,
+  weekly: input.weekly,
+  shortTerm: input.shortTerm,
+  buckets: input.buckets,
+});
+
 /**
  * Determines the canonical family for a model configuration.
  */
@@ -240,17 +290,11 @@ export const resolveModelFamily = (config: {
   const lbl = (config.label || '').toLowerCase();
 
   if (mid.includes('argon') || lbl.includes('argon')) {
-    return {
-      family: 'gemini-argon',
-      displayName: 'Gemini Argon',
-    };
+    return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
   if (mid.includes('flash') || lbl.includes('flash')) {
-    return {
-      family: 'gemini-flash',
-      displayName: 'Gemini Flash',
-    };
+    return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
   }
 
   if (
@@ -263,10 +307,7 @@ export const resolveModelFamily = (config: {
     lbl.includes('sonnet') ||
     lbl.includes('gpt-oss')
   ) {
-    return {
-      family: 'claude',
-      displayName: 'Claude and GPT models',
-    };
+    return { family: 'claude', displayName: FAMILY_DISPLAY_NAMES.claude };
   }
 
   return null;
@@ -286,21 +327,21 @@ export const resolveGroupFamily = (
   if (name.includes('argon')) {
     return {
       family: 'gemini-argon',
-      displayName: 'Gemini Argon',
+      displayName: FAMILY_DISPLAY_NAMES['gemini-argon'],
       defaultModels: ['Gemini 4 Argon'],
     };
   }
   if (name.includes('claude') || name.includes('gpt')) {
     return {
       family: 'claude',
-      displayName: 'Claude and GPT models',
+      displayName: FAMILY_DISPLAY_NAMES.claude,
       defaultModels: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
     };
   }
   if (name.includes('gemini')) {
     return {
       family: 'gemini-flash',
-      displayName: 'Gemini Flash',
+      displayName: FAMILY_DISPLAY_NAMES['gemini-flash'],
       defaultModels: ['Gemini Flash', 'Gemini Pro'],
     };
   }
@@ -318,11 +359,10 @@ export const aggregateUserQuotaSummary = (
 ): QuotaSnapshot[] => {
   const result: QuotaSnapshot[] = [];
   // Overage stays undefined when no signal is available so "unknown" is not reported as disabled.
-  const overageEnabled =
-    extraCredits?.overageEnabled ??
-    summary.response.overageInfo?.enabled ??
-    summary.response.overage_info?.enabled;
-  const remainingCredits = extraCredits?.remainingCredits ?? null;
+  const { remainingCredits, overageEnabled } = resolveCredits(
+    extraCredits,
+    summary.response.overageInfo?.enabled ?? summary.response.overage_info?.enabled
+  );
 
   for (const group of summary.response.groups) {
     const resolved = resolveGroupFamily(group.displayName);
@@ -370,31 +410,25 @@ export const aggregateUserQuotaSummary = (
     }
 
     if (weeklyBucket) {
-      result.push({
-        poolId: resolved.family,
-        family: resolved.family,
-        displayName: resolved.displayName,
-        // The weekly limit is the primary eval target
-        remainingFraction: weeklyBucket.remainingFraction,
-        resetTime: weeklyBucket.resetTime,
-        hoursUntilReset: weeklyBucket.hoursUntilReset,
-        models: groupModels,
-        overageEnabled,
-        remainingCredits,
-        weekly: weeklyBucket,
-        shortTerm: shortTermBucket,
-        buckets: bucketsWithHours,
-      });
+      result.push(
+        toSnapshot({
+          family: resolved.family,
+          // The weekly limit is the primary eval target
+          remainingFraction: weeklyBucket.remainingFraction,
+          resetTime: weeklyBucket.resetTime,
+          hoursUntilReset: weeklyBucket.hoursUntilReset,
+          models: groupModels,
+          overageEnabled,
+          remainingCredits,
+          weekly: weeklyBucket,
+          shortTerm: shortTermBucket,
+          buckets: bucketsWithHours,
+        })
+      );
     }
   }
 
-  const order: Record<QuotaFamily, number> = {
-    'gemini-flash': 0,
-    'gemini-argon': 1,
-    claude: 2,
-  };
-
-  return result.sort((a, b) => order[a.family] - order[b.family]);
+  return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };
 
 /**
@@ -457,10 +491,10 @@ export const aggregateQuotaPools = (
     }
   }
 
-  const remainingCredits = extraCredits?.remainingCredits ?? null;
-  const overageEnabled =
-    extraCredits?.overageEnabled ??
-    (process.env.ALLOW_OVERAGE === 'true' || process.env.ALLOW_OVERAGE === '1');
+  const { remainingCredits, overageEnabled } = resolveCredits(
+    extraCredits,
+    process.env.ALLOW_OVERAGE === 'true' || process.env.ALLOW_OVERAGE === '1'
+  );
 
   const result: QuotaSnapshot[] = [];
   for (const entry of poolMap.values()) {
@@ -473,29 +507,22 @@ export const aggregateQuotaPools = (
       resetTime: entry.resetTime,
       hoursUntilReset,
     };
-    result.push({
-      poolId: entry.family,
-      family: entry.family,
-      displayName: entry.displayName,
-      remainingFraction: entry.remainingFraction,
-      resetTime: entry.resetTime,
-      hoursUntilReset,
-      models: Array.from(entry.models).sort(),
-      overageEnabled,
-      remainingCredits,
-      weekly: weeklyBucket,
-      buckets: [weeklyBucket],
-    });
+    result.push(
+      toSnapshot({
+        family: entry.family,
+        remainingFraction: entry.remainingFraction,
+        resetTime: entry.resetTime,
+        hoursUntilReset,
+        models: Array.from(entry.models).sort(),
+        overageEnabled,
+        remainingCredits,
+        weekly: weeklyBucket,
+        buckets: [weeklyBucket],
+      })
+    );
   }
 
-  // Consistent ordering of pools: gemini-flash, gemini-argon, claude
-  const order: Record<QuotaFamily, number> = {
-    'gemini-flash': 0,
-    'gemini-argon': 1,
-    claude: 2,
-  };
-
-  return result.sort((a, b) => order[a.family] - order[b.family]);
+  return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };
 
 export interface QuotaStatePoolLike {
@@ -516,19 +543,7 @@ export const snapshotsFromSentryState = (
   const snapshots: QuotaSnapshot[] = [];
   for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
     const rawId = poolId.toLowerCase().trim();
-    const family: QuotaFamily =
-      rawId === 'claude' || rawId === 'sonnet' || rawId === '3p'
-        ? 'claude'
-        : rawId === 'gemini-flash' || rawId === 'flash'
-          ? 'gemini-flash'
-          : 'gemini-argon';
-
-    const displayName =
-      family === 'gemini-flash'
-        ? 'Gemini Flash'
-        : family === 'gemini-argon'
-          ? 'Gemini Argon'
-          : 'Claude and GPT models';
+    const family: QuotaFamily = FAMILY_ALIASES[rawId] ?? 'gemini-argon';
 
     const defaultModels =
       family === 'claude'
@@ -547,24 +562,19 @@ export const snapshotsFromSentryState = (
       hoursUntilReset,
     };
 
-    snapshots.push({
-      poolId,
-      family,
-      displayName,
-      remainingFraction: pool.remainingFraction,
-      resetTime: pool.resetTime,
-      hoursUntilReset,
-      models: defaultModels,
-      weekly: weeklyBucket,
-      buckets: [weeklyBucket],
-    });
+    snapshots.push(
+      toSnapshot({
+        poolId,
+        family,
+        remainingFraction: pool.remainingFraction,
+        resetTime: pool.resetTime,
+        hoursUntilReset,
+        models: defaultModels,
+        weekly: weeklyBucket,
+        buckets: [weeklyBucket],
+      })
+    );
   }
 
-  const order: Record<QuotaFamily, number> = {
-    'gemini-flash': 0,
-    'gemini-argon': 1,
-    claude: 2,
-  };
-
-  return snapshots.sort((a, b) => order[a.family] - order[b.family]);
+  return snapshots.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };

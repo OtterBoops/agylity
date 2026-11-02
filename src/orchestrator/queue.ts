@@ -1,6 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
+import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schema.js';
 import type { QuotaFamily } from '../sentry/models.js';
 import {
   resolvePoolFamilyForModel,
@@ -158,11 +159,6 @@ export interface StandingTaskRecord {
 export const hashRunnerToken = (token: string): string =>
   createHash('sha256').update(token.trim()).digest('hex');
 
-interface ColumnSpec {
-  name: string;
-  ddl: string;
-}
-
 // Single source of truth for every managed table: initSchema renders CREATE TABLE from these and
 // migrateSchema ALTER TABLE ADD COLUMNs any that an older database is missing.
 const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
@@ -275,23 +271,10 @@ const SCHEMA_VERSION = 1;
 
 const REGISTRATION_TOKEN_RETENTION = 50;
 
-const renderColumns = (columns: readonly ColumnSpec[]): string =>
-  columns.map((column) => `        ${column.ddl}`).join(',\n');
-
-// ALTER TABLE ADD COLUMN cannot add PRIMARY KEY/UNIQUE columns or NOT NULL columns without a default.
-const isAddableColumn = (ddl: string): boolean => {
-  const upper = ddl.toUpperCase();
-  if (upper.includes('PRIMARY KEY') || upper.includes('UNIQUE')) return false;
-  if (upper.includes('NOT NULL') && !upper.includes('DEFAULT')) return false;
-  return true;
-};
-
 export class TaskQueue {
-  private readonly appDb: AppDatabase;
   private readonly rawDb: DatabaseSync;
 
   constructor(database: AppDatabase) {
-    this.appDb = database;
     this.rawDb = database.getRawDb();
     this.initSchema();
   }
@@ -356,30 +339,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     }
 
     for (const table of SCHEMA_TABLES) {
-      const existing = new Set(
-        (
-          this.rawDb.prepare(`PRAGMA table_info(${table.name})`).all() as Array<{
-            name: string;
-          }>
-        ).map((row) => String(row.name))
-      );
-      const added: string[] = [];
-      for (const column of table.columns) {
-        if (existing.has(column.name)) continue;
-        if (!isAddableColumn(column.ddl)) {
-          logger.warn(
-            'Cannot add column %s.%s to legacy schema; manual repair required',
-            table.name,
-            column.name
-          );
-          continue;
-        }
-        this.rawDb.exec(`ALTER TABLE ${table.name} ADD COLUMN ${column.ddl}`);
-        added.push(column.name);
-      }
-      if (added.length > 0) {
-        logger.info('Migrated %s: added column(s) %s', table.name, added.join(', '));
-      }
+      migrateColumns(this.rawDb, table.name, table.columns);
     }
 
     if (currentVersion < SCHEMA_VERSION) {

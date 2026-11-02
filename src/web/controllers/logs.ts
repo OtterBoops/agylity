@@ -4,7 +4,7 @@ import type { WebServerOptions } from '../types.js';
 import type { LogLevel } from '../../logs/buffer.js';
 
 export const handleGetLogs = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   url: URL,

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
 import { parseRawEnv } from '../../src/config/schema.js';
@@ -1493,6 +1494,37 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         });
         assert.equal(task.status, 'queued');
         assert.equal(task.scheduleMode, 'immediate');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('migrates a legacy settings table additively through the shared schema helper', () => {
+      const { dir, cleanup } = makeTempDir('orch_settings_migrate_');
+      const dbPath = path.join(dir, 'legacy_settings.db');
+
+      // Seed a settings table that predates updated_at; AppDatabase must upgrade it on open.
+      const seed = new DatabaseSync(dbPath);
+      seed.exec(`
+        CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      seed.close();
+
+      const db = new AppDatabase(dbPath);
+      try {
+        const columns = new Set(
+          (
+            db.getRawDb().prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>
+          ).map((column) => column.name)
+        );
+        assert.ok(columns.has('updated_at'), 'legacy settings should gain updated_at');
+
+        db.set('probe', 'value');
+        assert.equal(db.get('probe'), 'value');
       } finally {
         db.close();
         cleanup();

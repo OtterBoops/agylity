@@ -1,13 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type http from 'node:http';
-import {
-  normalizeIp,
-  parseSubnet,
-  isIpInSubnet,
-  isIpAllowed,
-  extractClientIp,
-} from '../../src/web/ip.js';
+import { normalizeIp, isIpAllowed, extractClientIp } from '../../src/web/ip.js';
 
 describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
   describe('normalizeIp', () => {

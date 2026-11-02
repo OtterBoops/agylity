@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
+import { CANONICAL_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEY_ENV_NAMES } from '../config/schema.js';
 import { logger } from '../logs/logger.js';
 
 export const ENCRYPTION_PREFIX = 'enc:v1:';
@@ -15,16 +15,15 @@ export class SecretDecryptionError extends Error {
   }
 }
 
+// Both spellings of every canonical secret, derived from the single map in schema.ts.
 export const SECRET_KEYS = new Set<string>([
   ...CANONICAL_SECRET_CONFIG_KEYS,
-  'DISCORD_TOKEN',
-  'ANTIGRAVITY_CSRF_TOKEN',
-  'NOTIFICATION_WEBHOOK_URL',
-  'WEBHOOK_SECRET',
+  ...Object.values(SECRET_CONFIG_KEY_ENV_NAMES),
 ]);
 
 export const isSecretKey = (key: string): boolean => {
   if (SECRET_KEYS.has(key)) return true;
+  // Suffix heuristics catch secrets absent from the canonical map, e.g. a custom *_TOKEN in webhookCustomHeaders.
   const lower = key.toLowerCase();
   return (
     lower.endsWith('token') ||

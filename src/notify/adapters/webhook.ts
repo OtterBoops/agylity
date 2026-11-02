@@ -10,6 +10,7 @@ import type {
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
@@ -300,7 +301,7 @@ export class WebhookNotifier implements Notifier {
       embeds: [embed],
       data: {
         poolId: 'claude',
-        displayName: 'Claude and GPT models',
+        displayName: FAMILY_DISPLAY_NAMES.claude,
         family: 'claude',
         remainingPercentage: 25,
         remainingFraction: 0.25,

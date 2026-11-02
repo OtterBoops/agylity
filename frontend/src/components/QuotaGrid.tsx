@@ -129,22 +129,14 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
           barColor = 'bg-pine-gold';
           statusText = '5h Burst Cooldown';
         } else if (weeklyPct === 0) {
-          badgeClasses = pool.overageEnabled
-            ? 'bg-pine-love/20 text-pine-love border border-pine-love'
-            : 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
-          barColor = pool.overageEnabled ? 'bg-pine-love' : 'bg-pine-pine';
-          statusText = pool.overageEnabled ? 'Overages Billed' : 'Tapped out';
+          badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
+          barColor = 'bg-pine-pine';
+          statusText = 'Tapped out';
         } else if (effectivePct <= minHeadroomPercent) {
-          // At or below safety floor: tasks are blocked by default to prevent paid overages
-          badgeClasses = pool.overageEnabled
-            ? 'bg-pine-gold/20 text-pine-gold border border-pine-gold'
-            : 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
-          barColor = pool.overageEnabled ? 'bg-pine-gold' : 'bg-pine-foam';
-          statusText = pool.overageEnabled
-            ? 'Overage Risk'
-            : minHeadroomPercent > 0
-              ? 'Safety floor'
-              : 'Well spent';
+          // At or below the safety floor, dispatch is blocked by default
+          badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
+          barColor = 'bg-pine-foam';
+          statusText = minHeadroomPercent > 0 ? 'Safety floor' : 'Well spent';
         } else if (effectivePct <= 25) {
           badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
           barColor = 'bg-pine-foam';
@@ -202,23 +194,14 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                       {pool.poolId}
                     </span>
                   </span>
-                  {pool.overageEnabled ? (
+                  {typeof pool.remainingCredits === 'number' ? (
                     <span
-                      class="inline-flex items-center gap-1 rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-gold"
-                      title="AI Flex Credits/Overages are enabled. Falling below safety floor risks monetary charges."
+                      class="inline-flex items-center gap-1 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-muted"
+                      title="Google One AI credits remaining. Whether usage past the limit is billed is not exposed by the language server."
                     >
-                      <span class="size-1.5 shrink-0 animate-pulse rounded-full bg-pine-gold"></span>
-                      Overages Active
+                      {pool.remainingCredits} credits
                     </span>
-                  ) : (
-                    <span
-                      class="inline-flex items-center gap-1 rounded-sm border border-pine-foam/40 bg-pine-foam/20 px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-foam"
-                      title="Capped Plan: Quota depletion triggers 429 throttling without monetary charges."
-                    >
-                      <span class="size-1.5 shrink-0 rounded-full bg-pine-foam"></span>
-                      Capped Plan
-                    </span>
-                  )}
+                  ) : null}
                 </div>
               </div>
               <span

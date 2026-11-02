@@ -13,6 +13,8 @@ import {
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
   deriveOverageEnabled,
+  FAMILY_ORDER,
+  toSnapshot,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
@@ -843,29 +845,23 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     const fallbackReset = new Date(now + 24 * 3600 * 1000).toISOString();
     const result: QuotaSnapshot[] = [];
 
-    const order: Record<QuotaFamily, number> = {
-      'gemini-flash': 0,
-      'gemini-argon': 1,
-      claude: 2,
-    };
-
     for (const entry of poolsMap.values()) {
-      result.push({
-        poolId: entry.family,
-        family: entry.family,
-        displayName: entry.displayName,
-        remainingFraction: 1.0, // CLI models expose no fractions; a freshly rolled window is unconstrained
-        resetTime: fallbackReset,
-        hoursUntilReset: 24,
-        models: entry.models.sort(),
-      });
+      result.push(
+        toSnapshot({
+          family: entry.family,
+          remainingFraction: 1.0, // CLI models expose no fractions; a freshly rolled window is unconstrained
+          resetTime: fallbackReset,
+          hoursUntilReset: 24,
+          models: entry.models.sort(),
+        })
+      );
     }
 
     this.logger.warn(
       'Synthesized quota pools with a fresh reset window; quota telemetry is degraded (CLI models-only fallback)'
     );
 
-    return result.sort((a, b) => order[a.family] - order[b.family]);
+    return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
   }
 }
 

@@ -207,3 +207,73 @@ export const readBody = async (
     req.on('close', onClose);
   });
 };
+
+/**
+ * How readJsonBody treats an empty/whitespace-only body:
+ *  - 'reject' (default): 400 { error: 'Request body cannot be empty' }
+ *  - 'allow': accept the empty body and resolve to `emptyBodyValue` ({} by default)
+ *  - 'malformed': no empty-body special case; the empty string is parsed and fails -> 400 malformed
+ */
+export type EmptyBodyPolicy = 'reject' | 'allow' | 'malformed';
+
+export interface ReadJsonBodyOptions {
+  emptyBody?: EmptyBodyPolicy;
+  emptyBodyValue?: unknown;
+}
+
+export type ReadJsonBodyResult = { ok: true; body: unknown } | { ok: false };
+
+const rejectEmptyBody = (res: http.ServerResponse): ReadJsonBodyResult => {
+  sendJson(res, 400, { error: 'Request body cannot be empty' });
+  return { ok: false };
+};
+
+const rejectMalformedJson = (res: http.ServerResponse): ReadJsonBodyResult => {
+  sendJson(res, 400, { error: 'Malformed JSON payload' });
+  return { ok: false };
+};
+
+/**
+ * Reads and parses a JSON request body, writing the 400 response itself on failure.
+ * Callers branch on `ok` and never re-implement the empty/malformed 400. A 413
+ * (PayloadTooLargeError) is deliberately left to propagate to the route handler.
+ */
+export const readJsonBody = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: ReadJsonBodyOptions = {}
+): Promise<ReadJsonBodyResult> => {
+  const { emptyBody = 'reject', emptyBodyValue = {} } = options;
+  const raw = await readBody(req, res);
+
+  if (!raw.trim()) {
+    if (emptyBody === 'allow') return { ok: true, body: emptyBodyValue };
+    if (emptyBody === 'malformed') return rejectMalformedJson(res);
+    return rejectEmptyBody(res);
+  }
+
+  try {
+    return { ok: true, body: JSON.parse(raw) };
+  } catch {
+    return rejectMalformedJson(res);
+  }
+};
+
+/** String field or undefined; non-string inputs are treated as absent. */
+export const toStringOrUndefined = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value : undefined;
+
+/** Trimmed, non-empty string or undefined; blank/absent/non-string inputs are absent. */
+export const toTrimmedStringOrUndefined = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+};
+
+/** Array of trimmed, non-empty strings, or undefined when the field is not an array. */
+export const toStringArray = (value: unknown): string[] | undefined =>
+  Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : undefined;
+
+/** Finite number or undefined; absent/NaN/Infinity/non-number inputs are absent. */
+export const toFiniteNumberOrUndefined = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;

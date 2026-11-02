@@ -7,6 +7,7 @@ import type {
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 
 export class ConsoleNotifier implements Notifier {
   readonly channelName: string = 'console';
@@ -74,7 +75,7 @@ export class ConsoleNotifier implements Notifier {
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
-    const poolName = 'Claude and GPT models';
+    const poolName = FAMILY_DISPLAY_NAMES.claude;
     const remainingPct = '25%';
     const milestoneText = '3h before reset';
     const resetTime = new Date(Date.now() + 3 * 3600 * 1000).toISOString();

@@ -8,6 +8,8 @@ import {
   encryptSecret,
   decryptSecret,
   SecretDecryptionError,
+  isSecretKey,
+  SECRET_KEYS,
 } from '../../src/storage/db.js';
 
 describe('AppDatabase (node:sqlite Native Storage)', () => {
@@ -188,5 +190,26 @@ describe('Secret encryption failure surfacing (AES-256-GCM)', () => {
     } finally {
       db.close();
     }
+  });
+});
+
+describe('Secret key classification (canonical map and env spellings)', () => {
+  it('reports a secret key and its env spelling as secret, and a non-secret key as not', () => {
+    // Both spellings of a canonical secret come from the single map in schema.ts
+    assert.ok(SECRET_KEYS.has('webhookSecret'));
+    assert.ok(SECRET_KEYS.has('WEBHOOK_SECRET'));
+    assert.ok(SECRET_KEYS.has('webUiAuthToken'));
+    assert.ok(SECRET_KEYS.has('WEB_UI_AUTH_TOKEN'));
+
+    assert.equal(isSecretKey('webhookSecret'), true);
+    assert.equal(isSecretKey('WEBHOOK_SECRET'), true);
+    assert.equal(isSecretKey('discordToken'), true);
+    assert.equal(isSecretKey('DISCORD_TOKEN'), true);
+
+    // Non-secret keys must not be classified as secret
+    assert.equal(SECRET_KEYS.has('webUiPort'), false);
+    assert.equal(isSecretKey('webUiPort'), false);
+    assert.equal(isSecretKey('notificationChannel'), false);
+    assert.equal(isSecretKey('logLevel'), false);
   });
 });

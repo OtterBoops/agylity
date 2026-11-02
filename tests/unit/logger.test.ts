@@ -1,12 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  createLogger,
-  createMemorySink,
-  createBufferSink,
-  DefaultLogger,
-  type LogRecord,
-} from '../../src/logs/logger.js';
+import { createLogger, createMemorySink, createBufferSink } from '../../src/logs/logger.js';
 import { LogBuffer, installConsoleTee } from '../../src/logs/buffer.js';
 
 describe('Universal Logger', () => {

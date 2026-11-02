@@ -7,7 +7,7 @@ import ky from 'ky';
 import { makeTempDir } from '../e2e/harness/index.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
-import { createWebServer, startWebServer, closeWebServer } from '../../src/web/server.js';
+import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {

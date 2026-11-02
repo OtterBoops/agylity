@@ -159,12 +159,14 @@ export const App = () => {
     }
   }, [theme]);
 
-  const fetchAll = () =>
-    Promise.all([refreshQuota(), refreshConfig(), loadModelCatalog().catch(() => [])]).catch(
-      (err) => {
-        console.error('[agylity] Fetch error:', err);
-      }
-    );
+  const fetchAll = (force = false) =>
+    Promise.all([
+      refreshQuota({ force }),
+      refreshConfig(),
+      loadModelCatalog().catch(() => []),
+    ]).catch((err) => {
+      console.error('[agylity] Fetch error:', err);
+    });
 
   const checkIntervalMs =
     Math.max(30, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
@@ -178,7 +180,8 @@ export const App = () => {
   const handleManualRefresh = () => {
     if (refreshCooldown > 0 || isRefreshing) return;
     setIsRefreshing(true);
-    fetchAll().finally(() => {
+    // The 2s cooldown below bounds click-spam, so forcing a real probe here is safe.
+    fetchAll(true).finally(() => {
       setIsRefreshing(false);
       setRefreshCooldown(2);
     });

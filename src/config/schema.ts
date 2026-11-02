@@ -16,16 +16,6 @@ export const booleanEnv = z.preprocess((val) => {
   return val;
 }, z.boolean());
 
-// Safe number parser with integer bounds
-export const integerEnv = (defaultVal: number, min = 1) =>
-  z
-    .preprocess((val) => {
-      if (typeof val === 'number') return val;
-      if (typeof val === 'string' && val.trim() !== '') return Number(val);
-      return val;
-    }, z.number().int().min(min))
-    .default(defaultVal);
-
 // Safe comma-separated milestone parser ("24,12,3" -> [24, 12, 3])
 export const milestoneHoursEnv = z.preprocess(
   (val) => {
@@ -97,11 +87,6 @@ export const RepositorySchema = z.preprocess(
 );
 
 export type RepositoryEntry = z.infer<typeof RepositorySchema>;
-
-export interface PoolPolicy {
-  alertsEnabled: boolean;
-  dispatchEnabled: boolean;
-}
 
 export const PoolPolicySchema = z.object({
   alertsEnabled: z.boolean(),
@@ -253,6 +238,62 @@ export interface AppConfig {
 
 export type ResolvedConfig = AppConfig;
 
+// Authoritative secret map (config key -> env spelling); both spellings are secret and derive from here.
+/**
+ * Authoritative env-var spelling for every config key. The reverse lookup and the
+ * secret env names both derive from this, so a spelling is written down once.
+ */
+export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
+  notificationChannels: 'NOTIFICATION_CHANNELS',
+  notificationChannel: 'NOTIFICATION_CHANNEL',
+  notificationWebhookUrl: 'NOTIFICATION_WEBHOOK_URL',
+  webhookSecret: 'WEBHOOK_SECRET',
+  webhookCustomHeaders: 'WEBHOOK_CUSTOM_HEADERS',
+  discordToken: 'DISCORD_TOKEN',
+  discordClientId: 'DISCORD_CLIENT_ID',
+  discordGuildId: 'DISCORD_GUILD_ID',
+  discordNotificationChannelId: 'DISCORD_NOTIFICATION_CHANNEL_ID',
+  discordOwnerUserId: 'DISCORD_OWNER_USER_ID',
+  discordPingOwner: 'DISCORD_PING_OWNER',
+  antigravityEndpointUrl: 'ANTIGRAVITY_ENDPOINT_URL',
+  antigravityCsrfToken: 'ANTIGRAVITY_CSRF_TOKEN',
+  quotaCheckIntervalSeconds: 'QUOTA_CHECK_INTERVAL_SECONDS',
+  quotaAlertThresholdPercent: 'QUOTA_ALERT_THRESHOLD_PERCENT',
+  quotaMilestoneHours: 'QUOTA_MILESTONE_HOURS',
+  minDispatchHeadroomPercent: 'MIN_DISPATCH_HEADROOM_PERCENT',
+  repositories: 'REPOSITORIES_JSON',
+  orchestratorEnabled: 'ORCHESTRATOR_ENABLED',
+  defaultDispatchModel: 'DEFAULT_DISPATCH_MODEL',
+  defaultDispatchEffort: 'DEFAULT_DISPATCH_EFFORT',
+  workerSharedSecret: 'WORKER_SHARED_SECRET',
+  quotaBurnMaxHours: 'QUOTA_BURN_MAX_HOURS',
+  quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
+  webUiEnabled: 'WEB_UI_ENABLED',
+  webUiPort: 'WEB_UI_PORT',
+  webUiHost: 'WEB_UI_HOST',
+  webUiAuthToken: 'WEB_UI_AUTH_TOKEN',
+  allowedIpRanges: 'ALLOWED_IP_RANGES',
+  trustedProxies: 'TRUSTED_PROXIES',
+  logLevel: 'LOG_LEVEL',
+};
+
+/** Env spellings accepted as aliases; not the primary name for their key. */
+export const CONFIG_ENV_ALIASES: Record<string, keyof AppConfig> = {
+  WEBHOOK_URL: 'notificationWebhookUrl',
+};
+
+/** env name -> config key, so the UI API accepts either spelling. */
+export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
+  ...Object.fromEntries(
+    Object.entries(CONFIG_KEY_ENV_NAMES).map(([key, env]) => [
+      env as string,
+      key as keyof AppConfig,
+    ])
+  ),
+  ...CONFIG_ENV_ALIASES,
+};
+
+/** Which config keys are secret is declared once; their env names come from the map above. */
 export const CANONICAL_SECRET_CONFIG_KEYS = [
   'discordToken',
   'antigravityCsrfToken',
@@ -262,7 +303,9 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];
 
-export type SecretConfigKey = (typeof CANONICAL_SECRET_CONFIG_KEYS)[number];
+export const SECRET_CONFIG_KEY_ENV_NAMES: Record<string, string> = Object.fromEntries(
+  CANONICAL_SECRET_CONFIG_KEYS.map((k) => [k, CONFIG_KEY_ENV_NAMES[k]!])
+);
 
 // Built-in Defaults (Level 3 Fallback)
 export const BUILTIN_DEFAULTS: AppConfig = {

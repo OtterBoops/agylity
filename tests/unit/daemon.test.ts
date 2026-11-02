@@ -9,12 +9,7 @@ import { SentryStateManager } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
-import type {
-  Notifier,
-  QuotaAlert,
-  DispatchStatusUpdate,
-  DeliveryOutcome,
-} from '../../src/notify/types.js';
+import type { QuotaAlert, DeliveryOutcome } from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { logger } from '../../src/logs/logger.js';
 import { AgylityDaemon, createDaemon, startDaemon, stopDaemon } from '../../src/index.js';

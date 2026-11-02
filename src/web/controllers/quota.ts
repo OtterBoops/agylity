@@ -15,7 +15,9 @@ export const handleGetQuota = async (
   try {
     let snapshots: QuotaSnapshot[] = [];
     if (options.quotaClient) {
-      snapshots = await options.quotaClient.fetchQuota();
+      // ?refresh=1 forces a probe; without it a manual refresh can be served the 30s cache.
+      const force = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1';
+      snapshots = await options.quotaClient.fetchQuota(force);
     } else if (options.sentryState) {
       snapshots = snapshotsFromSentryState(options.sentryState.getState());
     }
@@ -31,7 +33,7 @@ export const handleGetQuota = async (
 };
 
 export const handleGetAlerts = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string

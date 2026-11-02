@@ -40,7 +40,7 @@ export const loadIndexHtml = async (): Promise<string | null> => {
 };
 
 export const handleStaticAsset = async (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   pathname: string,
   method: string
@@ -76,7 +76,7 @@ export const handleStaticAsset = async (
 };
 
 export const handleIndexHtml = async (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   method: string
 ): Promise<void> => {

@@ -1,13 +1,5 @@
 declare const __APP_VERSION__: string | undefined;
 
-export interface VersionCheckResult {
-  currentVersion: string;
-  latestVersion: string | null;
-  hasUpdate: boolean;
-  releaseUrl: string | null;
-  isChecking: boolean;
-}
-
 export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.3.2';
 const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';

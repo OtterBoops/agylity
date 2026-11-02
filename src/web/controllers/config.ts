@@ -1,5 +1,5 @@
 import type http from 'node:http';
-import { sendJson, methodNotAllowed, readBody } from '../http.js';
+import { sendJson, methodNotAllowed, readJsonBody } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { isSecretKey, maskSecret } from '../../storage/crypto.js';
 import { validateConfigOverridePatch } from '../../config/schema.js';
@@ -46,15 +46,9 @@ export const handleConfigEndpoint = async (
   }
 
   if (method === 'POST') {
-    const body = await readBody(req, res);
-    if (!body.trim()) return sendJson(res, 400, { error: 'Request body cannot be empty' });
-
-    let payload: any;
-    try {
-      payload = JSON.parse(body);
-    } catch {
-      return sendJson(res, 400, { error: 'Malformed JSON payload' });
-    }
+    const parsed = await readJsonBody(req, res);
+    if (!parsed.ok) return;
+    const payload: any = parsed.body;
 
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
       return sendJson(res, 400, { error: 'Payload must be a JSON object' });
@@ -121,7 +115,7 @@ export const handleConfigEndpoint = async (
 };
 
 export const handleDeleteConfigOverride = (
-  req: http.IncomingMessage,
+  _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,

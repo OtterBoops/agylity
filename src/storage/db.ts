@@ -8,7 +8,7 @@ import {
   resolveMasterKey,
   ENCRYPTION_PREFIX,
 } from './crypto.js';
-import { logger } from '../logs/logger.js';
+import { migrateColumns, type ColumnSpec } from './schema.js';
 
 export interface SettingRecord {
   key: string;
@@ -23,6 +23,12 @@ export interface DatabaseConnectionOptions {
 }
 
 export type DatabaseOptions = string | DatabaseConnectionOptions;
+
+const SETTINGS_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'key', ddl: 'key TEXT PRIMARY KEY' },
+  { name: 'value', ddl: 'value TEXT NOT NULL' },
+  { name: 'updated_at', ddl: "updated_at TEXT NOT NULL DEFAULT (datetime('now'))" },
+];
 
 export class AppDatabase {
   private db: DatabaseSync;
@@ -94,28 +100,7 @@ export class AppDatabase {
     `);
 
     // CREATE TABLE IF NOT EXISTS never upgrades an existing table, so diff the columns too.
-    const expected: Array<[string, string]> = [
-      ['key', 'TEXT PRIMARY KEY'],
-      ['value', 'TEXT NOT NULL'],
-      ['updated_at', "TEXT NOT NULL DEFAULT (datetime('now'))"],
-    ];
-    const existing = new Set(
-      (this.db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
-        (c) => c.name
-      )
-    );
-    for (const [name, definition] of expected) {
-      if (existing.has(name)) continue;
-      // ALTER TABLE cannot add a primary key, nor a NOT NULL column without a default.
-      if (definition.includes('PRIMARY KEY') || definition === 'TEXT NOT NULL') {
-        logger
-          .child('storage')
-          .warn('settings table is missing column %s and it cannot be added automatically', name);
-        continue;
-      }
-      this.db.exec(`ALTER TABLE settings ADD COLUMN ${name} ${definition}`);
-      logger.child('storage').info('Added missing column settings.%s', name);
-    }
+    migrateColumns(this.db, 'settings', SETTINGS_COLUMNS);
   }
 
   public getRawDb(): DatabaseSync {

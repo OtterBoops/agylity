@@ -7,11 +7,6 @@ export interface QuotaEvaluatorOptions {
   alertThresholdPercent?: number;
 }
 
-export interface EvaluationResult {
-  alerts: QuotaAlert[];
-  supersededMilestones: Map<string, number[]>;
-}
-
 export interface EvaluationPlan {
   alerts: QuotaAlert[];
   pendingMilestones: Map<string, number[]>;

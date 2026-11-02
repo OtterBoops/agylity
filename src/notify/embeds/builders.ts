@@ -8,12 +8,6 @@ export interface EmbedBuildOptions {
   pingOwner?: boolean;
 }
 
-const formatOwnerMentionPrefix = (options?: EmbedBuildOptions): string => {
-  if (options?.pingOwner === false) return '';
-  const cleanId = options?.ownerUserId?.trim();
-  return cleanId ? `<@${cleanId}> ` : '';
-};
-
 export const buildQuotaAlertEmbed = (
   alert: QuotaAlert,
   _options?: EmbedBuildOptions

@@ -17,38 +17,34 @@ export const EFFORT_OPTIONS: Array<{
   { value: 'high', label: 'High' },
 ];
 
-export const MODEL_SUPPORTED_EFFORTS: Record<string, Array<'low' | 'medium' | 'high'>> = {
-  'gemini-4-argon': ['low', 'medium', 'high'],
-  'gemini-3.8-flash': ['low', 'medium', 'high'],
-  'claude-sonnet-5-5': ['low', 'medium', 'high'],
-  'claude-opus-5-5': ['low', 'medium', 'high'],
-  'gpt-oss-120b': ['medium'],
+type Effort = 'low' | 'medium' | 'high';
+
+const ALL_EFFORTS: Effort[] = ['low', 'medium', 'high'];
+
+/** Bundled effort facts for the pre-load window; the live catalog from /api/models wins. */
+const FALLBACK_MODEL_EFFORTS: Record<string, { supported: Effort[]; defaultEffort: Effort }> = {
+  'gemini-4-argon': { supported: ALL_EFFORTS, defaultEffort: 'high' },
+  'gemini-3.8-flash': { supported: ALL_EFFORTS, defaultEffort: 'medium' },
+  'claude-sonnet-5-5': { supported: ALL_EFFORTS, defaultEffort: 'high' },
+  'claude-opus-5-5': { supported: ALL_EFFORTS, defaultEffort: 'high' },
+  'gpt-oss-120b': { supported: ['medium'], defaultEffort: 'medium' },
 };
 
-export const MODEL_DEFAULT_EFFORT: Record<string, 'low' | 'medium' | 'high'> = {
-  'gemini-4-argon': 'high',
-  'gemini-3.8-flash': 'medium',
-  'claude-sonnet-5-5': 'high',
-  'claude-opus-5-5': 'high',
-  'gpt-oss-120b': 'medium',
+/** Reads effort rules from the server catalog, so a new model needs no frontend edit. */
+export const resolveModelEffort = (
+  models: Array<{ id: string; supportedEfforts?: string[]; defaultEffort?: string }>,
+  id: string
+): { supported: Effort[]; defaultEffort: Effort } => {
+  const live = models.find((m) => m.id === id);
+  const fallback = FALLBACK_MODEL_EFFORTS[id];
+  return {
+    supported: live?.supportedEfforts?.length
+      ? (live.supportedEfforts as Effort[])
+      : (fallback?.supported ?? ALL_EFFORTS),
+    defaultEffort:
+      (live?.defaultEffort as Effort | undefined) ?? fallback?.defaultEffort ?? 'medium',
+  };
 };
-
-export const SCHEDULE_MODE_OPTIONS: Array<{
-  value: 'immediate' | 'pre_reset';
-  label: string;
-  desc: string;
-}> = [
-  {
-    value: 'immediate',
-    label: 'Immediate',
-    desc: 'Dispatches as soon as a runner is available and pool quota permits',
-  },
-  {
-    value: 'pre_reset',
-    label: 'Pre-Reset Opportunistic',
-    desc: 'Dispatches only when pool reset is imminent with surplus headroom',
-  },
-];
 
 export const ORCHESTRATOR_FIELDS: FieldDef[] = [
   {
