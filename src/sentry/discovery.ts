@@ -17,9 +17,13 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
   args: readonly string[],
   options?: Record<string, unknown>
 ): Promise<{ stdout: string; stderr: string }> => {
+  const callerEnv = (options?.env as Record<string, string> | undefined) ?? {};
   return promisifiedExecFile(file, args as string[], {
     windowsHide: true,
     ...options,
+    // agy checks for updates on startup and its updater spawns a visible console window on
+    // Windows; agy only honours the switch from the child environment.
+    env: { ...process.env, ...callerEnv, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
   }) as Promise<{ stdout: string; stderr: string }>;
 };
 
