@@ -1,4 +1,10 @@
-import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from '../types.js';
+import type {
+  Notifier,
+  NotifierOptions,
+  QuotaAlert,
+  DispatchStatusUpdate,
+  DeliveryOutcome,
+} from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 
@@ -23,7 +29,7 @@ export class ConsoleNotifier implements Notifier {
     return this.initialize();
   }
 
-  async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
+  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
     this.alerts.push(alert);
     if (this.alerts.length > 100) this.alerts.shift();
 
@@ -44,6 +50,7 @@ export class ConsoleNotifier implements Notifier {
     console.log(line2);
     console.log(line3);
     console.log('└' + '─'.repeat(71) + '┘');
+    return { delivered: true, results: { [this.channelName]: { success: true } } };
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {

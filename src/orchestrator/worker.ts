@@ -300,7 +300,7 @@ export class TaskExecutor {
 
       const combinedOutput = [agyStdout?.trim(), agyStderr?.trim()].filter(Boolean).join('\n');
 
-      // 3. Optional verification command (e.g. "npm test")
+      // 3. Optional verification command; a coarse test-runner allowlist, not a sandbox.
       if (task.verifyCommand && task.verifyCommand.trim() !== '') {
         const trimmed = task.verifyCommand.trim();
         if (/[;&|`$><\r\n]/.test(trimmed)) {
@@ -309,20 +309,15 @@ export class TaskExecutor {
         const parts = trimmed.split(/\s+/);
         const cmd = parts[0]!;
         const cmdArgs = parts.slice(1);
-        const ALLOWED_TEST_RUNNERS = new Set([
-          'npm',
-          'pnpm',
-          'yarn',
-          'npx',
-          'node',
-          'pytest',
-          'cargo',
-          'go',
-        ]);
+        const ALLOWED_TEST_RUNNERS = new Set(['npm', 'pnpm', 'yarn', 'pytest', 'cargo', 'go']);
         if (!ALLOWED_TEST_RUNNERS.has(cmd)) {
           throw new Error(
             `Verification command '${cmd}' is not in approved test runner allowlist (${Array.from(ALLOWED_TEST_RUNNERS).join(', ')})`
           );
+        }
+        // Interpreters are excluded above; block inline-code flags as defence in depth.
+        if (cmdArgs.some((arg) => arg === '-e' || arg === '--eval' || arg === '-c')) {
+          throw new Error('Verification command must not use an inline-code flag (-e/--eval/-c)');
         }
         await this.execFileFn(cmd, cmdArgs, {
           cwd,
@@ -833,7 +828,16 @@ export class RemoteSwarmWorker {
     this.isRunning = true;
     this.abortController = new AbortController();
 
-    await this.registerIfNeeded();
+    try {
+      await this.registerIfNeeded();
+    } catch (err: any) {
+      // A transient coordinator outage at boot must not be fatal; the poll loop retries.
+      this.log.warn(
+        'Initial runner registration failed for %s; retrying in the poll loop: %s',
+        this.workerId,
+        err?.message ?? err
+      );
+    }
 
     const idleIntervalMs = this.options.idlePollIntervalMs ?? 2000;
     this.log.info(

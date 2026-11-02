@@ -1,4 +1,11 @@
-import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from '../types.js';
+import type {
+  Notifier,
+  NotifierOptions,
+  QuotaAlert,
+  DispatchStatusUpdate,
+  DeliveryOutcome,
+  DeliveryChannelResult,
+} from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
@@ -34,7 +41,18 @@ export class CompositeNotifier implements Notifier {
   }
 
   async initialize(): Promise<void> {
-    await Promise.all(this.notifiers.map((n) => n.initialize()));
+    const results = await Promise.allSettled(this.notifiers.map((n) => n.initialize()));
+    results.forEach((res, i) => {
+      if (res.status === 'rejected') {
+        logger
+          .child('notify:composite')
+          .error(
+            'Notification adapter %s failed to initialize: %s',
+            this.notifiers[i]?.channelName ?? 'unknown',
+            (res.reason as any)?.message ?? String(res.reason)
+          );
+      }
+    });
   }
 
   async init(): Promise<void> {
@@ -55,14 +73,29 @@ export class CompositeNotifier implements Notifier {
     }
   }
 
-  async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
+  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
     await this.syncResolvedOwner();
     const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyQuotaAlert(alert)));
-    for (const res of results) {
-      if (res.status === 'rejected') {
+    const channelResults: Record<string, DeliveryChannelResult> = {};
+    // No configured channels means nothing to deliver and nothing that can fail.
+    let delivered = this.notifiers.length === 0;
+    results.forEach((res, i) => {
+      const channelName = this.notifiers[i]?.channelName ?? `channel-${i}`;
+      if (res.status === 'fulfilled') {
+        const outcome = res.value as DeliveryOutcome | undefined;
+        // A legacy adapter that resolves without a result is treated as delivered.
+        const ok = !outcome || outcome.delivered !== false;
+        channelResults[channelName] = { success: ok };
+        if (ok) delivered = true;
+      } else {
+        channelResults[channelName] = {
+          success: false,
+          error: (res.reason as any)?.message ?? String(res.reason),
+        };
         logger.child('notify:composite').error('Quota alert delivery error:', res.reason);
       }
-    }
+    });
+    return { delivered, results: channelResults };
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {

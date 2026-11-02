@@ -111,7 +111,7 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
           'x-real-ip': '10.0.0.1',
           'x-forwarded-for': '10.0.0.2',
         },
-        '172.18.0.1'
+        '127.0.0.1'
       );
       assert.equal(extractClientIp(req, true), '176.12.32.119');
     });
@@ -122,19 +122,37 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
           'x-real-ip': '176.12.32.119',
           'x-forwarded-for': '10.0.0.2',
         },
-        '172.18.0.1'
+        '127.0.0.1'
       );
       assert.equal(extractClientIp(req, true), '176.12.32.119');
     });
 
-    it('extracts first hop in x-forwarded-for list', () => {
+    it('extracts the client from x-forwarded-for when the peer is a trusted proxy', () => {
+      const req = makeReq({ 'x-forwarded-for': '176.12.32.119' }, '127.0.0.1');
+      assert.equal(extractClientIp(req, true), '176.12.32.119');
+    });
+
+    it('IGNORES a client-supplied prefix in x-forwarded-for', () => {
       const req = makeReq(
         {
-          'x-forwarded-for': '176.12.32.119, 10.0.0.1, 10.0.0.2',
+          'x-forwarded-for': '1.2.3.4, 176.12.32.119',
+        },
+        '127.0.0.1'
+      );
+      // The leftmost entry is attacker-controlled, so the rightmost untrusted hop wins.
+      assert.equal(extractClientIp(req, true), '176.12.32.119');
+    });
+
+    it('ANTI-SPOOFING INVARIANT: a private-range peer is not a trusted proxy', () => {
+      const req = makeReq(
+        {
+          'cf-connecting-ip': '176.12.32.119',
+          'x-forwarded-for': '176.12.32.119',
         },
         '172.18.0.1'
       );
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      // Any host on the LAN or a Docker bridge can forge these headers, so they are ignored.
+      assert.equal(extractClientIp(req, true), '172.18.0.1');
     });
 
     it('normalizes ::ffff: in headers', () => {

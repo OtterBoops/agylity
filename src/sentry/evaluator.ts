@@ -12,6 +12,12 @@ export interface EvaluationResult {
   supersededMilestones: Map<string, number[]>;
 }
 
+export interface EvaluationPlan {
+  alerts: QuotaAlert[];
+  pendingMilestones: Map<string, number[]>;
+  supersededMilestones: Map<string, number[]>;
+}
+
 export class QuotaEvaluator {
   public milestoneHours: number[];
   public alertThresholdPercent: number;
@@ -110,21 +116,24 @@ export class QuotaEvaluator {
   }
 
   /**
-   * Evaluates a collection of snapshots, optionally updating SentryStateManager.
-   * Returns triggered QuotaAlerts.
+   * Evaluates snapshots into a delivery plan and records NO milestone state.
+   * Pending milestones are returned so the caller persists them only after delivery succeeds,
+   * which lets a failed notification retry on the next poll instead of being lost.
    */
-  evaluate(
+  evaluateWithPlan(
     snapshots: QuotaSnapshot[],
     stateManager?: SentryStateManager,
     nowMs: number = Date.now()
-  ): QuotaAlert[] {
+  ): EvaluationPlan {
     const alerts: QuotaAlert[] = [];
+    const pendingMilestones = new Map<string, number[]>();
+    const supersededMilestones = new Map<string, number[]>();
 
     for (const snapshot of snapshots) {
       let firedMilestones: string[] = [];
 
       if (stateManager) {
-        // Detect cycle rollover and update pool state
+        // Detect cycle rollover and update pool quota; milestone recording is deferred to the caller.
         stateManager.updatePoolQuota(
           snapshot.poolId,
           snapshot.remainingFraction,
@@ -136,27 +145,54 @@ export class QuotaEvaluator {
         }
       }
 
-      const { alert, supersededMilestones } = this.evaluatePool(snapshot, firedMilestones, nowMs);
+      const { alert, supersededMilestones: superseded } = this.evaluatePool(
+        snapshot,
+        firedMilestones,
+        nowMs
+      );
 
       if (alert) {
         alerts.push(alert);
 
-        if (stateManager) {
-          // Record the fired milestone
-          stateManager.recordMilestoneFired(
-            snapshot.poolId,
-            alert.milestoneHours,
-            alert.triggeredAt
-          );
+        const pending = pendingMilestones.get(snapshot.poolId) ?? [];
+        pending.push(alert.milestoneHours);
+        pendingMilestones.set(snapshot.poolId, pending);
 
-          // Record superseded milestones to prevent later notification spam
-          if (supersededMilestones.length > 0) {
-            stateManager.recordSupersededMilestones(snapshot.poolId, supersededMilestones);
-          }
+        if (superseded.length > 0) {
+          const poolSuperseded = supersededMilestones.get(snapshot.poolId) ?? [];
+          poolSuperseded.push(...superseded);
+          supersededMilestones.set(snapshot.poolId, poolSuperseded);
         }
       }
     }
 
-    return alerts;
+    return { alerts, pendingMilestones, supersededMilestones };
+  }
+
+  /**
+   * Evaluates a collection of snapshots, recording fired milestones on the state manager.
+   * Returns triggered QuotaAlerts.
+   */
+  evaluate(
+    snapshots: QuotaSnapshot[],
+    stateManager?: SentryStateManager,
+    nowMs: number = Date.now()
+  ): QuotaAlert[] {
+    const plan = this.evaluateWithPlan(snapshots, stateManager, nowMs);
+
+    if (stateManager) {
+      for (const alert of plan.alerts) {
+        stateManager.recordMilestoneFired(
+          alert.pool.poolId,
+          alert.milestoneHours,
+          alert.triggeredAt
+        );
+      }
+      for (const [poolId, milestones] of plan.supersededMilestones) {
+        stateManager.recordSupersededMilestones(poolId, milestones);
+      }
+    }
+
+    return plan.alerts;
   }
 }

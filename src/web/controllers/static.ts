@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sendJson, methodNotAllowed, STANDARD_SECURITY_HEADERS } from '../http.js';
 import { MIME_TYPES } from '../types.js';
+import { logger } from '../../logs/logger.js';
 
 export const resolvePublicFilePath = (relative: string): string | null => {
   if (relative.includes('\0')) {
@@ -64,9 +65,13 @@ export const handleStaticAsset = async (
       })
       .end(content);
   } catch (err: any) {
-    res
-      .writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' })
-      .end(`Error loading asset: ${err?.message}`);
+    logger.child('web').error('Static asset read failed for %s: %s', pathname, err?.message ?? err);
+    if (!res.headersSent) {
+      return sendJson(res, 500, { error: 'Failed to load asset' });
+    }
+    if (!res.writableEnded && !res.destroyed) {
+      res.end();
+    }
   }
 };
 

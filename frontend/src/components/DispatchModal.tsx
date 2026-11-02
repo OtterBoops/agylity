@@ -97,6 +97,13 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   const [status, setStatus] = useState<ToastState | null>(null);
   const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>(cachedCatalogModels);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, []);
 
   const handleModelChange = (newModel: string) => {
     setSelectedModel(newModel);
@@ -213,7 +220,8 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
         });
         setTaskPrompt('');
         setAllowOverage(false);
-        setTimeout(() => {
+        if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+        closeTimerRef.current = setTimeout(() => {
           onClose();
           setStatus(null);
         }, 2500);

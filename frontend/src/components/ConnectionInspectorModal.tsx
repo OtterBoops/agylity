@@ -41,7 +41,9 @@ export const ConnectionInspectorModal = ({
   const dialogRef = useRef<HTMLDialogElement>(null);
 
   useEffect(() => {
+    let mounted = true;
     fetchLatestRelease().then((rel) => {
+      if (!mounted) return;
       if (rel && isNewerVersion(APP_VERSION, rel.latest)) {
         setUpdateInfo({
           hasUpdate: true,
@@ -50,6 +52,9 @@ export const ConnectionInspectorModal = ({
         });
       }
     });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {

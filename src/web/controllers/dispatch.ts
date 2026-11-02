@@ -310,7 +310,7 @@ export const handleTaskStatus = async (
     return sendJson(res, 400, { error: 'Valid status is required' });
   }
 
-  const updated = await orchestrator.reportTaskStatus(taskId, {
+  const result = await orchestrator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
     workerId:
       auth.worker?.workerId ??
@@ -319,11 +319,31 @@ export const handleTaskStatus = async (
     output: typeof payload.output === 'string' ? payload.output : undefined,
     error: typeof payload.error === 'string' ? payload.error : undefined,
     durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
+    numTurns:
+      typeof payload.numTurns === 'number' && Number.isFinite(payload.numTurns)
+        ? payload.numTurns
+        : undefined,
+    totalTokens:
+      typeof payload.totalTokens === 'number' && Number.isFinite(payload.totalTokens)
+        ? payload.totalTokens
+        : undefined,
+    thinkingTokens:
+      typeof payload.thinkingTokens === 'number' && Number.isFinite(payload.thinkingTokens)
+        ? payload.thinkingTokens
+        : undefined,
     message: typeof payload.message === 'string' ? payload.message : undefined,
   });
 
-  if (!updated) {
+  if (!result) {
     return sendJson(res, 404, { error: `Task ${taskId} not found` });
+  }
+
+  if (!result.applied) {
+    return sendJson(res, 409, {
+      error: `Task ${taskId} status update refused; current status is ${result.task.status}`,
+      status: result.task.status,
+      task: result.task,
+    });
   }
 
   // Relay runner status update into coordinator logs
@@ -331,7 +351,7 @@ export const handleTaskStatus = async (
     logger.child('runner').info('[%s] %s', taskId, payload.message);
   }
 
-  return sendJson(res, 200, { success: true, task: updated });
+  return sendJson(res, 200, { success: true, task: result.task });
 };
 
 export const handleTaskCancel = (
@@ -354,7 +374,7 @@ export const handleTaskCancel = (
     status: 'aborted',
     error: 'Task aborted by user',
   });
-  return sendJson(res, 200, { success: true, task: updated });
+  return sendJson(res, 200, { success: true, task: updated?.task });
 };
 
 export const handleTaskRetry = async (

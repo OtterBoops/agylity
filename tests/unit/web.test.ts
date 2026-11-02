@@ -1215,4 +1215,192 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
   });
+
+  /* ==================================================================== */
+  /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
+  /* ==================================================================== */
+  describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {
+    const authHeaders = { 'x-agylity-worker-token': 'swarm-secret-token-999' };
+
+    const healthyFlashState = (dir: string): SentryStateManager => {
+      const state = new SentryStateManager(path.join(dir, 'state.json'));
+      state.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      return state;
+    };
+
+    it('returns 409 with the persisted status and leaves a terminal task untouched', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_terminal_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        orchestratorEnabled: true,
+        workerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: { repositoryName: 'agylity', prompt: 'Fail then report completed' },
+          })
+          .json<any>();
+        assert.ok(disp.taskId);
+
+        // First report marks the task failed (as the reaper would)
+        const failed = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: { status: 'failed', error: 'boom' },
+          })
+          .json<any>();
+        assert.equal(failed.success, true);
+        assert.equal(failed.task.status, 'failed');
+
+        // A late 'completed' report must be refused, not reported as success
+        await assert.rejects(
+          async () => {
+            await ky.post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+              headers: authHeaders,
+              json: { status: 'completed', branchName: 'antigravity/late' },
+              retry: 0,
+            });
+          },
+          (err: any) => {
+            assert.equal(err.response?.status, 409);
+            return true;
+          }
+        );
+
+        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.status, 'failed');
+        assert.equal(task?.branchName, undefined);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('returns 409 when a status patch comes from a different worker', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_crossworker_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        orchestratorEnabled: true,
+        workerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState: healthyFlashState(dir),
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: { repositoryName: 'agylity', prompt: 'Owned by worker-a' },
+          })
+          .json<any>();
+
+        const poll = await ky
+          .post(`${baseUrl}/api/tasks/poll`, {
+            headers: authHeaders,
+            json: { workerId: 'worker-a', timeoutMs: 0 },
+          })
+          .json<any>();
+        assert.equal(poll.task?.id, disp.taskId);
+
+        // A patch from worker-b must be refused
+        await assert.rejects(
+          async () => {
+            await ky.post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+              headers: authHeaders,
+              json: { status: 'executing', workerId: 'worker-b' },
+              retry: 0,
+            });
+          },
+          (err: any) => {
+            assert.equal(err.response?.status, 409);
+            return true;
+          }
+        );
+
+        // The owning worker-a patch is still accepted
+        const accepted = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: { status: 'executing', workerId: 'worker-a' },
+          })
+          .json<any>();
+        assert.equal(accepted.success, true);
+        assert.equal(accepted.task.status, 'executing');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('persists runner token telemetry (numTurns, totalTokens, thinkingTokens) from a status report', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_telemetry_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        orchestratorEnabled: true,
+        workerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: { repositoryName: 'agylity', prompt: 'Telemetry task' },
+          })
+          .json<any>();
+
+        const reported = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'completed',
+              branchName: 'antigravity/task-telemetry',
+              numTurns: 4,
+              totalTokens: 1670,
+              thinkingTokens: 120,
+            },
+          })
+          .json<any>();
+        assert.equal(reported.success, true);
+
+        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.numTurns, 4);
+        assert.equal(task?.totalTokens, 1670);
+        assert.equal(task?.thinkingTokens, 120);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
 });

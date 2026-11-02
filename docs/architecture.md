@@ -125,7 +125,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 ### 3.7. Edge Rate Limiting & Timing-Safe Control Plane
 
-When `WEB_UI_AUTH_TOKEN` is configured:
+`WEB_UI_AUTH_TOKEN` is mandatory for a non-loopback `WEB_UI_HOST`: the server refuses to start without it, and only warns for a loopback bind. When configured:
 
 - **Route Lockdown**: All `/api/*` routes require Bearer token authorization, except public `/api/health` and runner-authenticated endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`).
 - **Timing-Safe Verification**: Bearer tokens and runner shared secrets are verified using constant-time `crypto.timingSafeEqual` with buffer length validation.

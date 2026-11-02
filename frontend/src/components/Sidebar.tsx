@@ -81,7 +81,9 @@ export const Sidebar = ({
   });
 
   useEffect(() => {
+    let mounted = true;
     fetchLatestRelease().then((rel) => {
+      if (!mounted) return;
       if (rel && isNewerVersion(APP_VERSION, rel.latest)) {
         setUpdateInfo({
           hasUpdate: true,
@@ -90,6 +92,9 @@ export const Sidebar = ({
         });
       }
     });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   const configurationItems: NavItem[] = [

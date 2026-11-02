@@ -24,6 +24,13 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (isOpen) {
@@ -60,7 +67,8 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
 
     if (result.success) {
       setSuccessMessage('Token verified and updated successfully');
-      setTimeout(() => {
+      if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = setTimeout(() => {
         onTokenUpdated();
         onClose();
       }, 1000);

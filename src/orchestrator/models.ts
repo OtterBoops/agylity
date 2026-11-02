@@ -248,7 +248,7 @@ export interface ModelEligibilityResult {
   family: QuotaFamily;
   effectiveHeadroomPercent: number;
   hoursUntilReset: number | null;
-  code?: 'OVERAGE_PROTECTION_TRIGGERED' | 'QUOTA_BURN_CONDITIONS_NOT_MET';
+  code?: 'OVERAGE_PROTECTION_TRIGGERED' | 'QUOTA_BURN_CONDITIONS_NOT_MET' | 'TELEMETRY_UNAVAILABLE';
   reason?: string;
 }
 
@@ -280,12 +280,24 @@ export const evaluateModelDispatchEligibility = (
         reason: `Pre-Reset Quota-Burn task queued: waiting for telemetry confirming <${quotaBurnMaxHours}h to reset and >=${minHeadroom}% headroom.`,
       };
     }
+    if (allowOverage) {
+      return {
+        allowed: true,
+        resolvedModel,
+        family,
+        effectiveHeadroomPercent: 100,
+        hoursUntilReset: null,
+      };
+    }
+    // No telemetry means the safety floor cannot be verified, so fail closed.
     return {
-      allowed: true,
+      allowed: false,
       resolvedModel,
       family,
-      effectiveHeadroomPercent: 100,
+      effectiveHeadroomPercent: 0,
       hoursUntilReset: null,
+      code: 'TELEMETRY_UNAVAILABLE',
+      reason: `Overage Protection: quota telemetry for ${family} could not be read, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
     };
   }
 

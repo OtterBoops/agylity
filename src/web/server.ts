@@ -14,9 +14,15 @@ export const createWebServer = (options: WebServerOptions): http.Server => {
     try {
       await handleRequest(req, res, options);
     } catch (err: any) {
+      logger
+        .child('web')
+        .error('Unhandled route error for %s %s: %s', req.method, req.url, err?.stack ?? err);
+      // The message stays in the log: it can carry absolute paths and SQL detail.
       if (!res.headersSent) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal Server Error', message: err?.message }));
+        res.end(JSON.stringify({ error: 'Internal Server Error' }));
+      } else if (!res.writableEnded && !res.destroyed) {
+        res.end();
       }
     }
   });
@@ -34,16 +40,42 @@ export const createWebServer = (options: WebServerOptions): http.Server => {
   return server;
 };
 
+/** Only a literal loopback bind is reachable from this machine alone. */
+const isLoopbackHost = (host: string): boolean => {
+  const h = host.trim().toLowerCase();
+  return h === '127.0.0.1' || h === '::1' || h === 'localhost';
+};
+
 /**
  * Starts the native HTTP server listening on the configured host and port.
  * Handles port collisions (EADDRINUSE) cleanly by rejecting the returned promise.
  */
+
 export const startWebServer = async (
   options: WebServerOptions
 ): Promise<{ server: http.Server; port: number; host: string }> => {
+  // A SecretDecryptionError from resolveConfig propagates: a secret that cannot be decrypted
+  // must never be treated as an absent one.
   const resolved = options.configStore.resolveConfig();
   const host = options.host ?? resolved.webUiHost ?? '0.0.0.0';
   const port = options.port ?? resolved.webUiPort ?? BUILTIN_DEFAULTS.webUiPort;
+  const expectedToken = resolved.webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
+  const log = options.logger ?? logger.child('web');
+
+  if (!expectedToken) {
+    if (!isLoopbackHost(host)) {
+      throw new Error(
+        `Refusing to start the control plane on ${host}:${port} without WEB_UI_AUTH_TOKEN. ` +
+          'Set WEB_UI_AUTH_TOKEN, or bind to loopback with WEB_UI_HOST=127.0.0.1.'
+      );
+    }
+    log.warn(
+      'WEB_UI_AUTH_TOKEN is not set; the control plane is unauthenticated on %s:%d (loopback only).',
+      host,
+      port
+    );
+  }
+
   const server = createWebServer(options);
 
   return new Promise((resolve, reject) => {
@@ -64,7 +96,6 @@ export const startWebServer = async (
         const addr = server.address() as net.AddressInfo | string | null;
         const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
         const actualHost = typeof addr === 'object' && addr !== null ? addr.address : host;
-        const log = options.logger ?? logger.child('web');
         log.info('Web server listening on http://%s:%d', actualHost, actualPort);
         resolve({ server, port: actualPort, host: actualHost });
       }

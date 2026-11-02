@@ -117,10 +117,25 @@ export const DispatchResultSchema = z.object({
   code: z.string().optional(),
 });
 
+/** Per-channel outcome of a single notification delivery attempt. */
+export interface DeliveryChannelResult {
+  success: boolean;
+  error?: string;
+}
+
+/**
+ * Aggregate outcome of a notifyQuotaAlert call.
+ * `delivered` is true when at least one channel delivered, or when no channels are configured.
+ */
+export interface DeliveryOutcome {
+  delivered: boolean;
+  results: Record<string, DeliveryChannelResult>;
+}
+
 export interface Notifier {
   readonly channelName: string;
   initialize(): Promise<void>;
-  notifyQuotaAlert(alert: QuotaAlert): Promise<void>;
+  notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome>;
   notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void>;
   updateConfig?(newConfig: Partial<ResolvedConfig>): Promise<void>;
   shutdown(): Promise<void>;

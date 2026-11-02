@@ -1,6 +1,12 @@
 import ky from 'ky';
 import crypto from 'node:crypto';
-import type { Notifier, NotifierOptions, QuotaAlert, DispatchStatusUpdate } from '../types.js';
+import type {
+  Notifier,
+  NotifierOptions,
+  QuotaAlert,
+  DispatchStatusUpdate,
+  DeliveryOutcome,
+} from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
@@ -72,25 +78,11 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
       u.hostname.toLowerCase().includes('discordapp.com')
     ) {
       u.pathname = `/${cleanSegments[0] || 'api'}/***`;
-    } else if (cleanSegments.length >= 2) {
-      // Generic multi-segment webhook paths: mask terminal token segment
+    } else if (cleanSegments.length >= 1) {
+      // Generic webhook paths: mask the terminal token segment regardless of count or length,
+      // so a single-segment secret such as /secret123 is not returned verbatim.
       const base = cleanSegments.slice(0, cleanSegments.length - 1).join('/');
-      u.pathname = `/${base}/***`;
-    } else if (cleanSegments.length > 0) {
-      // Check individual segments for UUID or high-entropy token shapes
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      const tokenRegex = /^[A-Za-z0-9_-]{24,}$/;
-      let modified = false;
-      const masked = cleanSegments.map((seg) => {
-        if (uuidRegex.test(seg) || tokenRegex.test(seg)) {
-          modified = true;
-          return '***';
-        }
-        return seg;
-      });
-      if (modified) {
-        u.pathname = `/${masked.join('/')}`;
-      }
+      u.pathname = base ? `/${base}/***` : '/***';
     }
 
     return u.toString();
@@ -98,6 +90,30 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
     return '[invalid-url]';
   }
 };
+
+/**
+ * Extracts the raw path/query values that sanitizeWebhookUrl masks, so the same secret can be
+ * redacted from error text or response bodies that quote it without the URL wrapper.
+ */
+function extractMaskedTokens(rawUrl: string): string[] {
+  try {
+    const raw = new URL(rawUrl);
+    const sanitized = new URL(sanitizeWebhookUrl(rawUrl));
+    const rawSegments = raw.pathname.split('/').filter(Boolean);
+    const sanitizedSegments = sanitized.pathname.split('/').filter(Boolean);
+    const tokens = new Set<string>();
+    rawSegments.forEach((segment, i) => {
+      if (segment && sanitizedSegments[i] !== segment) tokens.add(segment);
+    });
+    for (const key of raw.searchParams.keys()) {
+      const value = raw.searchParams.get(key);
+      if (value) tokens.add(value);
+    }
+    return [...tokens];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Strips raw webhook URLs and secrets from error strings before logging or API delivery.
@@ -108,6 +124,10 @@ export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   if (rawUrl && typeof rawUrl === 'string' && rawUrl.length > 0) {
     const sanitized = sanitizeWebhookUrl(rawUrl);
     result = result.split(rawUrl).join(sanitized);
+    // Response bodies and error text can quote a secret with no URL around it.
+    for (const token of extractMaskedTokens(rawUrl)) {
+      result = result.split(token).join('***');
+    }
   }
   return result.replace(/https?:\/\/[^\s"',)]+/gi, (matchedUrl) => {
     return sanitizeWebhookUrl(matchedUrl);
@@ -160,7 +180,7 @@ export class WebhookNotifier implements Notifier {
     this.config = { ...this.config, ...newConfig };
   }
 
-  async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
+  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
     this.alerts.push(alert);
     if (this.alerts.length > 100) this.alerts.shift();
 
@@ -199,8 +219,17 @@ export class WebhookNotifier implements Notifier {
 
     try {
       await this.postWebhook(payload);
-    } catch {
-      // Error already logged by postWebhook
+      return { delivered: true, results: { [this.channelName]: { success: true } } };
+    } catch (err: any) {
+      return {
+        delivered: false,
+        results: {
+          [this.channelName]: {
+            success: false,
+            error: sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl()),
+          },
+        },
+      };
     }
   }
 
@@ -288,7 +317,7 @@ export class WebhookNotifier implements Notifier {
       const res = await this.postWebhook(payload);
       return {
         success: true,
-        message: `Webhook ping delivered successfully to ${sanitizeWebhookUrl(url)} (status ${res.status})`,
+        message: `Webhook ping delivered successfully (status ${res.status}).`,
         channel: this.channelName,
       };
     } catch (err: any) {
@@ -364,7 +393,8 @@ export class WebhookNotifier implements Notifier {
         body: bodyStr,
         headers,
         timeout: 5000,
-        retry: 1,
+        // ky's default retry.methods excludes POST, so opt it in explicitly.
+        retry: { limit: 1, methods: ['post'] },
       });
 
       logger

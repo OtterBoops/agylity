@@ -10,6 +10,7 @@ import {
   BUILTIN_DEFAULTS,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
+import { logger, createMemorySink } from '../../src/logs/logger.js';
 
 describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses valid environment variables with correct coerced types', () => {
@@ -286,5 +287,62 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
     assert.equal(store.get('webUiPort'), BUILTIN_DEFAULTS.webUiPort);
 
     store.close();
+  });
+});
+
+describe('parseRawEnv malformed-value resilience', () => {
+  it('falls back to built-in defaults instead of throwing on malformed env values', () => {
+    const parsed = parseRawEnv({
+      REPOSITORIES_JSON: '{ broken json',
+      ORCHESTRATOR_ENABLED: 'maybe',
+      WEB_UI_ENABLED: 'sure',
+      QUOTA_MILESTONE_HOURS: 'abc,def',
+    });
+
+    assert.equal(parsed.repositories, undefined);
+    assert.equal(parsed.orchestratorEnabled, undefined);
+    assert.equal(parsed.webUiEnabled, undefined);
+    assert.deepEqual(parsed.quotaMilestoneHours, [24, 12, 3]);
+
+    // The ConfigStore constructor must not crash; the resolved config uses the defaults
+    const store = new ConfigStore(':memory:', parsed);
+    const config = store.resolveConfig();
+    assert.deepEqual(config.repositories, []);
+    assert.equal(config.orchestratorEnabled, false);
+    assert.equal(config.webUiEnabled, false);
+    assert.deepEqual(config.quotaMilestoneHours, [24, 12, 3]);
+    store.close();
+  });
+
+  it('parses each env field independently so one bad value does not drop the rest', () => {
+    const parsed = parseRawEnv({
+      ORCHESTRATOR_ENABLED: 'maybe',
+      REPOSITORIES_JSON: '{ broken json',
+      LOG_LEVEL: 'debug',
+      QUOTA_CHECK_INTERVAL_SECONDS: '300',
+    });
+
+    assert.equal(parsed.orchestratorEnabled, undefined);
+    assert.equal(parsed.repositories, undefined);
+    assert.equal(parsed.logLevel, 'debug');
+    assert.equal(parsed.quotaCheckIntervalSeconds, 300);
+  });
+
+  it('logs a warning naming each malformed variable', () => {
+    const memory = createMemorySink();
+    const previousLevel = logger.getLevel();
+    logger.setLevel('debug');
+    const detach = logger.addSink(memory.sink);
+    try {
+      parseRawEnv({ REPOSITORIES_JSON: '{ broken json', QUOTA_MILESTONE_HOURS: 'abc' });
+      const warnings = memory.records
+        .filter((record) => record.level === 'warn')
+        .map((record) => record.formatted);
+      assert.ok(warnings.some((message) => message.includes('REPOSITORIES_JSON')));
+      assert.ok(warnings.some((message) => message.includes('QUOTA_MILESTONE_HOURS')));
+    } finally {
+      detach();
+      logger.setLevel(previousLevel);
+    }
   });
 });

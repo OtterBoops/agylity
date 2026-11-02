@@ -7,6 +7,7 @@ import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { RemoteSwarmWorker, TaskExecutor } from '../../src/orchestrator/worker.js';
+import { SentryStateManager } from '../../src/sentry/state.js';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../../src/sentry/discovery.js';
 
 const execFileAsync = promisify(execFile);
@@ -22,6 +23,7 @@ async function main() {
   const repoDir = path.join(tmpRoot, 'test-target-repo');
   const dbPath = path.join(tmpRoot, 'coordinator.db');
   const runnerStatePath = path.join(tmpRoot, 'runner-state.json');
+  const coordinatorStatePath = path.join(tmpRoot, 'coordinator-state.json');
 
   let serverInstance: any = null;
   let configStore: ConfigStore | null = null;
@@ -62,8 +64,25 @@ async function main() {
       ],
     });
 
+    // Live telemetry: without it the safety floor fails closed and the claim is refused.
+    const sentryState = new SentryStateManager(coordinatorStatePath);
+    sentryState.setState({
+      version: 1,
+      lastProbeAt: new Date().toISOString(),
+      lastProbeSource: 'connect_rpc',
+      pools: {
+        'gemini-flash': {
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          remainingFraction: 0.8,
+          firedMilestones: [],
+          lastAlertSentAt: null,
+        },
+      },
+    });
+
     const { server, port } = await startWebServer({
       configStore,
+      sentryState,
       host: '127.0.0.1',
       port: 0,
     });

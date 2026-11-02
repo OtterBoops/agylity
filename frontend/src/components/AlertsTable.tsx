@@ -55,7 +55,7 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
                     </td>
                     <td class="px-4 py-3">
                       <span class="font-mono text-xs text-pine-gold sm:text-sm">
-                        {ev.firedMilestones.join(', ')}
+                        {(ev.firedMilestones ?? []).join(', ') || 'N/A'}
                       </span>
                     </td>
                     <td class="px-4 py-3 text-right text-xs font-semibold text-pine-text sm:text-sm">

@@ -63,12 +63,11 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
     return false;
   }
   const token = authHeader.slice(7).trim();
-  const tokenBuf = Buffer.from(token);
-  const expectedBuf = Buffer.from(expectedToken);
-  if (tokenBuf.length !== expectedBuf.length) {
-    return false;
-  }
-  return crypto.timingSafeEqual(tokenBuf, expectedBuf);
+  // Compare fixed-width digests: a raw Buffer compare returns early on a length mismatch,
+  // which leaks the expected token's length through response timing.
+  const tokenDigest = crypto.createHash('sha256').update(token).digest();
+  const expectedDigest = crypto.createHash('sha256').update(expectedToken).digest();
+  return crypto.timingSafeEqual(tokenDigest, expectedDigest);
 };
 
 interface AuthFailureRecord {
@@ -79,6 +78,31 @@ interface AuthFailureRecord {
 
 const authFailuresByIp = new Map<string, AuthFailureRecord>();
 
+const AUTH_FAILURE_WINDOW_MS = 60_000;
+const AUTH_FAILURE_MAX_ENTRIES = 10_000;
+
+/** Entries are only otherwise removed on a successful auth, so a flood must not grow the map. */
+const pruneAuthFailures = (now: number): void => {
+  for (const [ip, record] of authFailuresByIp) {
+    if (record.blockedUntilMs <= now && now - record.lastFailureMs > AUTH_FAILURE_WINDOW_MS) {
+      authFailuresByIp.delete(ip);
+    }
+  }
+
+  while (authFailuresByIp.size > AUTH_FAILURE_MAX_ENTRIES) {
+    let oldestIp: string | null = null;
+    let oldestMs = Number.POSITIVE_INFINITY;
+    for (const [ip, record] of authFailuresByIp) {
+      if (record.lastFailureMs < oldestMs) {
+        oldestMs = record.lastFailureMs;
+        oldestIp = ip;
+      }
+    }
+    if (oldestIp === null) break;
+    authFailuresByIp.delete(oldestIp);
+  }
+};
+
 export const recordAuthFailure = (clientIp: string): boolean => {
   const now = Date.now();
   const record = authFailuresByIp.get(clientIp) ?? {
@@ -87,7 +111,7 @@ export const recordAuthFailure = (clientIp: string): boolean => {
     lastFailureMs: now,
   };
 
-  if (now - record.lastFailureMs > 60_000) {
+  if (now - record.lastFailureMs > AUTH_FAILURE_WINDOW_MS) {
     record.failures = 0;
     record.blockedUntilMs = 0;
   }
@@ -96,10 +120,11 @@ export const recordAuthFailure = (clientIp: string): boolean => {
   record.lastFailureMs = now;
 
   if (record.failures >= 10) {
-    record.blockedUntilMs = now + 60_000;
+    record.blockedUntilMs = now + AUTH_FAILURE_WINDOW_MS;
   }
 
   authFailuresByIp.set(clientIp, record);
+  pruneAuthFailures(now);
   return record.blockedUntilMs > now;
 };
 

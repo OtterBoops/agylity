@@ -197,13 +197,16 @@ export const SettingsForm = ({
                     <button
                       type="button"
                       class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love"
-                      onClick={() => {
-                        deleteConfigOverride(f.key).then(() => {
+                      onClick={async () => {
+                        try {
+                          await deleteConfigOverride(f.key);
                           const nextDraft = { ...draft };
                           delete nextDraft[f.key];
                           setDraft(nextDraft);
                           onSaved();
-                        });
+                        } catch (err: any) {
+                          setToast({ type: 'error', message: err?.message || 'Failed to reset' });
+                        }
                       }}
                     >
                       (reset)

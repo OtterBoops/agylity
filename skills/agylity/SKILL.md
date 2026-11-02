@@ -180,8 +180,10 @@ Coordinator (Homelab / Cloud)
 ### 3. Verification Sandbox (`verifyCommand`)
 
 - **Metacharacter Rejection**: Verifications reject shell operators: `/[;&|`$><\r\n]/`.
-- **Executable Allowlist**: Only sanctioned toolchains may execute:
-  `['npm', 'pnpm', 'yarn', 'npx', 'node', 'pytest', 'cargo', 'go']`.
+- **Executable Allowlist**: Only sanctioned test invocations may execute:
+  `['npm', 'pnpm', 'yarn', 'pytest', 'cargo', 'go']`. `node` and `npx` are deliberately excluded -
+  with either of them the "allowlist" is arbitrary code execution under the runner's identity.
+- **Inline-Code Rejection**: `-e`, `--eval` and `-c` are rejected for the remaining interpreters.
 
 ### 4. Opportunistic Quota Burning (P2)
 
@@ -214,16 +216,21 @@ Agylity uses zero external database dependencies, relying exclusively on Node 24
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
 - **Key Tables & State:**
   - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
-  - `swarm_tasks`: `(id TEXT PRIMARY KEY, title TEXT, prompt TEXT, repository_name TEXT, repository_id TEXT, repository_path TEXT, clone_url TEXT, branch_name TEXT, status TEXT, ...)` - stores swarm task queue and execution lifecycle.
-  - `swarm_workers`: `(worker_id TEXT PRIMARY KEY, name TEXT, worker_mode TEXT, labels TEXT, enabled INTEGER, status TEXT, last_seen_at TEXT, ...)` - tracks registered runner nodes and heartbeat telemetry.
-  - `dispatches`: `(id INTEGER PRIMARY KEY AUTOINCREMENT, repository TEXT, prompt TEXT, requested_by TEXT, success INTEGER, branch TEXT, error TEXT, duration_ms INTEGER, created_at TEXT)` - stores task execution records.
+  - `swarm_tasks`: `(id TEXT PRIMARY KEY, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, schedule_mode, required_labels_json, model, pool_family, effort, allow_overage, push_branch, auto_create_pr, pr_url, expires_at, standing_task_id, verify_command, status, worker_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. There is no `title` column.
+  - `swarm_workers`: `(worker_id TEXT PRIMARY KEY, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)` - registered runner nodes and heartbeat telemetry. Labels and repositories are JSON columns, not `labels`/`worker_mode`.
+  - `swarm_runner_registrations`: one row per one-time registration token; consumed and expired rows are pruned by `pruneRegistrationTokens()`.
+  - `standing_tasks`: recurring task definitions triggered by the pre-reset window.
+  - Legacy leftovers from an older schema (`dispatches`, and the `dispatch_id`, `priority`, `priority_rank`, `worker_mode` columns) are no longer written and are intentionally not dropped.
+  - **Schema migration must be checked, not assumed:** `initSchema()`/`runMigrations()` are `CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that `ALTER TABLE ADD COLUMN`s anything missing. The CREATE alone never upgrades a database written by an earlier schema, and the failure surfaces only when a user tries to dispatch (`table swarm_tasks has no column named schedule_mode`) while `/api/health` stays green. Diff `PRAGMA table_info` against the source definitions before trusting an existing `data/agylity.db`.
+  - **Fail-Closed Startup:** the web server refuses to start when no `WEB_UI_AUTH_TOKEN` is configured and the bind host is not loopback (`127.0.0.1`/`::1`/`localhost`); a loopback bind without a token starts with a warning. Never re-introduce a silent skip of the auth block - that turned the shipped compose file, which binds `0.0.0.0:8484`, into an unauthenticated control plane.
+  - **Strict CIDR prefixes:** an empty prefix such as `1.2.3.4/` must be rejected, never parsed as `/0`, which would silently allow every client.
   - Sentry Alert State: `data/state.json` tracks deduplicated milestone firings per pool across restarts.
   - Log Buffer: In-memory ring buffer (`LogBuffer`) for recent operations, broadcast to subscribers via SSE.
 
 ### Control Plane Authentication & Edge Security
 
-- **Zero-Leak Control Plane Gate:** When `WEB_UI_AUTH_TOKEN` is configured, all API endpoints (excluding `/api/health` and `/api/auth/verify`) require `Authorization: Bearer <token>`. Unauthenticated clients receive a solid `<ControlPlaneGate />` that completely unmounts and replaces the DOM, ensuring zero settings, logs, or metrics leak in the browser before authentication.
-- **Application IP Allowlisting & Anti-Spoofing:** When `ALLOWED_CLIENT_IPS` is configured, requests from unlisted IPs or CIDR blocks receive HTTP 403 Forbidden. When behind reverse proxies (Caddy, Cloudflare, Traefik), `TRUSTED_REVERSE_PROXIES` ensures the rightmost untrusted address in `x-forwarded-for` is verified, preventing client-spoofed header bypasses.
+- **Zero-Leak Control Plane Gate:** When `WEB_UI_AUTH_TOKEN` is configured, all API endpoints (excluding `/api/health` and the runner-token endpoints) require `Authorization: Bearer <token>`. Unauthenticated clients receive a solid `<ControlPlaneGate />` that completely unmounts and replaces the DOM, ensuring zero settings, logs, or metrics leak in the browser before authentication.
+- **Application IP Allowlisting & Anti-Spoofing:** When `ALLOWED_IP_RANGES` is configured, requests from unlisted IPs or CIDR blocks receive HTTP 403 Forbidden. When behind reverse proxies (Caddy, Cloudflare, Traefik), `TRUSTED_PROXIES` (a boolean, not a list) honours proxy headers only when the direct TCP peer is loopback, and walks `x-forwarded-for` right-to-left skipping trusted hops, so a client-supplied prefix cannot name its own address. Private ranges are deliberately NOT trusted - any host on a LAN or Docker bridge could otherwise forge the headers. There is no `/api/auth/verify` route.
 
 ---
 

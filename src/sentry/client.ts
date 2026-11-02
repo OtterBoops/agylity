@@ -12,6 +12,8 @@ import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
+  deriveOverageEnabled,
+  GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
   resolveModelFamily,
@@ -84,7 +86,6 @@ export interface ConnectRpcQuotaClientOptions {
   host?: string;
   port?: number;
   csrfToken?: string;
-  protocol?: 'http' | 'https';
   timeoutMs?: number;
   fallbackPorts?: number[];
   agyBinPath?: string;
@@ -104,6 +105,7 @@ export interface ConnectRpcQuotaClientOptions {
 export const RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData';
 export const QUOTA_SUMMARY_RPC_PATH =
   '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary';
+export const USER_STATUS_RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetUserStatus';
 
 // Connect-RPC Client Implementation
 
@@ -156,7 +158,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private host: string;
   private port: number;
   private csrfToken: string;
-  private protocol: 'http' | 'https';
   private timeoutMs: number;
   private fallbackPorts: number[];
   private agyBinPath: string;
@@ -169,6 +170,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private lastFetchedAt: number = 0;
   private activeProvider: 'rpc' | 'cli' | 'unknown' = 'unknown';
   private lastProbeSource: 'connect_rpc' | 'cli' | 'cli_fallback' = 'connect_rpc';
+  private lastFallbackSynthetic = false;
   private nextRpcProbeAt: number = 0;
   private authBlockedUntil: number = 0;
   private lastAuthErrorMessage?: string;
@@ -192,7 +194,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       options.port ??
       (process.env.ANTIGRAVITY_LS_PORT ? Number(process.env.ANTIGRAVITY_LS_PORT) : 60643);
     this.csrfToken = options.csrfToken ?? process.env.ANTIGRAVITY_CSRF_TOKEN ?? '';
-    this.protocol = options.protocol ?? 'http';
     this.timeoutMs = options.timeoutMs ?? 5000;
     this.fallbackPorts =
       options.fallbackPorts ?? (this.port === 60643 ? [60643, 60642] : [this.port, 60643, 60642]);
@@ -261,7 +262,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.lastKnownSnapshots = cliSnapshots;
           this.lastFetchedAt = Date.now();
-          this.lastProbeSource = 'cli';
+          this.lastProbeSource = this.lastFallbackSynthetic ? 'cli_fallback' : 'cli';
           this.lastFailedAt = 0;
           this.lastProbeError = undefined;
           this.authBlockedUntil = 0;
@@ -355,7 +356,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
           this.activeProvider = 'cli';
-          this.lastProbeSource = 'cli';
+          this.lastProbeSource = this.lastFallbackSynthetic ? 'cli_fallback' : 'cli';
           this.nextRpcProbeAt = Date.now() + 15 * 60 * 1000;
           this.logger.info('Retrieved %d model pools via Antigravity CLI', cliSnapshots.length);
           this.lastKnownSnapshots = cliSnapshots;
@@ -574,22 +575,20 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           },
         });
 
-        if (response.ok) {
-          const rawJson = await response.json();
-          const parsed = RetrieveUserQuotaSummaryResponseSchema.safeParse(rawJson);
-          if (parsed.success && parsed.data.response?.groups?.length > 0) {
-            const remainingCredits = await this.getRemainingCredits();
-            const snapshots = aggregateUserQuotaSummary(parsed.data, Date.now(), {
-              remainingCredits,
-            });
-            const summary = snapshots
-              .map(
-                (s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`
-              )
-              .join(', ');
-            this.logger.info('Quota status: %s', summary);
-            return snapshots;
-          }
+        const rawJson = await response.json();
+        const parsed = RetrieveUserQuotaSummaryResponseSchema.safeParse(rawJson);
+        if (parsed.success && parsed.data.response?.groups?.length > 0) {
+          const remainingCredits = await this.getRemainingCredits();
+          const overageEnabled = await this.probeOverageEnabled(kyInstance, base);
+          const snapshots = aggregateUserQuotaSummary(parsed.data, Date.now(), {
+            remainingCredits,
+            overageEnabled,
+          });
+          const summary = snapshots
+            .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
+            .join(', ');
+          this.logger.info('Quota status: %s', summary);
+          return snapshots;
         }
       } catch (err: unknown) {
         if (isConnectionRefused(err)) {
@@ -623,14 +622,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           },
         });
 
-        if (!response.ok) {
-          const bodyText = await response.text().catch(() => '');
-          throw new LanguageServerError(
-            `RPC returned HTTP ${response.status}: ${bodyText}`,
-            `HTTP_${response.status}`
-          );
-        }
-
         const rawJson = await response.json();
         const parsed = LanguageServerResponseSchema.parse(rawJson);
         const remainingCredits = await this.getRemainingCredits();
@@ -656,9 +647,46 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   }
 
   /**
+   * Probes GetUserStatus for the plan signal that drives overage detection.
+   * Returns undefined when no signal is obtained so "unknown" is distinct from false.
+   */
+  private async probeOverageEnabled(
+    kyInstance: typeof ky,
+    base: string
+  ): Promise<boolean | undefined> {
+    try {
+      const response = await kyInstance.post(`${base}${USER_STATUS_RPC_PATH}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          'Connect-Protocol-Version': '1',
+          'x-codeium-csrf-token': this.csrfToken,
+        },
+        json: {},
+        timeout: this.timeoutMs,
+        retry: {
+          limit: 0,
+        },
+      });
+      const rawJson = await response.json();
+      const parsed = GetUserStatusResponseSchema.safeParse(rawJson);
+      if (parsed.success) {
+        return deriveOverageEnabled(parsed.data);
+      }
+    } catch (err: unknown) {
+      this.logger.debug(
+        'GetUserStatus probe failed: %s',
+        err instanceof Error ? err.message : String(err)
+      );
+    }
+    return undefined;
+  }
+
+  /**
    * Executes agy CLI models subcommand as fallback.
    */
   async fallbackToCli(): Promise<QuotaSnapshot[]> {
+    this.lastFallbackSynthetic = false;
+
     // 1. First attempt authoritative agy -p "/usage" (100% parity with Language Server RetrieveUserQuotaSummary)
     try {
       const { stdout: usageStdout } = await this.execFileFn(
@@ -712,6 +740,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       );
     }
 
+    // Models-only fallback: no reset times or fractions are available, so telemetry is degraded.
+    this.lastFallbackSynthetic = true;
+
     const { stdout } = await this.execFileFn(
       this.agyBinPath,
       ['--output-format', 'json', 'models'],
@@ -747,9 +778,17 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         modelsByFamily.set(resolved.family, list);
       }
 
-      return cached.map((s) => {
-        const hoursUntilReset = calculateHoursUntilReset(s.resetTime, now);
-        const remainingFraction = hoursUntilReset > 0 ? s.remainingFraction : 1.0;
+      let regeneratedReset = false;
+      const snapshots = cached.map((s) => {
+        let hoursUntilReset = calculateHoursUntilReset(s.resetTime, now);
+        let resetTime = s.resetTime;
+        if (hoursUntilReset <= 0) {
+          // No real reset window in degraded mode: roll a fresh synthetic one forward so an
+          // elapsed snapshot cannot freeze the pool and silence every later milestone.
+          resetTime = new Date(now + 24 * 3600 * 1000).toISOString();
+          hoursUntilReset = 24;
+          regeneratedReset = true;
+        }
         const cliModels = modelsByFamily.get(s.family);
         const models =
           s.models && s.models.length > 0
@@ -760,11 +799,20 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
         return {
           ...s,
-          remainingFraction,
+          resetTime,
+          // Unknown quota is never reported as full headroom.
+          remainingFraction: s.remainingFraction,
           hoursUntilReset: Math.max(0, hoursUntilReset),
           models,
         };
       });
+
+      if (regeneratedReset) {
+        this.logger.warn(
+          'CLI fallback rolled a fresh synthetic reset window; quota telemetry is degraded (no real reset time available)'
+        );
+      }
+      return snapshots;
     }
 
     // 2. Synthesize baseline snapshots for detected model families
@@ -806,12 +854,16 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         poolId: entry.family,
         family: entry.family,
         displayName: entry.displayName,
-        remainingFraction: 1.0, // CLI does not return fractions; retain full headroom in degraded state
+        remainingFraction: 1.0, // CLI models expose no fractions; a freshly rolled window is unconstrained
         resetTime: fallbackReset,
         hoursUntilReset: 24,
         models: entry.models.sort(),
       });
     }
+
+    this.logger.warn(
+      'Synthesized quota pools with a fresh reset window; quota telemetry is degraded (CLI models-only fallback)'
+    );
 
     return result.sort((a, b) => order[a.family] - order[b.family]);
   }

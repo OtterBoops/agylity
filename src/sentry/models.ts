@@ -103,6 +103,7 @@ export const RawQuotaGroupSchema = z.object({
 
 export type RawQuotaGroup = z.infer<typeof RawQuotaGroupSchema>;
 
+// The server does not currently emit overageInfo; retained only as a secondary signal.
 export const OverageInfoSchema = z.object({
   enabled: z.boolean().optional(),
 });
@@ -121,6 +122,48 @@ export const RetrieveUserQuotaSummaryResponseSchema = z.object({
 export type RetrieveUserQuotaSummaryResponse = z.infer<
   typeof RetrieveUserQuotaSummaryResponseSchema
 >;
+
+// GetUserStatus RPC Schemas (authoritative source of plan / overage signals)
+
+export const UserPlanInfoSchema = z.object({
+  teamsTier: z.string().optional(),
+  planName: z.string().optional(),
+  monthlyPromptCredits: z.number().optional(),
+  monthlyFlowCredits: z.number().optional(),
+  monthlyFlexCreditPurchaseAmount: z.number().optional(),
+  canBuyMoreCredits: z.boolean().optional(),
+});
+
+export type UserPlanInfo = z.infer<typeof UserPlanInfoSchema>;
+
+export const GetUserStatusResponseSchema = z.object({
+  userStatus: z
+    .object({
+      planStatus: z
+        .object({
+          planInfo: UserPlanInfoSchema.optional(),
+        })
+        .optional(),
+    })
+    .optional(),
+});
+
+export type GetUserStatusResponse = z.infer<typeof GetUserStatusResponseSchema>;
+
+/**
+ * Derives whether paid overage is enabled from GetUserStatus planInfo.
+ * Returns undefined (unknown) when the server supplies no usable signal.
+ */
+export const deriveOverageEnabled = (
+  status: GetUserStatusResponse | null | undefined
+): boolean | undefined => {
+  const planInfo = status?.userStatus?.planStatus?.planInfo;
+  if (!planInfo) return undefined;
+  const flex = planInfo.monthlyFlexCreditPurchaseAmount;
+  const canBuy = planInfo.canBuyMoreCredits;
+  if (typeof flex !== 'number' && typeof canBuy !== 'boolean') return undefined;
+  return (typeof flex === 'number' && flex > 0) || canBuy === true;
+};
 
 export const QuotaAlertSchema = z.object({
   pool: QuotaSnapshotSchema,
@@ -274,11 +317,11 @@ export const aggregateUserQuotaSummary = (
   extraCredits?: { remainingCredits?: number | null; overageEnabled?: boolean }
 ): QuotaSnapshot[] => {
   const result: QuotaSnapshot[] = [];
+  // Overage stays undefined when no signal is available so "unknown" is not reported as disabled.
   const overageEnabled =
     extraCredits?.overageEnabled ??
     summary.response.overageInfo?.enabled ??
-    summary.response.overage_info?.enabled ??
-    false;
+    summary.response.overage_info?.enabled;
   const remainingCredits = extraCredits?.remainingCredits ?? null;
 
   for (const group of summary.response.groups) {

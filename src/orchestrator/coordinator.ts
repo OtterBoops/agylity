@@ -7,6 +7,7 @@ import { logger, type Logger } from '../logs/logger.js';
 import {
   evaluateModelDispatchEligibility,
   resolveConcreteModelId,
+  resolvePoolFamilyForModel,
   resolveReasoningEffortForModel,
   type ModelEligibilityResult,
   type ReasoningEffort,
@@ -145,15 +146,9 @@ export class OrchestratorCoordinator {
   }): ModelEligibilityResult {
     const resolved = this.configStore.resolveConfig();
     const concreteModel = resolveConcreteModelId(params.model, resolved.defaultDispatchModel);
-    const family = resolveConcreteModelId(params.model, resolved.defaultDispatchModel);
 
     // Check per-pool dispatchEnabled policy
-    const poolFamily =
-      params.model?.includes('claude') || params.model?.includes('3p')
-        ? 'claude'
-        : params.model?.includes('flash')
-          ? 'gemini-flash'
-          : 'gemini-argon';
+    const poolFamily = resolvePoolFamilyForModel(concreteModel);
     const policy = resolved.poolPolicies?.[poolFamily];
     if (policy && !policy.dispatchEnabled && !params.allowOverage) {
       return {
@@ -254,7 +249,7 @@ export class OrchestratorCoordinator {
     const repoId =
       matchedRepo?.id ??
       req.repositoryId ??
-      (repositoryName.toLowerCase().replace(/[^a-z0-9-_]/g, '-') || 'default');
+      (repositoryName.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || 'default');
     const repoDisplayName = matchedRepo?.name ?? repositoryName;
     const repoPath =
       req.repositoryPath && req.repositoryPath.trim() !== ''
@@ -511,23 +506,27 @@ export class OrchestratorCoordinator {
   public async reportTaskStatus(
     taskId: string,
     patch: TaskStatusPatch & { message?: string }
-  ): Promise<SwarmTask | undefined> {
-    const updated = this.queue.updateTaskStatus(taskId, patch);
-    if (!updated) return undefined;
+  ): Promise<{ task: SwarmTask; applied: boolean } | undefined> {
+    const result = this.queue.updateTaskStatus(taskId, patch);
+    if (!result) return undefined;
+
+    // A refused update (terminal task or cross-worker patch) must not notify or emit
+    const { task: updated, applied } = result;
+    if (!applied) return result;
 
     const statusStep =
-      patch.status === 'completed'
+      updated.status === 'completed'
         ? 'completed'
-        : patch.status === 'failed'
+        : updated.status === 'failed'
           ? 'failed'
-          : patch.status === 'aborted'
+          : updated.status === 'aborted'
             ? 'aborted'
             : 'executing';
 
     const defaultMsg =
-      patch.status === 'completed'
+      updated.status === 'completed'
         ? `Completed task ${updated.id} on branch ${updated.branchName || 'continuation'} (${updated.model})`
-        : patch.status === 'failed'
+        : updated.status === 'failed'
           ? `Task ${updated.id} failed: ${updated.error || 'Unknown error'}`
           : `Executing task ${updated.id} on ${updated.repositoryName} (${updated.model})`;
 
@@ -548,7 +547,7 @@ export class OrchestratorCoordinator {
     });
 
     this.bus.emit(`task:updated:${taskId}`, updated);
-    return updated;
+    return result;
   }
 
   public listWorkers(): SwarmWorkerRecord[] {

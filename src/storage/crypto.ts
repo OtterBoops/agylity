@@ -2,8 +2,18 @@ import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
+import { logger } from '../logs/logger.js';
 
 export const ENCRYPTION_PREFIX = 'enc:v1:';
+
+// A value carrying ENCRYPTION_PREFIX that cannot be decrypted must never be
+// silently treated as an absent secret; callers treat this as fatal.
+export class SecretDecryptionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SecretDecryptionError';
+  }
+}
 
 export const SECRET_KEYS = new Set<string>([
   ...CANONICAL_SECRET_CONFIG_KEYS,
@@ -40,34 +50,42 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
     return createHash('sha256').update(trimmed, 'utf8').digest();
   }
 
-  // 2. Persistent keyfile
+  // 2. Persistent keyfile: a configured path must never fall back to a per-process
+  // key, or every secret encrypted with the real keyfile becomes undecryptable.
   if (keyFilePath && keyFilePath !== ':memory:') {
-    try {
-      if (existsSync(keyFilePath)) {
-        const raw = readFileSync(keyFilePath, 'utf8').trim();
-        if (raw.length === 64 && /^[0-9a-fA-F]+$/.test(raw)) {
-          return Buffer.from(raw, 'hex');
-        }
-        return createHash('sha256').update(raw, 'utf8').digest();
+    if (existsSync(keyFilePath)) {
+      let raw: string;
+      try {
+        raw = readFileSync(keyFilePath, 'utf8').trim();
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        logger
+          .child('crypto')
+          .error('Secret key file is unreadable at %s: %s', keyFilePath, reason);
+        throw new Error(
+          `Unable to read the configured secret key file at ${keyFilePath}: ${reason}`
+        );
       }
-
-      const parentDir = dirname(keyFilePath);
-      if (parentDir && parentDir !== '.' && !existsSync(parentDir)) {
-        mkdirSync(parentDir, { recursive: true });
+      if (raw.length === 64 && /^[0-9a-fA-F]+$/.test(raw)) {
+        return Buffer.from(raw, 'hex');
       }
-
-      const generatedKey = randomBytes(32);
-      writeFileSync(keyFilePath, generatedKey.toString('hex'), {
-        mode: 0o600,
-        encoding: 'utf8',
-      });
-      return generatedKey;
-    } catch {
-      // Fallback to process-level key if filesystem is read-only or during ephemeral tests
+      return createHash('sha256').update(raw, 'utf8').digest();
     }
+
+    const parentDir = dirname(keyFilePath);
+    if (parentDir && parentDir !== '.' && !existsSync(parentDir)) {
+      mkdirSync(parentDir, { recursive: true });
+    }
+
+    const generatedKey = randomBytes(32);
+    writeFileSync(keyFilePath, generatedKey.toString('hex'), {
+      mode: 0o600,
+      encoding: 'utf8',
+    });
+    return generatedKey;
   }
 
-  // 3. Process-level memory key fallback
+  // 3. Process-level memory key fallback (no keyfile path configured)
   if (!processMemoryKey) {
     processMemoryKey = randomBytes(32);
   }
@@ -92,15 +110,19 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
   if (!ciphertext || typeof ciphertext !== 'string') return ciphertext;
   if (!ciphertext.startsWith(ENCRYPTION_PREFIX)) return ciphertext;
 
+  const parts = ciphertext.slice(ENCRYPTION_PREFIX.length).split(':');
+  if (parts.length !== 3) {
+    throw new SecretDecryptionError(
+      'Malformed encrypted secret: expected enc:v1:<iv>:<tag>:<data>'
+    );
+  }
+
+  const [ivHex, tagHex, dataHex] = parts;
+  const iv = Buffer.from(ivHex!, 'hex');
+  const tag = Buffer.from(tagHex!, 'hex');
+  const data = Buffer.from(dataHex!, 'hex');
+
   try {
-    const parts = ciphertext.slice(ENCRYPTION_PREFIX.length).split(':');
-    if (parts.length !== 3) return ciphertext;
-
-    const [ivHex, tagHex, dataHex] = parts;
-    const iv = Buffer.from(ivHex!, 'hex');
-    const tag = Buffer.from(tagHex!, 'hex');
-    const data = Buffer.from(dataHex!, 'hex');
-
     const key = customKey ?? resolveMasterKey();
     const decipher = createDecipheriv('aes-256-gcm', key, iv);
     decipher.setAuthTag(tag);
@@ -108,9 +130,10 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
     const decrypted = Buffer.concat([decipher.update(data), decipher.final()]);
 
     return decrypted.toString('utf8');
-  } catch {
-    // If decryption fails (e.g. key mismatch or corrupted cipher), return empty string so ciphertext is not treated as a plaintext token
-    return '';
+  } catch (err) {
+    throw new SecretDecryptionError(
+      `Failed to decrypt an encrypted secret: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 };
 

@@ -8,6 +8,7 @@ import {
   resolveMasterKey,
   ENCRYPTION_PREFIX,
 } from './crypto.js';
+import { logger } from '../logs/logger.js';
 
 export interface SettingRecord {
   key: string;
@@ -91,6 +92,30 @@ export class AppDatabase {
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
     `);
+
+    // CREATE TABLE IF NOT EXISTS never upgrades an existing table, so diff the columns too.
+    const expected: Array<[string, string]> = [
+      ['key', 'TEXT PRIMARY KEY'],
+      ['value', 'TEXT NOT NULL'],
+      ['updated_at', "TEXT NOT NULL DEFAULT (datetime('now'))"],
+    ];
+    const existing = new Set(
+      (this.db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string }>).map(
+        (c) => c.name
+      )
+    );
+    for (const [name, definition] of expected) {
+      if (existing.has(name)) continue;
+      // ALTER TABLE cannot add a primary key, nor a NOT NULL column without a default.
+      if (definition.includes('PRIMARY KEY') || definition === 'TEXT NOT NULL') {
+        logger
+          .child('storage')
+          .warn('settings table is missing column %s and it cannot be added automatically', name);
+        continue;
+      }
+      this.db.exec(`ALTER TABLE settings ADD COLUMN ${name} ${definition}`);
+      logger.child('storage').info('Added missing column settings.%s', name);
+    }
   }
 
   public getRawDb(): DatabaseSync {
@@ -100,18 +125,17 @@ export class AppDatabase {
   public get<T = unknown>(key: string): T | undefined {
     const row = this.selectKeyStmt.get(key) as { value: string } | undefined;
     if (!row) return undefined;
+    // Decrypt outside the parse guard so SecretDecryptionError propagates instead of being swallowed.
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(row.value);
-      if (typeof parsed === 'string' && parsed.startsWith(ENCRYPTION_PREFIX)) {
-        return decryptSecret(parsed, this.masterKey) as unknown as T;
-      }
-      return parsed as T;
+      parsed = JSON.parse(row.value);
     } catch {
-      if (typeof row.value === 'string' && row.value.startsWith(ENCRYPTION_PREFIX)) {
-        return decryptSecret(row.value, this.masterKey) as unknown as T;
-      }
-      return row.value as unknown as T;
+      parsed = row.value;
     }
+    if (typeof parsed === 'string' && parsed.startsWith(ENCRYPTION_PREFIX)) {
+      return decryptSecret(parsed, this.masterKey) as unknown as T;
+    }
+    return parsed as T;
   }
 
   public getRaw(key: string): string | undefined {

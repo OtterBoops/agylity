@@ -7,7 +7,13 @@ import { normalizeStoredTheme, resolveEffectiveTheme, applyDocumentTheme } from 
 void invalidateClientCacheOnNewVersion();
 
 // Immediately apply theme and mobile status bar/navigation bar theme-color
-const initialTheme = normalizeStoredTheme(localStorage.getItem('agylity-theme'));
+const initialTheme = (() => {
+  try {
+    return normalizeStoredTheme(localStorage.getItem('agylity-theme'));
+  } catch {
+    return normalizeStoredTheme(null);
+  }
+})();
 applyDocumentTheme(resolveEffectiveTheme(initialTheme));
 
 render(<App />, document.getElementById('app')!);

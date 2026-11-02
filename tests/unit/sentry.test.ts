@@ -8,9 +8,11 @@ import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
+  deriveOverageEnabled,
   formatHoursHuman,
   formatResetTimeHuman,
   resolveModelFamily,
+  GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
   QuotaInfoSchema,
@@ -28,8 +30,13 @@ import {
   LanguageServerError,
   RPC_PATH,
   QUOTA_SUMMARY_RPC_PATH,
+  USER_STATUS_RPC_PATH,
 } from '../../src/sentry/client.js';
-import type { ExecFileAsyncFn } from '../../src/sentry/discovery.js';
+import {
+  discoverWindowsLanguageServer,
+  parseWindowsNetstatPorts,
+  type ExecFileAsyncFn,
+} from '../../src/sentry/discovery.js';
 
 // ==========================================
 // Test Fixtures: 13 Antigravity Models
@@ -911,7 +918,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const snapshotsCapped = aggregateUserQuotaSummary(parsedCapped);
       assert.equal(snapshotsCapped[0]?.overageEnabled, false);
 
-      // 3. Overage omitted (proto3 false default)
+      // 3. No overage signal at all: unknown, distinct from disabled
       const summaryOmitted = {
         response: {
           groups: [
@@ -932,7 +939,39 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const parsedOmitted = RetrieveUserQuotaSummaryResponseSchema.parse(summaryOmitted);
       const snapshotsOmitted = aggregateUserQuotaSummary(parsedOmitted);
-      assert.equal(snapshotsOmitted[0]?.overageEnabled, false);
+      assert.equal(snapshotsOmitted[0]?.overageEnabled, undefined);
+    });
+
+    it('derives overageEnabled from GetUserStatus and keeps unknown distinct from disabled', () => {
+      // Real GetUserStatus shape: paid flex credits + canBuyMoreCredits => overage enabled
+      const enabled = GetUserStatusResponseSchema.parse({
+        userStatus: {
+          planStatus: {
+            planInfo: {
+              teamsTier: 'TEAMS_TIER_PRO',
+              planName: 'Pro',
+              monthlyPromptCredits: 50000,
+              monthlyFlowCredits: 150000,
+              monthlyFlexCreditPurchaseAmount: 25000,
+              canBuyMoreCredits: true,
+            },
+          },
+        },
+      });
+      assert.equal(deriveOverageEnabled(enabled), true);
+
+      const flexOnly = GetUserStatusResponseSchema.parse({
+        userStatus: {
+          planStatus: {
+            planInfo: { monthlyFlexCreditPurchaseAmount: 0, canBuyMoreCredits: false },
+          },
+        },
+      });
+      assert.equal(deriveOverageEnabled(flexOnly), false);
+
+      const noSignal = GetUserStatusResponseSchema.parse({ userStatus: { planStatus: {} } });
+      assert.equal(deriveOverageEnabled(noSignal), undefined);
+      assert.equal(deriveOverageEnabled(undefined), undefined);
     });
 
     it('non-blocking background credits probe queries without blocking fetchQuota and caches balance', async () => {
@@ -1067,6 +1106,220 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         }
       );
       assert.equal(execCount, 2, 'Forced refresh executed CLI again');
+    });
+
+    it('reads overageEnabled from the GetUserStatus plan signal', async () => {
+      const nowMs = Date.now();
+      const quotaSummary = {
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.85,
+                  resetTime: new Date(nowMs + 120 * 3600 * 1000).toISOString(),
+                },
+              ],
+            },
+          ],
+        },
+      };
+      const userStatus = {
+        userStatus: {
+          planStatus: {
+            planInfo: {
+              teamsTier: 'TEAMS_TIER_PRO',
+              planName: 'Pro',
+              monthlyPromptCredits: 50000,
+              monthlyFlowCredits: 150000,
+              monthlyFlexCreditPurchaseAmount: 25000,
+              canBuyMoreCredits: true,
+            },
+          },
+        },
+      };
+
+      const server = createServer((req, res) => {
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end();
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(req.url === USER_STATUS_RPC_PATH ? userStatus : quotaSummary));
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as any).port;
+
+      const mockExecFile = async () => ({
+        stdout: JSON.stringify({ command: { name: 'credits', data: { remaining_credits: 675 } } }),
+        stderr: '',
+      });
+
+      try {
+        const client = new ConnectRpcQuotaClient({
+          endpointUrl: `http://127.0.0.1:${port}`,
+          csrfToken: 'test-token',
+          timeoutMs: 1000,
+          enableCliFallback: false,
+          execFileFn: mockExecFile as any,
+        });
+
+        const snapshots = await client.fetchQuota();
+        assert.equal(snapshots.length, 1);
+        assert.equal(snapshots[0]?.overageEnabled, true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it('leaves overageEnabled undefined when GetUserStatus returns nothing', async () => {
+      const nowMs = Date.now();
+      const quotaSummary = {
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.85,
+                  resetTime: new Date(nowMs + 120 * 3600 * 1000).toISOString(),
+                },
+              ],
+            },
+          ],
+        },
+      };
+
+      const server = createServer((req, res) => {
+        if (req.url === QUOTA_SUMMARY_RPC_PATH && req.method === 'POST') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(quotaSummary));
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as any).port;
+
+      const mockExecFile = async () => ({
+        stdout: JSON.stringify({ command: { name: 'credits', data: { remaining_credits: 675 } } }),
+        stderr: '',
+      });
+
+      try {
+        const client = new ConnectRpcQuotaClient({
+          endpointUrl: `http://127.0.0.1:${port}`,
+          csrfToken: 'test-token',
+          timeoutMs: 1000,
+          enableCliFallback: false,
+          execFileFn: mockExecFile as any,
+        });
+
+        const snapshots = await client.fetchQuota();
+        assert.equal(snapshots.length, 1);
+        assert.equal(snapshots[0]?.overageEnabled, undefined);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it('rolls a fresh synthetic reset for a degraded fallback probe older than 24 hours', async () => {
+      const staleReset = new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+      const cachedProvider = () => [
+        {
+          poolId: 'claude',
+          family: 'claude' as const,
+          displayName: 'Claude 5.5 / Opus',
+          remainingFraction: 0.42,
+          resetTime: staleReset,
+          hoursUntilReset: 0,
+          models: ['Claude Sonnet 5.5'],
+        },
+      ];
+
+      const mockExecFile = async () => ({
+        stdout: JSON.stringify({
+          status: 'SUCCESS',
+          command: { name: 'models', data: { models: [{ id: 'claude-sonnet-5-5-high' }] } },
+        }),
+        stderr: '',
+      });
+
+      const client = new ConnectRpcQuotaClient({
+        port: 59997,
+        fallbackPorts: [59997],
+        csrfToken: 'invalid',
+        enableCliFallback: true,
+        enableProcessDiscovery: false,
+        timeoutMs: 300,
+        cachedSnapshotProvider: cachedProvider,
+        execFileFn: mockExecFile as any,
+      });
+
+      const snapshots = await client.fetchQuota();
+      assert.equal(snapshots.length, 1);
+      // An elapsed degraded window must not be reported as full headroom
+      assert.equal(snapshots[0]?.remainingFraction, 0.42);
+      // The synthetic reset rolls forward instead of freezing at zero
+      assert.ok((snapshots[0]?.hoursUntilReset ?? 0) > 23);
+      assert.equal(client.getLastProbeSource(), 'cli_fallback');
+    });
+
+    it('probes for the CSRF token even when ports were already discovered', async () => {
+      const mockExec = async (file: string) => {
+        if (file === 'tasklist') {
+          return { stdout: '"language_server.exe","1234","Console","1","123,456 K"', stderr: '' };
+        }
+        if (file === 'netstat') {
+          return {
+            stdout: [
+              '  Proto  Local Address          Foreign Address        State           PID',
+              '  TCP    127.0.0.1:60643        0.0.0.0:0              LISTENING       1234',
+            ].join('\r\n'),
+            stderr: '',
+          };
+        }
+        if (file === 'powershell.exe') {
+          return {
+            stdout:
+              'CMD:C:\\tools\\language_server.exe --csrf_token abc123secret --https_server_port 60642\nPORTS:60642',
+            stderr: '',
+          };
+        }
+        return { stdout: '', stderr: '' };
+      };
+
+      const discovered = await discoverWindowsLanguageServer(mockExec as any);
+      assert.ok(discovered);
+      assert.equal(discovered.csrfToken, 'abc123secret');
+      assert.ok(discovered.ports?.includes(60643));
+    });
+  });
+
+  // ==========================================
+  // 5. Process Discovery
+  // ==========================================
+  describe('5. Process Discovery', () => {
+    it('matches the language_server PID as an exact netstat column, not a substring', () => {
+      const netstat = [
+        '  Proto  Local Address          Foreign Address        State           PID',
+        '  TCP    127.0.0.1:51234        0.0.0.0:0              LISTENING       9999',
+        '  TCP    127.0.0.1:60643        0.0.0.0:0              LISTENING       1234',
+        '  TCP    0.0.0.0:8080           0.0.0.0:0              LISTENING       1234',
+        '  TCP    [::1]:60644            0.0.0.0:0              LISTENING       1234',
+      ].join('\r\n');
+
+      // pid 1234 appears inside the first row's port (51234) but that row belongs to pid 9999
+      assert.deepEqual(parseWindowsNetstatPorts(netstat, '1234'), [60643, 60644]);
     });
   });
 });

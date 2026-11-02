@@ -7,7 +7,7 @@ import {
   DefaultLogger,
   type LogRecord,
 } from '../../src/logs/logger.js';
-import { LogBuffer } from '../../src/logs/buffer.js';
+import { LogBuffer, installConsoleTee } from '../../src/logs/buffer.js';
 
 describe('Universal Logger', () => {
   it('formats messages with timestamps, levels, and argument interpolation', () => {
@@ -128,5 +128,55 @@ describe('Universal Logger', () => {
     assert.ok(entries[0]!.message.includes('[auth]'));
     assert.ok(entries[0]!.message.includes('[redacted]'));
     assert.ok(!entries[0]!.message.includes('supersecret123'));
+  });
+
+  it('redacts configured secrets regardless of length (5-character token)', () => {
+    const buffer = new LogBuffer(10, () => ['abcde']);
+    buffer.push('info', 'authorization token abcde supplied');
+    const entries = buffer.since(0);
+    assert.equal(entries.length, 1);
+    assert.ok(!entries[0]!.message.includes('abcde'));
+    assert.ok(entries[0]!.message.includes('[redacted]'));
+  });
+
+  it('redacts the percent-encoded form of a secret embedded in a URL', () => {
+    const secret = 'ab+cd/ef=gh ij';
+    const encoded = encodeURIComponent(secret); // ab%2Bcd%2Fef%3Dgh%20ij
+    const buffer = new LogBuffer(10, () => [secret]);
+    buffer.push('info', `callback https://hooks.example.com/x/${encoded} delivered`);
+    const entries = buffer.since(0);
+    assert.equal(entries.length, 1);
+    assert.ok(!entries[0]!.message.includes(encoded));
+    assert.ok(entries[0]!.message.includes('[redacted]'));
+  });
+
+  it('returns an empty array from since() when limit is zero', () => {
+    const buffer = new LogBuffer(10, () => []);
+    buffer.push('info', 'first');
+    buffer.push('info', 'second');
+    assert.deepEqual(buffer.since(0, 'debug', 0), []);
+    assert.equal(buffer.since(0, 'debug', 1).length, 1);
+    assert.equal(buffer.since(0, 'debug', 5).length, 2);
+  });
+
+  it('redacts console output before it reaches stdout so stdout matches the buffer', () => {
+    const buffer = new LogBuffer(10, () => ['supersecret123']);
+    const captured: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]): void => {
+      captured.push(args.map((a) => String(a)).join(' '));
+    };
+
+    const uninstall = installConsoleTee(buffer);
+    try {
+      console.log('sending supersecret123 to webhook');
+    } finally {
+      uninstall();
+      console.log = originalLog;
+    }
+
+    assert.equal(captured.length, 1);
+    assert.ok(!captured[0]!.includes('supersecret123'));
+    assert.ok(captured[0]!.includes('[redacted]'));
   });
 });

@@ -8,6 +8,7 @@ import {
   type ScheduleMode,
   type TaskStatus,
 } from './models.js';
+import { logger } from '../logs/logger.js';
 
 export interface RunnerSystemInfo {
   hostname?: string;
@@ -157,6 +158,134 @@ export interface StandingTaskRecord {
 export const hashRunnerToken = (token: string): string =>
   createHash('sha256').update(token.trim()).digest('hex');
 
+interface ColumnSpec {
+  name: string;
+  ddl: string;
+}
+
+// Single source of truth for every managed table: initSchema renders CREATE TABLE from these and
+// migrateSchema ALTER TABLE ADD COLUMNs any that an older database is missing.
+const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
+  {
+    name: 'created_at',
+    ddl: "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+  {
+    name: 'updated_at',
+    ddl: "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+  { name: 'repository_id', ddl: 'repository_id TEXT NOT NULL' },
+  { name: 'repository_name', ddl: 'repository_name TEXT NOT NULL' },
+  { name: 'repository_path', ddl: 'repository_path TEXT NOT NULL' },
+  { name: 'clone_url', ddl: 'clone_url TEXT' },
+  { name: 'default_branch', ddl: "default_branch TEXT NOT NULL DEFAULT 'main'" },
+  { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
+  { name: 'requested_by', ddl: "requested_by TEXT NOT NULL DEFAULT 'web-ui'" },
+  { name: 'schedule_mode', ddl: "schedule_mode TEXT NOT NULL DEFAULT 'immediate'" },
+  { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: 'model', ddl: 'model TEXT NOT NULL' },
+  { name: 'pool_family', ddl: 'pool_family TEXT NOT NULL' },
+  { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
+  { name: 'allow_overage', ddl: 'allow_overage INTEGER NOT NULL DEFAULT 0' },
+  { name: 'push_branch', ddl: 'push_branch INTEGER NOT NULL DEFAULT 1' },
+  { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
+  { name: 'pr_url', ddl: 'pr_url TEXT' },
+  { name: 'expires_at', ddl: 'expires_at TEXT' },
+  { name: 'standing_task_id', ddl: 'standing_task_id TEXT' },
+  { name: 'verify_command', ddl: 'verify_command TEXT' },
+  { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'queued'" },
+  { name: 'worker_id', ddl: 'worker_id TEXT' },
+  { name: 'claimed_at', ddl: 'claimed_at TEXT' },
+  { name: 'heartbeat_at', ddl: 'heartbeat_at TEXT' },
+  { name: 'completed_at', ddl: 'completed_at TEXT' },
+  { name: 'branch_name', ddl: 'branch_name TEXT' },
+  { name: 'output', ddl: 'output TEXT' },
+  { name: 'error', ddl: 'error TEXT' },
+  { name: 'duration_ms', ddl: 'duration_ms INTEGER NOT NULL DEFAULT 0' },
+  { name: 'num_turns', ddl: 'num_turns INTEGER' },
+  { name: 'total_tokens', ddl: 'total_tokens INTEGER' },
+  { name: 'thinking_tokens', ddl: 'thinking_tokens INTEGER' },
+];
+
+const STANDING_TASK_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
+  { name: 'title', ddl: 'title TEXT NOT NULL' },
+  { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
+  { name: 'repository_id', ddl: 'repository_id TEXT NOT NULL' },
+  { name: 'model', ddl: 'model TEXT NOT NULL' },
+  { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
+  { name: 'verify_command', ddl: 'verify_command TEXT' },
+  { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
+  { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
+  { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
+  { name: 'trigger_before_reset_hours', ddl: 'trigger_before_reset_hours REAL NOT NULL DEFAULT 2' },
+  { name: 'last_triggered_reset_time', ddl: 'last_triggered_reset_time TEXT' },
+  { name: 'last_task_id', ddl: 'last_task_id TEXT' },
+  {
+    name: 'created_at',
+    ddl: "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+  {
+    name: 'updated_at',
+    ddl: "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+];
+
+const SWARM_WORKER_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'worker_id', ddl: 'worker_id TEXT PRIMARY KEY' },
+  { name: 'name', ddl: 'name TEXT NOT NULL' },
+  { name: 'token_hash', ddl: 'token_hash TEXT' },
+  { name: 'labels_json', ddl: "labels_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: 'repositories_json', ddl: "repositories_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: 'system_info_json', ddl: "system_info_json TEXT NOT NULL DEFAULT '{}'" },
+  { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
+  { name: 'active_task_id', ddl: 'active_task_id TEXT' },
+  { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'idle'" },
+  {
+    name: 'registered_at',
+    ddl: "registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+  {
+    name: 'last_seen_at',
+    ddl: "last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
+  },
+];
+
+const RUNNER_REGISTRATION_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
+  { name: 'token_hash', ddl: 'token_hash TEXT NOT NULL UNIQUE' },
+  { name: 'name_hint', ddl: 'name_hint TEXT' },
+  { name: 'labels_json', ddl: "labels_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: 'repositories_json', ddl: "repositories_json TEXT NOT NULL DEFAULT '[]'" },
+  { name: 'expires_at', ddl: 'expires_at TEXT NOT NULL' },
+  { name: 'created_at', ddl: 'created_at TEXT NOT NULL' },
+  { name: 'consumed_by_worker_id', ddl: 'consumed_by_worker_id TEXT' },
+  { name: 'consumed_at', ddl: 'consumed_at TEXT' },
+];
+
+const SCHEMA_TABLES: ReadonlyArray<{ name: string; columns: readonly ColumnSpec[] }> = [
+  { name: 'swarm_tasks', columns: SWARM_TASK_COLUMNS },
+  { name: 'standing_tasks', columns: STANDING_TASK_COLUMNS },
+  { name: 'swarm_workers', columns: SWARM_WORKER_COLUMNS },
+  { name: 'swarm_runner_registrations', columns: RUNNER_REGISTRATION_COLUMNS },
+];
+
+const SCHEMA_VERSION = 1;
+
+const REGISTRATION_TOKEN_RETENTION = 50;
+
+const renderColumns = (columns: readonly ColumnSpec[]): string =>
+  columns.map((column) => `        ${column.ddl}`).join(',\n');
+
+// ALTER TABLE ADD COLUMN cannot add PRIMARY KEY/UNIQUE columns or NOT NULL columns without a default.
+const isAddableColumn = (ddl: string): boolean => {
+  const upper = ddl.toUpperCase();
+  if (upper.includes('PRIMARY KEY') || upper.includes('UNIQUE')) return false;
+  if (upper.includes('NOT NULL') && !upper.includes('DEFAULT')) return false;
+  return true;
+};
+
 export class TaskQueue {
   private readonly appDb: AppDatabase;
   private readonly rawDb: DatabaseSync;
@@ -186,89 +315,76 @@ export class TaskQueue {
   private initSchema(): void {
     this.rawDb.exec(`
       CREATE TABLE IF NOT EXISTS swarm_tasks (
-        id TEXT PRIMARY KEY,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        repository_id TEXT NOT NULL,
-        repository_name TEXT NOT NULL,
-        repository_path TEXT NOT NULL,
-        clone_url TEXT,
-        default_branch TEXT NOT NULL DEFAULT 'main',
-        prompt TEXT NOT NULL,
-        requested_by TEXT NOT NULL DEFAULT 'web-ui',
-        schedule_mode TEXT NOT NULL DEFAULT 'immediate',
-        required_labels_json TEXT NOT NULL DEFAULT '[]',
-        model TEXT NOT NULL,
-        pool_family TEXT NOT NULL,
-        effort TEXT NOT NULL DEFAULT 'high',
-        allow_overage INTEGER NOT NULL DEFAULT 0,
-        push_branch INTEGER NOT NULL DEFAULT 1,
-        auto_create_pr INTEGER NOT NULL DEFAULT 1,
-        pr_url TEXT,
-        expires_at TEXT,
-        standing_task_id TEXT,
-        verify_command TEXT,
-        status TEXT NOT NULL DEFAULT 'queued',
-        worker_id TEXT,
-        claimed_at TEXT,
-        heartbeat_at TEXT,
-        completed_at TEXT,
-        branch_name TEXT,
-        output TEXT,
-        error TEXT,
-        duration_ms INTEGER NOT NULL DEFAULT 0,
-        num_turns INTEGER,
-        total_tokens INTEGER,
-        thinking_tokens INTEGER
+${renderColumns(SWARM_TASK_COLUMNS)}
       );
 
       CREATE INDEX IF NOT EXISTS idx_swarm_tasks_queue
         ON swarm_tasks (status, created_at ASC);
 
       CREATE TABLE IF NOT EXISTS standing_tasks (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        prompt TEXT NOT NULL,
-        repository_id TEXT NOT NULL,
-        model TEXT NOT NULL,
-        effort TEXT NOT NULL DEFAULT 'high',
-        verify_command TEXT,
-        auto_create_pr INTEGER NOT NULL DEFAULT 1,
-        enabled INTEGER NOT NULL DEFAULT 1,
-        sort_order INTEGER NOT NULL DEFAULT 0,
-        trigger_before_reset_hours REAL NOT NULL DEFAULT 2,
-        last_triggered_reset_time TEXT,
-        last_task_id TEXT,
-        created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+${renderColumns(STANDING_TASK_COLUMNS)}
       );
 
       CREATE TABLE IF NOT EXISTS swarm_workers (
-        worker_id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        token_hash TEXT,
-        labels_json TEXT NOT NULL DEFAULT '[]',
-        repositories_json TEXT NOT NULL DEFAULT '[]',
-        system_info_json TEXT NOT NULL DEFAULT '{}',
-        enabled INTEGER NOT NULL DEFAULT 1,
-        active_task_id TEXT,
-        status TEXT NOT NULL DEFAULT 'idle',
-        registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-        last_seen_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+${renderColumns(SWARM_WORKER_COLUMNS)}
       );
 
       CREATE TABLE IF NOT EXISTS swarm_runner_registrations (
-        id TEXT PRIMARY KEY,
-        token_hash TEXT NOT NULL UNIQUE,
-        name_hint TEXT,
-        labels_json TEXT NOT NULL DEFAULT '[]',
-        repositories_json TEXT NOT NULL DEFAULT '[]',
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        consumed_by_worker_id TEXT,
-        consumed_at TEXT
+${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       );
     `);
+
+    this.migrateSchema();
+  }
+
+  /**
+   * Additively upgrades an existing database to the current schema. Never drops or rewrites a
+   * column; it only ALTER TABLE ADD COLUMNs anything an older schema is missing.
+   */
+  private migrateSchema(): void {
+    const versionRow = this.rawDb.prepare('PRAGMA user_version').get() as
+      { user_version?: number } | undefined;
+    const currentVersion = Number(versionRow?.user_version ?? 0);
+
+    if (currentVersion > SCHEMA_VERSION) {
+      logger.warn(
+        'Database schema version %d is ahead of the known version %d; skipping migration',
+        currentVersion,
+        SCHEMA_VERSION
+      );
+      return;
+    }
+
+    for (const table of SCHEMA_TABLES) {
+      const existing = new Set(
+        (
+          this.rawDb.prepare(`PRAGMA table_info(${table.name})`).all() as Array<{
+            name: string;
+          }>
+        ).map((row) => String(row.name))
+      );
+      const added: string[] = [];
+      for (const column of table.columns) {
+        if (existing.has(column.name)) continue;
+        if (!isAddableColumn(column.ddl)) {
+          logger.warn(
+            'Cannot add column %s.%s to legacy schema; manual repair required',
+            table.name,
+            column.name
+          );
+          continue;
+        }
+        this.rawDb.exec(`ALTER TABLE ${table.name} ADD COLUMN ${column.ddl}`);
+        added.push(column.name);
+      }
+      if (added.length > 0) {
+        logger.info('Migrated %s: added column(s) %s', table.name, added.join(', '));
+      }
+    }
+
+    if (currentVersion < SCHEMA_VERSION) {
+      this.rawDb.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    }
   }
 
   /**
@@ -309,6 +425,8 @@ export class TaskQueue {
         createdAt
       );
 
+    this.pruneRegistrationTokens();
+
     return {
       id,
       registrationToken,
@@ -318,6 +436,30 @@ export class TaskQueue {
       expiresAt,
       createdAt,
     };
+  }
+
+  /**
+   * Deletes consumed or expired registration rows beyond the most-recent `keepCount` entries.
+   * Mirrors pruneOldTasks; consumed rows are removed, never un-consumed.
+   */
+  public pruneRegistrationTokens(keepCount = REGISTRATION_TOKEN_RETENTION): void {
+    try {
+      const now = new Date().toISOString();
+      this.rawDb
+        .prepare(
+          `DELETE FROM swarm_runner_registrations
+           WHERE (consumed_by_worker_id IS NOT NULL OR expires_at <= ?)
+             AND id NOT IN (
+               SELECT id FROM swarm_runner_registrations
+               WHERE consumed_by_worker_id IS NOT NULL OR expires_at <= ?
+               ORDER BY created_at DESC, rowid DESC
+               LIMIT ?
+             )`
+        )
+        .run(now, now, keepCount);
+    } catch {
+      // Best-effort pruning
+    }
   }
 
   /**
@@ -766,9 +908,15 @@ export class TaskQueue {
     });
   }
 
-  public updateTaskStatus(taskId: string, patch: TaskStatusPatch): SwarmTask | undefined {
+  public updateTaskStatus(
+    taskId: string,
+    patch: TaskStatusPatch,
+    options: { preserveWorkerLastSeen?: boolean } = {}
+  ): { task: SwarmTask; applied: boolean } | undefined {
     const existing = this.getTask(taskId);
     if (!existing) return undefined;
+
+    const refused = { task: existing, applied: false };
 
     // Guard against status updates on already terminal tasks
     const existingTerminal =
@@ -776,12 +924,23 @@ export class TaskQueue {
       existing.status === 'failed' ||
       existing.status === 'aborted';
     if (existingTerminal) {
-      return existing;
+      return refused;
     }
 
-    // Guard against cross-worker task status tampering
-    if (patch.workerId && existing.workerId && patch.workerId !== existing.workerId) {
-      return existing;
+    // Active states are only ever entered through claimNext.
+    const patchIsActive = patch.status === 'claimed' || patch.status === 'executing';
+    if (patchIsActive && existing.status === 'queued') {
+      return refused;
+    }
+
+    // Ownership: a worker patch must match the row's current owner; an unowned row may only be
+    // patched while it is still queued.
+    if (patch.workerId) {
+      if (existing.workerId !== undefined) {
+        if (existing.workerId !== patch.workerId) return refused;
+      } else if (existing.status !== 'queued') {
+        return refused;
+      }
     }
 
     const now = new Date().toISOString();
@@ -807,7 +966,8 @@ export class TaskQueue {
     const thinkingTokens =
       patch.thinkingTokens !== undefined ? patch.thinkingTokens : (existing.thinkingTokens ?? null);
 
-    this.rawDb
+    // Ownership and the queued->active guard sit in the predicate so the check and write are atomic.
+    const updateResult = this.rawDb
       .prepare(
         `UPDATE swarm_tasks
          SET status = ?,
@@ -823,7 +983,9 @@ export class TaskQueue {
              heartbeat_at = ?,
              completed_at = ?,
              updated_at = ?
-         WHERE id = ?`
+         WHERE id = ?
+           AND (worker_id IS NULL OR worker_id = ?)
+           AND NOT (status = 'queued' AND ? IN ('claimed', 'executing'))`
       )
       .run(
         patch.status,
@@ -839,22 +1001,31 @@ export class TaskQueue {
         now,
         completedAt,
         now,
-        taskId
-      );
+        taskId,
+        workerId,
+        patch.status
+      ) as unknown as { changes?: number };
+
+    if ((updateResult?.changes ?? 0) === 0) {
+      return { task: this.getTask(taskId) ?? existing, applied: false };
+    }
 
     if (isTerminal) {
       this.pruneOldTasks();
     }
 
     if (workerId && this.getWorker(workerId)) {
-      this.registerWorkerHeartbeat({
-        workerId,
-        activeTaskId: isTerminal ? null : taskId,
-        status: isTerminal ? 'idle' : 'busy',
-      });
+      this.registerWorkerHeartbeat(
+        {
+          workerId,
+          activeTaskId: isTerminal ? null : taskId,
+          status: isTerminal ? 'idle' : 'busy',
+        },
+        { touchLastSeen: !options.preserveWorkerLastSeen }
+      );
     }
 
-    return this.getTask(taskId);
+    return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
   /**
@@ -871,12 +1042,20 @@ export class TaskQueue {
       const lastBeat = task.heartbeatAt || task.claimedAt || task.updatedAt;
       const beatEpoch = new Date(lastBeat).getTime();
       if (!Number.isNaN(beatEpoch) && nowMs - beatEpoch > leaseTimeoutMs) {
-        const updated = this.updateTaskStatus(task.id, {
-          status: 'failed',
-          error: `Worker lease expired after ${Math.round(leaseTimeoutMs / 1000)}s without heartbeat`,
-          durationMs: nowMs - beatEpoch,
-        });
-        if (updated) reapedTasks.push(updated);
+        const claimedEpoch = task.claimedAt ? new Date(task.claimedAt).getTime() : NaN;
+        // Report real elapsed work time; the lease age is only a fallback when claimedAt is unknown.
+        const durationMs = Number.isNaN(claimedEpoch) ? nowMs - beatEpoch : nowMs - claimedEpoch;
+        const updated = this.updateTaskStatus(
+          task.id,
+          {
+            status: 'failed',
+            error: `Worker lease expired after ${Math.round(leaseTimeoutMs / 1000)}s without heartbeat`,
+            durationMs: Math.max(0, durationMs),
+          },
+          // The reaper must not refresh last_seen_at, or the offline sweep below misses the dead worker.
+          { preserveWorkerLastSeen: true }
+        );
+        if (updated?.applied) reapedTasks.push(updated.task);
       }
     }
 
@@ -900,15 +1079,18 @@ export class TaskQueue {
     return reapedTasks;
   }
 
-  public registerWorkerHeartbeat(info: {
-    workerId: string;
-    name?: string;
-    labels?: string[];
-    repositories?: string[];
-    systemInfo?: RunnerSystemInfo;
-    activeTaskId?: string | null;
-    status?: 'idle' | 'busy' | 'offline';
-  }): void {
+  public registerWorkerHeartbeat(
+    info: {
+      workerId: string;
+      name?: string;
+      labels?: string[];
+      repositories?: string[];
+      systemInfo?: RunnerSystemInfo;
+      activeTaskId?: string | null;
+      status?: 'idle' | 'busy' | 'offline';
+    },
+    options: { touchLastSeen?: boolean } = {}
+  ): void {
     const now = new Date().toISOString();
     const existing = this.rawDb
       .prepare('SELECT * FROM swarm_workers WHERE worker_id = ?')
@@ -934,6 +1116,8 @@ export class TaskQueue {
         : info.activeTaskId !== undefined
           ? info.activeTaskId
           : (existing?.active_task_id ?? null);
+    // Preserving last_seen_at keeps the offline sweep honest when the reaper updates worker state.
+    const lastSeenAt = options.touchLastSeen === false ? (existing?.last_seen_at ?? now) : now;
 
     this.rawDb
       .prepare(
@@ -959,7 +1143,7 @@ export class TaskQueue {
         activeTaskId,
         status,
         existing?.registered_at ?? now,
-        now
+        lastSeenAt
       );
   }
 

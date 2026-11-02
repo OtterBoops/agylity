@@ -69,6 +69,11 @@ export class DefaultLogger implements Logger {
     return 'info';
   }
 
+  /** Root of the parent chain, so a level can be applied to every namespace at once. */
+  public getRoot(): DefaultLogger {
+    return this.parent ? this.parent.getRoot() : this;
+  }
+
   public setLevel(level: LogLevel): void {
     this.minLevel = level;
   }

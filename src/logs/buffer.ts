@@ -22,7 +22,11 @@ const PATTERNS: RegExp[] = [
 export const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
   let out = text;
   for (const s of secrets) {
-    if (s && s.length >= 6) out = out.split(s).join('[redacted]');
+    if (!s) continue;
+    out = out.split(s).join('[redacted]');
+    // A secret inside a URL appears percent-encoded, so match that form too.
+    const encoded = encodeURIComponent(s);
+    if (encoded !== s) out = out.split(encoded).join('[redacted]');
   }
   out = out.replace(PATTERNS[0]!, '[redacted]');
   out = out.replace(PATTERNS[1]!, '$1[redacted]');
@@ -55,8 +59,14 @@ export class LogBuffer {
     return entry;
   }
 
+  /** Redacts arbitrary text (e.g. console output) using this buffer's secret set. */
+  redactText(text: string): string {
+    return redact(text, this.secretsProvider());
+  }
+
   /** Entries with id greater than `sinceId`, optionally filtered to a minimum level. */
   since(sinceId = 0, minLevel: LogLevel = 'debug', limit = 500): LogEntry[] {
+    if (limit <= 0) return [];
     const rank: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
     return this.entries
       .filter((e) => e.id > sinceId && rank[e.level] >= rank[minLevel])
@@ -94,16 +104,19 @@ export const installConsoleTee = (buffer: LogBuffer): (() => void) => {
     const original = (console[name] as (...args: unknown[]) => void).bind(console);
     originals.set(name, console[name] as (...args: unknown[]) => void);
     (console as any)[name] = (...args: unknown[]) => {
+      let output: unknown[] = args;
       try {
         const msg = format(...args);
         // Suppress Node runtime experimental feature warnings from polluting UI log buffer as errors
         if (!msg.includes('ExperimentalWarning: SQLite is an experimental feature')) {
           buffer.push(level, msg);
         }
+        // Print the redacted form so stdout matches the buffered copy.
+        output = [buffer.redactText(msg)];
       } catch {
         // never let logging break the process
       }
-      original(...args);
+      original(...output);
     };
   }
 

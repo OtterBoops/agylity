@@ -24,6 +24,7 @@ import type {
   DispatchStatusUpdate,
   DispatchRequest,
   DispatchResult,
+  DeliveryOutcome,
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
@@ -239,6 +240,9 @@ export class DiscordNotifier implements Notifier {
   public client: Client | null = null;
   public initialized = false;
   public activeInteractions = new Map<string, any>();
+  // Bounds retention of dispatched interactions so cancelled or reaped tasks cannot leak entries.
+  public maxActiveInteractions = 200;
+  public interactionRetentionMs = 30 * 60 * 1000;
   private config: ResolvedConfig;
   private options: DiscordNotifierOptions;
   private activeSubmissions = new Set<string>();
@@ -484,6 +488,20 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
+  /**
+   * Retains a dispatched interaction for status relaying: evicts the oldest entry past the cap and
+   * schedules a bounded fallback release so a task that never reports a terminal status cannot hold it.
+   */
+  private retainInteraction(key: string, interaction: any): void {
+    this.activeInteractions.set(key, interaction);
+    while (this.activeInteractions.size > this.maxActiveInteractions) {
+      const oldest = this.activeInteractions.keys().next().value;
+      if (oldest === undefined) break;
+      this.activeInteractions.delete(oldest);
+    }
+    setTimeout(() => this.activeInteractions.delete(key), this.interactionRetentionMs).unref?.();
+  }
+
   private async handleDispatchCommand(interaction: any): Promise<void> {
     const ownerCheck = this.verifyOwnerBinding(interaction);
     if (!ownerCheck.allowed) {
@@ -551,7 +569,7 @@ export class DiscordNotifier implements Notifier {
       });
 
       if (result.taskId) {
-        this.activeInteractions.set(result.taskId, interaction);
+        this.retainInteraction(result.taskId, interaction);
       }
 
       let content = '';
@@ -943,15 +961,39 @@ export class DiscordNotifier implements Notifier {
     return targetOwner ? `<@${targetOwner}>` : undefined;
   }
 
-  async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
-    if (!this.client || !this.initialized) return;
+  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
+    if (!this.client || !this.initialized) {
+      return {
+        delivered: false,
+        results: {
+          [this.channelName]: { success: false, error: 'Discord client is not initialized' },
+        },
+      };
+    }
 
     const channelId = this.config.discordNotificationChannelId;
-    if (!channelId || typeof this.client.channels?.fetch !== 'function') return;
+    if (!channelId || typeof this.client.channels?.fetch !== 'function') {
+      return {
+        delivered: false,
+        results: {
+          [this.channelName]: {
+            success: false,
+            error: 'No Discord notification channel configured',
+          },
+        },
+      };
+    }
 
     try {
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased?.()) return;
+      if (!channel || !channel.isTextBased?.()) {
+        return {
+          delivered: false,
+          results: {
+            [this.channelName]: { success: false, error: 'Discord channel is unavailable' },
+          },
+        };
+      }
 
       const ownerId = await this.resolveOwnerUserId();
       const embed = buildQuotaAlertEmbed(alert, {
@@ -981,8 +1023,13 @@ export class DiscordNotifier implements Notifier {
           channelId,
           alert.pool.displayName || alert.pool.poolId
         );
+      return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
       logger.child('notify:discord').error('Failed to notify quota alert: %s', err.message);
+      return {
+        delivered: false,
+        results: { [this.channelName]: { success: false, error: err.message } },
+      };
     }
   }
 

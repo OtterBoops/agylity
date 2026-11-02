@@ -9,8 +9,14 @@ import { SentryStateManager } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
-import type { Notifier, QuotaAlert, DispatchStatusUpdate } from '../../src/notify/types.js';
+import type {
+  Notifier,
+  QuotaAlert,
+  DispatchStatusUpdate,
+  DeliveryOutcome,
+} from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
+import { logger } from '../../src/logs/logger.js';
 import { AgylityDaemon, createDaemon, startDaemon, stopDaemon } from '../../src/index.js';
 
 describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
@@ -79,8 +85,9 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       const notifiedAlerts: QuotaAlert[] = [];
       class MockNotifier extends ConsoleNotifier {
-        override async notifyQuotaAlert(alert: QuotaAlert): Promise<void> {
+        override async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
           notifiedAlerts.push(alert);
+          return { delivered: true, results: {} };
         }
       }
 
@@ -159,6 +166,29 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       await daemon.shutdown();
       cleanup();
     });
+  });
+
+  it('applies the configured logLevel to the root logger so unrelated namespaces inherit it', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_loglevel_');
+    const dbPath = path.join(dir, 'test.db');
+    const statePath = path.join(dir, 'state.json');
+
+    const daemon = await createDaemon({
+      dbPath,
+      statePath,
+      autoCheckOnStart: false,
+      config: {
+        webUiEnabled: false,
+        logLevel: 'debug',
+      },
+    });
+
+    // Subsystems (notify, orchestrator) build loggers from the root singleton, not the daemon child.
+    assert.equal(logger.child('notify:webhook').getLevel(), 'debug');
+    assert.equal(daemon.logger.getLevel(), 'debug');
+
+    await daemon.shutdown();
+    cleanup();
   });
 
   /* ==================================================================== */

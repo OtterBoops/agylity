@@ -27,8 +27,30 @@ export interface DiscoveredLanguageServer {
   port?: number;
   ports?: number[];
   csrfToken?: string;
-  isHttps?: boolean;
 }
+
+const CSRF_TOKEN_RE = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i;
+
+/**
+ * Extracts listening loopback ports owned by an exact PID from `netstat -ano` output.
+ * Rows are column-parsed so a PID that only occurs inside another row's address is ignored.
+ */
+export const parseWindowsNetstatPorts = (netstatOut: string, pid: string): number[] => {
+  const ports: number[] = [];
+  for (const line of netstatOut.split('\n')) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 5) continue;
+    const proto = cols[0] ?? '';
+    const localAddr = cols[1] ?? '';
+    const state = cols[3] ?? '';
+    const rowPid = cols[4] ?? '';
+    if (proto.toUpperCase() !== 'TCP' || state.toUpperCase() !== 'LISTENING') continue;
+    if (rowPid !== pid) continue;
+    const m = /^(?:127\.0\.0\.1|\[::1\]):(\d+)$/.exec(localAddr);
+    if (m && m[1]) ports.push(Number(m[1]));
+  }
+  return ports;
+};
 
 export const discoverWindowsLanguageServer = async (
   execFileFn: ExecFileAsyncFn
@@ -53,12 +75,7 @@ export const discoverWindowsLanguageServer = async (
           windowsHide: true,
           timeout: 3000,
         });
-        for (const line of netstatOut.split('\n')) {
-          if (line.includes('LISTENING') && line.includes(pid)) {
-            const m = /127\.0\.0\.1:(\d+)/.exec(line);
-            if (m && m[1]) rawPorts.push(Number(m[1]));
-          }
-        }
+        rawPorts.push(...parseWindowsNetstatPorts(netstatOut, pid));
       } catch {
         // Netstat lookup is best effort
       }
@@ -104,8 +121,8 @@ export const discoverWindowsLanguageServer = async (
     // Fallback if tasklist/wscript is unavailable
   }
 
-  // Fallback to powershell only if silent discovery returned nothing
-  if (!commandLine && rawPorts.length === 0) {
+  // Probe for the CSRF token whenever it is still missing, even if ports were already found
+  if (!CSRF_TOKEN_RE.test(commandLine)) {
     const psScript = `
     $proc = Get-Process -Name 'language_server' -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($proc) {
@@ -136,7 +153,7 @@ export const discoverWindowsLanguageServer = async (
     }
   }
 
-  const csrfMatch = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i.exec(commandLine);
+  const csrfMatch = CSRF_TOKEN_RE.exec(commandLine);
   const portMatch = /--https_server_port(?:\s+|=)(\d+)/i.exec(commandLine);
   const portsMatch = /PORTS:([0-9,]+)/i.exec(commandLine);
 
@@ -157,7 +174,7 @@ export const discoverWindowsLanguageServer = async (
   }
 
   if (csrfToken || port || rawPorts.length > 0) {
-    return { port, ports: rawPorts, csrfToken, isHttps: false };
+    return { port, ports: rawPorts, csrfToken };
   }
   return null;
 };
@@ -216,7 +233,7 @@ export const discoverUnixLanguageServer = async (
   }
 
   if (csrfToken || port || rawPorts.length > 0) {
-    return { port, ports: rawPorts, csrfToken, isHttps: false };
+    return { port, ports: rawPorts, csrfToken };
   }
   return null;
 };

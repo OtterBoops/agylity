@@ -16,7 +16,7 @@ import {
 import { createNotifier, createDaemonNotifier } from './notify/factory.js';
 import { type Notifier } from './notify/types.js';
 import { LogBuffer, installConsoleTee } from './logs/buffer.js';
-import { logger, createLogger, type Logger } from './logs/logger.js';
+import { logger, createLogger, DefaultLogger, type Logger, type LogLevel } from './logs/logger.js';
 import {
   OrchestratorCoordinator,
   TaskQueue,
@@ -47,6 +47,12 @@ export {
   CANONICAL_AGY_MODELS,
   evaluateModelDispatchEligibility,
 };
+
+/** Dry-run milestone plan returned by the evaluator; state is recorded only after delivery. */
+interface MilestonePlan {
+  alerts: QuotaAlert[];
+  superseded?: Map<string, number[]> | Record<string, number[]>;
+}
 
 export interface AgylityDaemonOptions {
   configStore?: ConfigStore;
@@ -127,7 +133,7 @@ export class AgylityDaemon {
     this.orchestrator.setNotifier(notifier);
     const initialConfig = configStore.resolveConfig();
     if (initialConfig.logLevel) {
-      this.logger.setLevel(initialConfig.logLevel);
+      this.applyLogLevel(initialConfig.logLevel);
     }
 
     // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
@@ -135,7 +141,7 @@ export class AgylityDaemon {
       try {
         this.logger.info('Configuration update detected, syncing active components...');
         if (resolvedConfig.logLevel) {
-          this.logger.setLevel(resolvedConfig.logLevel);
+          this.applyLogLevel(resolvedConfig.logLevel);
         }
         if (typeof this.notifier.updateConfig === 'function') {
           await this.notifier.updateConfig(resolvedConfig);
@@ -154,15 +160,9 @@ export class AgylityDaemon {
           resolvedConfig.quotaCheckIntervalSeconds &&
           (key === 'quotaCheckIntervalSeconds' || key === '*')
         ) {
-          const newIntervalMs = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds) * 1000;
-          this.logger.info(
-            'Rescheduling quota sentry timer to %ds interval',
-            Math.round(newIntervalMs / 1000)
-          );
-          clearInterval(this.timer);
-          this.timer = setInterval(() => {
-            void this.checkQuota();
-          }, newIntervalMs);
+          const newIntervalSeconds = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds);
+          this.logger.info('Rescheduling quota sentry timer to %ds interval', newIntervalSeconds);
+          this.scheduleSentryTimer(newIntervalSeconds);
         }
       } catch (err: any) {
         this.logger.error('Error syncing updated configuration:', err?.message ?? err);
@@ -358,11 +358,7 @@ export class AgylityDaemon {
     // 5. Setup recurring sentry interval
     const intervalSeconds = Math.max(30, resolved.quotaCheckIntervalSeconds ?? 60);
     this.logger.info('Sentry recurring check scheduled every %d seconds.', intervalSeconds);
-    this.timer = setInterval(() => {
-      void this.checkQuota().catch((err) => {
-        this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
-      });
-    }, intervalSeconds * 1000);
+    this.scheduleSentryTimer(intervalSeconds);
 
     this.isRunning = true;
     this.isSentryStopped = false;
@@ -378,7 +374,8 @@ export class AgylityDaemon {
       this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
       this.orchestrator.onQuotaUpdated(snapshots);
-      const alerts = this.sentryEvaluator.evaluate(snapshots, this.sentryState);
+      const plan = this.evaluateMilestonePlan(snapshots);
+      const alerts = plan.alerts;
 
       // Informational status when quota is low or pool exhausted (deduplicated per reset cycle)
       for (const s of snapshots) {
@@ -411,7 +408,16 @@ export class AgylityDaemon {
           alert.milestoneHours,
           alert.remainingPercentage
         );
-        await this.notifier.notifyQuotaAlert(alert);
+        if (await this.deliverQuotaAlert(alert)) {
+          // Record only after a confirmed delivery so an outage cannot permanently lose the alert.
+          this.recordDeliveredMilestones(plan, alert);
+        } else {
+          this.logger.warn(
+            'Quota alert for %s (%sh milestone) could not be delivered; leaving milestone unrecorded for retry',
+            alert.pool.displayName || alert.pool.poolId,
+            alert.milestoneHours
+          );
+        }
       }
 
       const probeSource =
@@ -444,7 +450,77 @@ export class AgylityDaemon {
       }
       return [];
     } finally {
-      this.orchestrator.reapStaleClaims();
+      try {
+        this.orchestrator.reapStaleClaims();
+      } catch (reapErr: any) {
+        // A reaper failure (e.g. database already closed) must never escape the probe outcome.
+        this.logger.warn('Stale claim reaper failed: %s', reapErr?.message ?? reapErr);
+      }
+    }
+  }
+
+  /** Applies a level to the root logger so every namespace inherits it; children may still override. */
+  private applyLogLevel(level: LogLevel): void {
+    const root = this.logger instanceof DefaultLogger ? this.logger.getRoot() : this.logger;
+    root.setLevel(level);
+  }
+
+  /** Single scheduling path for the recurring probe so the two call sites cannot drift. */
+  private scheduleSentryTimer(intervalSeconds: number): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => {
+      void this.checkQuota().catch((err) => {
+        this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
+      });
+    }, intervalSeconds * 1000);
+  }
+
+  /**
+   * Evaluates snapshots via the evaluator's dry-run plan when available, so milestone
+   * recording can be deferred until delivery succeeds.
+   */
+  private evaluateMilestonePlan(snapshots: QuotaSnapshot[]): MilestonePlan {
+    const evaluator = this.sentryEvaluator as unknown as {
+      evaluateWithPlan?: (
+        snapshots: QuotaSnapshot[],
+        state: SentryStateManager
+      ) => { alerts?: QuotaAlert[]; supersededMilestones?: Map<string, number[]> };
+    };
+    if (typeof evaluator.evaluateWithPlan === 'function') {
+      const plan = evaluator.evaluateWithPlan(snapshots, this.sentryState);
+      return { alerts: plan.alerts ?? [], superseded: plan.supersededMilestones };
+    }
+    // Legacy evaluator records milestones itself and returns only the alerts.
+    return { alerts: this.sentryEvaluator.evaluate(snapshots, this.sentryState) };
+  }
+
+  /** Delivers one alert; returns false when the notifier reports no successful channel. */
+  private async deliverQuotaAlert(alert: QuotaAlert): Promise<boolean> {
+    try {
+      const outcome = await this.notifier.notifyQuotaAlert(alert);
+      return outcome?.delivered !== false;
+    } catch (err: any) {
+      this.logger.warn(
+        'Quota alert delivery failed for %s: %s',
+        alert.pool.displayName || alert.pool.poolId,
+        err?.message ?? err
+      );
+      return false;
+    }
+  }
+
+  /** Records the fired and superseded milestones for a delivered alert. */
+  private recordDeliveredMilestones(plan: MilestonePlan, alert: QuotaAlert): void {
+    const poolId = alert.pool.poolId;
+    this.sentryState.recordMilestoneFired(poolId, alert.milestoneHours, alert.triggeredAt);
+    const superseded = plan.superseded;
+    if (!superseded) return;
+    const list =
+      superseded instanceof Map
+        ? superseded.get(poolId)
+        : (superseded as Record<string, number[] | undefined>)[poolId];
+    if (list && list.length > 0) {
+      this.sentryState.recordSupersededMilestones(poolId, list);
     }
   }
 
@@ -588,9 +664,7 @@ export const main = async (): Promise<AgylityDaemon> => {
       }
     }
 
-    cachedSecrets = secrets.filter(
-      (s): s is string => Boolean(s) && typeof s === 'string' && s.length >= 6
-    );
+    cachedSecrets = secrets.filter((s): s is string => Boolean(s) && typeof s === 'string');
   };
 
   const logBuffer = new LogBuffer(1000, () => {
@@ -625,6 +699,23 @@ export const main = async (): Promise<AgylityDaemon> => {
 
   process.once('SIGINT', () => void handleSignal('SIGINT'));
   process.once('SIGTERM', () => void handleSignal('SIGTERM'));
+
+  // A fatal error must shut down cleanly (closing the database and web server) before exiting.
+  const handleFatal = async (kind: string, err: unknown): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const detail = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    logger.error('[Fatal] %s: %s', kind, detail);
+    try {
+      await daemon.shutdown();
+    } catch (shutdownErr) {
+      logger.error('Error during fatal shutdown:', shutdownErr);
+    }
+    process.exit(1);
+  };
+
+  process.on('unhandledRejection', (reason) => void handleFatal('unhandledRejection', reason));
+  process.on('uncaughtException', (err) => void handleFatal('uncaughtException', err));
 
   await daemon.start();
   logger.info('Daemon started.');

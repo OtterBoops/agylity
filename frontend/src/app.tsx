@@ -51,9 +51,13 @@ export const App = () => {
   const handleRouteChange = (e: RouterOnChangeArgs) => {
     setCurrentUrl(e.url);
   };
-  const [theme, setTheme] = useState<ThemeChoice>(() =>
-    normalizeStoredTheme(localStorage.getItem('agylity-theme'))
-  );
+  const [theme, setTheme] = useState<ThemeChoice>(() => {
+    try {
+      return normalizeStoredTheme(localStorage.getItem('agylity-theme'));
+    } catch {
+      return normalizeStoredTheme(null);
+    }
+  });
   const { quota, alerts, error: quotaError } = useStore(quotaStore);
   const { config } = useStore(configStore);
   const [authCopied, setAuthCopied] = useState(false);
@@ -143,7 +147,9 @@ export const App = () => {
     };
 
     apply();
-    localStorage.setItem('agylity-theme', theme);
+    try {
+      localStorage.setItem('agylity-theme', theme);
+    } catch {}
 
     if (theme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
       const media = window.matchMedia('(prefers-color-scheme: light)');

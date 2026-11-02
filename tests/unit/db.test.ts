@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AppDatabase, type SettingRecord } from '../../src/storage/db.js';
+import {
+  AppDatabase,
+  encryptSecret,
+  decryptSecret,
+  SecretDecryptionError,
+} from '../../src/storage/db.js';
 
 describe('AppDatabase (node:sqlite Native Storage)', () => {
   let db: AppDatabase;
@@ -141,5 +146,47 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     const pragma = busyDb.getRawDb().prepare('PRAGMA busy_timeout;').get() as { timeout: number };
     assert.equal(pragma.timeout, 2500);
     busyDb.close();
+  });
+});
+
+describe('Secret encryption failure surfacing (AES-256-GCM)', () => {
+  it('throws SecretDecryptionError for corrupted ciphertext and a mismatched key', () => {
+    const key = Buffer.alloc(32, 1);
+    const ciphertext = encryptSecret('super-secret-token', key);
+    assert.equal(decryptSecret(ciphertext, key), 'super-secret-token');
+
+    // A wrong key fails GCM auth-tag verification
+    assert.throws(() => decryptSecret(ciphertext, Buffer.alloc(32, 2)), SecretDecryptionError);
+
+    // A corrupted auth tag
+    const parts = ciphertext.split(':');
+    const tag = parts[2]!;
+    parts[2] = (tag[0] === '0' ? '1' : '0') + tag.slice(1);
+    assert.throws(() => decryptSecret(parts.join(':'), key), SecretDecryptionError);
+
+    // A payload carrying the enc:v1: prefix but no valid structure
+    assert.throws(() => decryptSecret('enc:v1:not-valid', key), SecretDecryptionError);
+
+    // Plaintext values pass through untouched
+    assert.equal(decryptSecret('plain-value', key), 'plain-value');
+  });
+
+  it('propagates SecretDecryptionError out of AppDatabase.get for undecryptable values', () => {
+    const db = new AppDatabase(':memory:');
+    try {
+      // Ciphertext produced with a foreign key the database cannot resolve
+      const foreign = encryptSecret('web-ui-token', Buffer.alloc(32, 9));
+      db.getRawDb().exec(
+        `INSERT INTO settings (key, value) VALUES ('webUiAuthToken', '"${foreign}"');`
+      );
+      assert.throws(() => db.get('webUiAuthToken'), SecretDecryptionError);
+
+      db.getRawDb().exec(
+        `INSERT INTO settings (key, value) VALUES ('badSecret', '"enc:v1:aa:bb:cc"');`
+      );
+      assert.throws(() => db.get('badSecret'), SecretDecryptionError);
+    } finally {
+      db.close();
+    }
   });
 });

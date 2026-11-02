@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import { logger } from '../logs/logger.js';
+
+// A malformed env value must degrade to the built-in default, never crash the daemon at boot.
+const warnEnvFallback = (variable: string, reason: string): void =>
+  logger.child('config').warn('%s: %s; falling back to default', variable, reason);
 
 // Safe boolean preprocessor preventing Boolean('false') === true coercion trap
 export const booleanEnv = z.preprocess((val) => {
@@ -37,7 +42,7 @@ export const milestoneHoursEnv = z.preprocess(
     }
     return val;
   },
-  z.array(z.number().positive()).default([24, 12, 3])
+  z.array(z.number().positive()).min(1).default([24, 12, 3])
 );
 
 // Repository schema
@@ -313,7 +318,19 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     }
   }
 
-  const parsed = RawEnvSchema.parse(sanitizedEnv);
+  const parsed: Partial<RawEnv> = {};
+  const rawEnvFields = RawEnvSchema.shape as Record<string, z.ZodTypeAny>;
+  for (const [key, value] of Object.entries(sanitizedEnv)) {
+    const fieldSchema = rawEnvFields[key];
+    if (!fieldSchema) continue;
+    const outcome = fieldSchema.safeParse(value);
+    if (outcome.success) {
+      (parsed as Record<string, unknown>)[key] = outcome.data;
+    } else {
+      warnEnvFallback(key, 'invalid value');
+    }
+  }
+
   const result: Partial<AppConfig> = {};
 
   if (parsed.NOTIFICATION_CHANNELS) {
@@ -363,7 +380,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     result.discordOwnerUserId = parsed.DISCORD_OWNER_USER_ID.trim();
   }
   if (parsed.DISCORD_PING_OWNER !== undefined && parsed.DISCORD_PING_OWNER.trim() !== '') {
-    result.discordPingOwner = booleanEnv.parse(parsed.DISCORD_PING_OWNER);
+    try {
+      result.discordPingOwner = booleanEnv.parse(parsed.DISCORD_PING_OWNER);
+    } catch {
+      warnEnvFallback('DISCORD_PING_OWNER', 'invalid boolean value');
+    }
   }
 
   if (parsed.ANTIGRAVITY_ENDPOINT_URL && !isTemplatePlaceholder(parsed.ANTIGRAVITY_ENDPOINT_URL)) {
@@ -377,18 +398,31 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.QUOTA_ALERT_THRESHOLD_PERCENT !== undefined)
     result.quotaAlertThresholdPercent = parsed.QUOTA_ALERT_THRESHOLD_PERCENT;
   if (parsed.QUOTA_MILESTONE_HOURS) {
-    result.quotaMilestoneHours = milestoneHoursEnv.parse(parsed.QUOTA_MILESTONE_HOURS);
+    try {
+      result.quotaMilestoneHours = milestoneHoursEnv.parse(parsed.QUOTA_MILESTONE_HOURS);
+    } catch {
+      warnEnvFallback('QUOTA_MILESTONE_HOURS', 'no valid positive hour entries');
+      result.quotaMilestoneHours = [...BUILTIN_DEFAULTS.quotaMilestoneHours];
+    }
   }
   if (parsed.MIN_DISPATCH_HEADROOM_PERCENT !== undefined) {
     result.minDispatchHeadroomPercent = parsed.MIN_DISPATCH_HEADROOM_PERCENT;
   }
 
   if (parsed.REPOSITORIES_JSON) {
-    result.repositories = RepositoriesJsonSchema.parse(parsed.REPOSITORIES_JSON);
+    try {
+      result.repositories = RepositoriesJsonSchema.parse(parsed.REPOSITORIES_JSON);
+    } catch {
+      warnEnvFallback('REPOSITORIES_JSON', 'invalid JSON or repository entry');
+    }
   }
 
   if (parsed.ORCHESTRATOR_ENABLED !== undefined && parsed.ORCHESTRATOR_ENABLED.trim() !== '') {
-    result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
+    try {
+      result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
+    } catch {
+      warnEnvFallback('ORCHESTRATOR_ENABLED', 'invalid boolean value');
+    }
   }
   if (parsed.DEFAULT_DISPATCH_MODEL && parsed.DEFAULT_DISPATCH_MODEL.trim() !== '') {
     result.defaultDispatchModel = parsed.DEFAULT_DISPATCH_MODEL.trim();
@@ -407,7 +441,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   }
 
   if (parsed.WEB_UI_ENABLED !== undefined && parsed.WEB_UI_ENABLED.trim() !== '') {
-    result.webUiEnabled = booleanEnv.parse(parsed.WEB_UI_ENABLED);
+    try {
+      result.webUiEnabled = booleanEnv.parse(parsed.WEB_UI_ENABLED);
+    } catch {
+      warnEnvFallback('WEB_UI_ENABLED', 'invalid boolean value');
+    }
   }
   if (parsed.WEB_UI_PORT !== undefined) result.webUiPort = parsed.WEB_UI_PORT;
   if (parsed.WEB_UI_HOST) result.webUiHost = parsed.WEB_UI_HOST;
@@ -421,7 +459,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
       .filter(Boolean);
   }
   if (parsed.TRUSTED_PROXIES !== undefined && parsed.TRUSTED_PROXIES.trim() !== '') {
-    result.trustedProxies = booleanEnv.parse(parsed.TRUSTED_PROXIES);
+    try {
+      result.trustedProxies = booleanEnv.parse(parsed.TRUSTED_PROXIES);
+    } catch {
+      warnEnvFallback('TRUSTED_PROXIES', 'invalid boolean value');
+    }
   }
 
   if (parsed.LOG_LEVEL) result.logLevel = parsed.LOG_LEVEL;

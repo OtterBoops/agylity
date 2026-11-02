@@ -28,6 +28,8 @@ services:
       - WEB_UI_ENABLED=true
       - WEB_UI_PORT=8484
       - WEB_UI_HOST=0.0.0.0
+      # Required: the control plane refuses to start on a non-loopback host without a token.
+      - WEB_UI_AUTH_TOKEN=${WEB_UI_AUTH_TOKEN}
       - ORCHESTRATOR_ENABLED=true
       - NOTIFICATION_CHANNELS=discord,webhook
       - DISCORD_TOKEN=${DISCORD_TOKEN}

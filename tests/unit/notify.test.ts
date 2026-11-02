@@ -20,9 +20,17 @@ import {
   DispatchResultSchema,
   DispatchStatusUpdateSchema,
 } from '../../src/notify/types.js';
-import { createNotifier, createDaemonNotifier } from '../../src/notify/factory.js';
+import {
+  createNotifier,
+  createDaemonNotifier,
+  CompositeNotifier,
+} from '../../src/notify/factory.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
-import { WebhookNotifier } from '../../src/notify/adapters/webhook.js';
+import {
+  WebhookNotifier,
+  sanitizeWebhookUrl,
+  sanitizeErrorMessage,
+} from '../../src/notify/adapters/webhook.js';
 import {
   DiscordNotifier,
   generateProgressBar,
@@ -47,6 +55,7 @@ const createMockInteraction = (
     selectedRepo?: string;
     taskPrompt?: string;
     customId?: string;
+    commandOptions?: Record<string, string>;
   } = {}
 ) => {
   let deferred = false;
@@ -69,6 +78,9 @@ const createMockInteraction = (
           ? 'modal_dispatch:repo-1'
           : undefined),
     values: options.selectedRepo ? [options.selectedRepo] : [],
+    options: {
+      getString: (name: string) => options.commandOptions?.[name] ?? null,
+    },
     fields: {
       getTextInputValue: (id: string) => (id === 'task_prompt' ? (options.taskPrompt ?? '') : ''),
     },
@@ -876,6 +888,62 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       }
     });
 
+    it('retries a POST once so a transient 503 does not lose the notification', async () => {
+      let attempts = 0;
+      let deliveredBody: any = null;
+
+      const server = http.createServer((req, res) => {
+        attempts++;
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          if (attempts === 1) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'temporarily unavailable' }));
+          } else {
+            deliveredBody = JSON.parse(body);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          }
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const webhookUrl = `http://127.0.0.1:${port}/hook`;
+
+        const notifier = new WebhookNotifier({ notificationWebhookUrl: webhookUrl });
+        await notifier.initialize();
+
+        const alert: QuotaAlert = {
+          pool: {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude',
+            remainingFraction: 0.2,
+            resetTime: '2026-10-20T12:00:00Z',
+            hoursUntilReset: 3,
+            models: ['Claude'],
+          },
+          milestoneHours: 3,
+          remainingPercentage: 20,
+          triggeredAt: '2026-10-19T13:15:00.000Z',
+        };
+
+        const outcome = await notifier.notifyQuotaAlert(alert);
+
+        assert.equal(attempts, 2, 'a 503 on the first POST attempt must be retried');
+        assert.equal(deliveredBody?.event, 'quota_alert');
+        assert.equal(outcome.delivered, true);
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
     it('testNotification masks sensitive webhook URL secrets and parameters in returned messages', async () => {
       const server = http.createServer((req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -900,11 +968,11 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
           !result.message.includes('superSecretQuery'),
           'Message must NOT contain query secret'
         );
-        assert.ok(result.message.includes('***'), 'Message must contain masked placeholder ***');
         assert.ok(
-          result.message.includes('987654321'),
-          'Message retains non-sensitive channel/webhook id'
+          !result.message.includes('987654321'),
+          'API response must NOT echo the webhook URL or its path tokens'
         );
+        assert.ok(result.message.includes('delivered successfully'));
 
         await notifier.shutdown();
       } finally {
@@ -950,9 +1018,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
 
     it('sanitizeWebhookUrl masks Discord, Slack, query parameters, and basic auth credentials', async () => {
-      const { sanitizeWebhookUrl, sanitizeErrorMessage } =
-        await import('../../src/notify/adapters/webhook.js');
-
       // Discord webhook
       assert.equal(
         sanitizeWebhookUrl('https://discord.com/api/webhooks/12345/abcdef_token_secret'),
@@ -965,22 +1030,22 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         'https://hooks.slack.com/services/T123/B456/***'
       );
 
-      // Query parameter masking
+      // Query parameter masking (the single-segment path secret is masked too)
       assert.equal(
         sanitizeWebhookUrl('https://example.com/hook?token=secret123&key=val456'),
-        'https://example.com/hook?token=***&key=***'
+        'https://example.com/***?token=***&key=***'
       );
 
       // Basic auth masking
       assert.equal(
         sanitizeWebhookUrl('https://user:password@example.com/hook'),
-        'https://***:***@example.com/hook'
+        'https://***:***@example.com/***'
       );
 
       // Hash fragment masking / stripping
       assert.equal(
         sanitizeWebhookUrl('https://example.com/webhook#token=secret123'),
-        'https://example.com/webhook'
+        'https://example.com/***'
       );
       assert.equal(
         sanitizeWebhookUrl(
@@ -989,7 +1054,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         'https://webhook.example.com/api/***?token=***'
       );
 
-      // Generic 2-segment path masking (short token < 24 chars)
+      // Generic multi-segment path masking (short token < 24 chars)
       assert.equal(
         sanitizeWebhookUrl('https://webhook.example.org/webhook/shortkey123'),
         'https://webhook.example.org/webhook/***'
@@ -999,12 +1064,30 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         'https://hooks.example.com/alerts/***'
       );
 
+      // Single-segment path secret is masked regardless of length heuristics
+      assert.equal(sanitizeWebhookUrl('https://example.com/secret123'), 'https://example.com/***');
+
+      // Query-parameter secret is masked
+      assert.equal(
+        sanitizeWebhookUrl('https://example.com/alerts/notify?token=superSecretQuery'),
+        'https://example.com/alerts/***?token=***'
+      );
+
       // Error message masking
       const raw =
         'Request failed with status code 404: POST https://discord.com/api/webhooks/12345/abcdef_secret';
       assert.equal(
         sanitizeErrorMessage(raw),
         'Request failed with status code 404: POST https://discord.com/api/webhooks/12345/***'
+      );
+
+      // A response body can quote a bare secret with no URL around it
+      assert.equal(
+        sanitizeErrorMessage(
+          'Request failed: {"error":"bad token SECRET_TOKEN_REDACT_TEST_12345"}',
+          'http://127.0.0.1:9000/api/webhooks/55555/SECRET_TOKEN_REDACT_TEST_12345'
+        ),
+        'Request failed: {"error":"bad token ***"}'
       );
     });
 
@@ -1091,6 +1174,87 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       // Verify that activeInteractions is cleaned up in finally block
       assert.equal(notifier.activeInteractions.size, 0);
+
+      await notifier.shutdown();
+    });
+
+    it('releases slash-command interactions on terminal status and bounds retained entries', async () => {
+      let seq = 0;
+      const notifier = new DiscordNotifier(
+        {
+          repositories: [
+            { id: 'repo-1', name: 'Repo One', path: '/opt/repo1', defaultBranch: 'main' },
+          ],
+        },
+        {
+          onDispatchRequested: async () => ({
+            success: true,
+            status: 'queued',
+            taskId: `task-slash-${++seq}`,
+            durationMs: 5,
+          }),
+        }
+      );
+
+      await notifier.handleInteraction(
+        createMockInteraction({
+          commandName: 'dispatch',
+          commandOptions: { repository: 'repo-1', prompt: 'Run continuation' },
+        })
+      );
+      assert.equal(notifier.activeInteractions.has('task-slash-1'), true);
+
+      await notifier.notifyDispatchStatus({
+        status: 'completed',
+        taskId: 'task-slash-1',
+        repositoryName: 'repo-1',
+        message: 'Continuation complete',
+      });
+      assert.equal(
+        notifier.activeInteractions.has('task-slash-1'),
+        false,
+        'terminal status must release the retained interaction'
+      );
+
+      // The bounded cap prevents unbounded growth when terminal statuses never arrive.
+      notifier.maxActiveInteractions = 2;
+      for (let i = 0; i < 3; i++) {
+        await notifier.handleInteraction(
+          createMockInteraction({
+            commandName: 'dispatch',
+            commandOptions: { repository: 'repo-1', prompt: `Run ${i}` },
+          })
+        );
+      }
+      assert.ok(notifier.activeInteractions.size <= 2);
+
+      await notifier.shutdown();
+    });
+
+    it('releases slash-command interactions via the bounded fallback timer when no status arrives', async () => {
+      const notifier = new DiscordNotifier(
+        {},
+        {
+          onDispatchRequested: async () => ({
+            success: true,
+            status: 'queued',
+            taskId: 'task-orphan',
+            durationMs: 5,
+          }),
+        }
+      );
+      notifier.interactionRetentionMs = 20;
+
+      await notifier.handleInteraction(
+        createMockInteraction({
+          commandName: 'dispatch',
+          commandOptions: { repository: 'repo-x', prompt: 'Run orphan' },
+        })
+      );
+      assert.equal(notifier.activeInteractions.has('task-orphan'), true);
+
+      await new Promise((r) => setTimeout(r, 80));
+      assert.equal(notifier.activeInteractions.has('task-orphan'), false);
 
       await notifier.shutdown();
     });
@@ -1424,6 +1588,84 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       });
       assert.equal((webhook as any).config.notificationWebhookUrl, 'http://127.0.0.1:9999/new');
       assert.equal((webhook as any).config.webhookSecret, 'new-secret');
+    });
+  });
+
+  /* ==================================================================== */
+  /* 9. Composite Resilience & Delivery Outcomes                          */
+  /* ==================================================================== */
+  describe('9. Composite Resilience & Delivery Outcomes', () => {
+    const buildNotifier = (name: string, impl: Partial<Notifier> = {}): Notifier => ({
+      channelName: name,
+      initialize: async () => {},
+      notifyQuotaAlert: async () => ({ delivered: true, results: { [name]: { success: true } } }),
+      notifyDispatchStatus: async () => {},
+      shutdown: async () => {},
+      ...impl,
+    });
+
+    const sampleAlert: QuotaAlert = {
+      pool: {
+        poolId: 'claude',
+        family: 'claude',
+        displayName: 'Claude',
+        remainingFraction: 0.2,
+        resetTime: '2026-10-20T12:00:00Z',
+        hoursUntilReset: 3,
+        models: ['Claude'],
+      },
+      milestoneHours: 3,
+      remainingPercentage: 20,
+      triggeredAt: '2026-10-19T13:15:00.000Z',
+    };
+
+    it('initialize() survives one adapter failing and continues with the rest', async () => {
+      let okInitialized = false;
+      const failing = buildNotifier('failing', {
+        initialize: async () => {
+          throw new Error('init boom');
+        },
+      });
+      const ok = buildNotifier('ok', {
+        initialize: async () => {
+          okInitialized = true;
+        },
+      });
+
+      const composite = new CompositeNotifier([failing, ok]);
+      await composite.initialize();
+
+      assert.equal(okInitialized, true, 'a failing adapter must not abort the whole composite');
+    });
+
+    it('notifyQuotaAlert reports a non-delivered outcome when the only channel rejects', async () => {
+      const failing = buildNotifier('failing', {
+        notifyQuotaAlert: async () => {
+          throw new Error('delivery boom');
+        },
+      });
+      const composite = new CompositeNotifier([failing]);
+
+      const outcome = await composite.notifyQuotaAlert(sampleAlert);
+
+      assert.equal(outcome.delivered, false);
+      assert.equal(outcome.results.failing?.success, false);
+      assert.equal(outcome.results.failing?.error, 'delivery boom');
+    });
+
+    it('notifyQuotaAlert reports delivered when at least one channel succeeds', async () => {
+      const failing = buildNotifier('failing', {
+        notifyQuotaAlert: async () => {
+          throw new Error('delivery boom');
+        },
+      });
+      const composite = new CompositeNotifier([failing, buildNotifier('ok')]);
+
+      const outcome = await composite.notifyQuotaAlert(sampleAlert);
+
+      assert.equal(outcome.delivered, true);
+      assert.equal(outcome.results.failing?.success, false);
+      assert.equal(outcome.results.ok?.success, true);
     });
   });
 });

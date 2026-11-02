@@ -249,6 +249,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setIsSaving(true);
     setToast(null);
 
+    const overrideDeletes: string[] = [];
     const channelsList = [...enabledChannels];
     const payload: Record<string, unknown> = {
       notificationChannels: channelsList,
@@ -261,28 +262,28 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         discordChannelId.trim() === '' &&
         config.overrides?.discordNotificationChannelId !== undefined
       ) {
-        await deleteConfigOverride('discordNotificationChannelId');
+        overrideDeletes.push('discordNotificationChannelId');
       } else {
         payload.discordNotificationChannelId = discordChannelId.trim();
       }
     }
     if (discordClientId !== serverDiscordClientId) {
       if (discordClientId.trim() === '' && config.overrides?.discordClientId !== undefined) {
-        await deleteConfigOverride('discordClientId');
+        overrideDeletes.push('discordClientId');
       } else {
         payload.discordClientId = discordClientId.trim();
       }
     }
     if (discordGuildId !== serverDiscordGuildId) {
       if (discordGuildId.trim() === '' && config.overrides?.discordGuildId !== undefined) {
-        await deleteConfigOverride('discordGuildId');
+        overrideDeletes.push('discordGuildId');
       } else {
         payload.discordGuildId = discordGuildId.trim();
       }
     }
     if (discordOwnerUserId !== serverDiscordOwnerUserId) {
       if (discordOwnerUserId.trim() === '' && config.overrides?.discordOwnerUserId !== undefined) {
-        await deleteConfigOverride('discordOwnerUserId');
+        overrideDeletes.push('discordOwnerUserId');
       } else {
         payload.discordOwnerUserId = discordOwnerUserId.trim();
       }
@@ -299,6 +300,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     }
 
     try {
+      for (const key of overrideDeletes) {
+        await deleteConfigOverride(key);
+      }
       await updateConfig(payload);
       setToast({
         type: 'success',

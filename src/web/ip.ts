@@ -70,6 +70,14 @@ const ipv6ToBigInt = (ip: string): bigint | null => {
   return res;
 };
 
+/** Strict decimal prefix. An empty string, a hex/exponent form or an out-of-range value is invalid. */
+const parsePrefix = (prefixStr: string | null, maxBits: number): number | null => {
+  if (prefixStr === null) return maxBits;
+  if (!/^\d{1,3}$/.test(prefixStr)) return null;
+  const prefix = Number(prefixStr);
+  return prefix >= 0 && prefix <= maxBits ? prefix : null;
+};
+
 export interface ParsedSubnet {
   family: 'ipv4' | 'ipv6';
   network: bigint;
@@ -93,8 +101,8 @@ export const parseSubnet = (entry: string): ParsedSubnet | null => {
   if (ipFamily === 4) {
     const ipNum = ipv4ToBigInt(ipStr);
     if (ipNum === null) return null;
-    const prefix = prefixStr !== null ? Number(prefixStr) : 32;
-    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 32) return null;
+    const prefix = parsePrefix(prefixStr, 32);
+    if (prefix === null) return null;
 
     const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(32 - prefix);
     const network = ipNum & mask;
@@ -104,8 +112,8 @@ export const parseSubnet = (entry: string): ParsedSubnet | null => {
   if (ipFamily === 6) {
     const ipNum = ipv6ToBigInt(ipStr);
     if (ipNum === null) return null;
-    const prefix = prefixStr !== null ? Number(prefixStr) : 128;
-    if (!Number.isInteger(prefix) || prefix < 0 || prefix > 128) return null;
+    const prefix = parsePrefix(prefixStr, 128);
+    if (prefix === null) return null;
 
     const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix);
     const network = ipNum & mask;
@@ -159,15 +167,8 @@ export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean
   return false;
 };
 
-export const DEFAULT_TRUSTED_PROXY_RANGES = [
-  '127.0.0.0/8',
-  '::1/128',
-  '10.0.0.0/8',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  'fc00::/7',
-  'fe80::/10',
-];
+/** Loopback only: a private-range peer is not a proxy, it is another host that can forge headers. */
+export const DEFAULT_TRUSTED_PROXY_RANGES = ['127.0.0.0/8', '::1/128'];
 
 /**
  * Checks if the immediate socket peer is a recognized trusted proxy / private network hop.
@@ -183,7 +184,7 @@ export const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[])
 /**
  * Extracts real client IP from incoming request, taking trusted proxy headers into account.
  * SECURITY INVARIANT: Proxy headers (CF-Connecting-IP, X-Real-IP, X-Forwarded-For) are STRICTLY
- * ignored unless the direct TCP peer socket is a trusted proxy / loopback / private network IP.
+ * ignored unless the direct TCP peer socket is a trusted proxy or loopback.
  */
 export const extractClientIp = (
   req: http.IncomingMessage,
@@ -208,14 +209,18 @@ export const extractClientIp = (
         if (net.isIP(norm) !== 0) return norm;
       }
 
-      // Standard X-Forwarded-For (leftmost entry is the initial client)
+      // X-Forwarded-For is walked from the RIGHT, skipping trusted hops: a client-supplied
+      // prefix must never be able to name its own address.
       const xForwardedFor = req.headers['x-forwarded-for'];
       if (typeof xForwardedFor === 'string' && xForwardedFor.trim()) {
-        const first = xForwardedFor.split(',')[0]?.trim();
-        if (first) {
-          const norm = normalizeIp(first);
-          if (net.isIP(norm) !== 0) return norm;
+        const hops = xForwardedFor
+          .split(',')
+          .map((h) => normalizeIp(h.trim()))
+          .filter((h) => net.isIP(h) !== 0);
+        for (let i = hops.length - 1; i >= 0; i--) {
+          if (!isTrustedProxyPeer(hops[i]!, trustedProxyRanges)) return hops[i]!;
         }
+        if (hops.length > 0) return hops[0]!;
       }
     }
   }

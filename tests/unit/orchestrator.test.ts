@@ -427,8 +427,25 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         ],
       });
 
+      // Provide live quota telemetry so the queued task passes the safety-floor eligibility check
+      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
       const { server, port } = await startWebServer({
         configStore: store,
+        sentryState,
         host: '127.0.0.1',
         port: 0,
       });
@@ -532,8 +549,25 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         ],
       });
 
+      // Provide live quota telemetry so dispatched tasks pass the safety-floor eligibility check
+      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
       const { server, port } = await startWebServer({
         configStore: store,
+        sentryState,
         host: '127.0.0.1',
         port: 0,
       });
@@ -1089,6 +1123,380 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       // 3. pollOnce returns null immediately without attempting network poll
       const task = await worker.pollOnce();
       assert.equal(task, null);
+    });
+  });
+
+  /* ==================================================================== */
+  /* 8. Dispatch Policy Resolution, Telemetry Failsafe & Repo Id Sanitise  */
+  /* ==================================================================== */
+  describe('8. Dispatch Policy Resolution, Telemetry Failsafe & Repo Id Sanitise', () => {
+    it('derives the per-pool policy from the resolved model, not raw substring matching', () => {
+      const { dir, cleanup } = makeTempDir('coord_policy_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        defaultDispatchModel: 'claude-sonnet-5-5',
+      });
+      const coordinator = new OrchestratorCoordinator({ configStore: store });
+
+      // An omitted model must use the default model's pool (claude), whose built-in policy disables dispatch
+      const omitted = coordinator.evaluateEligibility({});
+      assert.equal(omitted.allowed, false);
+      assert.equal(omitted.family, 'claude');
+      assert.equal(omitted.code, 'OVERAGE_PROTECTION_TRIGGERED');
+
+      // Aliases without a literal 'claude' must still be governed by the claude policy
+      for (const alias of ['sonnet', 'opus', 'gpt-oss', 'gpt-oss-120b']) {
+        const check = coordinator.evaluateEligibility({ model: alias });
+        assert.equal(check.allowed, false, `alias ${alias} should be blocked`);
+        assert.equal(check.family, 'claude', `alias ${alias} should map to the claude pool`);
+        assert.equal(check.code, 'OVERAGE_PROTECTION_TRIGGERED');
+      }
+
+      store.close();
+      cleanup();
+    });
+
+    it('applies the default model pool policy (not gemini-argon) when model is omitted', () => {
+      const { dir, cleanup } = makeTempDir('coord_policy_default_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        defaultDispatchModel: 'gemini-3.8-flash',
+        poolPolicies: {
+          claude: { alertsEnabled: true, dispatchEnabled: true },
+          'gemini-argon': { alertsEnabled: true, dispatchEnabled: false },
+          'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+        },
+      });
+      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      coordinator.onQuotaUpdated([
+        {
+          poolId: 'gemini-flash',
+          family: 'gemini-flash',
+          displayName: 'Gemini Flash',
+          remainingFraction: 0.8,
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          hoursUntilReset: 1,
+          models: ['gemini-3.8-flash'],
+        },
+      ]);
+
+      // The disabled gemini-argon policy must not be consulted for the flash default model
+      const omitted = coordinator.evaluateEligibility({});
+      assert.equal(omitted.allowed, true);
+      assert.equal(omitted.family, 'gemini-flash');
+
+      store.close();
+      cleanup();
+    });
+
+    it('fails closed with TELEMETRY_UNAVAILABLE when no quota pools are available', () => {
+      const immediate = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        pools: [],
+        scheduleMode: 'immediate',
+      });
+      assert.equal(immediate.allowed, false);
+      assert.equal(immediate.code, 'TELEMETRY_UNAVAILABLE');
+      assert.ok(immediate.reason?.includes('could not be read'));
+
+      // allowOverage still overrides the failsafe
+      const overridden = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        pools: [],
+        allowOverage: true,
+      });
+      assert.equal(overridden.allowed, true);
+
+      // pre_reset keeps its existing queued behaviour when telemetry is missing
+      const preReset = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        pools: [],
+        scheduleMode: 'pre_reset',
+      });
+      assert.equal(preReset.allowed, false);
+      assert.equal(preReset.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
+    });
+
+    it('sanitises a repository name containing a colon or at-sign into the derived repository id', async () => {
+      const { dir, cleanup } = makeTempDir('coord_repo_id_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { orchestratorEnabled: true });
+      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      coordinator.onQuotaUpdated([
+        {
+          poolId: 'gemini-flash',
+          family: 'gemini-flash',
+          displayName: 'Gemini Flash',
+          remainingFraction: 0.8,
+          resetTime: new Date(Date.now() + 3600000).toISOString(),
+          hoursUntilReset: 1,
+          models: ['gemini-3.8-flash'],
+        },
+      ]);
+
+      const res = await coordinator.dispatch({
+        repositoryName: 'my:repo@v1',
+        prompt: 'Sanitise the derived repository id',
+      });
+      assert.equal(res.success, true);
+      const task = res.taskId ? coordinator.queue.getTask(res.taskId) : null;
+      assert.equal(task?.repositoryId, 'my-repo-v1');
+
+      store.close();
+      cleanup();
+    });
+  });
+
+  /* ==================================================================== */
+  /* 9. Task Queue Ownership Guards, Lease Reaping & Schema Migration     */
+  /* ==================================================================== */
+  describe('9. Task Queue Ownership Guards, Lease Reaping & Schema Migration', () => {
+    it('refuses a revoked worker heartbeat so it cannot re-claim a requeued task', () => {
+      const { dir, cleanup } = makeTempDir('orch_owner_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Ownership guard',
+          model: 'gemini-4-argon',
+        });
+
+        const claimed = queue.claimNext({ workerId: 'runner-1' });
+        assert.equal(claimed?.id, task.id);
+        assert.equal(claimed?.status, 'claimed');
+
+        // Revoking the runner mid-flight returns the task to the queue.
+        assert.equal(queue.revokeWorker('runner-1'), true);
+        assert.equal(queue.getTask(task.id)?.status, 'queued');
+        assert.equal(queue.getTask(task.id)?.workerId, undefined);
+
+        // The still-running runner's heartbeat must not flip the task back to executing.
+        const result = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          workerId: 'runner-1',
+        });
+        assert.equal(result?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'queued');
+        assert.equal(queue.getTask(task.id)?.workerId, undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('rejects cross-worker and queued-to-active status patches from a foreign runner', () => {
+      const { dir, cleanup } = makeTempDir('orch_foreign_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Foreign runner guard',
+          model: 'gemini-4-argon',
+        });
+        const claimed = queue.claimNext({ workerId: 'runner-owner' });
+        assert.equal(claimed?.status, 'claimed');
+
+        // A foreign runner cannot transition a task owned by another runner.
+        const foreign = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          workerId: 'runner-intruder',
+        });
+        assert.equal(foreign?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'claimed');
+        assert.equal(queue.getTask(task.id)?.workerId, 'runner-owner');
+
+        // A queued task may never be taken straight to an active state.
+        const queued = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Queued takeover guard',
+          model: 'gemini-4-argon',
+        });
+        const takeover = queue.updateTaskStatus(queued.id, {
+          status: 'executing',
+          workerId: 'runner-intruder',
+        });
+        assert.equal(takeover?.applied, false);
+        assert.equal(queue.getTask(queued.id)?.status, 'queued');
+        assert.equal(queue.getTask(queued.id)?.workerId, undefined);
+
+        // The owning runner may still advance its own task.
+        const owned = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          workerId: 'runner-owner',
+        });
+        assert.equal(owned?.applied, true);
+        assert.equal(owned?.task.status, 'executing');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('records real elapsed work time (claimed_at to now) when reaping a stale claim', () => {
+      const { dir, cleanup } = makeTempDir('orch_reap_duration_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Reap duration',
+          model: 'gemini-4-argon',
+        });
+        queue.claimNext({ workerId: 'runner-dead' });
+
+        const nowMs = Date.now();
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET claimed_at = ?, heartbeat_at = ? WHERE id = ?')
+          .run(
+            new Date(nowMs - 45_000).toISOString(),
+            new Date(nowMs - 20_000).toISOString(),
+            task.id
+          );
+
+        const reaped = queue.reapStaleClaims(5_000, nowMs);
+        assert.equal(reaped.length, 1);
+        // Must reflect claimed_at -> now (45000ms), not the 20000ms lease age.
+        assert.equal(reaped[0]!.durationMs, 45_000);
+        assert.equal(reaped[0]!.status, 'failed');
+
+        // Falls back to the lease age only when claimed_at is missing.
+        const fallback = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Reap fallback',
+          model: 'gemini-4-argon',
+        });
+        queue.claimNext({ workerId: 'runner-dead-2' });
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET claimed_at = NULL, heartbeat_at = ? WHERE id = ?')
+          .run(new Date(nowMs - 20_000).toISOString(), fallback.id);
+
+        const reapedFallback = queue.reapStaleClaims(5_000, nowMs);
+        assert.equal(reapedFallback.length, 1);
+        assert.equal(reapedFallback[0]!.durationMs, 20_000);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('marks a reaped dead worker offline in the same cycle instead of refreshing its last_seen_at', () => {
+      const { dir, cleanup } = makeTempDir('orch_reap_offline_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Reap offline',
+          model: 'gemini-4-argon',
+        });
+        queue.claimNext({ workerId: 'runner-dead' });
+        assert.equal(queue.getWorker('runner-dead')?.status, 'busy');
+
+        const nowMs = Date.now();
+        const staleBeat = new Date(nowMs - 20_000).toISOString();
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET claimed_at = ?, heartbeat_at = ? WHERE id = ?')
+          .run(staleBeat, staleBeat, task.id);
+        db.getRawDb()
+          .prepare('UPDATE swarm_workers SET last_seen_at = ? WHERE worker_id = ?')
+          .run(staleBeat, 'runner-dead');
+
+        const reaped = queue.reapStaleClaims(5_000, nowMs);
+        assert.equal(reaped.length, 1);
+        assert.equal(queue.getWorker('runner-dead')?.status, 'offline');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('prunes consumed registration tokens so repeated creation stays bounded', () => {
+      const { dir, cleanup } = makeTempDir('orch_reg_prune_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const total = 60;
+        for (let i = 0; i < total; i++) {
+          const reg = queue.createRegistrationToken({ nameHint: `runner-${i}` });
+          queue.exchangeRegistrationToken({
+            registrationToken: reg.registrationToken,
+            workerId: `worker-${i}`,
+          });
+        }
+
+        const count = (
+          db.getRawDb().prepare('SELECT COUNT(*) AS c FROM swarm_runner_registrations').get() as {
+            c: number;
+          }
+        ).c;
+        assert.ok(count < total, `expected pruning below ${total}, got ${count}`);
+        assert.ok(count <= 51, `expected a bounded count, got ${count}`);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('migrates a legacy swarm_tasks schema additively and can enqueue afterwards', () => {
+      const { dir, cleanup } = makeTempDir('orch_migrate_');
+      const db = new AppDatabase(path.join(dir, 'legacy.db'));
+
+      try {
+        const raw = db.getRawDb();
+        raw.exec(`
+          CREATE TABLE swarm_tasks (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+            repository_id TEXT NOT NULL,
+            repository_name TEXT NOT NULL,
+            repository_path TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            model TEXT NOT NULL,
+            pool_family TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            duration_ms INTEGER NOT NULL DEFAULT 0
+          );
+        `);
+        // A vestigial column from an older schema must survive the migration.
+        raw.exec('ALTER TABLE swarm_tasks ADD COLUMN dispatch_id TEXT');
+
+        const queue = new TaskQueue(db);
+
+        const columns = new Set(
+          (raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name: string }>).map(
+            (column) => column.name
+          )
+        );
+        for (const expected of [
+          'schedule_mode',
+          'auto_create_pr',
+          'pr_url',
+          'expires_at',
+          'standing_task_id',
+          'num_turns',
+          'total_tokens',
+          'thinking_tokens',
+        ]) {
+          assert.ok(columns.has(expected), `migrated swarm_tasks should have ${expected}`);
+        }
+        assert.ok(columns.has('dispatch_id'), 'legacy column must not be dropped');
+
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Post-migration enqueue',
+          model: 'gemini-4-argon',
+        });
+        assert.equal(task.status, 'queued');
+        assert.equal(task.scheduleMode, 'immediate');
+      } finally {
+        db.close();
+        cleanup();
+      }
     });
   });
 });

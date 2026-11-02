@@ -122,17 +122,10 @@ export const api = ky.create({
   },
 });
 
-export const getQuota = (): Promise<QuotaSnapshot[]> =>
-  api
-    .get('quota')
-    .json<QuotaSnapshot[]>()
-    .catch(() => []);
+export const getQuota = (): Promise<QuotaSnapshot[]> => api.get('quota').json<QuotaSnapshot[]>();
 
 export const getAlerts = (): Promise<SentryAlertState | null> =>
-  api
-    .get('alerts')
-    .json<SentryAlertState | null>()
-    .catch(() => null);
+  api.get('alerts').json<SentryAlertState | null>();
 
 export const getConfig = (): Promise<ConfigData> =>
   api
