@@ -2,7 +2,7 @@ import { useState, useEffect } from 'preact/hooks';
 import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './components/Icon';
 import { useHashRoute, type Route } from './router';
-import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme } from './theme';
+import { type ThemeChoice, normalizeStoredTheme, resolveEffectiveTheme, applyDocumentTheme } from './theme';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { QuotaGrid } from './components/QuotaGrid';
@@ -125,7 +125,7 @@ export const App = () => {
   useEffect(() => {
     const apply = () => {
       const effective = resolveEffectiveTheme(theme);
-      document.documentElement.setAttribute('data-theme', effective);
+      applyDocumentTheme(effective);
     };
 
     apply();
@@ -175,7 +175,7 @@ export const App = () => {
 
   if (isCheckingAuth) {
     return (
-      <div class="flex min-h-screen w-full items-center justify-center bg-pine-base text-pine-muted">
+      <div class="flex min-h-screen min-h-dvh w-full items-center justify-center bg-pine-base text-pine-muted">
         <div class="flex items-center gap-3">
           <div class="size-4 animate-spin rounded-full border-2 border-pine-iris border-t-transparent" />
           <span class="font-mono text-xs">Connecting to Agylity...</span>
@@ -196,7 +196,7 @@ export const App = () => {
   }
 
   return (
-    <div class="min-h-screen bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
+    <div class="min-h-screen min-h-dvh bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
         route={route}
         onNavigate={navigate}

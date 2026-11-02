@@ -63,3 +63,26 @@ export const getThemeDisplayLabel = (choice: ThemeChoice): string => {
   if (choice === 'moon') return 'Moon';
   return choice;
 };
+
+export const THEME_META: Record<
+  'rose-pine' | 'rose-pine-moon' | 'rose-pine-dawn',
+  { bg: string; colorScheme: 'dark' | 'light' }
+> = {
+  'rose-pine': { bg: '#191724', colorScheme: 'dark' },
+  'rose-pine-moon': { bg: '#232136', colorScheme: 'dark' },
+  'rose-pine-dawn': { bg: '#faf4ed', colorScheme: 'light' },
+};
+
+export const applyDocumentTheme = (
+  effectiveTheme: 'rose-pine' | 'rose-pine-moon' | 'rose-pine-dawn'
+): void => {
+  if (typeof document === 'undefined') return;
+  document.documentElement.setAttribute('data-theme', effectiveTheme);
+  const meta = THEME_META[effectiveTheme];
+  document.documentElement.style.colorScheme = meta.colorScheme;
+  const metaThemeColor = document.querySelector('meta[name="theme-color"]');
+  if (metaThemeColor) {
+    metaThemeColor.setAttribute('content', meta.bg);
+  }
+};
+
