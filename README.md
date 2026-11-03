@@ -195,3 +195,8 @@ Autonomous agents and AI pair programmers working in this repository must adhere
 ## License
 
 [PolyForm Noncommercial License 1.0.0](./LICENSE) © [OtterBoops](https://github.com/OtterBoops). Free for personal homelabs, noncommercial hacking, and learning. Commercial exploitation, hosted charging, or SaaS wrapping is strictly prohibited.
+
+
+## End-to-end verification
+
+A dispatched task is claimed by a swarm worker, which runs `agy` in an isolated branch. The result is pushed and opened as a pull request automatically.
