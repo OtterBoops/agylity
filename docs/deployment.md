@@ -41,7 +41,7 @@ Access the web dashboard at `http://localhost:8484` (when `WEB_UI_ENABLED=true`)
 For homelabs managed via GitOps, Portainer, or Dockge:
 
 1. Store secrets in your container management stack or local environment file.
-2. In your compose stack, add the `agylity` service:
+2. In your compose stack, add the coordinator and — if you want unattended execution — the worker. They are **separate images**, so a coordinator-only stack cannot claim tasks:
    ```yaml
    services:
      agylity:
@@ -55,8 +55,22 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        env_file:
          - /opt/agylity/.env
 
+     agylity-worker:
+       image: ghcr.io/otterboops/agylity-worker:latest
+       container_name: agylity-worker
+       restart: unless-stopped
+       env_file:
+         - /opt/agylity/.env
+       environment:
+         # The worker pushes branches, so the token must be named here as well as in .env —
+         # `env_file` alone does not put it in the container environment.
+         - GITHUB_TOKEN=${GITHUB_TOKEN}
+       volumes:
+         - agylity-worker-data:/app/data
+
    volumes:
      agylity-data:
+     agylity-worker-data:
    ```
 3. Deploy the stack.
 
@@ -66,20 +80,20 @@ Agylity container images published to GitHub Container Registry (`ghcr.io/otterb
 
 | Tag             | Channel            | Description                                                                                                                               |
 | --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.2.0`). Recommended for production homelabs and compose stacks.             |
-| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.2.0`, `0.2`).                                                                                              |
+| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.3.4`). Recommended for production homelabs and compose stacks.             |
+| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.3.4`, `0.3`).                                                                                              |
 | `edge` / `main` | **Development**    | Built from the tip of the `main` branch on every commit. Contains intermediate changes between formal releases without touching `latest`. |
 | `sha-<hash>`    | **Immutable**      | Commit-specific immutable image digest tag (e.g. `sha-9d62b78`).                                                                          |
 
 ---
 
-## 3. Option C: Standalone Native Node 24 Daemon
+## 3. Option C: Standalone Native Node 26 Daemon
 
 ### 3.1. Build & Run
 
-1. Ensure Node.js >= 24.0.0 is installed:
+1. Ensure Node.js >= 26.0.0 is installed:
    ```bash
-   node --version # >= v24.0.0
+   node --version # >= v26.0.0
    ```
 2. Install dependencies:
    ```bash
@@ -90,9 +104,9 @@ Agylity container images published to GitHub Container Registry (`ghcr.io/otterb
    ```bash
    npm run build
    ```
-4. Start with native Node 24 environment file loading:
+4. Start with native Node 26 environment file loading (`--env-file-if-exists` so a missing file is not fatal):
    ```bash
-   node --env-file=.env dist/index.js
+   npm start   # node --no-warnings --env-file-if-exists=.env dist/index.js
    ```
 
 ### 3.2. systemd Service Configuration (`/etc/systemd/system/agylity.service`)
@@ -106,7 +120,7 @@ After=network.target
 Type=simple
 User=otter
 WorkingDirectory=/home/otter/Code/agylity
-ExecStart=/usr/bin/node --env-file=.env dist/index.js
+ExecStart=/usr/bin/node --no-warnings --env-file-if-exists=.env dist/index.js
 Restart=always
 RestartSec=10
 StandardOutput=journal

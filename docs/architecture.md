@@ -97,11 +97,15 @@ Continuation tasks are designed to be executed strictly on designated worker mac
 
 ### 3.2. Cryptographic Security at Rest (AES-256-GCM)
 
-Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secrets) stored in SQLite are encrypted before being written to disk using native Node 24 `node:crypto` AES-256-GCM authenticated encryption (`enc:v1:<iv>:<tag>:<ciphertext>`). On all REST API routes (`GET /api/config`), secret values are masked (`••••••••`) to prevent accidental credential leakage in browser network logs or client inspection.
+Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secrets) stored in SQLite are encrypted before being written to disk using native Node 26 `node:crypto` AES-256-GCM authenticated encryption (`enc:v1:<iv>:<tag>:<ciphertext>`). On all REST API routes (`GET /api/config`), secret values are masked (`••••••••`) to prevent accidental credential leakage in browser network logs or client inspection.
 
 ### 3.3. AI Overcharge & Credit Safety Floor
 
-Tasks are blocked from dispatch when remaining quota headroom is $\le$ `MIN_DISPATCH_HEADROOM_PERCENT` (default: `10%`) to protect against billable AI overages or credit consumption. Pass `allowOverage: true` in the API or UI to override. Setting this to `0` is recommended for flat-tier / non-metered accounts.
+A task is blocked from dispatch when the headroom of its chosen pool is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), protecting against billable AI overages.
+
+The check **fails closed**: headroom is also treated as below the floor when it cannot be established — no readable pool for the requested family, stale telemetry, or an unparseable fraction. An unknown quota is never assumed to be full. The refusal reaches the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`.
+
+`allowOverage: true` is the override, and it is the honest record of your billing posture: the language server does not report whether overages are enabled, so Agylity cannot detect it for you. Note that setting the floor to `0` disables the check entirely — with overages enabled on your account that is an unbounded spend path, so only do it for flat-tier or non-metered accounts.
 
 ### 3.4. Strict Single-User Binding (Single-Tenant Invariant)
 
@@ -152,9 +156,9 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 - **Development Tooling**: `typescript`, `@types/node`, `tsx`.
 - **Zero Third-Party Primitives**:
   - **Cryptographic Security at Rest**: Native `node:crypto` AES-256-GCM authenticated encryption. Sensitive tokens (Discord Bot Tokens, CSRF headers, webhook secrets) are encrypted before writing to SQLite and masked across all REST endpoints.
-  - **Embedded Persistence**: Native Node 24 `node:sqlite` (`DatabaseSync`) in WAL mode.
+  - **Embedded Persistence**: Native Node 26 `node:sqlite` (`DatabaseSync`) in WAL mode.
   - **Fast HTTP**: Native Node `node:http` (zero Express/Fastify bloat).
-  - **Test Suite**: Native Node 24 test runner (`node:test`, `node:assert/strict`).
+  - **Test Suite**: Native Node 26 test runner (`node:test`, `node:assert/strict`).
 
 ---
 
@@ -219,13 +223,13 @@ Agylity incorporates a lightweight, universal logging subsystem designed for pro
 
 ---
 
-## 6. Pull-Based Worker Swarm Architecture (Roadmap)
+## 7. Pull-Based Worker Swarm Architecture
 
-Agylity's execution roadmap codifies a **Pull-Based Worker Swarm** architecture (authoritatively specified in `skills/agylity/SKILL.md` Section 5):
+Agylity's execution model is a **Pull-Based Worker Swarm**:
 
 ```
 Coordinator (Homelab / Cloud)
-  ├── SQLite Task Queue (P0 Urgent, P1 Scheduled, P2 Quota-Burn)
+  ├── SQLite Task Queue (scheduleMode: immediate | pre_reset)
   ├── Discord Bot (/dispatch modal)
   └── REST API (/api/tasks/poll)
         ▲
@@ -234,21 +238,20 @@ Coordinator (Homelab / Cloud)
         └── Visible Worker (Home Desktop PC)        -> Supervised tasks in active terminal
 ```
 
-### 6.1. Architectural Principles & Invariants
+### 7.1. Architectural Principles & Invariants
 
 1. **Outbound Long-Polling (Inbound Firewall Invariant)**:
    - Worker machines connect outbound via HTTPS to `/api/tasks/poll`.
    - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on worker nodes.
-2. **Task Prioritization Matrix**:
-   - **P0 (Urgent)**: Direct user prompts dispatched interactively via Discord modal or Web UI.
-   - **P1 (Scheduled)**: Periodic maintenance jobs, automated benchmark runs, or scheduled continuation branches.
-   - **P2 (Quota-Burn)**: Opportunistic background work triggered only when the reset deadline is imminent (`< 2h`) and quota headroom is ample (`> 30%`), ensuring free quota is utilized rather than forfeited.
-3. **Target Routing**:
-   - Tasks specify `worker_mode: 'headless'` (unattended execution on Docker/Linux hosts) or `worker_mode: 'visible'` (desktop environments with terminal feedback).
+2. **Task Scheduling**: every task carries a `scheduleMode`.
+   - **`immediate`**: run as soon as a matching worker polls.
+   - **`pre_reset`**: opportunistic quota-burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
+3. **Target Routing by Labels and Repository**:
+   - A task declares `requiredLabels`; a worker claims it only if it holds **all** of them, and only if the task's repository is in the worker's own scope. A worker's scope comes from its registration — the poll payload may narrow it, never widen it.
 4. **Safety Floor Rule**:
-   - The coordinator blocks task dispatches whenever quota headroom is $\le$ `MIN_DISPATCH_HEADROOM_PERCENT` (default: `10%`), preventing billable AI overages.
+   - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested family, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 5. **Alerting-First Operational Mode**:
-   - In current production releases, `ORCHESTRATOR_ENABLED=false` runs Agylity in pure sentry mode. Attempted dispatches via `/api/dispatch` cleanly return `ORCHESTRATOR_DISABLED` while worker swarm poller integration is finalized.
+   - `ORCHESTRATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `ORCHESTRATOR_DISABLED` and no execution resources are initialised.
 
 ---
 
@@ -263,29 +266,32 @@ agylity/
 │   ├── architecture.md         # System design, Connect-RPC, security invariants
 │   ├── configuration.md        # Environment variables & SQLite hierarchy
 │   ├── deployment.md           # Docker Compose, Arcane GitOps, systemd
-│   └── testing.md              # Multi-tier verification architecture & test harness
+│   └── testing.md              # Test layout, coverage by suite, and commands
 ├── frontend/                   # Dedicated Vite + Preact + Tailwind CSS client
 │   ├── public/                 # Static vector assets (favicon, icons)
 │   ├── src/                    # Preact components, hooks, and types
 │   ├── package.json            # Client workspace dependencies
 │   └── vite.config.ts          # Bundles directly to dist/web/public
 ├── src/                        # Pure TypeScript daemon source
+│   ├── cli/                    # Daemon entrypoint, startup banner & log-buffer wiring
 │   ├── config/                 # Zod validation & SQLite store hierarchy
+│   ├── daemon/                 # Probe scheduler, milestone evaluation & lifecycle
 │   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
 │   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
 │   ├── orchestrator/           # Swarm coordinator, task queue, model routing & worker runner
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
+│   ├── version.ts              # Shared version constant, read from package.json
 │   ├── worker-cli.ts           # Standalone headless swarm worker runner CLI
 │   └── index.ts                # Daemon bootstrap & graceful shutdown coordinator
-├── tests/                      # Deterministic test suites (Tiers 1-5 + unit)
+├── tests/                      # Deterministic test suites (unit + e2e)
 │   ├── e2e/                    # Opaque-box E2E suites & shared mock harness
 │   └── unit/                   # Focused unit tests
-├── Dockerfile                  # Multi-stage production container (node:24-slim)
+├── Dockerfile                  # Multi-stage production container (node:26-slim)
 ├── docker-compose.yaml         # Container deployment definition (ports: 8484:8484)
 ├── LICENSE                     # PolyForm Noncommercial License 1.0.0
-├── package.json                # Root manifest (Node >=24, minimal dependencies)
+├── package.json                # Root manifest (Node >=26, minimal dependencies)
 ├── tsconfig.json               # NodeNext, strict: true
 └── README.md                   # Clean project landing page & quickstart
 ```

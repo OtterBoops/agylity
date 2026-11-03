@@ -1,10 +1,10 @@
 # agylity
 
 > **Stop letting precious Antigravity quotas evaporate into thin air while sleeping, touching grass, or losing track of time.**  
-> A lightweight, zero-CVE 24/7 sentry and AI overcharge guard for Google Antigravity (`agy`). Built for Node 24 (`node:24-slim`) with pure TypeScript and a strictly minimal runtime footprint to keep containers lean and supply chains secure.
+> A lightweight, zero-CVE 24/7 sentry and AI overcharge guard for Google Antigravity (`agy`). Built for Node 26 (`node:26-slim`) with pure TypeScript and a strictly minimal runtime footprint to keep containers lean and supply chains secure.
 
 [![CI/CD Pipeline](https://github.com/OtterBoops/agylity/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/OtterBoops/agylity/actions/workflows/docker-publish.yml)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24.0.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D26.0.0-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/License-PolyForm_Noncommercial_1.0.0-blue.svg)](./LICENSE)
@@ -40,7 +40,7 @@ Finishing work for the day with 80% quota headroom remaining means donating free
 - **Application IP Whitelisting & Anti-Spoofing**: Native IPv4, IPv6, and CIDR subnet allowlisting (`ALLOWED_IP_RANGES`) with strict RFC1918 peer socket validation (`TRUSTED_PROXIES`) preventing proxy header injection (CWE-290).
 - **Non-Blocking Hidden Telemetry**: Background stale-while-revalidate credits probe and headless Windows process execution (`-WindowStyle Hidden`, `windowsHide: true`) preventing terminal flashing or focus stealing.
 - **Clean Single-Post Webhook Embeds**: Formatted rich Discord and generic webhook cards with elapsed duration metrics, dynamic Discord relative timestamps, and intermediate runner heartbeat suppression.
-- **Zero npm Bloat**: Powered by Node 24 native primitives (`node:http`, `node:sqlite`, `node:crypto`, `node:test`). The entire production runtime depends strictly on **3 packages** (`discord.js`, `ky`, `zod`).
+- **Zero npm Bloat**: Powered by Node 26 native primitives (`node:http`, `node:sqlite`, `node:crypto`, `node:test`). The entire production runtime depends strictly on **3 packages** (`discord.js`, `ky`, `zod`).
 
 ---
 
@@ -74,7 +74,7 @@ Detailed operational guides and architectural references live in the [`docs/`](.
 
 - **[System Architecture & Protocols](./docs/architecture.md)** — Connect-RPC dual-bucket mechanics, IPC sniffing, encryption internals, and zero-clobber invariants.
 - **[Configuration Reference](./docs/configuration.md)** — Exhaustive breakdown of every `.env` setting, milestone window, and SQLite override.
-- **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose configs, homelab GitOps, and vanilla Node 24 systemd service templates.
+- **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose configs, homelab GitOps, and vanilla Node 26 systemd service templates.
 - **[Testing & Verification](./docs/testing.md)** — Test architecture and methodology behind deterministic tests written with Node's native test runner.
 
 ---
@@ -85,7 +85,7 @@ Contributions, issues, and feature requests are welcome! If you're submitting a 
 
 ### Prerequisites
 
-- Node.js >= 24.0.0
+- Node.js >= 26.0.0
 - npm >= 10.0.0
 
 ### Local Dev Setup
