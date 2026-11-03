@@ -175,33 +175,6 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
 };
 
-// Formats time remaining in hours to human readable string (e.g. "23h 45m").
-export const formatHoursHuman = (hours: number): string => {
-  if (hours <= 0) return '0m';
-  const totalMinutes = Math.round(hours * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-};
-
-// Formats time remaining in hours to human-friendly calendar durations matching Antigravity native UI
-export const formatResetTimeHuman = (hours: number): string => {
-  if (hours <= 0) return '0m';
-  if (hours >= 24) {
-    const days = Math.floor(hours / 24);
-    const rem = Math.floor(hours % 24);
-    return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
-  }
-  const totalMinutes = Math.round(hours * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-};
-
 /** Canonical pool ordering, shared by every aggregator. */
 export const FAMILY_ORDER: Record<QuotaFamily, number> = {
   'gemini-flash': 0,

@@ -93,7 +93,11 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
         let barColor = 'bg-pine-iris';
         let statusText = 'Ready to burn';
 
-        if (shortTermPct !== null && shortTermPct <= 10 && weeklyPct > minHeadroomPercent) {
+        if (
+          shortTermPct !== null &&
+          shortTermPct <= minHeadroomPercent &&
+          weeklyPct > minHeadroomPercent
+        ) {
           badgeClasses = 'bg-pine-gold/20 text-pine-gold border border-pine-gold';
           barColor = 'bg-pine-gold';
           statusText = '5h Burst Cooldown';

@@ -9,8 +9,6 @@ import {
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
   deriveOverageEnabled,
-  formatHoursHuman,
-  formatResetTimeHuman,
   resolveModelFamily,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
@@ -255,10 +253,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(calculateHoursUntilReset(in2Hours, now), 2);
       assert.equal(calculateHoursUntilReset(inPast, now), 0);
       assert.equal(calculateHoursUntilReset('invalid-date', now), 0);
-
-      assert.equal(formatHoursHuman(2.5), '2h 30m');
-      assert.equal(formatHoursHuman(0.75), '45m');
-      assert.equal(formatHoursHuman(0), '0m');
     });
 
     it('handles models with null or missing quotaInfo safely', () => {
@@ -847,17 +841,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
-    });
-
-    it('formatResetTimeHuman formats hours into natural human durations', () => {
-      assert.equal(formatResetTimeHuman(0), '0m');
-      assert.equal(formatResetTimeHuman(-1), '0m');
-      assert.equal(formatResetTimeHuman(1.5), '1h 30m');
-      assert.equal(formatResetTimeHuman(3.3), '3h 18m');
-      assert.equal(formatResetTimeHuman(24), '1d');
-      assert.equal(formatResetTimeHuman(27), '1d 3h');
-      assert.equal(formatResetTimeHuman(112.5), '4d 16h');
-      assert.equal(formatResetTimeHuman(165), '6d 21h');
     });
 
     it('parses overageInfo and sets overageEnabled flag accurately', () => {

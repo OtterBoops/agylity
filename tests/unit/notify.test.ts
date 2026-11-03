@@ -33,9 +33,6 @@ import {
 } from '../../src/notify/adapters/webhook.js';
 import {
   DiscordNotifier,
-  generateProgressBar,
-  formatProgressBar,
-  renderProgressBar,
   renderQuotaEmbed,
   createRepoSelectMenu,
   createDispatchModal,
@@ -289,54 +286,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       );
 
       assert.equal(stderr, '');
-    });
-  });
-
-  /* ==================================================================== */
-  /* 3. Visual Progress Bar Formatting                                    */
-  /* ==================================================================== */
-  describe('3. Visual Progress Bar Formatting', () => {
-    it('generates standard 10-slot visual progress bars accurately', () => {
-      assert.equal(generateProgressBar(1.0), '██████████');
-      assert.equal(generateProgressBar(0.9), '█████████░');
-      assert.equal(generateProgressBar(0.82), '████████░░');
-      assert.equal(generateProgressBar(0.5), '█████░░░░░');
-      assert.equal(generateProgressBar(0.25), '███░░░░░░░');
-      assert.equal(generateProgressBar(0.1), '█░░░░░░░░░');
-      assert.equal(generateProgressBar(0.0), '░░░░░░░░░░');
-    });
-
-    it('clamps boundary and out-of-range fractions safely', () => {
-      assert.equal(generateProgressBar(-0.5), '░░░░░░░░░░');
-      assert.equal(generateProgressBar(1.5), '██████████');
-      assert.equal(generateProgressBar(Number.NaN), '░░░░░░░░░░');
-    });
-
-    it('supports custom bar slot lengths', () => {
-      assert.equal(generateProgressBar(0.5, 20), '██████████░░░░░░░░░░');
-      assert.equal(generateProgressBar(1.0, 5), '█████');
-      assert.equal(generateProgressBar(0.0, 5), '░░░░░');
-    });
-
-    it('formatProgressBar returns bracketed bar with percentage', () => {
-      assert.equal(formatProgressBar(0.6), '[██████░░░░] 60%');
-      assert.equal(formatProgressBar(0.0), '[░░░░░░░░░░] 0%');
-      assert.equal(formatProgressBar(1.0), '[██████████] 100%');
-      assert.equal(formatProgressBar(0.824), '[████████░░] 82%');
-    });
-
-    it('renderProgressBar returns markdown formatted Discord string', () => {
-      assert.equal(renderProgressBar(0.5), '`[█████░░░░░]` **50%**');
-      assert.equal(renderProgressBar(0.494), '`[█████░░░░░]` **49%**');
-    });
-
-    it('sanitizes totalBars and fraction safely on negative or non-finite inputs', () => {
-      assert.equal(generateProgressBar(0.5, -5), '█████░░░░░');
-      assert.equal(generateProgressBar(0.5, 0), '█████░░░░░');
-      assert.equal(generateProgressBar(0.5, Number.NaN), '█████░░░░░');
-      assert.equal(generateProgressBar(Number.POSITIVE_INFINITY, 10), '░░░░░░░░░░');
-      assert.equal(formatProgressBar(0.5, -5), '[█████░░░░░] 50%');
-      assert.equal(renderProgressBar(0.5, -5), '`[█████░░░░░]` **50%**');
     });
   });
 

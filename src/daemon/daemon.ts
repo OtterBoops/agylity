@@ -322,10 +322,12 @@ export class AgylityDaemon {
 
   // Executes a single quota probe and milestone evaluation cycle.
   public async checkQuota(): Promise<QuotaAlert[]> {
+    let reaped = false;
     try {
       this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
       this.orchestrator.onQuotaUpdated(snapshots);
+      reaped = true;
       const plan = this.evaluateMilestonePlan(snapshots);
       const alerts = plan.alerts;
 
@@ -403,7 +405,10 @@ export class AgylityDaemon {
       return [];
     } finally {
       try {
-        this.orchestrator.reapStaleClaims();
+        // onQuotaUpdated already reaped; a failed probe still needs its own pass.
+        if (!reaped) {
+          this.orchestrator.reapStaleClaims();
+        }
       } catch (reapErr: any) {
         // A reaper failure (e.g. database already closed) must never escape the probe outcome.
         this.logger.warn('Stale claim reaper failed: %s', reapErr?.message ?? reapErr);

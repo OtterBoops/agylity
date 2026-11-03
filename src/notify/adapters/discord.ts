@@ -18,12 +18,6 @@ import { registerSlashCommands } from '../discord/commands.js';
 import { routeInteraction } from '../discord/interactions.js';
 import type { DiscordInteractionDeps } from '../discord/interactions.js';
 
-export {
-  generateProgressBar,
-  formatProgressBar,
-  renderProgressBar,
-  renderSquareProgressBar,
-} from '../discord/progress.js';
 export { renderQuotaEmbed, renderDispatchEmbed } from '../discord/embeds.js';
 export { createRepoSelectMenu, createDispatchModal } from '../discord/components.js';
 export type { CreateDispatchModalOptions } from '../discord/components.js';
