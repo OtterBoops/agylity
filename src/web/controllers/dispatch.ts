@@ -167,7 +167,10 @@ export const handlePostDispatch = async (
     verifyCommand: toStringOrUndefined(payload.verifyCommand),
   });
 
-  if (!result.success && result.code === 'OVERAGE_PROTECTION_TRIGGERED') {
+  if (
+    !result.success &&
+    (result.code === 'OVERAGE_PROTECTION_TRIGGERED' || result.code === 'TELEMETRY_UNAVAILABLE')
+  ) {
     return sendJson(res, 400, result);
   }
 

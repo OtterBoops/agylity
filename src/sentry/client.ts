@@ -13,8 +13,6 @@ import {
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
   deriveOverageEnabled,
-  FAMILY_ORDER,
-  toSnapshot,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
@@ -778,8 +776,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         return {
           ...s,
           resetTime,
-          // Unknown quota is never reported as full headroom.
-          remainingFraction: s.remainingFraction,
           hoursUntilReset: Math.max(0, hoursUntilReset),
           models,
         };
@@ -817,27 +813,14 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
     }
 
-    const now = Date.now();
-    const fallbackReset = new Date(now + 24 * 3600 * 1000).toISOString();
-    const result: QuotaSnapshot[] = [];
-
-    for (const entry of poolsMap.values()) {
-      result.push(
-        toSnapshot({
-          family: entry.family,
-          remainingFraction: 1.0, // CLI models expose no fractions; a freshly rolled window is unconstrained
-          resetTime: fallbackReset,
-          hoursUntilReset: 24,
-          models: entry.models.sort(),
-        })
-      );
-    }
-
+    // Reporting invented pools would authorise dispatch at 100% headroom while the real
+    // quota is unknown, so return nothing and let eligibility fail closed.
     this.logger.warn(
-      'Synthesized quota pools with a fresh reset window; quota telemetry is degraded (CLI models-only fallback)'
+      'Quota telemetry is degraded (CLI models-only fallback): %d detected pool(s) reported as unknown, dispatch stays locked',
+      poolsMap.size
     );
 
-    return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
+    return [];
   }
 }
 

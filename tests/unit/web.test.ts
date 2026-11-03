@@ -611,6 +611,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               prompt: 'Run security audit',
               requestedBy: 'admin',
             },
+            retry: 0,
+            throwHttpErrors: false,
           })
           .json<any>();
 
@@ -664,7 +666,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          sonnet: {
+          flash: {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.08, // 8% remaining, below 15% floor
             firedMilestones: ['1h'],

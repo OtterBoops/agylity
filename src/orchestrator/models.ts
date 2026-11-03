@@ -193,7 +193,7 @@ export const resolveConcreteModelId = (
 
 export const calculateEffectiveHeadroomPercent = (
   pool: Pick<QuotaSnapshot, 'remainingFraction' | 'weekly' | 'shortTerm' | 'buckets'>
-): number => {
+): number | null => {
   const fractions: number[] = [];
   if (typeof pool.remainingFraction === 'number' && Number.isFinite(pool.remainingFraction)) {
     fractions.push(pool.remainingFraction);
@@ -219,9 +219,10 @@ export const calculateEffectiveHeadroomPercent = (
       }
     }
   }
-  if (fractions.length === 0) return 100;
+  if (fractions.length === 0) return null;
   const minFraction = Math.max(0, Math.min(1, Math.min(...fractions)));
-  return Math.round(minFraction * 100);
+  // Floor, not round: 9.5% must not clear a 10% safety floor.
+  return Math.floor(minFraction * 100);
 };
 
 export interface ModelEligibilityOptions {
@@ -303,25 +304,28 @@ export const evaluateModelDispatchEligibility = (
     };
   }
 
-  // Locate the specific pool matching the resolved model family
-  let targetPool = pools.find(
+  const targetPool = pools.find(
     (p) =>
       p.family === family ||
       p.poolId === family ||
       resolvePoolFamilyForModel(p.poolId || p.displayName) === family
   );
 
-  // Fallback if only a partial/mock pool set was provided in state
-  if (!targetPool) {
-    targetPool = pools.reduce((mostConstrained, current) =>
-      calculateEffectiveHeadroomPercent(current) <
-      calculateEffectiveHeadroomPercent(mostConstrained)
-        ? current
-        : mostConstrained
-    );
+  // No pool for this family, or a pool whose fractions are unusable, means unknown.
+  const effectiveHeadroomPercent = targetPool
+    ? calculateEffectiveHeadroomPercent(targetPool)
+    : null;
+  if (effectiveHeadroomPercent === null) {
+    return {
+      allowed: false,
+      resolvedModel,
+      family,
+      effectiveHeadroomPercent: 0,
+      hoursUntilReset: null,
+      code: 'TELEMETRY_UNAVAILABLE',
+      reason: `Overage Protection: no usable quota telemetry for ${family}, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
+    };
   }
-
-  const effectiveHeadroomPercent = targetPool ? calculateEffectiveHeadroomPercent(targetPool) : 100;
   const hoursUntilReset = targetPool
     ? typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
       ? targetPool.hoursUntilReset
@@ -407,7 +411,9 @@ export const annotateModelsWithQuota = (
       shortTermRemainingPercent,
       resetTime: pool.resetTime,
       hoursUntilReset,
-      belowSafetyFloor: effectiveHeadroomPercent < minDispatchHeadroomPercent,
+      // Unknown headroom counts as below the floor, matching the dispatch gate.
+      belowSafetyFloor:
+        effectiveHeadroomPercent === null || effectiveHeadroomPercent < minDispatchHeadroomPercent,
     };
   });
 };

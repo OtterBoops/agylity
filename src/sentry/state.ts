@@ -7,7 +7,7 @@ import type { QuotaAlert } from './models.js';
 
 export const PoolStateSchema = z.object({
   resetTime: z.string(),
-  remainingFraction: z.number(),
+  remainingFraction: z.number().min(0).max(1),
   firedMilestones: z.array(z.string()),
   lastAlertSentAt: z.string().nullable().optional(),
 });

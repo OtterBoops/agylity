@@ -1072,7 +1072,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       });
 
       const snapshots = await client.fallbackToCli();
-      assert.equal(snapshots.length, 2);
+      // Detected pools are reported as unknown rather than invented at 100% headroom.
+      assert.equal(snapshots.length, 0);
     });
 
     it('CompositeNotifier preserves NotifierOptions when dynamically activating channels via updateConfig', async () => {
@@ -1267,6 +1268,55 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       });
       assert.equal(preReset.allowed, false);
       assert.equal(preReset.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
+    });
+
+    it('fails closed when the family has no pool, or its fractions are unusable', () => {
+      const pool = (over: Record<string, unknown>) => ({
+        poolId: 'gemini-argon',
+        family: 'gemini-argon',
+        displayName: 'Gemini Argon',
+        remainingFraction: 0.9,
+        resetTime: new Date(Date.now() + 3600000).toISOString(),
+        hoursUntilReset: 1,
+        models: ['Gemini 4 Argon'],
+        ...over,
+      });
+
+      // A healthy pool for a DIFFERENT family must not lend its headroom to this dispatch.
+      const otherFamily = evaluateModelDispatchEligibility({
+        requestedModel: 'claude-sonnet-5-5',
+        pools: [pool({})] as any,
+      });
+      assert.equal(otherFamily.allowed, false);
+      assert.equal(otherFamily.code, 'TELEMETRY_UNAVAILABLE');
+
+      // A pool whose fractions are unusable is unknown, not full headroom.
+      const noFraction = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        pools: [pool({ remainingFraction: Number.NaN, weekly: undefined }) as any],
+      });
+      assert.equal(noFraction.allowed, false);
+      assert.equal(noFraction.code, 'TELEMETRY_UNAVAILABLE');
+    });
+
+    it('does not let a fraction just below the floor round up over it', () => {
+      const justUnder = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        minDispatchHeadroomPercent: 10,
+        pools: [
+          {
+            poolId: 'gemini-argon',
+            family: 'gemini-argon',
+            displayName: 'Gemini Argon',
+            remainingFraction: 0.095, // 9.5% must not round to 10 and clear a 10% floor
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            hoursUntilReset: 1,
+            models: ['Gemini 4 Argon'],
+          } as any,
+        ],
+      });
+      assert.equal(justUnder.allowed, false);
+      assert.equal(justUnder.code, 'OVERAGE_PROTECTION_TRIGGERED');
     });
 
     it('sanitises a repository name containing a colon or at-sign into the derived repository id', async () => {

@@ -631,7 +631,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(snapshots.length, 3);
     });
 
-    it('falls back to agy CLI when RPC fails', async () => {
+    it('fails closed when the CLI can only report models, not quota', async () => {
       // Mock execFileFn simulating successful CLI output
       const mockExecFile = async (_cmd: string, _args: readonly string[]) => {
         return {
@@ -662,11 +662,11 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         execFileFn: mockExecFile as any,
       });
 
-      const snapshots = await client.fetchQuota();
-      assert.equal(snapshots.length, 3);
-      assert.equal(snapshots[0]?.family, 'gemini-flash');
-      assert.equal(snapshots[1]?.family, 'gemini-argon');
-      assert.equal(snapshots[2]?.family, 'claude');
+      // Detected pools are reported as unknown rather than invented at 100% headroom,
+      // so the probe reports failure and dispatch stays locked.
+      await assert.rejects(async () => {
+        await client.fetchQuota();
+      });
     });
 
     it('throws LanguageServerError with code LANGUAGE_SERVER_UNAVAILABLE when all options fail', async () => {
