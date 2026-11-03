@@ -93,6 +93,8 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -156,8 +158,17 @@ jobs:
           cache-from: type=gha,scope=worker
           cache-to: type=gha,mode=min,scope=worker
 
+      # The annotated tag message IS the release title: git tag -a v0.3.4 -m "v0.3.4 — <themes>"
+      - name: Resolve Release Title
+        if: startsWith(github.ref, 'refs/tags/')
+        id: release_title
+        run: |
+          TITLE=$(git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents:subject)')
+          echo "name=${TITLE:-${{ github.ref_name }}}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
+          name: ${{ steps.release_title.outputs.name }}
           generate_release_notes: true
