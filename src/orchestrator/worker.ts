@@ -809,6 +809,7 @@ export class RemoteSwarmWorker {
       status: result.noChanges ? 'no_changes' : result.success ? 'completed' : 'failed',
       workerId: this.workerId,
       branchName: result.branchName,
+      prUrl: result.prUrl,
       output: result.output,
       error: result.error,
       durationMs: result.durationMs,

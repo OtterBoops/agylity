@@ -715,28 +715,28 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
       const existingWorker = this.getWorker(options.workerId);
+      // A registered worker's scope is its registration; the poll payload may only narrow
+      // an unregistered (shared-secret) runner's view, and must never widen a registration.
+      const effectiveLabels =
+        existingWorker?.labels ??
+        (options.labels && options.labels.length > 0 ? options.labels : []);
+      const workerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
+
+      const effectiveRepos =
+        existingWorker?.repositories ??
+        (options.repositories && options.repositories.length > 0 ? options.repositories : []);
       if (existingWorker && !existingWorker.enabled) {
         this.registerWorkerHeartbeat({
           workerId: options.workerId,
           name: options.workerName,
-          labels: options.labels,
-          repositories: options.repositories,
+          labels: effectiveLabels,
+          repositories: effectiveRepos,
           systemInfo: options.systemInfo,
           status: 'idle',
         });
         return null;
       }
 
-      const effectiveLabels =
-        options.labels && options.labels.length > 0
-          ? options.labels
-          : (existingWorker?.labels ?? []);
-      const workerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
-
-      const effectiveRepos =
-        options.repositories && options.repositories.length > 0
-          ? options.repositories
-          : (existingWorker?.repositories ?? []);
       const repoFilter =
         effectiveRepos.length > 0 ? new Set(effectiveRepos.map((r) => r.toLowerCase())) : null;
 
@@ -829,8 +829,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           this.registerWorkerHeartbeat({
             workerId: options.workerId,
             name: options.workerName,
-            labels: options.labels,
-            repositories: options.repositories,
+            labels: effectiveLabels,
+            repositories: effectiveRepos,
             systemInfo: options.systemInfo,
             activeTaskId: task.id,
             status: 'busy',
@@ -842,8 +842,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       this.registerWorkerHeartbeat({
         workerId: options.workerId,
         name: options.workerName,
-        labels: options.labels,
-        repositories: options.repositories,
+        labels: effectiveLabels,
+        repositories: effectiveRepos,
         systemInfo: options.systemInfo,
         status: 'idle',
       });

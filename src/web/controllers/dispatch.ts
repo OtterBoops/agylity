@@ -228,8 +228,11 @@ export const handlePollTasks = async (
     auth.worker?.workerId ?? toTrimmedStringOrUndefined(payload?.workerId) ?? 'worker-default';
   const workerName =
     auth.worker?.name ?? toTrimmedStringOrUndefined(payload?.workerName) ?? workerId;
-  const labels = toStringArray(payload?.labels) ?? auth.worker?.labels;
-  const repositories = toStringArray(payload?.repositories) ?? auth.worker?.repositories;
+  // A registered runner's scope comes from its registration, never from the poll payload.
+  const labels = auth.worker ? auth.worker.labels : (toStringArray(payload?.labels) ?? []);
+  const repositories = auth.worker
+    ? auth.worker.repositories
+    : (toStringArray(payload?.repositories) ?? []);
   const systemInfo =
     payload?.systemInfo && typeof payload.systemInfo === 'object' ? payload.systemInfo : undefined;
   const timeoutMs = toFiniteNumberOrUndefined(payload?.timeoutMs) ?? 0;
@@ -293,6 +296,7 @@ export const handleTaskStatus = async (
     status: statusParse.data as TaskStatus,
     workerId: auth.worker?.workerId ?? toStringOrUndefined(payload.workerId),
     branchName: toStringOrUndefined(payload.branchName),
+    prUrl: toStringOrUndefined(payload.prUrl),
     output: toStringOrUndefined(payload.output),
     error: toStringOrUndefined(payload.error),
     durationMs: toFiniteNumberOrUndefined(payload.durationMs),

@@ -1432,6 +1432,45 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('persists the PR url a runner reports on completion', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_pr_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        orchestratorEnabled: true,
+        workerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: { repositoryName: 'agylity', prompt: 'PR task', allowOverage: true },
+          })
+          .json<any>();
+
+        await ky.post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+          headers: authHeaders,
+          json: {
+            status: 'completed',
+            branchName: 'antigravity/task-pr',
+            prUrl: 'https://github.com/OtterBoops/agylity/pull/99',
+          },
+        });
+
+        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.prUrl, 'https://github.com/OtterBoops/agylity/pull/99');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('persists runner token telemetry (numTurns, totalTokens, thinkingTokens) from a status report', async () => {
       const { dir, cleanup } = makeTempDir('web_status_telemetry_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {

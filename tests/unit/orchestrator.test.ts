@@ -1388,6 +1388,40 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
   /* 9. Task Queue Ownership Guards, Lease Reaping & Schema Migration     */
   /* ==================================================================== */
   describe('9. Task Queue Ownership Guards, Lease Reaping & Schema Migration', () => {
+    it('will not let a poll payload widen a registered worker scope', () => {
+      const { dir, cleanup } = makeTempDir('orch_scope_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+
+        // Registered with a docker-only scope.
+        queue.registerWorkerHeartbeat({
+          workerId: 'runner-scoped',
+          name: 'scoped',
+          labels: ['docker'],
+          repositories: [],
+          status: 'idle',
+        });
+
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Needs linux',
+          model: 'gemini-4-argon',
+          requiredLabels: ['linux'],
+        });
+
+        // Declaring the extra label at poll time must not widen the registration.
+        const claimed = queue.claimNext({ workerId: 'runner-scoped', labels: ['linux'] });
+        assert.equal(claimed, null);
+        assert.equal(queue.getTask(task.id)?.status, 'queued');
+        assert.deepEqual(queue.getWorker('runner-scoped')?.labels, ['docker']);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('refuses a revoked worker heartbeat so it cannot re-claim a requeued task', () => {
       const { dir, cleanup } = makeTempDir('orch_owner_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
