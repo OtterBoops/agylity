@@ -64,7 +64,7 @@ docker compose up -d
 When `WEB_UI_ENABLED=true`, access the dashboard at `http://localhost:8484`.
 
 > [!NOTE]
-> The worker container needs `GITHUB_TOKEN` to push task branches. It must be set in the project `.env` **and** named in that project's `compose.yaml` `environment:` list — a `.env` entry alone reaches nothing. Without it the clone still succeeds on a public repository and only the push fails, with `could not read Username for 'https://github.com'`.
+> The worker container needs `GITHUB_TOKEN` to push task branches. It must be set in the project `.env` **and** named in that project's `compose.yaml` `environment:` list — a `.env` entry alone reaches nothing, and a variable that is set but empty counts as unset. A worker with no token **refuses to start** (exit 1, so it crash-loops visibly) rather than claiming a task it could never deliver: the clone would succeed on a public repository, the task would run and spend its quota, and only the push would fail. Set `ALLOW_TOKENLESS_WORKER=true` only for a non-GitHub remote.
 
 ---
 
@@ -147,7 +147,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **233 tests passing across 55 suites** (0 failures, 0 skipped, 100% deterministic). Run `npm test` for the current count — this line rots.
+Verification status: **240 tests passing across 56 suites** (0 failures, 0 skipped, 100% deterministic). Run `npm test` for the current count — this line rots.
 
 ---
 

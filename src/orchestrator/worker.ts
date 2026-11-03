@@ -41,6 +41,30 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
+// A tokenless worker clones anonymously, runs the whole task, then fails the push -- burning a full
+// agent run for nothing. Fail at boot instead. Opt out only for non-GitHub remotes.
+export const assertWorkerGitCredentials = (
+  repositories: string[] | undefined,
+  env: NodeJS.ProcessEnv = process.env
+): void => {
+  if (env.ALLOW_TOKENLESS_WORKER?.trim().toLowerCase() === 'true') return;
+  const token = env.GITHUB_TOKEN?.trim();
+  if (token) return;
+
+  const scope =
+    repositories && repositories.length > 0
+      ? `scoped to ${repositories.join(', ')}`
+      : 'unscoped, so it may claim any repository the coordinator offers';
+
+  throw new Error(
+    `GITHUB_TOKEN is not set on this worker (${scope}). Without it the clone is anonymous and ` +
+      'git push fails after the task has already spent its quota, so refusing to start. ' +
+      'Note that env_file alone does not put a variable in the container environment -- the token ' +
+      'must also be named under environment: in compose.yaml. Set ALLOW_TOKENLESS_WORKER=true to ' +
+      'run without a token against a non-GitHub remote.'
+  );
+};
+
 const buildGitAuthArgs = (repoUrl?: string): string[] => {
   const ghToken = process.env.GITHUB_TOKEN?.trim();
   if (ghToken && (!repoUrl || repoUrl.startsWith('https://github.com/'))) {
@@ -824,6 +848,7 @@ export class RemoteSwarmWorker {
   // Starts the continuous outbound long-poll loop until `stop()` is called.
   public async start(): Promise<void> {
     if (this.isRunning) return;
+    assertWorkerGitCredentials(this.options.repositories);
     this.isRunning = true;
     this.abortController = new AbortController();
 
