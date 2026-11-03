@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   test:
-    name: Typecheck & Test (Node 24)
+    name: Typecheck & Test (Node 26)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository

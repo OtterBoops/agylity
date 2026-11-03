@@ -21,9 +21,12 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
   return promisifiedExecFile(file, args as string[], {
     windowsHide: true,
     ...options,
-    // agy checks for updates on startup and its updater spawns a visible console window on
-    // Windows; agy only honours the switch from the child environment.
-    env: { ...process.env, ...callerEnv, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+    env: {
+      ...process.env,
+      ...callerEnv,
+      // Windows only: agy's update check flashes a console window there.
+      ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
+    },
   }) as Promise<{ stdout: string; stderr: string }>;
 };
 
@@ -35,10 +38,7 @@ export interface DiscoveredLanguageServer {
 
 const CSRF_TOKEN_RE = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i;
 
-/**
- * Extracts listening loopback ports owned by an exact PID from `netstat -ano` output.
- * Rows are column-parsed so a PID that only occurs inside another row's address is ignored.
- */
+// Extracts listening loopback ports owned by an exact PID from `netstat -ano` output.
 export const parseWindowsNetstatPorts = (netstatOut: string, pid: string): number[] => {
   const ports: number[] = [];
   for (const line of netstatOut.split('\n')) {

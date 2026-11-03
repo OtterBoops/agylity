@@ -55,7 +55,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update && apt-get install -y --no-install-recommends gh)) && \
-    (curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin || true) && \
+    mkdir -p /home/node/.local/bin && \
+    (curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /home/node/.local/bin) && \
     rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
@@ -65,12 +66,19 @@ COPY --from=builder /app/dist ./dist
 RUN mkdir -p /home/node/.gemini /repos /data && \
     chown -R node:node /home/node /repos /data /app
 
+COPY docker/entrypoint.sh /usr/local/bin/agylity-entrypoint.sh
+RUN chmod +x /usr/local/bin/agylity-entrypoint.sh
+
 USER node
 
+# node-writable, so the entrypoint's boot refresh can replace it
 ENV NODE_ENV=production \
+    PATH=/home/node/.local/bin:$PATH \
+    AGY_UPDATE_ON_BOOT=blocking \
     COORDINATOR_URL=http://agylity:8484 \
     RUNNER_STATE_PATH=/data/runner.json
 
+ENTRYPOINT ["/usr/local/bin/agylity-entrypoint.sh"]
 CMD ["node", "--no-warnings", "dist/worker-cli.js"]
 
 # ------------------------------------------------------------------------------
@@ -87,7 +95,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates procps curl && \
-    (curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /usr/local/bin || true) && \
+    mkdir -p /home/node/.local/bin && \
+    (curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /home/node/.local/bin) && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy package manifests and production dependencies directly from prod-deps stage (instant)
@@ -101,15 +110,20 @@ COPY --from=builder /app/dist ./dist
 RUN mkdir -p /app/data /home/node/.gemini && \
     chown -R node:node /app/data /home/node /app
 
+COPY docker/entrypoint.sh /usr/local/bin/agylity-entrypoint.sh
+RUN chmod +x /usr/local/bin/agylity-entrypoint.sh
+
 # Switch to non-root node user
 USER node
 
-# Healthcheck for coordinator web service
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+# Healthcheck for coordinator web service; start-period covers the entrypoint's agy refresh.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8484/api/health || exit 1
 
 # Default production environment configuration
 ENV NODE_ENV=production \
+    PATH=/home/node/.local/bin:$PATH \
+    AGY_UPDATE_ON_BOOT=background \
     DATA_DIR=/app/data \
     DATABASE_PATH=/app/data/agylity.db \
     QUOTA_STATE_FILE_PATH=/app/data/state.json \
@@ -123,5 +137,5 @@ VOLUME ["/app/data"]
 # Expose Web UI dashboard & Swarm Runner API port (conditional listener)
 EXPOSE 8484
 
-# Native Node 24 invocation
+ENTRYPOINT ["/usr/local/bin/agylity-entrypoint.sh"]
 CMD ["node", "--no-warnings", "dist/index.js"]

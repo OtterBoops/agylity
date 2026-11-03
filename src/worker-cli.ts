@@ -116,6 +116,9 @@ export const parseWorkerCliArgs = (
 };
 
 export const runWorkerCli = async (): Promise<void> => {
+  // Never swap agy out from under a running task; the entrypoint refreshes it before this runs.
+  process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
+
   const log = logger.child('runner-cli');
   const opts = parseWorkerCliArgs();
 
