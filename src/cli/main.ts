@@ -1,18 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
+import { AGYLITY_VERSION } from '../version.js';
 import { LogBuffer, installConsoleTee } from '../logs/buffer.js';
 import { logger } from '../logs/logger.js';
 import { createDaemon, type AgylityDaemon } from '../daemon/daemon.js';
-
-const AGYLITY_VERSION = (() => {
-  try {
-    const pkg = fileURLToPath(new URL('../../package.json', import.meta.url));
-    return (JSON.parse(readFileSync(pkg, 'utf8')) as { version?: string }).version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
-})();
 
 // Primary CLI execution entrypoint for standalone daemon process.
 export const main = async (): Promise<AgylityDaemon> => {

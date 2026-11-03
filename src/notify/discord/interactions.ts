@@ -1,7 +1,11 @@
 import type { ResolvedConfig } from '../../config/schema.js';
 import type { DispatchRequest, DispatchResult, QuotaSnapshot } from '../types.js';
 import { logger } from '../../logs/logger.js';
-import { parseDiscordModelPriorityInput } from '../../orchestrator/models.js';
+import {
+  CANONICAL_AGY_MODELS,
+  ReasoningEffortSchema,
+  resolveConcreteModelId,
+} from '../../orchestrator/models.js';
 import type { DiscordNotifierOptions } from './types.js';
 import { TaskPromptSchema } from './commands.js';
 import { renderQuotaEmbed } from './embeds.js';
@@ -17,6 +21,15 @@ export interface DiscordInteractionDeps {
   readonly interactionRetentionMs: number;
   verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string };
 }
+
+// Components V2 selects submit through getStringSelectValues, not getTextInputValue.
+const readStringSelect = (interaction: any, customId: string): string => {
+  try {
+    return interaction.fields?.getStringSelectValues?.(customId)?.[0] ?? '';
+  } catch {
+    return '';
+  }
+};
 
 // Retains a dispatched interaction for status relaying: evicts the oldest entry past the cap and
 const retainInteraction = (deps: DiscordInteractionDeps, key: string, interaction: any): void => {
@@ -43,6 +56,11 @@ export const routeInteraction = async (
     return;
   }
 
+  if (interaction.isAutocomplete && interaction.isAutocomplete()) {
+    await handleAutocomplete(deps, interaction);
+    return;
+  }
+
   if (interaction.isStringSelectMenu && interaction.isStringSelectMenu()) {
     if (
       interaction.customId === 'repo_select' ||
@@ -63,6 +81,34 @@ export const routeInteraction = async (
       await handleModalSubmit(deps, interaction);
     }
     return;
+  }
+};
+
+// Autocomplete is served live from the current config, so the offered choices never go stale
+// the way baked-in command choices do (those need a re-register to change).
+const handleAutocomplete = async (
+  deps: DiscordInteractionDeps,
+  interaction: any
+): Promise<void> => {
+  const focused = interaction.options?.getFocused?.(true);
+  const query = String(focused?.value ?? '').toLowerCase();
+  const optionName = focused?.name;
+
+  let candidates: Array<{ name: string; value: string }> = [];
+  if (optionName === 'repository') {
+    candidates = deps.config.repositories.map((r) => ({ name: r.name || r.id, value: r.id }));
+  } else if (optionName === 'model') {
+    candidates = CANONICAL_AGY_MODELS.map((m) => ({ name: m.id, value: m.id }));
+  }
+
+  const filtered = candidates
+    .filter((c) => c.name.toLowerCase().includes(query) || c.value.toLowerCase().includes(query))
+    .slice(0, 25);
+
+  try {
+    await interaction.respond(filtered);
+  } catch {
+    // An autocomplete response is best-effort and must never surface an error.
   }
 };
 
@@ -93,11 +139,6 @@ const handleDispatchCommand = async (
   const repositoryName = interaction.options?.getString?.('repository') ?? '';
   const prompt = interaction.options?.getString?.('prompt') ?? '';
   const model = interaction.options?.getString?.('model') || undefined;
-  const rawPriority = interaction.options?.getString?.('priority');
-  const priority =
-    rawPriority && ['P0', 'P1', 'P2'].includes(rawPriority.toUpperCase())
-      ? (rawPriority.toUpperCase() as 'P0' | 'P1' | 'P2')
-      : undefined;
   const effort = interaction.options?.getString?.('effort') || undefined;
 
   if (!prompt.trim()) {
@@ -130,7 +171,6 @@ const handleDispatchCommand = async (
       requestedBy,
       requestedByUserId,
       model,
-      priority,
       effort,
     });
 
@@ -143,9 +183,10 @@ const handleDispatchCommand = async (
     if (!result.success) {
       content = `[Error] Dispatch failed: ${result.error ?? 'Unknown error'}`;
     } else if (isQueued) {
-      content = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` (${result.priority ?? priority ?? 'P1'}) queued for \`${repositoryName}\` — waiting for swarm runner...`;
+      content = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` queued for \`${repositoryName}\` — waiting for swarm runner...`;
     } else {
-      content = `[Success] Antigravity continuation complete on branch \`${result.branchName ?? 'main'}\`.`;
+      const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
+      content = `[Success] Antigravity continuation complete${branch}.`;
     }
 
     if (canDefer && typeof interaction.editReply === 'function') {
@@ -332,12 +373,8 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
   let result: DispatchResult | undefined;
   try {
     const rawPrompt = interaction.fields?.getTextInputValue?.('task_prompt') ?? '';
-    let rawModelInput = '';
-    try {
-      rawModelInput = interaction.fields?.getTextInputValue?.('task_model_priority') ?? '';
-    } catch {
-      rawModelInput = '';
-    }
+    const selectedModel = readStringSelect(interaction, 'task_model');
+    const selectedEffort = readStringSelect(interaction, 'task_effort');
     const parseResult = TaskPromptSchema.safeParse(rawPrompt);
     if (!parseResult.success) {
       const errorMsg =
@@ -366,17 +403,18 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
         requestedByUserId: interaction.user?.id,
       };
 
-      if (rawModelInput.trim() || alertPoolFamily) {
-        const parsedMeta = parseDiscordModelPriorityInput(
-          rawModelInput,
-          deps.config.defaultDispatchModel,
-          alertPoolFamily
+      if (selectedModel) {
+        dispatchPayload.model = resolveConcreteModelId(
+          selectedModel,
+          deps.config.defaultDispatchModel
         );
-        dispatchPayload.model = parsedMeta.model;
-        dispatchPayload.effort = parsedMeta.effort;
-        if (alertPoolFamily) {
-          dispatchPayload.poolFamily = alertPoolFamily;
-        }
+      }
+      const effortParse = ReasoningEffortSchema.safeParse(selectedEffort);
+      if (effortParse.success) {
+        dispatchPayload.effort = effortParse.data;
+      }
+      if (alertPoolFamily) {
+        dispatchPayload.poolFamily = alertPoolFamily;
       }
 
       result = await deps.options.onDispatchRequested(dispatchPayload);
@@ -384,8 +422,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
       const isQueued = result.status === 'queued' || Boolean(result.taskId && !result.branchName);
       if (result.success) {
         if (isQueued) {
-          const p = result.priority ?? dispatchPayload.priority ?? 'P1';
-          const msg = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` (${p}) queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
+          const msg = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
           await interaction.editReply({
             content: msg,
           });

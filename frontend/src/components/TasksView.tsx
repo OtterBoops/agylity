@@ -177,7 +177,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                   </td>
                   <td class="p-3.5 font-mono text-pine-text 2xl:p-4.5">{t.id}</td>
                   <td class="p-3.5 font-medium text-pine-text 2xl:p-4.5">{t.repositoryName}</td>
-                  <td class="p-3.5 font-mono text-pine-iris 2xl:p-4.5">{t.model}</td>
+                  <td class="p-3.5 font-mono text-pine-iris 2xl:p-4.5">
+                    {t.model}
+                    <span class="text-pine-muted"> · {t.effort}</span>
+                  </td>
                   <td class="p-3.5 font-mono text-pine-muted 2xl:p-4.5">{t.scheduleMode}</td>
                   <td class="p-3.5 font-mono text-pine-subtle 2xl:p-4.5">
                     {t.prUrl ? (

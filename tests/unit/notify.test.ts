@@ -540,7 +540,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   describe('5. Discord UI Components, Embeds & Slash Command', () => {
     it('renderQuotaEmbed handles zero model pools gracefully', () => {
       const embed = renderQuotaEmbed([]);
-      assert.equal(embed.data.title, 'Antigravity Model Quota Status');
+      assert.equal(embed.data.title, '[Quota] Antigravity Model Pools');
       assert.equal(embed.data.description, 'No active quota pools currently monitored.');
       assert.equal(embed.data.fields, undefined);
     });
@@ -569,11 +569,18 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       const embed = renderQuotaEmbed(snapshots);
       assert.equal(embed.data.fields?.length, 2);
-      assert.equal(embed.data.fields?.[0]?.name, 'Claude 5.5 / Opus');
-      assert.ok(embed.data.fields?.[0]?.value.includes('49%'));
-      assert.ok(embed.data.fields?.[0]?.value.includes('25.5h'));
-      assert.equal(embed.data.fields?.[1]?.name, 'Gemini 4 Argon');
-      assert.ok(embed.data.fields?.[1]?.value.includes('17%'));
+
+      // The field name carries the pool and its headline figure, so each pool scans as one line.
+      assert.ok(embed.data.fields?.[0]?.name.startsWith('Claude 5.5 / Opus'));
+      assert.ok(embed.data.fields?.[0]?.name.includes('49%'));
+      assert.ok(embed.data.fields?.[0]?.name.includes('▰'));
+
+      // The value carries the reset window (a Discord timestamp, so the countdown ticks) and models.
+      assert.ok(embed.data.fields?.[0]?.value.includes('<t:'));
+      assert.ok(embed.data.fields?.[0]?.value.includes('`Claude Sonnet 5.5`'));
+
+      assert.ok(embed.data.fields?.[1]?.name.startsWith('Gemini 4 Argon'));
+      assert.ok(embed.data.fields?.[1]?.name.includes('17%'));
     });
 
     it('createRepoSelectMenu handles empty repository registry safely', () => {
@@ -607,7 +614,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(menu.options?.[1]?.description, '/opt/backend');
     });
 
-    it('createDispatchModal builds modal with task_prompt paragraph input', () => {
+    it('createDispatchModal builds a Components V2 modal wrapping the prompt in a label', () => {
       const modal = createDispatchModal('repo-1', 'Agylity Core');
       const data = modal.toJSON() as any;
 
@@ -615,7 +622,11 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(data.title, 'Dispatch Task: Agylity Core');
       assert.equal(data.components.length, 1);
 
-      const textInput = data.components[0].components[0];
+      const label = data.components[0];
+      assert.equal(label.type, 18); // Label
+      assert.equal(label.label, 'Task Prompt / Objectives');
+
+      const textInput = label.component;
       assert.equal(textInput.type, 4); // TextInput
       assert.equal(textInput.custom_id, 'task_prompt');
       assert.equal(textInput.style, 2); // Paragraph
@@ -1336,6 +1347,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         branchName: 'antigravity/task-123',
         durationMs: 18200,
         model: 'gemini-3.8-flash',
+        effort: 'medium',
         createdAt: new Date(Date.now() - 18200).toISOString(),
       });
 
@@ -1347,12 +1359,22 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const completedEmbed = sentPayloads[1].embeds[0];
       assert.equal(completedEmbed.data.title, '[Task: Completed] • Took 18.2s');
 
-      const durationField = completedEmbed.data.fields.find((f: any) => f.name === 'Duration');
-      assert.ok(durationField);
-      assert.equal(durationField.value, '**18.2s**');
+      // The title already carries the duration, so it is not repeated as a field.
+      assert.equal(
+        completedEmbed.data.fields.find((f: any) => f.name === 'Duration'),
+        undefined
+      );
+
+      // Model reports the reasoning effort alongside it.
+      const modelField = completedEmbed.data.fields.find((f: any) => f.name === 'Model');
+      assert.ok(modelField);
+      assert.equal(modelField.value, 'gemini-3.8-flash · medium');
 
       const timelineField = completedEmbed.data.fields.find((f: any) => f.name === 'Timeline');
       assert.ok(timelineField);
+
+      // Footer carries the version, not a hardcoded product string.
+      assert.ok(String(completedEmbed.data.footer?.text).startsWith('Agylity v'));
 
       await notifier.shutdown();
     });

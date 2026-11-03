@@ -33,6 +33,7 @@ export interface DispatchStatusUpdate {
   details?: Record<string, unknown>;
   taskId?: string;
   model?: string;
+  effort?: string;
   runnerName?: string;
   createdAt?: string;
 }
@@ -66,7 +67,6 @@ export interface DispatchRequest {
   requestedByUserId?: string;
   repositoryId?: string;
   model?: string;
-  priority?: 'P0' | 'P1' | 'P2';
   effort?: 'low' | 'medium' | 'high';
   workerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
@@ -85,7 +85,6 @@ export const DispatchRequestSchema = z.object({
   requestedByUserId: z.string().optional(),
   repositoryId: z.string().optional(),
   model: z.string().optional(),
-  priority: z.enum(['P0', 'P1', 'P2']).optional(),
   effort: z.enum(['low', 'medium', 'high']).optional(),
   workerMode: z.enum(['headless', 'visible', 'any']).optional(),
   poolFamily: z.string().optional(),
@@ -102,7 +101,6 @@ export interface DispatchResult {
   error?: string;
   durationMs: number;
   taskId?: string;
-  priority?: 'P0' | 'P1' | 'P2';
   status?: string;
   code?: string;
 }
@@ -114,7 +112,6 @@ export const DispatchResultSchema = z.object({
   error: z.string().optional(),
   durationMs: z.number().nonnegative(),
   taskId: z.string().optional(),
-  priority: z.enum(['P0', 'P1', 'P2']).optional(),
   status: z.string().optional(),
   code: z.string().optional(),
 });

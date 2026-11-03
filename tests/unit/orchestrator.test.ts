@@ -16,7 +16,6 @@ import {
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
-  parseDiscordModelPriorityInput,
   resolveConcreteModelId,
   TaskQueue,
   TaskExecutor,
@@ -531,7 +530,6 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
               repositoryName: 'Agylity',
               prompt: 'Refactor Connect-RPC discovery',
               model: 'gemini-3.8-flash-high',
-              priority: 'P0',
               workerMode: 'headless',
             },
           })
@@ -795,25 +793,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
   /* ==================================================================== */
   /* 5. Discord Modal Model/Priority Parsing & Pool Alert Inheritance     */
   /* ==================================================================== */
-  describe('5. Discord Modal Model/Priority Parsing & Pool Alert Inheritance', () => {
-    it('parses Discord model & priority input strings accurately', () => {
-      assert.deepEqual(
-        parseDiscordModelPriorityInput('claude-opus-5-5-high P2', 'gemini-4-argon'),
-        {
-          model: 'claude-opus-5-5',
-          scheduleMode: 'pre_reset',
-          effort: 'high',
-        }
-      );
-
-      assert.deepEqual(parseDiscordModelPriorityInput('P1', 'gemini-4-argon', 'claude'), {
-        model: 'claude-sonnet-5-5',
-        scheduleMode: 'immediate',
-        effort: 'high',
-      });
-    });
-
-    it('builds 2-row Discord modal with pre-filled model when includeModelInput is enabled', () => {
+  describe('5. Discord Modal Shape & Pool Alert Inheritance', () => {
+    it('builds a Components V2 modal whose model and effort are selects scoped to the pool', () => {
       const selectRow = createRepoSelectMenu(
         [{ id: 'agylity', name: 'Agylity', path: '/repos/agylity' }],
         'gemini-argon'
@@ -828,9 +809,27 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       });
       const data = modal.toJSON() as any;
       assert.equal(data.custom_id, 'modal_dispatch:agylity:claude');
-      assert.equal(data.components.length, 2);
-      assert.equal(data.components[1].components[0].custom_id, 'task_model_priority');
-      assert.equal(data.components[1].components[0].value, 'claude-sonnet-5-5 P0');
+
+      // Labels (type 18) only: mixing labels with legacy action rows is an invalid modal.
+      assert.deepEqual(
+        data.components.map((c: any) => c.type),
+        [18, 18, 18]
+      );
+      assert.equal(data.components[0].component.custom_id, 'task_prompt');
+
+      const modelSelect = data.components[1].component;
+      assert.equal(modelSelect.custom_id, 'task_model');
+      assert.ok(modelSelect.options.length > 0);
+      // A claude pool must not offer gemini models.
+      assert.ok(modelSelect.options.every((o: any) => !o.value.startsWith('gemini-')));
+      assert.equal(modelSelect.options.find((o: any) => o.default)?.value, 'claude-sonnet-5-5');
+
+      const effortSelect = data.components[2].component;
+      assert.equal(effortSelect.custom_id, 'task_effort');
+      assert.deepEqual(
+        effortSelect.options.map((o: any) => o.value),
+        ['low', 'medium', 'high']
+      );
     });
   });
 

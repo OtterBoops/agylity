@@ -8,12 +8,25 @@ export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder => {
   const embed = new EmbedBuilder().setTitle(standard.title!).setColor(standard.color!);
 
   if (standard.description) {
-    embed.setDescription(standard.description);
-    return embed;
+    embed.setDescription(standard.description.slice(0, 4096));
   }
 
   if (standard.fields && standard.fields.length > 0) {
-    embed.addFields(standard.fields);
+    embed.addFields(
+      standard.fields.map((f) => ({
+        name: f.name.slice(0, 256),
+        value: f.value.slice(0, 1024),
+        inline: f.inline ?? true,
+      }))
+    );
+  }
+
+  if (standard.footer) {
+    embed.setFooter({ text: standard.footer.text.slice(0, 2048) });
+  }
+
+  if (standard.timestamp) {
+    embed.setTimestamp(new Date(standard.timestamp));
   }
 
   return embed;

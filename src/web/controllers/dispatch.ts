@@ -132,9 +132,7 @@ export const handlePostDispatch = async (
     return sendJson(res, 400, { error: 'prompt is required' });
   }
 
-  const scheduleModeParse = ScheduleModeSchema.safeParse(
-    payload.scheduleMode ?? (payload.priority === 'P2' ? 'pre_reset' : 'immediate')
-  );
+  const scheduleModeParse = ScheduleModeSchema.safeParse(payload.scheduleMode ?? 'immediate');
   const scheduleMode: ScheduleMode = scheduleModeParse.success
     ? scheduleModeParse.data
     : 'immediate';

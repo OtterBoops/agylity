@@ -210,7 +210,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
               </span>
             </div>
 
-            {/* Quota 1: Weekly Limit (Primary Eval Target) */}
+            {/* Quota 1: Weekly Limit */}
             <div class="flex flex-col gap-2 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:p-3.5">
               <div class="flex items-center justify-between text-sm font-semibold sm:text-base">
                 <span class="font-medium text-pine-text">Weekly Limit</span>

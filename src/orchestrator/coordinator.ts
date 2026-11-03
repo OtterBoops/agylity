@@ -509,9 +509,10 @@ export class OrchestratorCoordinator {
               ? 'aborted'
               : 'executing';
 
+    // Terminal prose adds nothing: the title and fields already carry status, branch and model.
     const defaultMsg =
       updated.status === 'completed'
-        ? `Completed task ${updated.id} on branch ${updated.branchName || 'continuation'} (${updated.model})`
+        ? ''
         : updated.status === 'no_changes'
           ? `Task ${updated.id} finished with no file changes (${updated.model})`
           : updated.status === 'failed'
@@ -526,6 +527,7 @@ export class OrchestratorCoordinator {
       prompt: updated.prompt,
       branchName: updated.branchName,
       model: updated.model,
+      effort: updated.effort,
       output: updated.output,
       error: updated.error,
       durationMs: updated.durationMs,

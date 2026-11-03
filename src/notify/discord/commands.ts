@@ -20,7 +20,11 @@ export const buildSlashCommandDefinitions = (): unknown[] => [
     .setName('dispatch')
     .setDescription('Dispatch a background continuation task to Antigravity swarm')
     .addStringOption((opt) =>
-      opt.setName('repository').setDescription('Target repository ID or name').setRequired(true)
+      opt
+        .setName('repository')
+        .setDescription('Target repository ID or name')
+        .setRequired(true)
+        .setAutocomplete(true)
     )
     .addStringOption((opt) =>
       opt.setName('prompt').setDescription('Task prompt or instructions').setRequired(true)
@@ -30,15 +34,18 @@ export const buildSlashCommandDefinitions = (): unknown[] => [
         .setName('model')
         .setDescription('Model override (e.g. gemini-4-argon, claude-opus-5-5)')
         .setRequired(false)
-    )
-    .addStringOption((opt) =>
-      opt.setName('priority').setDescription('Task priority (P0, P1, P2)').setRequired(false)
+        .setAutocomplete(true)
     )
     .addStringOption((opt) =>
       opt
         .setName('effort')
-        .setDescription('Reasoning effort (low, medium, high)')
+        .setDescription('Reasoning effort')
         .setRequired(false)
+        .addChoices(
+          { name: 'low', value: 'low' },
+          { name: 'medium', value: 'medium' },
+          { name: 'high', value: 'high' }
+        )
     )
     .toJSON(),
 ];

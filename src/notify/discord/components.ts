@@ -4,8 +4,13 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  LabelBuilder,
 } from 'discord.js';
-import { resolveConcreteModelId } from '../../orchestrator/models.js';
+import {
+  CANONICAL_AGY_MODELS,
+  resolveConcreteModelId,
+  resolveReasoningEffortForModel,
+} from '../../orchestrator/models.js';
 
 export const createRepoSelectMenu = (
   repositories: Array<{ id: string; name: string; path?: string; description?: string }>,
@@ -66,32 +71,56 @@ export const createDispatchModal = (
 
   const promptInput = new TextInputBuilder()
     .setCustomId('task_prompt')
-    .setLabel('Task Prompt / Objectives')
     .setStyle(TextInputStyle.Paragraph)
     .setPlaceholder('Enter the exact task instructions for Antigravity continuation...')
     .setRequired(true)
     .setMinLength(1)
     .setMaxLength(4000);
 
-  const row1 = new ActionRowBuilder<TextInputBuilder>().addComponents(promptInput);
-  modal.addComponents(row1);
+  modal.addComponents(
+    new LabelBuilder().setLabel('Task Prompt / Objectives').setTextInputComponent(promptInput)
+  );
 
   if (options?.includeModelInput) {
     const initialModel = resolveConcreteModelId(
       options.poolFamily,
       options.defaultModel || 'gemini-4-argon'
     );
-    const modelInput = new TextInputBuilder()
-      .setCustomId('task_model_priority')
-      .setLabel('Model & Priority (e.g. model-id P0/P1/P2)')
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder('gemini-4-argon P0 (or claude-opus-5-5, P2)')
-      .setValue(`${initialModel} P0`)
-      .setRequired(false)
-      .setMaxLength(120);
 
-    const row2 = new ActionRowBuilder<TextInputBuilder>().addComponents(modelInput);
-    modal.addComponents(row2);
+    // Offer only the models the target pool can reach, and pre-select the pool's default.
+    const scoped = CANONICAL_AGY_MODELS.filter(
+      (m) => !options.poolFamily || m.family === options.poolFamily
+    );
+    const offered = (scoped.length > 0 ? scoped : CANONICAL_AGY_MODELS).slice(0, 25);
+    const initialEffort = resolveReasoningEffortForModel(initialModel, undefined);
+
+    const modelSelect = new StringSelectMenuBuilder()
+      .setCustomId('task_model')
+      .setPlaceholder('Select model')
+      .addOptions(
+        offered.map((m) => ({
+          label: m.id.slice(0, 100),
+          value: m.id.slice(0, 100),
+          default: m.id === initialModel,
+        }))
+      );
+
+    // Every effort is listed; the runner clamps to what the chosen model supports.
+    const effortSelect = new StringSelectMenuBuilder()
+      .setCustomId('task_effort')
+      .setPlaceholder('Select reasoning effort')
+      .addOptions(
+        (['low', 'medium', 'high'] as const).map((effort) => ({
+          label: effort,
+          value: effort,
+          default: effort === initialEffort,
+        }))
+      );
+
+    modal.addComponents(
+      new LabelBuilder().setLabel('Model').setStringSelectMenuComponent(modelSelect),
+      new LabelBuilder().setLabel('Reasoning Effort').setStringSelectMenuComponent(effortSelect)
+    );
   }
 
   return modal;
