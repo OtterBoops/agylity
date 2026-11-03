@@ -1,5 +1,6 @@
 import type http from 'node:http';
 import { sendJson, methodNotAllowed } from '../http.js';
+import { logger } from '../../logs/logger.js';
 import type { WebServerOptions } from '../types.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
 import { snapshotsFromSentryState } from '../../sentry/models.js';
@@ -24,10 +25,11 @@ export const handleGetQuota = async (
     return sendJson(res, 200, snapshots);
   } catch (err: any) {
     const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
+    // The message stays in the log: it can carry absolute paths and SQL detail.
+    logger.child('web').error('Quota fetch failed: %s', err?.stack ?? err);
     return sendJson(res, statusCode, {
       error: err?.code === 'AUTH_REQUIRED' ? 'Authentication Required' : 'Failed to fetch quota',
       code: err?.code,
-      message: err?.message,
     });
   }
 };

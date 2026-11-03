@@ -196,9 +196,11 @@ export const handleTestNotify = async (
       sendPayloadTooLarge(req, res, err?.message);
       return;
     }
+    // The message stays in the log: it can carry absolute paths and SQL detail.
+    log.error('Test notification failed: %s', err?.stack ?? err);
     return sendJson(res, 500, {
       success: false,
-      error: err?.message || 'Failed to send test notification',
+      error: 'Failed to send test notification',
     });
   }
 };

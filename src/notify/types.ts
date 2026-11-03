@@ -54,6 +54,7 @@ export const DispatchStatusUpdateSchema = z.object({
   details: z.record(z.string(), z.unknown()).optional(),
   taskId: z.string().optional(),
   model: z.string().optional(),
+  effort: z.string().optional(),
   runnerName: z.string().optional(),
   createdAt: z.string().optional(),
 });

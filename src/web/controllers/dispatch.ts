@@ -10,6 +10,7 @@ import {
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
+import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { OrchestratorCoordinator } from '../../orchestrator/coordinator.js';
 import {
   annotateModelsWithQuota,
@@ -98,8 +99,8 @@ export const handleGetModels = async (
     res,
     200,
     {
-      defaultModel: resolved.defaultDispatchModel || 'gemini-4-argon',
-      defaultEffort: resolved.defaultDispatchEffort || 'high',
+      defaultModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
+      defaultEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
       models,
     },
     { 'Cache-Control': 'no-store' }
@@ -289,7 +290,7 @@ export const handleTaskStatus = async (
     branchName: toStringOrUndefined(payload.branchName),
     output: toStringOrUndefined(payload.output),
     error: toStringOrUndefined(payload.error),
-    durationMs: typeof payload.durationMs === 'number' ? payload.durationMs : undefined,
+    durationMs: toFiniteNumberOrUndefined(payload.durationMs),
     numTurns: toFiniteNumberOrUndefined(payload.numTurns),
     totalTokens: toFiniteNumberOrUndefined(payload.totalTokens),
     thinkingTokens: toFiniteNumberOrUndefined(payload.thinkingTokens),
@@ -365,6 +366,9 @@ export const handleTaskRetry = async (
     scheduleMode: task.scheduleMode,
     model: task.model,
     effort: task.effort,
+    requiredLabels: task.requiredLabels,
+    expiresAt: task.expiresAt,
+    standingTaskId: task.standingTaskId,
     allowOverage: task.allowOverage,
     pushBranch: task.pushBranch,
     autoCreatePr: task.autoCreatePr,

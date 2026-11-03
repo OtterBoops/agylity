@@ -589,6 +589,41 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('refuses a dispatch whose quota telemetry cannot be read', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_dispatch_telemetry_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        orchestratorEnabled: true,
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const res = await ky
+          .post(`http://127.0.0.1:${started.port}/api/dispatch`, {
+            json: {
+              repositoryName: 'agylity',
+              prompt: 'Run security audit',
+              requestedBy: 'admin',
+            },
+          })
+          .json<any>();
+
+        // Queueing it would strand the task: claiming re-checks eligibility and refuses.
+        assert.equal(res.success, false);
+        assert.equal(res.code, 'TELEMETRY_UNAVAILABLE');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('POST /api/dispatch rejects missing repositoryName with 400', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_bad_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
@@ -1256,7 +1291,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const baseUrl = `http://127.0.0.1:${port}`;
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'Fail then report completed' },
+            json: {
+              repositoryName: 'agylity',
+              prompt: 'Fail then report completed',
+              allowOverage: true,
+            },
           })
           .json<any>();
         assert.ok(disp.taskId);
@@ -1373,7 +1412,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const baseUrl = `http://127.0.0.1:${port}`;
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'Telemetry task' },
+            json: {
+              repositoryName: 'agylity',
+              prompt: 'Telemetry task',
+              allowOverage: true,
+            },
           })
           .json<any>();
 

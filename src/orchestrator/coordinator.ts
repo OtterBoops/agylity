@@ -62,6 +62,7 @@ export interface DispatchTaskResponse {
     | 'ORCHESTRATOR_DISABLED'
     | 'OVERAGE_PROTECTION_TRIGGERED'
     | 'QUOTA_BURN_QUEUED'
+    | 'TELEMETRY_UNAVAILABLE'
     | 'EXECUTION_FAILED';
   minDispatchHeadroomPercent?: number;
   currentHeadroomPercent?: number;
@@ -233,6 +234,27 @@ export class OrchestratorCoordinator {
         code: 'ORCHESTRATOR_DISABLED',
         dispatchId: `disp-${Date.now()}`,
         repo: repositoryName,
+      };
+    }
+
+    // Claiming re-checks eligibility, so an unverifiable task would queue and never run.
+    if (!eligibility.allowed && eligibility.code === 'TELEMETRY_UNAVAILABLE') {
+      this.log.warn(
+        'Task dispatch blocked for "%s" (model=%s, pool=%s): %s',
+        repositoryName,
+        eligibility.resolvedModel,
+        eligibility.family,
+        eligibility.reason
+      );
+      return {
+        success: false,
+        repo: repositoryName,
+        model: eligibility.resolvedModel,
+        poolFamily: eligibility.family,
+        error: eligibility.reason,
+        code: 'TELEMETRY_UNAVAILABLE',
+        minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
+        currentHeadroomPercent: eligibility.effectiveHeadroomPercent,
       };
     }
 

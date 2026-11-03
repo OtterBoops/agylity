@@ -23,6 +23,7 @@ export const main = async (): Promise<AgylityDaemon> => {
   // Tee console output into a bounded, secret-redacting ring buffer for the dashboard Logs view
   let daemonRef: AgylityDaemon | undefined;
   let cachedSecrets: string[] = [];
+  let secretsLoaded = false;
 
   const refreshCachedSecrets = () => {
     const c = daemonRef?.configStore.resolveConfig();
@@ -60,7 +61,9 @@ export const main = async (): Promise<AgylityDaemon> => {
   };
 
   const logBuffer = new LogBuffer(1000, () => {
-    if (cachedSecrets.length === 0) {
+    // An empty result is a valid loaded state, so gate on having loaded, not on emptiness.
+    if (!secretsLoaded) {
+      secretsLoaded = true;
       refreshCachedSecrets();
     }
     return cachedSecrets;

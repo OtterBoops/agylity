@@ -524,7 +524,9 @@ export const snapshotsFromSentryState = (
   const snapshots: QuotaSnapshot[] = [];
   for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
     const rawId = poolId.toLowerCase().trim();
-    const family: QuotaFamily = FAMILY_ALIASES[rawId] ?? 'gemini-argon';
+    const family = FAMILY_ALIASES[rawId];
+    // An unknown pool id must not be reported as another pool's headroom.
+    if (!family) continue;
 
     const defaultModels =
       family === 'claude'
