@@ -59,14 +59,23 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
       .replace(/[^a-zA-Z0-9]/g, '')
       .slice(0, 8) || 'cont';
 
-  const slug =
-    prompt
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || 'work';
+  // Whole words only: a raw slice can end on a hyphen or cut a word in half.
+  const words = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean);
 
-  return `antigravity/task-${shortId}-${slug}`;
+  let slug = '';
+  for (const word of words) {
+    const candidate = slug ? `${slug}-${word}` : word;
+    if (candidate.length > 32) break;
+    slug = candidate;
+  }
+
+  // Fallback covers a prompt whose first word already exceeds the budget.
+  return `antigravity/task-${shortId}-${slug || 'work'}`;
 };
 
 export const collectRunnerSystemInfo = (): RunnerSystemInfo => ({
@@ -391,9 +400,12 @@ export class TaskExecutor {
           // Cleanup best-effort
         }
         return {
-          success: true,
-          branchName: baseBranch,
+          success: false,
+          branchName,
           output: combinedOutput,
+          error:
+            'Agent produced no file changes, so there was nothing to commit or push. ' +
+            'It likely answered in text instead of editing files.',
           durationMs: Date.now() - startMs,
         };
       }
@@ -426,11 +438,14 @@ export class TaskExecutor {
               .join('[redacted]');
           }
           this.log.error('Git push failed on %s: %s', branchName, pushErrMsg);
+          const noToken = !process.env.GITHUB_TOKEN?.trim();
           return {
             success: false,
             branchName,
             output: combinedOutput,
-            error: `Git push to origin/${branchName} failed: ${pushErrMsg}`,
+            error: noToken
+              ? `Git push to origin/${branchName} failed: ${pushErrMsg} (this worker has no GITHUB_TOKEN set)`
+              : `Git push to origin/${branchName} failed: ${pushErrMsg}`,
             durationMs: Date.now() - startMs,
           };
         }

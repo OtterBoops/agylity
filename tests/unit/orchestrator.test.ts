@@ -13,6 +13,7 @@ import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
 import {
   CANONICAL_AGY_MODELS,
+  buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
   parseDiscordModelPriorityInput,
@@ -403,6 +404,59 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.ok(res.error?.includes('[redacted]'));
       } finally {
         process.env.GITHUB_TOKEN = oldToken;
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('builds whole-word continuation branch names that never end on a hyphen', () => {
+      const branch = buildContinuationBranchName(
+        'task-1793630699721-a4eb1c',
+        'Tasks table is fucked on mobile. Possibly others too.'
+      );
+      assert.equal(branch, 'antigravity/task-a4eb1c-tasks-table-is-fucked-on-mobile');
+      assert.ok(!branch.endsWith('-'));
+
+      // A word too long for the budget is dropped rather than sliced mid-word.
+      assert.equal(
+        buildContinuationBranchName('task-1-abc', 'x'.repeat(80)),
+        'antigravity/task-abc-work'
+      );
+    });
+
+    it('reports a run that produced no commits as a failure, not a success on the base branch', async () => {
+      const { dir, cleanup } = makeTempDir('orch_zerodiff_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Review the current discord bot modals',
+          model: 'gemini-4-argon',
+          pushBranch: true,
+        });
+
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          execFileFn: async (file, args) => {
+            // Clean tree and zero commits ahead of base: the agent answered without editing anything.
+            if (file === 'git' && args[0] === 'status') return { stdout: '', stderr: '' };
+            if (file === 'git' && args[0] === 'rev-list') return { stdout: '0\n', stderr: '' };
+            return {
+              stdout: 'Executive Summary: the bot provides continuation dispatches',
+              stderr: '',
+            };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, false);
+        assert.notEqual(res.branchName, 'main');
+        assert.ok(res.error?.includes('no file changes'));
+      } finally {
         db.close();
         cleanup();
       }
