@@ -7,6 +7,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
@@ -91,18 +92,7 @@ export const ConnectionInspectorModal = ({
     }
   };
 
-  const handleDialogClick = (e: MouseEvent) => {
-    if (!dialogRef.current) return;
-    const rect = dialogRef.current.getBoundingClientRect();
-    const isInDialog =
-      rect.top <= e.clientY &&
-      e.clientY <= rect.top + rect.height &&
-      rect.left <= e.clientX &&
-      e.clientX <= rect.left + rect.width;
-    if (!isInDialog) {
-      onClose();
-    }
-  };
+  const handleDialogClick = dialogBackdropClickHandler(dialogRef, onClose);
 
   return (
     <dialog

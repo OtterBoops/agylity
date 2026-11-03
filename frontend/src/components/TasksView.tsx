@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import { formatDuration } from '../utils/time';
 import { taskStatusBadgeClass } from '../utils/status';
 import { faCheck, faCopy, faPlus } from '@fortawesome/free-solid-svg-icons';
@@ -42,6 +43,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   useEffect(() => {
     loadTasks();
     const timer = setInterval(loadTasks, 4000);
+
     return () => clearInterval(timer);
   }, []);
 
@@ -85,6 +87,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     if (filter === 'all') return true;
     return t.status === filter;
   });
+
+  const handleDialogClick = dialogBackdropClickHandler(dialogRef, () => setSelectedTask(null));
 
   return (
     <div class="flex flex-col gap-6 2xl:gap-8">
@@ -231,18 +235,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         <dialog
           ref={dialogRef}
           onClose={() => setSelectedTask(null)}
-          onClick={(e) => {
-            if (!dialogRef.current) return;
-            const rect = dialogRef.current.getBoundingClientRect();
-            const isInDialog =
-              rect.top <= e.clientY &&
-              e.clientY <= rect.top + rect.height &&
-              rect.left <= e.clientX &&
-              e.clientX <= rect.left + rect.width;
-            if (!isInDialog) {
-              setSelectedTask(null);
-            }
-          }}
+          onClick={handleDialogClick}
           class="fixed inset-0 m-auto w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">

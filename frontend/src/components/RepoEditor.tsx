@@ -1,6 +1,7 @@
 import { useState } from 'preact/hooks';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig } from '../api';
+import { StatusBanner } from './StatusBanner';
 
 interface Repo {
   id: string;
@@ -164,17 +165,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         </div>
       )}
 
-      {toast && (
-        <div
-          class={`rounded-lg border p-3 text-xs font-medium ${
-            toast.type === 'success'
-              ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-              : 'border-pine-love bg-pine-love/20 text-pine-love'
-          }`}
-        >
-          {toast.message}
-        </div>
-      )}
+      {toast && <StatusBanner status={toast} />}
     </div>
   );
 };

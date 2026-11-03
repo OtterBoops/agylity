@@ -1,5 +1,6 @@
 import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
 import { getModels, triggerDispatch } from '../api';
 import { normalizeModelId, resolveModelEffort } from '../config/fields';
@@ -211,18 +212,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       });
   };
 
-  const handleDialogClick = (e: MouseEvent) => {
-    if (!dialogRef.current) return;
-    const rect = dialogRef.current.getBoundingClientRect();
-    const isInDialog =
-      rect.top <= e.clientY &&
-      e.clientY <= rect.top + rect.height &&
-      rect.left <= e.clientX &&
-      e.clientX <= rect.left + rect.width;
-    if (!isInDialog) {
-      onClose();
-    }
-  };
+  const handleDialogClick = dialogBackdropClickHandler(dialogRef, onClose);
 
   return (
     <dialog

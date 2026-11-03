@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks';
 import { normalizeModelId } from '../config/fields';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig, deleteConfigOverride } from '../api';
+import { StatusBanner } from './StatusBanner';
 import { ToggleSwitch } from './ToggleSwitch';
 
 export interface FieldDef {
@@ -341,17 +342,7 @@ export const SettingsForm = ({
         </div>
       </div>
 
-      {toast && (
-        <div
-          class={`rounded-lg border p-3 text-xs font-medium ${
-            toast.type === 'success'
-              ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
-              : 'border-pine-love bg-pine-love/20 text-pine-love'
-          }`}
-        >
-          {toast.message}
-        </div>
-      )}
+      {toast && <StatusBanner status={toast} />}
     </form>
   );
 };

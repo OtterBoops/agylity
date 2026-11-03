@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { route } from 'preact-router';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import {
   faBell,
   faBolt,
@@ -200,18 +201,7 @@ export const CommandPalette = ({
 
   if (!isOpen) return null;
 
-  const handleDialogClick = (e: MouseEvent) => {
-    if (!dialogRef.current) return;
-    const rect = dialogRef.current.getBoundingClientRect();
-    const isInDialog =
-      rect.top <= e.clientY &&
-      e.clientY <= rect.top + rect.height &&
-      rect.left <= e.clientX &&
-      e.clientX <= rect.left + rect.width;
-    if (!isInDialog) {
-      onClose();
-    }
-  };
+  const handleDialogClick = dialogBackdropClickHandler(dialogRef, onClose);
 
   return (
     <dialog

@@ -9,6 +9,7 @@ import {
   dispatchOutcomeLabel,
   taskStatusBadgeClass,
 } from '../utils/status';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import { formatDuration, formatDateTime, formatTime, useTimeFormat } from '../utils/time';
 
 interface ActivityViewProps {
@@ -47,6 +48,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
     };
     load();
     const timer = setInterval(load, 10000);
+
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -67,6 +69,8 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
   const activeTasks = tasks.filter(
     (t) => t.status === 'queued' || t.status === 'claimed' || t.status === 'executing'
   );
+
+  const handleDialogClick = dialogBackdropClickHandler(dialogRef, () => setSelectedDispatch(null));
 
   return (
     <div class="flex flex-col gap-2">
@@ -214,18 +218,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
       <dialog
         ref={dialogRef}
         onClose={() => setSelectedDispatch(null)}
-        onClick={(e) => {
-          if (!dialogRef.current) return;
-          const rect = dialogRef.current.getBoundingClientRect();
-          const isInDialog =
-            rect.top <= e.clientY &&
-            e.clientY <= rect.top + rect.height &&
-            rect.left <= e.clientX &&
-            e.clientX <= rect.left + rect.width;
-          if (!isInDialog) {
-            setSelectedDispatch(null);
-          }
-        }}
+        onClick={handleDialogClick}
         class="fixed inset-0 m-auto max-h-[85vh] w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
       >
         {selectedDispatch && (

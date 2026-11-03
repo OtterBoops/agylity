@@ -6,6 +6,8 @@ interface StatusBannerProps {
 
 export const StatusBanner = ({ status }: StatusBannerProps) => (
   <div
+    role="status"
+    aria-live="polite"
     class={`rounded-lg border p-3 text-xs font-medium ${
       status.type === 'success'
         ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
