@@ -1791,4 +1791,108 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       }
     });
   });
+  describe('7. Worker Identity Stability & List Hygiene', () => {
+    it('derives the worker id from the configured name, not the container hostname', () => {
+      const w = new RemoteSwarmWorker({
+        coordinatorUrl: 'http://127.0.0.1:1',
+        workerName: 'worker-homelab',
+      });
+      // os.hostname() is the container id, so it changes on every recreate.
+      assert.equal(w.getWorkerId(), 'worker-homelab');
+      assert.ok(!w.getWorkerId().startsWith('runner-'));
+    });
+
+    it('gives two recreations of the same configured worker the same id', () => {
+      const a = new RemoteSwarmWorker({ coordinatorUrl: 'http://127.0.0.1:1', workerName: 'w1' });
+      const b = new RemoteSwarmWorker({ coordinatorUrl: 'http://127.0.0.1:1', workerName: 'w1' });
+      assert.equal(a.getWorkerId(), b.getWorkerId());
+    });
+
+    it('still honours an explicit worker id over the name', () => {
+      const w = new RemoteSwarmWorker({
+        coordinatorUrl: 'http://127.0.0.1:1',
+        workerId: 'explicit-id',
+        workerName: 'worker-homelab',
+      });
+      assert.equal(w.getWorkerId(), 'explicit-id');
+    });
+
+    it('prunes offline workers past the grace period, keeping live ones', () => {
+      const { dir, cleanup } = makeTempDir('orch_prune_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        queue.registerWorkerHeartbeat({ workerId: 'live-idle', name: 'live-idle', status: 'idle' });
+        queue.registerWorkerHeartbeat({ workerId: 'live-busy', name: 'live-busy', status: 'busy' });
+        for (let i = 0; i < 30; i++) {
+          queue.registerWorkerHeartbeat({
+            workerId: `dead-${i}`,
+            name: `dead-${i}`,
+            status: 'offline',
+          });
+        }
+        // Age everything well past the grace period.
+        const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        db.getRawDb().prepare('UPDATE swarm_workers SET last_seen_at = ?').run(stale);
+
+        queue.pruneOldWorkers();
+        assert.deepEqual(
+          queue
+            .listWorkers()
+            .map((w) => w.workerId)
+            .sort(),
+          ['live-busy', 'live-idle']
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('leaves a just-offline worker visible inside the grace period', () => {
+      const { dir, cleanup } = makeTempDir('orch_prune_grace_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        queue.registerWorkerHeartbeat({
+          workerId: 'dead-now',
+          name: 'dead-now',
+          status: 'offline',
+        });
+        // The reaper marks a worker offline the moment it goes quiet; that transition must be
+        // observable rather than deleted in the same cycle.
+        queue.pruneOldWorkers();
+        assert.equal(queue.listWorkers().length, 1);
+        assert.equal(queue.listWorkers()[0]?.status, 'offline');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('is idempotent across repeated reaper cycles', () => {
+      const { dir, cleanup } = makeTempDir('orch_prune_idem_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        queue.registerWorkerHeartbeat({ workerId: 'live-1', name: 'live-1', status: 'idle' });
+        for (let i = 0; i < 5; i++) {
+          queue.registerWorkerHeartbeat({
+            workerId: `dead-${i}`,
+            name: `dead-${i}`,
+            status: 'offline',
+          });
+        }
+        const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+        db.getRawDb().prepare('UPDATE swarm_workers SET last_seen_at = ?').run(stale);
+        queue.pruneOldWorkers();
+        queue.pruneOldWorkers();
+        queue.pruneOldWorkers();
+        assert.deepEqual(
+          queue.listWorkers().map((w) => w.workerId),
+          ['live-1']
+        );
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });

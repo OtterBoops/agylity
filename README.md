@@ -147,7 +147,7 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **240 tests passing across 56 suites** (0 failures, 0 skipped, 100% deterministic). Run `npm test` for the current count — this line rots.
+Verification status: **246 tests passing across 57 suites** (0 failures, 0 skipped, 100% deterministic). Run `npm test` for the current count — this line rots.
 
 ---
 
