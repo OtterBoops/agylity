@@ -63,6 +63,9 @@ docker compose up -d
 
 When `WEB_UI_ENABLED=true`, access the dashboard at `http://localhost:8484`.
 
+> [!NOTE]  
+> The worker container requires `GITHUB_TOKEN` to be set so it can push task branches.
+
 ---
 
 ## Technical Documentation
