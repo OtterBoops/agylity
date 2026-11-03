@@ -16,11 +16,7 @@ import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
   buildDispatchStatusEmbed,
-  formatResetWindow,
-  renderSquareProgressBar,
 } from '../embeds/index.js';
-
-export { formatResetWindow, renderSquareProgressBar };
 
 export interface WebhookPayload {
   event: 'quota_alert' | 'dispatch_status' | 'test_ping';

@@ -9,17 +9,11 @@ import {
   dispatchOutcomeLabel,
   taskStatusBadgeClass,
 } from '../utils/status';
-import { formatDateTime, formatTime, useTimeFormat } from '../utils/time';
+import { formatDuration, formatDateTime, formatTime, useTimeFormat } from '../utils/time';
 
 interface ActivityViewProps {
   alerts: SentryAlertState | null;
 }
-
-const formatDuration = (ms: number): string => {
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-};
 
 export const ActivityView = ({ alerts }: ActivityViewProps) => {
   const [timeFormat] = useTimeFormat();
@@ -164,6 +158,14 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                     <tr
                       key={d.id}
                       onClick={() => setSelectedDispatch(d)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedDispatch(d);
+                        }
+                      }}
+                      tabIndex={0}
+                      aria-label={`Open details for ${d.id}`}
                       class="cursor-pointer align-top transition-colors hover:bg-white/4"
                       title="Click to inspect task details"
                     >

@@ -64,7 +64,6 @@ export const routeInteraction = async (
   if (interaction.isStringSelectMenu && interaction.isStringSelectMenu()) {
     if (
       interaction.customId === 'repo_select' ||
-      interaction.customId === 'select_dispatch_repo' ||
       (typeof interaction.customId === 'string' && interaction.customId.startsWith('repo_select:'))
     ) {
       await handleRepoSelect(deps, interaction);
@@ -75,8 +74,7 @@ export const routeInteraction = async (
   if (interaction.isModalSubmit && interaction.isModalSubmit()) {
     if (
       typeof interaction.customId === 'string' &&
-      (interaction.customId.startsWith('modal_dispatch:') ||
-        interaction.customId.startsWith('modal_dispatch_'))
+      interaction.customId.startsWith('modal_dispatch:')
     ) {
       await handleModalSubmit(deps, interaction);
     }
@@ -354,10 +352,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
   const rawCustomSuffix =
     typeof interaction.customId === 'string' && interaction.customId.startsWith('modal_dispatch:')
       ? interaction.customId.slice('modal_dispatch:'.length)
-      : typeof interaction.customId === 'string' &&
-          interaction.customId.startsWith('modal_dispatch_')
-        ? interaction.customId.slice('modal_dispatch_'.length)
-        : '';
+      : '';
 
   const lastColonIdx = rawCustomSuffix.lastIndexOf(':');
   const rawRepoId = lastColonIdx !== -1 ? rawCustomSuffix.slice(0, lastColonIdx) : rawCustomSuffix;

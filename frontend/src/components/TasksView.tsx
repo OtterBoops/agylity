@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { formatDuration } from '../utils/time';
 import { taskStatusBadgeClass } from '../utils/status';
 import { faCheck, faCopy, faPlus } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../types';
@@ -9,12 +10,6 @@ interface TasksViewProps {
   onRefresh?: () => void;
   onOpenDispatch?: () => void;
 }
-
-const formatDuration = (ms: number): string => {
-  if (ms < 1000) return `${ms}ms`;
-  const s = Math.round(ms / 1000);
-  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
-};
 
 const STATUS_FILTERS = [
   'all',
@@ -159,6 +154,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 <tr
                   key={t.id}
                   onClick={() => setSelectedTask(t)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedTask(t);
+                    }
+                  }}
+                  tabIndex={0}
+                  aria-label={`Open details for ${t.id}`}
                   class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
                 >
                   <td class="p-3.5 2xl:p-4.5">

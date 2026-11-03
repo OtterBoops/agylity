@@ -82,3 +82,9 @@ export const useTimeFormat = (): [TimeFormat, (fmt: TimeFormat) => void] => {
 
   return [fmt, update];
 };
+
+export const formatDuration = (ms: number): string => {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+};

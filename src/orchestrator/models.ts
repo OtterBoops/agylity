@@ -312,7 +312,7 @@ export const evaluateModelDispatchEligibility = (
   );
 
   // Fallback if only a partial/mock pool set was provided in state
-  if (!targetPool && pools.length > 0) {
+  if (!targetPool) {
     targetPool = pools.reduce((mostConstrained, current) =>
       calculateEffectiveHeadroomPercent(current) <
       calculateEffectiveHeadroomPercent(mostConstrained)

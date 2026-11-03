@@ -7,6 +7,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
+import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
 
@@ -69,20 +70,7 @@ export const ConnectionInspectorModal = ({
 
   if (!isOpen) return null;
 
-  const probeStatus =
-    lastProbeSource === 'connect_rpc'
-      ? 'Live Connect-RPC'
-      : lastProbeSource === 'cli' || lastProbeSource === 'cli_fallback'
-        ? 'Antigravity CLI'
-        : lastProbeSource === 'auth_required'
-          ? 'Auth Required'
-          : 'Offline';
-  const probeColor =
-    lastProbeSource === 'connect_rpc' ||
-    lastProbeSource === 'cli' ||
-    lastProbeSource === 'cli_fallback'
-      ? 'bg-pine-pine'
-      : 'bg-pine-love';
+  const { label: probeStatus, color: probeColor } = describeProbe(lastProbeSource);
 
   const handleCopyDiagnostics = async () => {
     const diag = {

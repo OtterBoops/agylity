@@ -14,10 +14,21 @@ export const PoolStateSchema = z.object({
 
 export type PoolState = z.infer<typeof PoolStateSchema>;
 
+/** Probe sources, so the schema and its callers cannot disagree. */
+export const PROBE_SOURCES = [
+  'connect_rpc',
+  'cli',
+  'cli_fallback',
+  'unreachable',
+  'auth_required',
+] as const;
+
+export type ProbeSource = (typeof PROBE_SOURCES)[number];
+
 export const SentryStateSchema = z.object({
   version: z.literal(1),
   lastProbeAt: z.string(),
-  lastProbeSource: z.enum(['connect_rpc', 'cli', 'cli_fallback', 'unreachable', 'auth_required']),
+  lastProbeSource: z.enum(PROBE_SOURCES),
   authRequired: z.boolean().optional(),
   authErrorMessage: z.string().optional(),
   pools: z.record(z.string(), PoolStateSchema),
@@ -118,7 +129,7 @@ export class SentryStateManager {
   }
 
   updateProbe(
-    source: 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required',
+    source: ProbeSource,
     at: string = new Date().toISOString(),
     authInfo?: { authRequired?: boolean; authErrorMessage?: string }
   ): void {

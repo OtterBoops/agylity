@@ -50,10 +50,12 @@ export interface SentryPoolState {
   lastAlertSentAt: string | null;
 }
 
+export type ProbeSource = 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required';
+
 export interface SentryAlertState {
   version: number;
   lastProbeAt: string;
-  lastProbeSource: 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required';
+  lastProbeSource: ProbeSource;
   authRequired?: boolean;
   authErrorMessage?: string;
   pools: Record<string, SentryPoolState>;

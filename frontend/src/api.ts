@@ -126,7 +126,10 @@ export const getQuota = (force = false): Promise<QuotaSnapshot[]> =>
   api.get(force ? 'quota?refresh=1' : 'quota').json<QuotaSnapshot[]>();
 
 export const getAlerts = (): Promise<SentryAlertState | null> =>
-  api.get('alerts').json<SentryAlertState | null>();
+  api
+    .get('alerts')
+    .json<SentryAlertState | null>()
+    .catch(() => null);
 
 export const getConfig = (): Promise<ConfigData> =>
   api

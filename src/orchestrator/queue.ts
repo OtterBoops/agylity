@@ -17,7 +17,6 @@ export interface RunnerSystemInfo {
   hostname?: string;
   platform?: string;
   arch?: string;
-  agyVersion?: string;
 }
 
 export interface SwarmTask {
