@@ -245,6 +245,14 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
     it('rejects unsupported channel with typed error', async () => {
       await assert.rejects(() => createNotifier('slack'), /Unknown notification channel: slack/);
+
+      it('deduplicates channels case-insensitively instead of instantiating twice', async () => {
+        const composite = await createDaemonNotifier({
+          ...BUILTIN_DEFAULTS,
+          notificationChannels: ['Console', 'console', 'CONSOLE'],
+        } as any);
+        assert.equal(composite.getNotifiers().length, 1);
+      });
       await assert.rejects(
         () => createNotifier('telegram'),
         /Unknown notification channel: telegram/

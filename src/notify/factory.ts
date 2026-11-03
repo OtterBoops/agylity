@@ -5,6 +5,56 @@ import { CompositeNotifier } from './adapters/composite.js';
 
 export { CompositeNotifier } from './adapters/composite.js';
 
+/** Channels resolve from the plural form first; blanks, 'none' and duplicates are dropped. */
+const resolveChannels = (config: ResolvedConfig): string[] => {
+  const raw =
+    Array.isArray(config.notificationChannels) && config.notificationChannels.length > 0
+      ? config.notificationChannels.map((c) => String(c))
+      : config.notificationChannel
+        ? [String(config.notificationChannel)]
+        : [];
+
+  return Array.from(
+    new Set(raw.map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none'))
+  );
+};
+
+/** One instantiation table, so a new adapter is registered in a single place. */
+const instantiateChannels = async (
+  channels: string[],
+  config: ResolvedConfig,
+  options: NotifierOptions | undefined,
+  onUnknown: 'throw' | 'skip'
+): Promise<Notifier[]> => {
+  const notifiers: Notifier[] = [];
+
+  for (const ch of channels) {
+    switch (ch) {
+      case 'console': {
+        const { ConsoleNotifier } = await import('./adapters/console.js');
+        notifiers.push(new ConsoleNotifier(config, options));
+        break;
+      }
+      case 'webhook': {
+        const { WebhookNotifier } = await import('./adapters/webhook.js');
+        notifiers.push(new WebhookNotifier(config, options));
+        break;
+      }
+      case 'discord': {
+        const { DiscordNotifier } = await import('./adapters/discord.js');
+        notifiers.push(new DiscordNotifier(config, options));
+        break;
+      }
+      default:
+        if (onUnknown === 'throw') {
+          throw new Error(`Unknown notification channel: ${ch}`);
+        }
+    }
+  }
+
+  return notifiers;
+};
+
 // Inactive channels must never import discord.js into memory; only 'discord' may.
 export const createNotifier = async (
   channelOrConfig: string | ResolvedConfig,
@@ -16,7 +66,6 @@ export const createNotifier = async (
   let options: NotifierOptions | undefined;
 
   if (typeof channelOrConfig === 'string') {
-    const rawChannelStr = channelOrConfig;
     if (
       configOrOptions &&
       ('notificationChannels' in configOrOptions || 'notificationChannel' in configOrOptions)
@@ -28,57 +77,25 @@ export const createNotifier = async (
       options = configOrOptions as NotifierOptions | undefined;
     }
 
-    channels = rawChannelStr
-      .split(',')
-      .map((c) => c.trim())
-      .filter((c) => Boolean(c) && c.toLowerCase() !== 'none');
+    channels = Array.from(
+      new Set(
+        channelOrConfig
+          .split(',')
+          .map((c) => c.trim().toLowerCase())
+          .filter((c) => Boolean(c) && c !== 'none')
+      )
+    );
   } else {
     config = channelOrConfig;
     options = configOrOptions as NotifierOptions | undefined;
-
-    if (Array.isArray(config.notificationChannels) && config.notificationChannels.length > 0) {
-      channels = config.notificationChannels
-        .map((c) => String(c).trim())
-        .filter((c) => Boolean(c) && c.toLowerCase() !== 'none');
-    } else if (config.notificationChannel) {
-      const single = String(config.notificationChannel).trim();
-      channels = single && single.toLowerCase() !== 'none' ? [single] : [];
-    } else {
-      channels = [];
-    }
+    channels = resolveChannels(config);
   }
 
-  // Deduplicate channels
-  const uniqueChannels = Array.from(new Set(channels));
-
-  if (uniqueChannels.length === 0) {
+  if (channels.length === 0) {
     return new CompositeNotifier([], options);
   }
 
-  const instantiatedNotifiers: Notifier[] = [];
-
-  for (const rawCh of uniqueChannels) {
-    const ch = rawCh.toLowerCase();
-    switch (ch) {
-      case 'console': {
-        const { ConsoleNotifier } = await import('./adapters/console.js');
-        instantiatedNotifiers.push(new ConsoleNotifier(config, options));
-        break;
-      }
-      case 'webhook': {
-        const { WebhookNotifier } = await import('./adapters/webhook.js');
-        instantiatedNotifiers.push(new WebhookNotifier(config, options));
-        break;
-      }
-      case 'discord': {
-        const { DiscordNotifier } = await import('./adapters/discord.js');
-        instantiatedNotifiers.push(new DiscordNotifier(config, options));
-        break;
-      }
-      default:
-        throw new Error(`Unknown notification channel: ${rawCh}`);
-    }
-  }
+  const instantiatedNotifiers = await instantiateChannels(channels, config, options, 'throw');
 
   if (instantiatedNotifiers.length === 1 && instantiatedNotifiers[0]) {
     return instantiatedNotifiers[0];
@@ -91,41 +108,7 @@ export const createDaemonNotifier = async (
   config: ResolvedConfig,
   options?: NotifierOptions
 ): Promise<CompositeNotifier> => {
-  const channels: string[] = [];
-  if (Array.isArray(config.notificationChannels) && config.notificationChannels.length > 0) {
-    for (const c of config.notificationChannels) {
-      const s = String(c).trim().toLowerCase();
-      if (s && s !== 'none') channels.push(s);
-    }
-  } else if (config.notificationChannel) {
-    const s = String(config.notificationChannel).trim().toLowerCase();
-    if (s && s !== 'none') channels.push(s);
-  }
-
-  const uniqueChannels = Array.from(new Set(channels));
-  const instantiated: Notifier[] = [];
-
-  for (const ch of uniqueChannels) {
-    switch (ch) {
-      case 'console': {
-        const { ConsoleNotifier } = await import('./adapters/console.js');
-        instantiated.push(new ConsoleNotifier(config, options));
-        break;
-      }
-      case 'webhook': {
-        const { WebhookNotifier } = await import('./adapters/webhook.js');
-        instantiated.push(new WebhookNotifier(config, options));
-        break;
-      }
-      case 'discord': {
-        const { DiscordNotifier } = await import('./adapters/discord.js');
-        instantiated.push(new DiscordNotifier(config, options));
-        break;
-      }
-      default:
-        break;
-    }
-  }
-
-  return new CompositeNotifier(instantiated, options, config);
+  // A daemon must survive a channel typo, so an unknown channel is skipped rather than fatal.
+  const notifiers = await instantiateChannels(resolveChannels(config), config, options, 'skip');
+  return new CompositeNotifier(notifiers, options, config);
 };
