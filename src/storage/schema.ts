@@ -17,11 +17,7 @@ const isAddableColumn = (ddl: string): boolean => {
   return true;
 };
 
-/**
- * Additively upgrades a table to its expected column set. Never drops or rewrites a column; it only
- * ALTER TABLE ADD COLUMNs anything the existing table is missing, logging additions at info and
- * columns that cannot be added automatically at warn.
- */
+// Additively upgrades a table to its expected column set. Never drops or rewrites a column; it only
 export const migrateColumns = (
   db: DatabaseSync,
   tableName: string,

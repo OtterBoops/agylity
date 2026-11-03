@@ -54,19 +54,12 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
-  /**
-   * Returns the currently bound Discord owner user ID (explicitly configured or TOFU-pinned).
-   */
+  // Returns the currently bound Discord owner user ID (explicitly configured or TOFU-pinned).
   public getBoundOwnerUserId(): string | undefined {
     return this.config.discordOwnerUserId?.trim() || this.pinnedOwnerUserId;
   }
 
-  /**
-   * Enforces strict single-user binding on Discord interactions.
-   * - If `discordOwnerUserId` is explicitly configured, only that user ID is permitted.
-   * - Otherwise, pins the first interacting Discord user ID (Trust-On-First-Use) for the session
-   *   and rejects any subsequent interactions from different Discord users.
-   */
+  // Owner binding is single-user: a configured owner id, else the first interactor pins the session.
   private verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string } {
     const userId = typeof interaction?.user?.id === 'string' ? interaction.user.id.trim() : '';
     const configuredOwner = this.config.discordOwnerUserId?.trim();
@@ -113,10 +106,7 @@ export class DiscordNotifier implements Notifier {
     return { allowed: true };
   }
 
-  /**
-   * Bundles the live interaction context for the extracted handlers; the retention caps are getters
-   * so a handler that resumes after an await still observes the current limits.
-   */
+  // Bundles the live interaction context for the extracted handlers; the retention caps are getters
   private interactionDeps(): DiscordInteractionDeps {
     const self = this;
     return {
@@ -209,18 +199,12 @@ export class DiscordNotifier implements Notifier {
     return this.initialize();
   }
 
-  /**
-   * Main interaction dispatcher handling commands, selects, and modals.
-   * Acknowledgement ordering lives in the handler flows: the first awaited call on every path is
-   * the Discord ack (deferReply / showModal / reply) within the 3-second deadline.
-   */
+  // The first awaited call on every handler path must be the Discord ack, inside the 3s deadline.
   async handleInteraction(interaction: any): Promise<void> {
     return routeInteraction(this.interactionDeps(), interaction);
   }
 
-  /**
-   * Automatically discovers and binds the Discord server owner ID if discordOwnerUserId is unset.
-   */
+  // Automatically discovers and binds the Discord server owner ID if discordOwnerUserId is unset.
   public async autoDiscoverOwnerUserId(): Promise<string | undefined> {
     if (this.config.discordOwnerUserId?.trim()) {
       return this.config.discordOwnerUserId.trim();

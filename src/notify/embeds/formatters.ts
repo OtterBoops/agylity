@@ -1,7 +1,4 @@
-/**
- * Renders a monospaced geometric square progress bar enclosed in backticks:
- * `[■■■□□□□□□□]` **30%**
- */
+// Renders a monospaced square bar, e.g. `[■■■□□□□□□□] **30%**`.
 export const renderSquareProgressBar = (fraction: number, totalBars = 10): string => {
   const safeFraction = Number.isFinite(fraction) ? fraction : 0;
   const clamped = Math.max(0, Math.min(1, safeFraction));
@@ -13,10 +10,7 @@ export const renderSquareProgressBar = (fraction: number, totalBars = 10): strin
   return `\`[${bar}]\` **${percent}%**`;
 };
 
-/**
- * Formats an ISO reset timestamp into Discord's relative countdown and localized time tags:
- * <t:1793215200:R> (<t:1793215200:t>) -> "in 3 hours (11:51 PM)"
- */
+// ISO reset -> Discord tags: `<t:...:R> (<t:...:t>)`.
 export const formatResetWindow = (rawResetTime?: string): string => {
   if (!rawResetTime) return 'Unknown';
   try {
@@ -29,9 +23,6 @@ export const formatResetWindow = (rawResetTime?: string): string => {
   return rawResetTime;
 };
 
-/**
- * Formats a list of model names as inline code tags separated by bullets.
- */
 export const formatModelPills = (models?: string[]): string => {
   if (!models || models.length === 0) return '';
   return models.map((m) => `\`${m}\``).join(' • ');

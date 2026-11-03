@@ -2,9 +2,7 @@ import { renderSquareProgressBar } from '../embeds/index.js';
 
 export { renderSquareProgressBar };
 
-/**
- * Generates an ASCII visual progress bar for quota fractions (e.g. "██████░░░░" or "■■■■■■□□□□").
- */
+// Generates an ASCII visual progress bar for quota fractions (e.g. "██████░░░░" or "■■■■■■□□□□").
 export const generateProgressBar = (
   fraction: number,
   totalBars = 10,

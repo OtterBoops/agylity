@@ -238,11 +238,7 @@ export interface AppConfig {
 
 export type ResolvedConfig = AppConfig;
 
-// Authoritative secret map (config key -> env spelling); both spellings are secret and derive from here.
-/**
- * Authoritative env-var spelling for every config key. The reverse lookup and the
- * secret env names both derive from this, so a spelling is written down once.
- */
+// Authoritative env-var spelling per config key; the reverse lookup and secret env names derive from it.
 export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   notificationChannels: 'NOTIFICATION_CHANNELS',
   notificationChannel: 'NOTIFICATION_CHANNEL',

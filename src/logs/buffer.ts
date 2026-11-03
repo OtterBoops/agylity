@@ -16,9 +16,7 @@ const PATTERNS: RegExp[] = [
   /((?:token|secret|password|csrf[_-]?token|x-codeium-csrf-token)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
 ];
 
-/**
- * Masks known secret values and common token shapes before text is retained or served.
- */
+// Masks known secret values and common token shapes before text is retained or served.
 export const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
   let out = text;
   for (const s of secrets) {
@@ -33,9 +31,7 @@ export const redact = (text: string, secrets: Iterable<string | undefined> = [])
   return out;
 };
 
-/**
- * Bounded in-memory ring buffer of log lines. Lost on restart by design.
- */
+// Bounded in-memory ring buffer of log lines. Lost on restart by design.
 export class LogBuffer {
   private entries: LogEntry[] = [];
   private nextId = 1;
@@ -86,10 +82,7 @@ export class LogBuffer {
   }
 }
 
-/**
- * Tees console.log/info/warn/error/debug into the buffer while still printing normally.
- * Returns an uninstall function restoring the original console methods.
- */
+// Tees console.log/info/warn/error/debug into the buffer while still printing normally.
 export const installConsoleTee = (buffer: LogBuffer): (() => void) => {
   const methods: Array<[keyof Console, LogLevel]> = [
     ['log', 'info'],

@@ -5,13 +5,7 @@ import { CompositeNotifier } from './adapters/composite.js';
 
 export { CompositeNotifier } from './adapters/composite.js';
 
-/**
- * Creates an isolated Notifier adapter instance based on the active channels.
- *
- * Isolation Invariant:
- * Inactive notification channels (e.g. console, webhook) NEVER import or evaluate
- * discord.js or its dependencies into V8 memory unless 'discord' is explicitly enabled.
- */
+// Inactive channels must never import discord.js into memory; only 'discord' may.
 export const createNotifier = async (
   channelOrConfig: string | ResolvedConfig,
   configOrOptions?: ResolvedConfig | NotifierOptions,
@@ -93,11 +87,6 @@ export const createNotifier = async (
   return new CompositeNotifier(instantiatedNotifiers, options);
 };
 
-/**
- * Creates a CompositeNotifier specifically for the daemon lifecycle.
- * Always wraps active notifiers in a CompositeNotifier (even with 0 or 1 channel),
- * guaranteeing that dynamic updateConfig() can activate or deactivate channels at runtime.
- */
 export const createDaemonNotifier = async (
   config: ResolvedConfig,
   options?: NotifierOptions

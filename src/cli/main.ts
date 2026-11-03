@@ -3,9 +3,7 @@ import { LogBuffer, installConsoleTee } from '../logs/buffer.js';
 import { logger } from '../logs/logger.js';
 import { createDaemon, type AgylityDaemon } from '../daemon/daemon.js';
 
-/**
- * Primary CLI execution entrypoint for standalone daemon process.
- */
+// Primary CLI execution entrypoint for standalone daemon process.
 export const main = async (): Promise<AgylityDaemon> => {
   console.log('================================================================');
   console.log('   agylity — Autonomous Quota Sentry & Remote Task Orchestrator  ');

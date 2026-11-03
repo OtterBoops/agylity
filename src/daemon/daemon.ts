@@ -39,16 +39,6 @@ export interface AgylityDaemonOptions {
   logger?: Logger;
 }
 
-/**
- * AgylityDaemon coordinates the complete autonomous lifecycle of agylity:
- * 1. Persistent configuration store (node:sqlite with fallback precedence)
- * 2. Antigravity Language Server Connect-RPC client with agy CLI fallback
- * 3. Quota Sentry milestone evaluator and deduplication state engine
- * 4. Pluggable notification adapters (Discord with slash commands & modal prompt, Console)
- * 5. Task orchestrator with pluggable worker executor
- * 6. Decoupled Web UI (zero-overhead dynamic import on demand)
- * 7. Graceful teardown on SIGINT/SIGTERM
- */
 export class AgylityDaemon {
   public readonly configStore: ConfigStore;
   public readonly database: AppDatabase;
@@ -139,9 +129,7 @@ export class AgylityDaemon {
     });
   }
 
-  /**
-   * Factory method to construct and wire all daemon subsystems.
-   */
+  // Factory method to construct and wire all daemon subsystems.
   public static async create(options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> {
     // 1. Initialize configuration store & database
     const dbPath = options.dbPath ?? process.env.DATABASE_PATH ?? 'data/agylity.db';
@@ -270,10 +258,7 @@ export class AgylityDaemon {
     );
   }
 
-  /**
-   * Starts the daemon, initializing notifier, loading state, conditionally starting
-   * the web UI, executing initial quota check, and activating the sentry poll interval.
-   */
+  // Starts the daemon, initializing notifier, loading state, conditionally starting
   public async start(): Promise<void> {
     if (this.isRunning) {
       return;
@@ -334,9 +319,7 @@ export class AgylityDaemon {
     this.isNotifierShutdown = false;
   }
 
-  /**
-   * Executes a single quota probe and milestone evaluation cycle.
-   */
+  // Executes a single quota probe and milestone evaluation cycle.
   public async checkQuota(): Promise<QuotaAlert[]> {
     try {
       this.logger.debug('Running scheduled quota evaluation...');
@@ -443,10 +426,7 @@ export class AgylityDaemon {
     }, intervalSeconds * 1000);
   }
 
-  /**
-   * Evaluates snapshots via the evaluator's dry-run plan when available, so milestone
-   * recording can be deferred until delivery succeeds.
-   */
+  // Evaluates snapshots via the evaluator's dry-run plan when available, so milestone
   private evaluateMilestonePlan(snapshots: QuotaSnapshot[]): MilestonePlan {
     const evaluator = this.sentryEvaluator as unknown as {
       evaluateWithPlan?: (
@@ -492,13 +472,6 @@ export class AgylityDaemon {
     }
   }
 
-  /**
-   * Graceful shutdown sequence:
-   * 1. Stops sentry scheduler interval timer.
-   * 2. Shuts down notification adapter.
-   * 3. Closes decoupled web server if running.
-   * 4. Closes SQLite database connection cleanly.
-   */
   public async shutdown(): Promise<void> {
     if (!this.isRunning && this.isDbClosed) {
       return;
@@ -550,32 +523,24 @@ export class AgylityDaemon {
     this.isRunning = false;
   }
 
-  /**
-   * Alias for shutdown() adhering to universal lifecycle conventions.
-   */
+  // Alias for shutdown() adhering to universal lifecycle conventions.
   public async stop(): Promise<void> {
     return this.shutdown();
   }
 }
 
-/**
- * Programmatic helper to create an unstarted AgylityDaemon.
- */
+// Programmatic helper to create an unstarted AgylityDaemon.
 export const createDaemon = async (options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> =>
   AgylityDaemon.create(options);
 
-/**
- * Programmatic helper to create and immediately start an AgylityDaemon.
- */
+// Programmatic helper to create and immediately start an AgylityDaemon.
 export const startDaemon = async (options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> => {
   const daemon = await AgylityDaemon.create(options);
   await daemon.start();
   return daemon;
 };
 
-/**
- * Programmatic helper to gracefully stop an active AgylityDaemon.
- */
+// Programmatic helper to gracefully stop an active AgylityDaemon.
 export const stopDaemon = async (daemon: AgylityDaemon): Promise<void> => {
   await daemon.shutdown();
 };

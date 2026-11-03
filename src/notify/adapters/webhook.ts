@@ -35,10 +35,7 @@ export interface WebhookPayload {
   status?: string;
 }
 
-/**
- * Sanitizes a webhook URL by masking sensitive path tokens, user credentials,
- * and query parameter values while preserving host, scheme, and non-sensitive path routing.
- */
+// Sanitizes a webhook URL by masking sensitive path tokens, user credentials,
 export const sanitizeWebhookUrl = (rawUrl: string): string => {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
   try {
@@ -92,10 +89,7 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
   }
 };
 
-/**
- * Extracts the raw path/query values that sanitizeWebhookUrl masks, so the same secret can be
- * redacted from error text or response bodies that quote it without the URL wrapper.
- */
+// Extracts the raw path/query values that sanitizeWebhookUrl masks, so the same secret can be
 function extractMaskedTokens(rawUrl: string): string[] {
   try {
     const raw = new URL(rawUrl);
@@ -116,9 +110,7 @@ function extractMaskedTokens(rawUrl: string): string[] {
   }
 }
 
-/**
- * Strips raw webhook URLs and secrets from error strings before logging or API delivery.
- */
+// Strips raw webhook URLs and secrets from error strings before logging or API delivery.
 export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   if (!message || typeof message !== 'string') return '';
   let result = message;

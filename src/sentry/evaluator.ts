@@ -47,9 +47,6 @@ export class QuotaEvaluator {
     }
   }
 
-  /**
-   * Pure evaluation for a single pool snapshot against a list of already fired milestones.
-   */
   evaluatePool(
     snapshot: QuotaSnapshot,
     firedMilestones: (number | string)[] = [],
@@ -90,11 +87,9 @@ export class QuotaEvaluator {
       return { alert: null, supersededMilestones: [] };
     }
 
-    // Late-wake reconciliation:
-    // When multiple milestone thresholds are crossed, trigger ONLY the most urgent (smallest window)
+    // Several thresholds crossed at once: only the most urgent fires.
     const mostUrgentMilestone = Math.min(...unfiredApplicable);
 
-    // All larger applicable un-fired milestones are superseded
     const supersededMilestones = unfiredApplicable.filter((m) => m > mostUrgentMilestone);
 
     const alert: QuotaAlert = {
@@ -110,11 +105,7 @@ export class QuotaEvaluator {
     return { alert, supersededMilestones };
   }
 
-  /**
-   * Evaluates snapshots into a delivery plan and records NO milestone state.
-   * Pending milestones are returned so the caller persists them only after delivery succeeds,
-   * which lets a failed notification retry on the next poll instead of being lost.
-   */
+  // Evaluates snapshots into a delivery plan and records NO milestone state.
   evaluateWithPlan(
     snapshots: QuotaSnapshot[],
     stateManager?: SentryStateManager,
@@ -164,10 +155,6 @@ export class QuotaEvaluator {
     return { alerts, pendingMilestones, supersededMilestones };
   }
 
-  /**
-   * Evaluates a collection of snapshots, recording fired milestones on the state manager.
-   * Returns triggered QuotaAlerts.
-   */
   evaluate(
     snapshots: QuotaSnapshot[],
     stateManager?: SentryStateManager,

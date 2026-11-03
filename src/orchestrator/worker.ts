@@ -39,10 +39,6 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
-/**
- * Generates a deterministic, URL-safe Git branch name for an isolated continuation task.
- * Never returns 'main' or 'master'.
- */
 const buildGitAuthArgs = (repoUrl?: string): string[] => {
   const ghToken = process.env.GITHUB_TOKEN?.trim();
   if (ghToken && (!repoUrl || repoUrl.startsWith('https://github.com/'))) {
@@ -52,6 +48,7 @@ const buildGitAuthArgs = (repoUrl?: string): string[] => {
   return [];
 };
 
+// Never returns 'main' or 'master'.
 export const buildContinuationBranchName = (taskId: string, prompt: string): string => {
   const shortId =
     taskId
@@ -93,10 +90,7 @@ export interface TaskExecutionTelemetry {
   outputTokens?: number;
 }
 
-/**
- * Gracefully parses NDJSON and JSON telemetry lines from `agy` stdout.
- * Falls back cleanly to empty metadata if stdout contains only plain text.
- */
+// Gracefully parses NDJSON and JSON telemetry lines from `agy` stdout.
 export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
   if (!stdout || !stdout.trim()) return {};
   const telemetry: TaskExecutionTelemetry = {};
@@ -146,9 +140,7 @@ export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
   return telemetry;
 };
 
-/**
- * Executes a single SwarmTask using Git branch isolation and the official `agy` CLI binary.
- */
+// Executes a single SwarmTask using Git branch isolation and the official `agy` CLI binary.
 export class TaskExecutor {
   private readonly agyBinPath: string;
   private readonly timeoutMs: number;
@@ -540,11 +532,7 @@ export interface RemoteSwarmWorkerOptions {
   logger?: Logger;
 }
 
-/**
- * Outbound long-polling swarm runner client (`agylity-worker`) that exchanges
- * one-time registration tokens (`agyr_reg_...`) for persistent runner credentials (`agyr_run_...`),
- * pulls tasks from `/api/tasks/poll`, and reports execution progress to `/api/tasks/:id/status`.
- */
+// Outbound long-polling swarm runner client (`agylity-worker`) that exchanges
 export class RemoteSwarmWorker {
   private readonly options: RemoteSwarmWorkerOptions;
   private readonly executor: TaskExecutor;
@@ -694,10 +682,7 @@ export class RemoteSwarmWorker {
     }
   }
 
-  /**
-   * Exchanges a one-time `registrationToken` (`agyr_reg_...`) for a persistent `runnerToken` (`agyr_run_...`)
-   * if this runner does not already have a persistent token.
-   */
+  // Exchanges a one-time `registrationToken` (`agyr_reg_...`) for a persistent `runnerToken` (`agyr_run_...`)
   public async registerIfNeeded(): Promise<SwarmWorkerRecord | null> {
     if (this.runnerToken) {
       return null;
@@ -835,9 +820,7 @@ export class RemoteSwarmWorker {
     return task;
   }
 
-  /**
-   * Starts the continuous outbound long-poll loop until `stop()` is called.
-   */
+  // Starts the continuous outbound long-poll loop until `stop()` is called.
   public async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;

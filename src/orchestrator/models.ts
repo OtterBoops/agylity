@@ -42,9 +42,7 @@ export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   belowSafetyFloor: boolean;
 }
 
-/**
- * Authoritative catalog of official Antigravity CLI (`agy --output-format json models`) models.
- */
+// Authoritative catalog of official Antigravity CLI (`agy --output-format json models`) models.
 export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   {
     id: 'gemini-3.8-flash',
@@ -121,9 +119,6 @@ export const resolveReasoningEffortForModel = (
   return supported.includes(normalized) ? normalized : defaultEffort;
 };
 
-/**
- * Resolves a model ID or pool family string to its canonical QuotaFamily.
- */
 export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily => {
   if (!modelOrFamily) return 'gemini-argon';
   const normalized = modelOrFamily.trim().toLowerCase();
@@ -134,10 +129,7 @@ export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =
   return resolved?.family ?? 'gemini-argon';
 };
 
-/**
- * Resolves a requested model string (or pool family shorthand) to an explicit `agy --model` identifier.
- * Never returns 'auto' so the CLI is always invoked with an explicit, predictable model flag.
- */
+// Resolves to an explicit `agy --model` identifier; never returns 'auto'.
 export const resolveConcreteModelId = (
   requestedModel: string | undefined,
   defaultModel = 'gemini-4-argon'
@@ -191,11 +183,6 @@ export const resolveConcreteModelId = (
   return requestedModel.trim().replace(/-(high|medium|low)$/i, '');
 };
 
-/**
- * Computes the effective remaining headroom percentage (0-100) for a quota pool,
- * taking the minimum of the weekly limit and the 5-hour rolling window limit:
- * effectiveHeadroom = min(weeklyRemaining, fiveHourRemaining)
- */
 export const calculateEffectiveHeadroomPercent = (
   pool: Pick<QuotaSnapshot, 'remainingFraction' | 'weekly' | 'shortTerm' | 'buckets'>
 ): number => {
@@ -263,10 +250,6 @@ export interface ModelEligibilityResult {
   reason?: string;
 }
 
-/**
- * Evaluates whether a task with the given model and scheduleMode can safely dispatch/execute
- * under the current quota pool telemetry and safety floor rules.
- */
 export const evaluateModelDispatchEligibility = (
   options: ModelEligibilityOptions
 ): ModelEligibilityResult => {
@@ -378,9 +361,7 @@ export const evaluateModelDispatchEligibility = (
   };
 };
 
-/**
- * Annotates the canonical model catalog with live quota headroom and reset windows from active pools.
- */
+// Annotates the canonical model catalog with live quota headroom and reset windows from active pools.
 export const annotateModelsWithQuota = (
   pools: QuotaSnapshot[] = [],
   minDispatchHeadroomPercent = 10,
@@ -423,9 +404,7 @@ export const annotateModelsWithQuota = (
   });
 };
 
-/**
- * Parses the optional Discord modal model/scheduleMode input string (e.g. "gemini-4-argon-high pre_reset", "claude-opus-5-5-high").
- */
+// Parses the optional Discord modal model/scheduleMode input string (e.g. "gemini-4-argon-high pre_reset", "claude-opus-5-5-high").
 export const parseDiscordModelPriorityInput = (
   rawInput: string | undefined,
   defaultModel = 'gemini-3.8-flash',

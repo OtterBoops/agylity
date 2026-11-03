@@ -208,12 +208,8 @@ export const readBody = async (
   });
 };
 
-/**
- * How readJsonBody treats an empty/whitespace-only body:
- *  - 'reject' (default): 400 { error: 'Request body cannot be empty' }
- *  - 'allow': accept the empty body and resolve to `emptyBodyValue` ({} by default)
- *  - 'malformed': no empty-body special case; the empty string is parsed and fails -> 400 malformed
- */
+// Empty-body policy: 'reject' (default) -> 400; 'allow' -> resolve to emptyBodyValue;
+// 'malformed' -> no special case, so the empty string fails JSON.parse and 400s as malformed.
 export type EmptyBodyPolicy = 'reject' | 'allow' | 'malformed';
 
 export interface ReadJsonBodyOptions {
@@ -233,11 +229,7 @@ const rejectMalformedJson = (res: http.ServerResponse): ReadJsonBodyResult => {
   return { ok: false };
 };
 
-/**
- * Reads and parses a JSON request body, writing the 400 response itself on failure.
- * Callers branch on `ok` and never re-implement the empty/malformed 400. A 413
- * (PayloadTooLargeError) is deliberately left to propagate to the route handler.
- */
+// Reads and parses a JSON request body, writing the 400 response itself on failure.
 export const readJsonBody = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,

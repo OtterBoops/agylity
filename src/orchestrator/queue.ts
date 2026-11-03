@@ -320,10 +320,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     this.migrateSchema();
   }
 
-  /**
-   * Additively upgrades an existing database to the current schema. Never drops or rewrites a
-   * column; it only ALTER TABLE ADD COLUMNs anything an older schema is missing.
-   */
+  // Additively upgrades an existing database to the current schema. Never drops or rewrites a
   private migrateSchema(): void {
     const versionRow = this.rawDb.prepare('PRAGMA user_version').get() as
       { user_version?: number } | undefined;
@@ -347,10 +344,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     }
   }
 
-  /**
-   * Generates a short-lived one-time registration token (GitHub Actions Runner style).
-   * The plaintext token is returned once and only its SHA-256 hash is persisted.
-   */
+  // One-time registration token: plaintext is returned once, only its SHA-256 hash is persisted.
   public createRegistrationToken(
     input: CreateRegistrationTokenInput = {}
   ): RunnerRegistrationTokenResult {
@@ -398,10 +392,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     };
   }
 
-  /**
-   * Deletes consumed or expired registration rows beyond the most-recent `keepCount` entries.
-   * Mirrors pruneOldTasks; consumed rows are removed, never un-consumed.
-   */
+  // Deletes consumed or expired registration rows beyond the most-recent `keepCount` entries.
   public pruneRegistrationTokens(keepCount = REGISTRATION_TOKEN_RETENTION): void {
     try {
       const now = new Date().toISOString();
@@ -422,10 +413,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     }
   }
 
-  /**
-   * Exchanges a valid, unexpired one-time registration token for a persistent runner identity
-   * and unique per-runner authentication token (`agyr_run_...`).
-   */
+  // Exchanges a valid, unexpired one-time registration token for a persistent runner identity
   public exchangeRegistrationToken(
     input: ExchangeRegistrationTokenInput,
     nowMs = Date.now()
@@ -530,10 +518,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     });
   }
 
-  /**
-   * Authenticates a runner request using its unique `agyr_run_...` token
-   * (or optional fallback `workerSharedSecret` for static/test setups).
-   */
+  // Authenticates a runner request using its unique `agyr_run_...` token
   public authenticateRunner(
     providedToken: string | undefined,
     fallbackSharedSecret?: string
@@ -583,10 +568,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return this.getWorker(workerId);
   }
 
-  /**
-   * Revokes a runner, deleting its record and credentials from `swarm_workers`.
-   * Any in-flight task claimed by this runner is returned to `'queued'` status.
-   */
+  // Revokes a runner, deleting its record and credentials from `swarm_workers`.
   public revokeWorker(workerId: string): boolean {
     return this.inTransaction(() => {
       const existing = this.getWorker(workerId);
@@ -723,11 +705,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return rows.map((r) => this.mapRowToTask(r));
   }
 
-  /**
-   * Atomically claims the next eligible queued task for a worker.
-   * Evaluates worker enabled state, required labels, repository match,
-   * expiration cutoff (pre-reset expiration), and live quota eligibility.
-   */
+  // Atomically claims the next eligible queued task for a worker.
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
       const existingWorker = this.getWorker(options.workerId);
@@ -988,9 +966,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
-  /**
-   * Fails tasks whose worker lease heartbeat has expired and marks stale workers offline.
-   */
+  // Fails tasks whose worker lease heartbeat has expired and marks stale workers offline.
   public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {
     const activeRows = this.rawDb
       .prepare("SELECT * FROM swarm_tasks WHERE status IN ('claimed', 'executing')")

@@ -117,8 +117,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
         const shortTermPct = shortTerm ? Math.round(shortTerm.remainingFraction * 100) : null;
         const shortTermHours = shortTerm ? shortTerm.hoursUntilReset : null;
 
-        // agylity core philosophy: Fully utilizing quota before reset is the GOAL!
-        // Evaluated on the effective quota budget min(weeklyPct, shortTermPct):
+        // Badges use the effective budget: min(weekly, shortTerm).
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
         let badgeClasses = 'bg-pine-iris/20 text-pine-iris border border-pine-iris';
         let barColor = 'bg-pine-iris';

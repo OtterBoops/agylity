@@ -172,9 +172,7 @@ export class DefaultLogger implements Logger {
   }
 }
 
-/**
- * Standard console sink writing to stdout / stderr via console methods.
- */
+// Standard console sink writing to stdout / stderr via console methods.
 export const createConsoleSink = (): LogSink => {
   return (record: LogRecord) => {
     switch (record.level) {
@@ -194,18 +192,14 @@ export const createConsoleSink = (): LogSink => {
   };
 };
 
-/**
- * Sink that forwards records directly to an in-memory LogBuffer.
- */
+// Sink that forwards records directly to an in-memory LogBuffer.
 export const createBufferSink = (buffer: LogBuffer): LogSink => {
   return (record: LogRecord) => {
     buffer.push(record.level, record.formatted);
   };
 };
 
-/**
- * In-memory sink recording log entries for assertions and tests.
- */
+// In-memory sink recording log entries for assertions and tests.
 export const createMemorySink = () => {
   const records: LogRecord[] = [];
   return {
@@ -221,9 +215,7 @@ export const createMemorySink = () => {
   };
 };
 
-/**
- * Factory for creating custom or scoped loggers.
- */
+// Factory for creating custom or scoped loggers.
 export const createLogger = (optionsOrNamespace?: LoggerOptions | string): Logger => {
   if (typeof optionsOrNamespace === 'string') {
     return new DefaultLogger({ namespace: optionsOrNamespace });
@@ -231,7 +223,5 @@ export const createLogger = (optionsOrNamespace?: LoggerOptions | string): Logge
   return new DefaultLogger(optionsOrNamespace);
 };
 
-/**
- * Root universal logger instance.
- */
+// Root universal logger instance.
 export const logger: Logger = createLogger();

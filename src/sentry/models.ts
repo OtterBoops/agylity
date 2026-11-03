@@ -138,10 +138,7 @@ export const GetUserStatusResponseSchema = z.object({
 
 export type GetUserStatusResponse = z.infer<typeof GetUserStatusResponseSchema>;
 
-/**
- * Derives whether paid overage is enabled from GetUserStatus planInfo.
- * Returns undefined (unknown) when the server supplies no usable signal.
- */
+// Derives whether paid overage is enabled from GetUserStatus planInfo.
 export const deriveOverageEnabled = (
   status: GetUserStatusResponse | null | undefined
 ): boolean | undefined => {
@@ -169,10 +166,6 @@ export interface QuotaClient {
 
 // Helpers & Aggregation
 
-/**
- * Calculates hours until reset from an ISO 8601 string.
- * Returns 0 if already reset or invalid date.
- */
 export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date.now()): number => {
   const resetEpoch = new Date(resetTime).getTime();
   if (Number.isNaN(resetEpoch)) return 0;
@@ -182,9 +175,7 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
 };
 
-/**
- * Formats time remaining in hours to human readable string (e.g. "23h 45m").
- */
+// Formats time remaining in hours to human readable string (e.g. "23h 45m").
 export const formatHoursHuman = (hours: number): string => {
   if (hours <= 0) return '0m';
   const totalMinutes = Math.round(hours * 60);
@@ -195,10 +186,7 @@ export const formatHoursHuman = (hours: number): string => {
   return `${h}h ${m}m`;
 };
 
-/**
- * Formats time remaining in hours to human-friendly calendar durations matching Antigravity native UI
- * (e.g. "4d 16h", "1d 3h", "6d 14h", "3h 18m").
- */
+// Formats time remaining in hours to human-friendly calendar durations matching Antigravity native UI
 export const formatResetTimeHuman = (hours: number): string => {
   if (hours <= 0) return '0m';
   if (hours >= 24) {
@@ -276,9 +264,6 @@ export const toSnapshot = (input: {
   buckets: input.buckets,
 });
 
-/**
- * Determines the canonical family for a model configuration.
- */
 export const resolveModelFamily = (config: {
   modelId?: string;
   label?: string;
@@ -313,9 +298,7 @@ export const resolveModelFamily = (config: {
   return null;
 };
 
-/**
- * Determines canonical family and defaults from a RetrieveUserQuotaSummary group name.
- */
+// Determines canonical family and defaults from a RetrieveUserQuotaSummary group name.
 export const resolveGroupFamily = (
   groupName: string
 ): {
@@ -348,10 +331,7 @@ export const resolveGroupFamily = (
   return null;
 };
 
-/**
- * Aggregates RetrieveUserQuotaSummary Connect-RPC response into canonical QuotaSnapshot pools.
- * Accurately tracks both the Weekly Limit (primary eval target) and 5-Hour rolling limits.
- */
+// Aggregates RetrieveUserQuotaSummary Connect-RPC response into canonical QuotaSnapshot pools.
 export const aggregateUserQuotaSummary = (
   summary: RetrieveUserQuotaSummaryResponse,
   nowMs: number = Date.now(),
@@ -431,13 +411,7 @@ export const aggregateUserQuotaSummary = (
   return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };
 
-/**
- * Aggregates raw language server model configs into canonical QuotaSnapshot pools.
- * Pools 13 raw models into 3 canonical family pools:
- * - claude: Claude 5.5 / 3.7 / 3.5 Sonnet, Opus, GPT-OSS
- * - gemini-argon: Gemini 4 Argon
- * - gemini-flash: Gemini 3.8 Flash
- */
+// Aggregates raw language server model configs into canonical QuotaSnapshot pools.
 export const aggregateQuotaPools = (
   configs: LanguageServerModelConfig[],
   nowMs: number = Date.now(),

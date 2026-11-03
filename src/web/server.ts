@@ -6,9 +6,6 @@ import { BUILTIN_DEFAULTS } from '../config/schema.js';
 
 export { type WebServerOptions };
 
-/**
- * Creates a native node:http server instance wired to Agylity REST route handlers.
- */
 export const createWebServer = (options: WebServerOptions): http.Server => {
   const server = http.createServer(async (req, res) => {
     try {
@@ -45,11 +42,6 @@ const isLoopbackHost = (host: string): boolean => {
   const h = host.trim().toLowerCase();
   return h === '127.0.0.1' || h === '::1' || h === 'localhost';
 };
-
-/**
- * Starts the native HTTP server listening on the configured host and port.
- * Handles port collisions (EADDRINUSE) cleanly by rejecting the returned promise.
- */
 
 export const startWebServer = async (
   options: WebServerOptions
@@ -107,9 +99,7 @@ export const startWebServer = async (
   });
 };
 
-/**
- * Performs graceful teardown of the web server, closing active connections and releasing the port.
- */
+// Performs graceful teardown of the web server, closing active connections and releasing the port.
 export const closeWebServer = async (server: http.Server): Promise<void> => {
   return new Promise((resolve, reject) => {
     const sockets = (server as any).__activeSockets as Set<net.Socket> | undefined;

@@ -2,11 +2,7 @@ import { APP_VERSION } from './version';
 
 const VERSION_STORAGE_KEY = 'agylity_client_version';
 
-/**
- * Ensures any registered service workers from previous builds or development
- * are immediately unregistered, and browser CacheStorage is purged whenever
- * a new version is detected or on boot.
- */
+// Ensures any registered service workers from previous builds or development
 export const invalidateClientCacheOnNewVersion = async (): Promise<void> => {
   if (typeof window === 'undefined') return;
 

@@ -7,10 +7,6 @@ import {
 } from 'discord.js';
 import { resolveConcreteModelId } from '../../orchestrator/models.js';
 
-/**
- * Creates repository StringSelectMenu component.
- * Optional poolFamily encodes the triggering quota alert family into customId (`repo_select:<family>`).
- */
 export const createRepoSelectMenu = (
   repositories: Array<{ id: string; name: string; path?: string; description?: string }>,
   poolFamily?: string
@@ -56,9 +52,6 @@ export interface CreateDispatchModalOptions {
   poolFamily?: string;
 }
 
-/**
- * Creates modal dialog for task prompt (and optional model/priority input).
- */
 export const createDispatchModal = (
   repoId: string,
   repoName: string,

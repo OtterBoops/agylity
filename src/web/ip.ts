@@ -1,9 +1,7 @@
 import net from 'node:net';
 import type http from 'node:http';
 
-/**
- * Normalizes IPv4-mapped IPv6 addresses (e.g. ::ffff:192.168.1.1 -> 192.168.1.1).
- */
+// Normalizes IPv4-mapped IPv6 addresses (e.g. ::ffff:192.168.1.1 -> 192.168.1.1).
 export const normalizeIp = (ip: string): string => {
   const trimmed = ip.trim();
   if (trimmed.startsWith('::ffff:')) {
@@ -12,9 +10,6 @@ export const normalizeIp = (ip: string): string => {
   return trimmed;
 };
 
-/**
- * Converts an IPv4 dotted-decimal string into a 32-bit unsigned number.
- */
 const ipv4ToBigInt = (ip: string): bigint | null => {
   const parts = ip.split('.');
   if (parts.length !== 4) return null;
@@ -27,9 +22,6 @@ const ipv4ToBigInt = (ip: string): bigint | null => {
   return res;
 };
 
-/**
- * Expands and converts an IPv6 string into a 128-bit unsigned BigInt.
- */
 const ipv6ToBigInt = (ip: string): bigint | null => {
   // Handle mixed IPv4-in-IPv6 if present
   const lastColon = ip.lastIndexOf(':');
@@ -84,9 +76,6 @@ export interface ParsedSubnet {
   mask: bigint;
 }
 
-/**
- * Parses an exact IP or CIDR block into a normalized Subnet representation.
- */
 export const parseSubnet = (entry: string): ParsedSubnet | null => {
   const clean = normalizeIp(entry.trim());
   if (!clean) return null;
@@ -123,9 +112,6 @@ export const parseSubnet = (entry: string): ParsedSubnet | null => {
   return null;
 };
 
-/**
- * Checks if a normalized client IP matches a single parsed Subnet.
- */
 export const isIpInSubnet = (clientIp: string, subnet: ParsedSubnet): boolean => {
   const norm = normalizeIp(clientIp);
   const family = net.isIP(norm);
@@ -142,10 +128,6 @@ export const isIpInSubnet = (clientIp: string, subnet: ParsedSubnet): boolean =>
   return false;
 };
 
-/**
- * Evaluates whether an incoming client IP is permitted.
- * Invariant: Off by default. Returns true if allowedRanges is empty or undefined.
- */
 export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean => {
   if (!allowedRanges || allowedRanges.length === 0) {
     return true; // Off by default: allow all
@@ -170,9 +152,6 @@ export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean
 /** Loopback only: a private-range peer is not a proxy, it is another host that can forge headers. */
 export const DEFAULT_TRUSTED_PROXY_RANGES = ['127.0.0.0/8', '::1/128'];
 
-/**
- * Checks if the immediate socket peer is a recognized trusted proxy / private network hop.
- */
 export const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[]): boolean => {
   const ranges =
     customProxyRanges && customProxyRanges.length > 0
@@ -181,11 +160,7 @@ export const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[])
   return isIpAllowed(peerIp, ranges);
 };
 
-/**
- * Extracts real client IP from incoming request, taking trusted proxy headers into account.
- * SECURITY INVARIANT: Proxy headers (CF-Connecting-IP, X-Real-IP, X-Forwarded-For) are STRICTLY
- * ignored unless the direct TCP peer socket is a trusted proxy or loopback.
- */
+// SECURITY: proxy headers are ignored unless the direct peer socket is a trusted proxy or loopback.
 export const extractClientIp = (
   req: http.IncomingMessage,
   trustedProxies: boolean = false,

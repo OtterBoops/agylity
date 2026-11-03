@@ -48,25 +48,15 @@ export class SentryStateManager {
     this.state = createInitialState();
   }
 
-  /**
-   * Returns current in-memory state.
-   */
   getState(): SentryState {
     return JSON.parse(JSON.stringify(this.state));
   }
 
-  /**
-   * Sets in-memory state directly (useful for tests).
-   */
   setState(newState: SentryState): void {
     this.state = JSON.parse(JSON.stringify(newState));
   }
 
-  /**
-   * Safely loads state from disk.
-   * If the file does not exist, initializes a fresh state.
-   * If the file is corrupt, renames it to quarantine and initializes a fresh state.
-   */
+  // Loads state from disk; a corrupt file is quarantined rather than trusted.
   async load(): Promise<SentryState> {
     try {
       const raw = await fs.readFile(this.stateFilePath, 'utf-8');
@@ -94,9 +84,7 @@ export class SentryStateManager {
     }
   }
 
-  /**
-   * Atomically saves state to disk using a unique temporary file and fs.rename.
-   */
+  // Atomically saves state to disk using a unique temporary file and fs.rename.
   async save(): Promise<void> {
     const dir = path.dirname(this.stateFilePath);
     await fs.mkdir(dir, { recursive: true });
@@ -129,9 +117,6 @@ export class SentryStateManager {
     }
   }
 
-  /**
-   * Updates last probe metadata.
-   */
   updateProbe(
     source: 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required',
     at: string = new Date().toISOString(),
@@ -150,11 +135,6 @@ export class SentryStateManager {
     }
   }
 
-  /**
-   * Updates pool quota info.
-   * Detects cycle rollover when resetTime advances or changes.
-   * Returns true if a rollover occurred.
-   */
   updatePoolQuota(poolId: string, remainingFraction: number, resetTime: string): boolean {
     const existing = this.state.pools[poolId];
     if (!existing) {
@@ -180,9 +160,6 @@ export class SentryStateManager {
     return false;
   }
 
-  /**
-   * Returns whether a milestone has already been fired for the specified pool.
-   */
   isMilestoneFired(poolId: string, milestone: number | string): boolean {
     const pool = this.state.pools[poolId];
     if (!pool) return false;
@@ -191,9 +168,6 @@ export class SentryStateManager {
     return pool.firedMilestones.includes(key) || pool.firedMilestones.includes(rawKey);
   }
 
-  /**
-   * Records that a milestone has fired for a pool.
-   */
   recordMilestoneFired(
     poolId: string,
     milestone: number | string,
@@ -217,9 +191,6 @@ export class SentryStateManager {
     pool.lastAlertSentAt = alertTime;
   }
 
-  /**
-   * Records superseded milestones that should not fire later.
-   */
   recordSupersededMilestones(poolId: string, milestones: (number | string)[]): void {
     const pool = this.state.pools[poolId];
     if (!pool) return;
@@ -231,17 +202,11 @@ export class SentryStateManager {
     }
   }
 
-  /**
-   * Records a full QuotaAlert and persists state atomically.
-   */
   async recordAlert(alert: QuotaAlert): Promise<void> {
     this.recordMilestoneFired(alert.pool.poolId, alert.milestoneHours, alert.triggeredAt);
     await this.save();
   }
 
-  /**
-   * Retrieves the current state of a specific pool.
-   */
   getPoolState(poolId: string): PoolState | undefined {
     return this.state.pools[poolId];
   }

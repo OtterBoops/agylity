@@ -65,10 +65,7 @@ export const CliModelsResponseSchema = z.object({
 
 export type CliModelsResponse = z.infer<typeof CliModelsResponseSchema>;
 
-/**
- * Extracts a JSON object from CLI stdout, handling leading status banners
- * such as "Fetching available models...\n{\n...".
- */
+// Extracts a JSON object from CLI stdout, handling leading status banners
 export const extractCliJsonPayload = (stdout: string): unknown => {
   const trimmed = stdout.trim();
   try {
@@ -213,11 +210,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.execFileFn = options.execFileFn ?? (defaultExecFileAsync as any);
   }
 
-  /**
-   * Fetches rolling model quota snapshots from the Antigravity Language Server.
-   * Enforces minimum refresh interval cooldown when configured to prevent API rate limiting.
-   * Connect-RPC -> Dual-port fallback -> CLI fallback.
-   */
+  // Fetches rolling model quota snapshots from the Antigravity Language Server.
   async fetchQuota(force = false): Promise<QuotaSnapshot[]> {
     if (force) {
       this.authBlockedUntil = 0;
@@ -469,20 +462,13 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     );
   }
 
-  /**
-   * Returns cached AI credits immediately without blocking quota queries.
-   * Kicks off asynchronous background refresh if cache is stale or missing.
-   */
+  // Returns cached AI credits immediately without blocking quota queries.
   public async getRemainingCredits(force = false): Promise<number | null> {
     void this.triggerCreditsRefreshInBackground(force);
     return this.cachedRemainingCredits;
   }
 
-  /**
-   * Asynchronously probes /credits in the background without blocking callers.
-   * On Windows locally, routes through hidden PowerShell to prevent terminal popups.
-   * In container / Linux, executes directly.
-   */
+  // Background /credits probe; callers read the cached value.
   public async triggerCreditsRefreshInBackground(force = false): Promise<number | null> {
     const now = Date.now();
     if (!force && now < this.authBlockedUntil) {
@@ -535,12 +521,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return this.cachedRemainingCredits;
   }
 
-  /**
-   * Tries to query Language Server Connect-RPC endpoint across configured ports.
-   * Priority:
-   * 1. RetrieveUserQuotaSummary (provides full dual quota breakdown: weekly & 5-hour limits)
-   * 2. GetCascadeModelConfigData (fallback for legacy/mocked environments)
-   */
+  // Tries to query Language Server Connect-RPC endpoint across configured ports.
   private async tryConnectRpc(): Promise<QuotaSnapshot[]> {
     const targetBases: string[] = [];
 
@@ -648,10 +629,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     throw lastError || new LanguageServerError('Failed to connect to Language Server RPC');
   }
 
-  /**
-   * Probes GetUserStatus for the plan signal that drives overage detection.
-   * Returns undefined when no signal is obtained so "unknown" is distinct from false.
-   */
+  // Returns undefined (not false) when no signal, so "unknown" stays distinct from "disabled".
   private async probeOverageEnabled(
     kyInstance: typeof ky,
     base: string
@@ -683,9 +661,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return undefined;
   }
 
-  /**
-   * Executes agy CLI models subcommand as fallback.
-   */
+  // Executes agy CLI models subcommand as fallback.
   async fallbackToCli(): Promise<QuotaSnapshot[]> {
     this.lastFallbackSynthetic = false;
 

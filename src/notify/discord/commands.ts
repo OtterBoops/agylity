@@ -3,9 +3,7 @@ import { z } from 'zod';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
-/**
- * Task prompt validation schema enforcing 1-4000 character boundaries.
- */
+// Task prompt validation schema enforcing 1-4000 character boundaries.
 export const TaskPromptSchema = z
   .string()
   .trim()

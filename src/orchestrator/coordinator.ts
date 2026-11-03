@@ -173,11 +173,7 @@ export class OrchestratorCoordinator {
     });
   }
 
-  /**
-   * Main entrypoint for Web UI, REST API, and Discord task dispatches.
-   * Pure Runner Architecture: Enqueues tasks into the persistent SQLite swarm queue
-   * and wakes registered outbound runners (`agylity-worker` containers or host CLI runners).
-   */
+  // Main entrypoint for Web UI, REST API, and Discord task dispatches.
   public async dispatch(req: DispatchTaskRequest): Promise<DispatchTaskResponse> {
     const resolved = this.configStore.resolveConfig();
     const repositoryName = req.repositoryName.trim();
@@ -372,9 +368,7 @@ export class OrchestratorCoordinator {
     });
   }
 
-  /**
-   * Generates a short-lived one-time runner registration token (`agyr_reg_...`).
-   */
+  // Generates a short-lived one-time runner registration token (`agyr_reg_...`).
   public createRegistrationToken(
     input: CreateRegistrationTokenInput = {}
   ): RunnerRegistrationTokenResult {
@@ -387,9 +381,7 @@ export class OrchestratorCoordinator {
     return res;
   }
 
-  /**
-   * Exchanges a one-time registration token for a persistent runner identity and `agyr_run_...` token.
-   */
+  // Exchanges a one-time registration token for a persistent runner identity and `agyr_run_...` token.
   public registerRunner(input: ExchangeRegistrationTokenInput): {
     worker: SwarmWorkerRecord;
     runnerToken: string;
@@ -406,10 +398,7 @@ export class OrchestratorCoordinator {
     return result;
   }
 
-  /**
-   * Authenticates an incoming runner request via its persistent `agyr_run_...` token
-   * or fallback `workerSharedSecret`.
-   */
+  // Authenticates an incoming runner request via its persistent `agyr_run_...` token
   public authenticateRunner(providedToken?: string): {
     authenticated: boolean;
     worker?: SwarmWorkerRecord;
@@ -424,9 +413,7 @@ export class OrchestratorCoordinator {
     };
   }
 
-  /**
-   * Long-poll claim handler for outbound runners (`POST /api/tasks/poll`).
-   */
+  // Long-poll claim handler for outbound runners (`POST /api/tasks/poll`).
   public async pollForTask(
     pollReq: WorkerPollRequest,
     abortSignal?: AbortSignal
@@ -500,9 +487,6 @@ export class OrchestratorCoordinator {
     });
   }
 
-  /**
-   * Updates task status from a remote runner and relays notifications.
-   */
   public async reportTaskStatus(
     taskId: string,
     patch: TaskStatusPatch & { message?: string }

@@ -7,10 +7,7 @@ import { TaskPromptSchema } from './commands.js';
 import { renderQuotaEmbed } from './embeds.js';
 import { createRepoSelectMenu, createDispatchModal } from './components.js';
 
-/**
- * Live context handed to the interaction handlers: the notifier's config, callbacks and shared
- * bookkeeping maps. The retention caps are getters so the handlers always observe current values.
- */
+// Live context handed to the interaction handlers: the notifier's config, callbacks and shared
 export interface DiscordInteractionDeps {
   config: ResolvedConfig;
   options: DiscordNotifierOptions;
@@ -21,10 +18,7 @@ export interface DiscordInteractionDeps {
   verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string };
 }
 
-/**
- * Retains a dispatched interaction for status relaying: evicts the oldest entry past the cap and
- * schedules a bounded fallback release so a task that never reports a terminal status cannot hold it.
- */
+// Retains a dispatched interaction for status relaying: evicts the oldest entry past the cap and
 const retainInteraction = (deps: DiscordInteractionDeps, key: string, interaction: any): void => {
   deps.activeInteractions.set(key, interaction);
   while (deps.activeInteractions.size > deps.maxActiveInteractions) {
@@ -35,9 +29,7 @@ const retainInteraction = (deps: DiscordInteractionDeps, key: string, interactio
   setTimeout(() => deps.activeInteractions.delete(key), deps.interactionRetentionMs).unref?.();
 };
 
-/**
- * Main interaction dispatcher handling commands, selects, and modals.
- */
+// Main interaction dispatcher handling commands, selects, and modals.
 export const routeInteraction = async (
   deps: DiscordInteractionDeps,
   interaction: any

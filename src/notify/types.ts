@@ -123,10 +123,7 @@ export interface DeliveryChannelResult {
   error?: string;
 }
 
-/**
- * Aggregate outcome of a notifyQuotaAlert call.
- * `delivered` is true when at least one channel delivered, or when no channels are configured.
- */
+// Outcome of notifyQuotaAlert; `delivered` is true if any channel succeeded, or if none are configured.
 export interface DeliveryOutcome {
   delivered: boolean;
   results: Record<string, DeliveryChannelResult>;
