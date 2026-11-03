@@ -34,11 +34,15 @@ export class QuotaEvaluator {
 
   public updateConfig(options: QuotaEvaluatorOptions): void {
     if (options.milestoneHours !== undefined) {
-      this.milestoneHours = Array.from(
+      const next = Array.from(
         new Set(
           options.milestoneHours.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0)
         )
       ).sort((a, b) => b - a);
+      // An empty list would disable every milestone alert, so keep the current one.
+      if (next.length > 0) {
+        this.milestoneHours = next;
+      }
     }
     if (
       typeof options.alertThresholdPercent === 'number' &&

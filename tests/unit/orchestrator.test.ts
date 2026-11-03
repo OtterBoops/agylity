@@ -1122,6 +1122,10 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         alertThresholdPercent: 40,
       });
       assert.deepEqual(evaluator.milestoneHours, [48, 6, 1]);
+
+      // An empty list would disable every milestone alert, so it is ignored.
+      evaluator.updateConfig({ milestoneHours: [] });
+      assert.deepEqual(evaluator.milestoneHours, [48, 6, 1]);
       assert.equal(evaluator.alertThresholdPercent, 40);
     });
 

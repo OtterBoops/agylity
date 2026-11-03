@@ -107,6 +107,12 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public get<T = unknown>(key: string): T | undefined {
     const normKey = normalizeKey(key) as keyof AppConfig;
 
+    // resolveConfig() derives this one from notificationChannels, so reading it raw would
+    // disagree with the resolved config whenever only the plural form is set.
+    if (normKey === 'notificationChannel') {
+      return this.resolveConfig().notificationChannel as unknown as T;
+    }
+
     // Level 1: SQLite
     const sqliteVal =
       this.database.get(normKey as string) ??

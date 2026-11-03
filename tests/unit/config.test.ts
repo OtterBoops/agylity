@@ -346,3 +346,17 @@ describe('parseRawEnv malformed-value resilience', () => {
     }
   });
 });
+
+describe('ConfigStore accessor agreement', () => {
+  it('get() and resolveConfig() agree on notificationChannel when only the plural form is set', () => {
+    const store = new ConfigStore(':memory:', {});
+    store.setOverride('notificationChannels', ['console']);
+
+    const resolved = store.resolveConfig();
+    assert.equal(resolved.notificationChannel, 'console');
+    // Reading the singular key raw would return the built-in 'none' instead.
+    assert.equal(store.get('notificationChannel'), 'console');
+
+    store.close();
+  });
+});
