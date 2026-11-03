@@ -180,6 +180,7 @@ export const RawEnvSchema = z.object({
 
   /* Optional Web UI */
   WEB_UI_ENABLED: z.string().optional(),
+  ALLOW_OVERAGE: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
   WEB_UI_AUTH_TOKEN: z.string().optional(),
@@ -226,6 +227,8 @@ export interface AppConfig {
   quotaBurnMinHeadroomPercent: number;
 
   webUiEnabled: boolean;
+  /** Whether usage past 0% quota may draw billable credits; the language server does not report this. */
+  allowOverage: boolean;
   webUiPort: number;
   webUiHost: string;
   webUiAuthToken?: string;
@@ -265,6 +268,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   quotaBurnMaxHours: 'QUOTA_BURN_MAX_HOURS',
   quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
   webUiEnabled: 'WEB_UI_ENABLED',
+  allowOverage: 'ALLOW_OVERAGE',
   webUiPort: 'WEB_UI_PORT',
   webUiHost: 'WEB_UI_HOST',
   webUiAuthToken: 'WEB_UI_AUTH_TOKEN',
@@ -342,6 +346,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   quotaBurnMinHeadroomPercent: 30,
 
   webUiEnabled: false,
+  allowOverage: false,
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
   webUiAuthToken: undefined,
@@ -463,6 +468,10 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     }
   }
 
+  if (parsed.ALLOW_OVERAGE !== undefined && parsed.ALLOW_OVERAGE.trim() !== '') {
+    result.allowOverage = booleanEnv.parse(parsed.ALLOW_OVERAGE);
+  }
+
   if (parsed.ORCHESTRATOR_ENABLED !== undefined && parsed.ORCHESTRATOR_ENABLED.trim() !== '') {
     try {
       result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
@@ -543,6 +552,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
   webUiEnabled: z.boolean(),
+  allowOverage: z.boolean(),
   webUiPort: z.number().int().positive(),
   webUiHost: z.string(),
   webUiAuthToken: z.string().optional(),

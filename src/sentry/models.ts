@@ -472,10 +472,7 @@ export const aggregateQuotaPools = (
     }
   }
 
-  const { remainingCredits, overageEnabled } = resolveCredits(
-    extraCredits,
-    process.env.ALLOW_OVERAGE === 'true' || process.env.ALLOW_OVERAGE === '1'
-  );
+  const { remainingCredits, overageEnabled } = resolveCredits(extraCredits, false);
 
   const result: QuotaSnapshot[] = [];
   for (const entry of poolMap.values()) {

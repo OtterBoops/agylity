@@ -161,6 +161,7 @@ export class AgylityDaemon {
         cachedSnapshotProvider: () => {
           return snapshotsFromSentryState(sentryState.getState());
         },
+        overageEnabledProvider: () => configStore.resolveConfig().allowOverage,
       });
 
     const orchestrator =

@@ -3,6 +3,7 @@ import { faSliders } from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData } from '../types';
 import { updateConfig } from '../api';
 import { Icon } from './Icon';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface PoolPoliciesCardProps {
   config: ConfigData;
@@ -110,55 +111,30 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
                 {/* Alerts Toggle */}
                 <div class="flex items-center gap-2.5">
                   <span class="text-xs font-medium text-pine-subtle">Alerts</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={policy.alertsEnabled}
+                  <ToggleSwitch
+                    size="sm"
+                    checked={policy.alertsEnabled}
                     disabled={isAlertsLoading}
-                    onClick={() => handleToggle(pool.key, 'alertsEnabled')}
-                    class={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 ${
-                      policy.alertsEnabled
-                        ? 'bg-pine-iris'
-                        : 'border-pine-highlight bg-pine-overlay'
-                    }`}
-                    title={policy.alertsEnabled ? 'Disable pool alerts' : 'Enable pool alerts'}
-                  >
-                    <span
-                      aria-hidden="true"
-                      class={`pointer-events-none inline-block size-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                        policy.alertsEnabled ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
+                    onChange={() => handleToggle(pool.key, 'alertsEnabled')}
+                    label={policy.alertsEnabled ? 'Disable pool alerts' : 'Enable pool alerts'}
+                  />
                 </div>
 
                 {/* Dispatch Toggle */}
                 <div class="flex items-center gap-2.5">
                   <span class="text-xs font-medium text-pine-subtle">Swarm Dispatch</span>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={policy.dispatchEnabled}
+                  <ToggleSwitch
+                    size="sm"
+                    activeClass="bg-pine-pine"
+                    checked={policy.dispatchEnabled}
                     disabled={isDispatchLoading}
-                    onClick={() => handleToggle(pool.key, 'dispatchEnabled')}
-                    class={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 ${
-                      policy.dispatchEnabled
-                        ? 'bg-pine-pine'
-                        : 'border-pine-highlight bg-pine-overlay'
-                    }`}
-                    title={
+                    onChange={() => handleToggle(pool.key, 'dispatchEnabled')}
+                    label={
                       policy.dispatchEnabled
                         ? 'Disable swarm dispatches'
                         : 'Enable swarm dispatches'
                     }
-                  >
-                    <span
-                      aria-hidden="true"
-                      class={`pointer-events-none inline-block size-4 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                        policy.dispatchEnabled ? 'translate-x-4' : 'translate-x-0'
-                      }`}
-                    />
-                  </button>
+                  />
                 </div>
               </div>
             </div>

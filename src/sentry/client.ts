@@ -89,6 +89,7 @@ export interface ConnectRpcQuotaClientOptions {
   enableCliFallback?: boolean;
   enableProcessDiscovery?: boolean;
   cachedSnapshotProvider?: () => QuotaSnapshot[];
+  overageEnabledProvider?: () => boolean;
   minRefreshIntervalMs?: number;
   logger?: Logger;
   fetchFn?: typeof fetch;
@@ -162,6 +163,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private enableProcessDiscovery: boolean;
   private isCreditsProbing: boolean = false;
   private cachedSnapshotProvider?: () => QuotaSnapshot[];
+  private overageEnabledProvider?: () => boolean;
   private lastKnownSnapshots: QuotaSnapshot[] = [];
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
@@ -199,6 +201,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.enableCliFallback = options.enableCliFallback ?? true;
     this.enableProcessDiscovery = options.enableProcessDiscovery ?? true;
     this.cachedSnapshotProvider = options.cachedSnapshotProvider;
+    this.overageEnabledProvider = options.overageEnabledProvider;
     this.minRefreshIntervalMs =
       options.minRefreshIntervalMs ??
       (process.env.QUOTA_MIN_REFRESH_INTERVAL_MS
@@ -608,6 +611,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         const remainingCredits = await this.getRemainingCredits();
         const snapshots = aggregateQuotaPools(parsed.clientModelConfigs, Date.now(), {
           remainingCredits,
+          overageEnabled: this.overageEnabledProvider?.(),
         });
         const summary = snapshots
           .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)

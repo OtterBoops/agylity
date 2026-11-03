@@ -118,6 +118,12 @@ export const SENTRY_FIELDS: FieldDef[] = [
     hint: 'Block dispatches when quota <= this floor to prevent paid overages (default: 10). Set to 0 if overages do not apply.',
   },
   {
+    key: 'allowOverage',
+    label: 'Allow billable overage',
+    type: 'boolean',
+    hint: 'Whether usage past 0% quota may draw purchased credits. The language server does not report this, so set it to match your account.',
+  },
+  {
     key: 'quotaAlertThresholdPercent',
     label: 'Alert quota threshold (%)',
     type: 'number',

@@ -2,11 +2,12 @@ import { useState } from 'preact/hooks';
 import { normalizeModelId } from '../config/fields';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig, deleteConfigOverride } from '../api';
+import { ToggleSwitch } from './ToggleSwitch';
 
 export interface FieldDef {
   key: string;
   label: string;
-  type: 'text' | 'number' | 'list' | 'select' | 'password';
+  type: 'text' | 'number' | 'list' | 'select' | 'password' | 'boolean';
   hint?: string;
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;
@@ -39,6 +40,9 @@ const parseValue = (field: FieldDef, raw: string): unknown => {
       .filter(Boolean);
   }
   if (field.type === 'select' && (raw === 'true' || raw === 'false')) {
+    return raw === 'true';
+  }
+  if (field.type === 'boolean') {
     return raw === 'true';
   }
   return raw;
@@ -207,7 +211,13 @@ export const SettingsForm = ({
                   </span>
                 )}
               </label>
-              {f.type === 'select' ? (
+              {f.type === 'boolean' ? (
+                <ToggleSwitch
+                  checked={valueOf(f) === 'true'}
+                  onChange={(next) => setDraft({ ...draft, [f.key]: String(next) })}
+                  label={f.label}
+                />
+              ) : f.type === 'select' ? (
                 <select
                   id={`f-${f.key}`}
                   name={`agylity_cfg_${f.key}`}

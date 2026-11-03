@@ -1,6 +1,7 @@
 import { faArrowUpRightFromSquare } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import { Icon } from './Icon';
+import { ToggleSwitch } from './ToggleSwitch';
 import { DiscordEmbedSimulator } from './DiscordEmbedSimulator';
 
 interface DiscordChannelFormProps {
@@ -256,27 +257,15 @@ export const DiscordChannelForm = ({
                 ) in the notification message so Discord triggers an active push and sound alert
               </span>
             </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={pingOwner}
-              onClick={() => onPingOwnerChange(!pingOwner)}
-              class={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-                pingOwner ? 'bg-pine-iris' : 'border-pine-highlight bg-pine-overlay'
-              }`}
-              title={
+            <ToggleSwitch
+              checked={pingOwner}
+              onChange={onPingOwnerChange}
+              label={
                 pingOwner
                   ? 'Disable owner mention in Discord notifications'
                   : 'Enable owner mention in Discord notifications'
               }
-            >
-              <span
-                aria-hidden="true"
-                class={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                  pingOwner ? 'translate-x-5' : 'translate-x-0'
-                }`}
-              />
-            </button>
+            />
           </div>
         </div>
       </div>

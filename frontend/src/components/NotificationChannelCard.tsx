@@ -5,6 +5,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import type { ComponentChildren } from 'preact';
 import { Icon } from './Icon';
+import { ToggleSwitch } from './ToggleSwitch';
 
 export type ChannelId = 'discord' | 'webhook' | 'console';
 
@@ -81,23 +82,11 @@ export const NotificationChannelCard = ({
 
         {/* Right-aligned Toggle Switch */}
         <div class="flex shrink-0 items-center gap-3">
-          <button
-            type="button"
-            role="switch"
-            aria-checked={isEnabled}
-            onClick={onToggleChannel}
-            class={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
-              isEnabled ? 'bg-pine-iris' : 'border-pine-highlight bg-pine-overlay'
-            }`}
-            title={isEnabled ? `Disable ${channel.label}` : `Enable ${channel.label}`}
-          >
-            <span
-              aria-hidden="true"
-              class={`pointer-events-none inline-block size-5 transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
-                isEnabled ? 'translate-x-5' : 'translate-x-0'
-              }`}
-            />
-          </button>
+          <ToggleSwitch
+            checked={isEnabled}
+            onChange={onToggleChannel}
+            label={isEnabled ? `Disable ${channel.label}` : `Enable ${channel.label}`}
+          />
         </div>
       </div>
 
