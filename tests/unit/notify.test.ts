@@ -963,6 +963,41 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       }
     });
 
+    it('reports an unconfigured webhook as undelivered instead of a false success', async () => {
+      const saved = {
+        url: process.env.NOTIFICATION_WEBHOOK_URL,
+        legacy: process.env.WEBHOOK_URL,
+      };
+      delete process.env.NOTIFICATION_WEBHOOK_URL;
+      delete process.env.WEBHOOK_URL;
+
+      try {
+        const notifier = new WebhookNotifier({});
+        await notifier.initialize();
+
+        const outcome = await notifier.notifyQuotaAlert({
+          pool: {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude',
+            remainingFraction: 0.2,
+            resetTime: '2026-10-20T12:00:00Z',
+            hoursUntilReset: 3,
+            models: ['Claude'],
+          },
+          milestoneHours: 3,
+          remainingPercentage: 20,
+          triggeredAt: '2026-10-19T13:15:00.000Z',
+        });
+
+        assert.equal(outcome.delivered, false, 'a missing webhook URL is not a delivery');
+        await notifier.shutdown();
+      } finally {
+        if (saved.url !== undefined) process.env.NOTIFICATION_WEBHOOK_URL = saved.url;
+        if (saved.legacy !== undefined) process.env.WEBHOOK_URL = saved.legacy;
+      }
+    });
+
     it('testNotification masks sensitive webhook URL secrets and parameters in returned messages', async () => {
       const server = http.createServer((_req, res) => {
         res.writeHead(200, { 'Content-Type': 'application/json' });

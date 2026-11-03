@@ -10,7 +10,7 @@ import type {
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
-import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
+import { FAMILY_DEFAULT_MODELS, FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
@@ -273,7 +273,7 @@ export class WebhookNotifier implements Notifier {
     }
 
     const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
-    const modelsList = ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
+    const modelsList = FAMILY_DEFAULT_MODELS.claude;
     const textMsg =
       '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
     const embed = buildTestAlertEmbed(undefined, {
@@ -345,7 +345,8 @@ export class WebhookNotifier implements Notifier {
 
   public async postWebhook(payload: WebhookPayload): Promise<{ status: number }> {
     const url = this.getWebhookUrl();
-    if (!url) return { status: 0 };
+    // Callers treat a resolved postWebhook as delivered, so a missing URL must throw.
+    if (!url) throw new Error('No webhook URL is configured for this channel');
 
     const outgoingPayload: any = { ...payload };
     const isOwnerAlertEvent =

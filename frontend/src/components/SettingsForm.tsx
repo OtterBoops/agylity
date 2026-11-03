@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { normalizeModelId } from '../config/fields';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig, deleteConfigOverride } from '../api';
 
@@ -43,16 +44,8 @@ const parseValue = (field: FieldDef, raw: string): unknown => {
   return raw;
 };
 
-const normalizeValueForField = (field: FieldDef, rawValue: string): string => {
-  if (field.key === 'defaultDispatchModel' && rawValue) {
-    if (rawValue.startsWith('gemini-4-argon')) return 'gemini-4-argon';
-    if (rawValue.startsWith('gemini-3.8-flash')) return 'gemini-3.8-flash';
-    if (rawValue.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
-    if (rawValue.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
-    if (rawValue.startsWith('gpt-oss-120b')) return 'gpt-oss-120b';
-  }
-  return rawValue;
-};
+const normalizeValueForField = (field: FieldDef, rawValue: string): string =>
+  field.key === 'defaultDispatchModel' ? normalizeModelId(rawValue) : rawValue;
 
 export const SettingsForm = ({
   title,

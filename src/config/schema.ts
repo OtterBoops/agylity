@@ -295,6 +295,7 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'antigravityCsrfToken',
   'notificationWebhookUrl',
   'webhookSecret',
+  'webhookCustomHeaders',
   'workerSharedSecret',
   'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];

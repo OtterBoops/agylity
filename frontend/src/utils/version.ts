@@ -1,6 +1,6 @@
-declare const __APP_VERSION__: string | undefined;
+declare const __APP_VERSION__: string;
 
-export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.3.2';
+export const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour

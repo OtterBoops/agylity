@@ -2,7 +2,7 @@ import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
 import { getModels, triggerDispatch } from '../api';
-import { resolveModelEffort } from '../config/fields';
+import { normalizeModelId, resolveModelEffort } from '../config/fields';
 import { Icon } from './Icon';
 import {
   DispatchFormFields,
@@ -40,23 +40,16 @@ export const loadModelCatalog = async (): Promise<ModelCatalogEntry[]> => {
   return modelsFetchPromise;
 };
 
-const normalizeBaseModel = (raw?: string): string => {
-  if (!raw) return 'gemini-3.8-flash';
-  if (raw.startsWith('gemini-3.8-flash')) return 'gemini-3.8-flash';
-  if (raw.startsWith('gemini-4-argon')) return 'gemini-4-argon';
-  if (raw.startsWith('claude-sonnet-5-5')) return 'claude-sonnet-5-5';
-  if (raw.startsWith('claude-opus-5-5')) return 'claude-opus-5-5';
-  if (raw.startsWith('gpt-oss-120b')) return 'gpt-oss-120b';
-  return raw;
-};
-
 const EMPTY_REPOS: RepoItem[] = [];
 
 export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
   const repos: RepoItem[] = (config.resolved?.repositories as unknown as RepoItem[]) || EMPTY_REPOS;
   const defaultRepo = repos.length === 1 ? repos[0]!.name : '';
 
-  const configuredDefaultModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
+  const configuredDefaultModel = normalizeModelId(
+    config.resolved?.defaultDispatchModel,
+    cachedCatalogModels
+  );
   // No catalog yet at this point in render; the effect below re-derives once it loads.
   const defaultEfforts = resolveModelEffort([], configuredDefaultModel);
   const rawEffort = config.resolved?.defaultDispatchEffort as any;
@@ -95,7 +88,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
 
   useEffect(() => {
     if (isOpen) return;
-    const nextModel = normalizeBaseModel(config.resolved?.defaultDispatchModel);
+    const nextModel = normalizeModelId(config.resolved?.defaultDispatchModel, cachedCatalogModels);
     setSelectedModel(nextModel);
     const { supported, defaultEffort } = resolveModelEffort(catalogModels, nextModel);
     const raw = config.resolved?.defaultDispatchEffort as any;

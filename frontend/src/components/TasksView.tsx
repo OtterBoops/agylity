@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { taskStatusBadgeClass } from '../utils/status';
 import { faCheck, faCopy, faPlus } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../types';
-import { getTasks } from '../api';
+import { cancelTask, getTasks, retryTask } from '../api';
 import { Icon } from './Icon';
 
 interface TasksViewProps {
@@ -62,7 +63,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const handleCancelTask = async (taskId: string) => {
     setActionLoading(true);
     try {
-      await fetch(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST' });
+      await cancelTask(taskId);
       loadTasks();
       onRefresh?.();
       setSelectedTask(null);
@@ -75,7 +76,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const handleRetryTask = async (taskId: string) => {
     setActionLoading(true);
     try {
-      await fetch(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: 'POST' });
+      await retryTask(taskId);
       loadTasks();
       onRefresh?.();
       setSelectedTask(null);
@@ -162,15 +163,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 >
                   <td class="p-3.5 2xl:p-4.5">
                     <span
-                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
-                        t.status === 'completed'
-                          ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
-                          : t.status === 'failed' || t.status === 'aborted'
-                            ? 'border-pine-love/40 bg-pine-love/15 text-pine-love'
-                            : t.status === 'executing'
-                              ? 'animate-pulse border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
-                              : 'border-pine-highlight bg-pine-overlay/60 text-pine-subtle'
-                      }`}
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(t.status)}`}
                     >
                       {t.status}
                     </span>
@@ -254,15 +247,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               <div class="flex items-center gap-2">
                 <h3 class="text-base font-bold text-pine-text">Task {selectedTask.id}</h3>
                 <span
-                  class={`rounded-sm px-2 py-0.5 text-[10px] font-bold uppercase ${
-                    selectedTask.status === 'completed'
-                      ? 'border border-pine-pine bg-pine-pine/20 text-pine-foam'
-                      : selectedTask.status === 'failed' || selectedTask.status === 'aborted'
-                        ? 'border border-pine-love bg-pine-love/20 text-pine-love'
-                        : selectedTask.status === 'executing'
-                          ? 'border border-pine-gold bg-pine-gold/20 text-pine-gold'
-                          : 'border border-pine-highlight bg-pine-overlay text-pine-subtle'
-                  }`}
+                  class={`rounded-sm border px-2 py-0.5 text-[10px] font-bold uppercase ${taskStatusBadgeClass(selectedTask.status)}`}
                 >
                   {selectedTask.status}
                 </span>

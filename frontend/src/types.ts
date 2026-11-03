@@ -134,6 +134,9 @@ export interface RunnerRegistrationTokenResult {
   createdAt: string;
 }
 
+export type TaskStatus =
+  'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
+
 export interface SwarmTask {
   id: string;
   createdAt: string;
@@ -149,7 +152,7 @@ export interface SwarmTask {
   requiredLabels: string[];
   model: string;
   effort: 'low' | 'medium' | 'high';
-  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
+  status: TaskStatus;
   workerId?: string;
   claimedByWorkerId?: string;
   branchName?: string;

@@ -17,6 +17,19 @@ export const EFFORT_OPTIONS: Array<{
   { value: 'high', label: 'High' },
 ];
 
+const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
+
+/** Collapses a configured model string (e.g. 'gemini-3.8-flash-high') to a catalog id. */
+export const normalizeModelId = (
+  raw: string | undefined,
+  models: Array<{ id: string }> = [],
+  fallback = 'gemini-3.8-flash'
+): string => {
+  if (!raw) return fallback;
+  const pool = models.length > 0 ? models : FALLBACK_CATALOG;
+  return pool.find((m) => raw === m.id || raw.startsWith(m.id))?.id ?? raw;
+};
+
 type Effort = 'low' | 'medium' | 'high';
 
 const ALL_EFFORTS: Effort[] = ['low', 'medium', 'high'];

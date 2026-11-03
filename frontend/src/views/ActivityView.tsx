@@ -4,6 +4,11 @@ import type { DispatchRecord, SentryAlertState, SwarmTask } from '../types';
 import { AlertsTable } from '../components/AlertsTable';
 import { getDispatches, getTasks } from '../api';
 import { Icon } from '../components/Icon';
+import {
+  dispatchOutcomeBadgeClass,
+  dispatchOutcomeLabel,
+  taskStatusBadgeClass,
+} from '../utils/status';
 import { formatDateTime, formatTime, useTimeFormat } from '../utils/time';
 
 interface ActivityViewProps {
@@ -108,11 +113,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       </td>
                       <td class="px-4 py-3 whitespace-nowrap">
                         <span
-                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
-                            t.status === 'queued'
-                              ? 'border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
-                              : 'border-pine-foam/40 bg-pine-foam/15 text-pine-foam'
-                          }`}
+                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(t.status)}`}
                         >
                           {t.status}
                         </span>
@@ -183,13 +184,9 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                       </td>
                       <td class="px-4 py-3.5 2xl:px-5 2xl:py-4">
                         <span
-                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
-                            d.success
-                              ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
-                              : 'border-pine-love/40 bg-pine-love/15 text-pine-love'
-                          }`}
+                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${dispatchOutcomeBadgeClass(d.success)}`}
                         >
-                          {d.success ? 'Done' : 'Failed'}
+                          {dispatchOutcomeLabel(d.success)}
                         </span>
                         {d.branch && (
                           <div class="mt-1 font-mono text-xs text-pine-muted 2xl:text-sm">
@@ -236,13 +233,9 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
               <div class="flex items-center gap-3">
                 <h3 class="text-lg font-bold text-pine-text">Task #{selectedDispatch.id}</h3>
                 <span
-                  class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
-                    selectedDispatch.success
-                      ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
-                      : 'border-pine-love/40 bg-pine-love/15 text-pine-love'
-                  }`}
+                  class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${dispatchOutcomeBadgeClass(selectedDispatch.success)}`}
                 >
-                  {selectedDispatch.success ? 'Done' : 'Failed'}
+                  {dispatchOutcomeLabel(selectedDispatch.success)}
                 </span>
               </div>
               <button

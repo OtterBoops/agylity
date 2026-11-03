@@ -204,13 +204,13 @@ export class OrchestratorCoordinator {
     });
 
     if (!eligibility.allowed && eligibility.code === 'OVERAGE_PROTECTION_TRIGGERED') {
+      // Both a safety-floor breach and a pool-policy disable carry this code, so log the reason.
       this.log.warn(
-        'Task dispatch blocked for "%s" (model=%s, pool=%s): remaining headroom (%d%%) is below safety floor (%d%%)',
+        'Task dispatch blocked for "%s" (model=%s, pool=%s): %s',
         repositoryName,
         eligibility.resolvedModel,
         eligibility.family,
-        eligibility.effectiveHeadroomPercent,
-        resolved.minDispatchHeadroomPercent
+        eligibility.reason
       );
       return {
         success: false,

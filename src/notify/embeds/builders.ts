@@ -2,7 +2,11 @@ import type { StandardEmbed, EmbedField } from './types.js';
 import { renderSquareProgressBar, formatResetWindow, formatModelPills } from './formatters.js';
 import { AGYLITY_VERSION } from '../../version.js';
 import type { QuotaAlert, DispatchStatusUpdate } from '../types.js';
-import type { QuotaSnapshot } from '../../sentry/models.js';
+import {
+  FAMILY_DEFAULT_MODELS,
+  FAMILY_DISPLAY_NAMES,
+  type QuotaSnapshot,
+} from '../../sentry/models.js';
 
 export interface EmbedBuildOptions {
   ownerUserId?: string;
@@ -61,11 +65,11 @@ export const buildTestAlertEmbed = (
   samplePool?: Partial<QuotaSnapshot>,
   _options?: EmbedBuildOptions
 ): StandardEmbed => {
-  const poolName = (samplePool?.displayName || 'Claude & GPT Models').slice(0, 256);
+  const poolName = (samplePool?.displayName || FAMILY_DISPLAY_NAMES.claude).slice(0, 256);
   const modelsList =
     samplePool?.models && samplePool.models.length > 0
       ? samplePool.models
-      : ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'];
+      : FAMILY_DEFAULT_MODELS.claude;
 
   const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
   const resetTimestamp = formatResetWindow(resetIso);

@@ -2,6 +2,7 @@ import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import type { SwarmWorkerRecord } from '../types';
 import { Icon } from './Icon';
+import { workerStatusBadgeClass } from '../utils/status';
 import { formatTime, useTimeFormat } from '../utils/time';
 
 interface SwarmRunnersGridProps {
@@ -86,13 +87,7 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                       </span>
                     )}
                     <span
-                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
-                        w.status === 'busy'
-                          ? 'border-pine-gold/40 bg-pine-gold/20 text-pine-gold'
-                          : w.status === 'offline'
-                            ? 'border-pine-love/40 bg-pine-love/15 text-pine-love'
-                            : 'border-pine-pine/40 bg-pine-pine/20 text-pine-foam'
-                      }`}
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${workerStatusBadgeClass(w.status)}`}
                     >
                       {w.status}
                     </span>

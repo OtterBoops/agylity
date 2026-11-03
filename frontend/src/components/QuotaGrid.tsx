@@ -6,29 +6,6 @@ interface QuotaGridProps {
   minHeadroomPercent?: number;
 }
 
-const MODEL_DISPLAY_NAMES: Record<string, string> = {
-  'gemini-4-argon': 'Gemini 4 Argon',
-  'gemini-3.8-flash': 'Gemini Flash',
-  'gemini-2.5-pro': 'Gemini Pro',
-  'claude-opus-5-5': 'Claude Opus',
-  'claude-sonnet-5-5': 'Claude Sonnet',
-  'gpt-oss-120b': 'GPT-OSS',
-};
-
-const POOL_ORDER: Record<string, number> = {
-  'gemini-flash': 0,
-  'gemini-argon': 1,
-  claude: 2,
-};
-
-const POOL_DISPLAY_NAMES: Record<string, string> = {
-  'gemini-flash': 'Gemini Flash',
-  'gemini-argon': 'Gemini Argon',
-  claude: 'Claude and GPT models',
-};
-
-const formatModelLabel = (model: string): string => MODEL_DISPLAY_NAMES[model] ?? model;
-
 const formatResetHuman = (hours: number): string => {
   if (hours <= 0) return '0m';
   if (hours >= 24) {
@@ -98,17 +75,10 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
     );
   }
 
-  const sortedQuota = [...quota].sort((a, b) => {
-    const aOrder = POOL_ORDER[a.family] ?? POOL_ORDER[a.poolId] ?? 99;
-    const bOrder = POOL_ORDER[b.family] ?? POOL_ORDER[b.poolId] ?? 99;
-    return aOrder - bOrder;
-  });
-
   return (
     <div id="quotaGrid" class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
-      {sortedQuota.map((pool) => {
-        const poolDisplayName =
-          POOL_DISPLAY_NAMES[pool.family] ?? POOL_DISPLAY_NAMES[pool.poolId] ?? pool.displayName;
+      {quota.map((pool) => {
+        const poolDisplayName = pool.displayName || pool.family || pool.poolId;
         const weeklyFraction = pool.weekly?.remainingFraction ?? pool.remainingFraction;
         const weeklyHours = pool.weekly?.hoursUntilReset ?? pool.hoursUntilReset;
         const weeklyResetTime = pool.weekly?.resetTime ?? pool.resetTime;
@@ -279,9 +249,9 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
               <span class="shrink-0 text-pine-muted">Models:</span>
               <span
                 class="min-w-0 flex-1 truncate text-right font-medium text-pine-text"
-                title={pool.models?.map(formatModelLabel).join(', ')}
+                title={pool.models?.join(', ')}
               >
-                {pool.models?.map(formatModelLabel).join(', ') || 'N/A'}
+                {pool.models?.join(', ') || 'N/A'}
               </span>
             </div>
           </div>

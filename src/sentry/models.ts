@@ -227,6 +227,13 @@ export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
   claude: 'Claude and GPT models',
 };
 
+/** Fallback member models per pool, used when the API supplies none. */
+export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
+  'gemini-flash': ['Gemini Flash', 'Gemini Pro'],
+  'gemini-argon': ['Gemini 4 Argon'],
+  claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
+};
+
 /** Credits and overage travel together; each aggregator supplies its own overage fallback. */
 const resolveCredits = (
   extraCredits: { remainingCredits?: number | null; overageEnabled?: boolean } | undefined,
@@ -311,21 +318,21 @@ export const resolveGroupFamily = (
     return {
       family: 'gemini-argon',
       displayName: FAMILY_DISPLAY_NAMES['gemini-argon'],
-      defaultModels: ['Gemini 4 Argon'],
+      defaultModels: FAMILY_DEFAULT_MODELS['gemini-argon'],
     };
   }
   if (name.includes('claude') || name.includes('gpt')) {
     return {
       family: 'claude',
       displayName: FAMILY_DISPLAY_NAMES.claude,
-      defaultModels: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
+      defaultModels: FAMILY_DEFAULT_MODELS.claude,
     };
   }
   if (name.includes('gemini')) {
     return {
       family: 'gemini-flash',
       displayName: FAMILY_DISPLAY_NAMES['gemini-flash'],
-      defaultModels: ['Gemini Flash', 'Gemini Pro'],
+      defaultModels: FAMILY_DEFAULT_MODELS['gemini-flash'],
     };
   }
   return null;

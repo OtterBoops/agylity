@@ -142,6 +142,12 @@ export const updateConfig = (
 export const deleteConfigOverride = (key: string): Promise<{ success: boolean }> =>
   api.delete(`config/${encodeURIComponent(key)}`).json<{ success: boolean }>();
 
+export const cancelTask = (id: string): Promise<{ success: boolean }> =>
+  api.post(`tasks/${encodeURIComponent(id)}/cancel`).json<{ success: boolean }>();
+
+export const retryTask = (id: string): Promise<{ success: boolean }> =>
+  api.post(`tasks/${encodeURIComponent(id)}/retry`).json<{ success: boolean }>();
+
 export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
   api
     .get(`tasks?limit=${limit}`)

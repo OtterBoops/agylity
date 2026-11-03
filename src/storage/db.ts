@@ -48,7 +48,7 @@ export class AppDatabase {
         ? options.keyPath
         : this.dbPath !== ':memory:'
           ? join(dirname(this.dbPath), '.agylity.key')
-          : undefined;
+          : ':memory:';
     this.masterKey = resolveMasterKey(keyPath);
 
     // Directory auto-creation guard: if path !== ':memory:' mkdirSync(dirname(path), { recursive: true })
