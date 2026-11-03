@@ -13,6 +13,7 @@ import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
 import {
   CANONICAL_AGY_MODELS,
+  assertWorkerGitCredentials,
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
@@ -1739,6 +1740,54 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       } finally {
         db.close();
         cleanup();
+      }
+    });
+  });
+  describe('6. Worker GitHub Credential Preflight', () => {
+    it('refuses to start when GITHUB_TOKEN is absent', () => {
+      assert.throws(() => assertWorkerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
+    });
+
+    it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
+      assert.throws(() => assertWorkerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
+    });
+
+    it('names the compose environment: trap, which is how a token gets lost', () => {
+      assert.throws(
+        () => assertWorkerGitCredentials(['OtterBoops/agylity'], {}),
+        /environment: in compose\.yaml/
+      );
+    });
+
+    it('accepts a real token', () => {
+      assert.doesNotThrow(() => assertWorkerGitCredentials([], { GITHUB_TOKEN: 'ghp_abc123' }));
+    });
+
+    it('allows an explicit opt-out for non-GitHub remotes', () => {
+      assert.doesNotThrow(() => assertWorkerGitCredentials([], { ALLOW_TOKENLESS_WORKER: 'true' }));
+    });
+
+    it('does not let the opt-out be enabled by a truthy-but-wrong value', () => {
+      assert.throws(() => assertWorkerGitCredentials([], { ALLOW_TOKENLESS_WORKER: 'yes' }));
+    });
+
+    it('blocks start() before any registration or poll happens', async () => {
+      const savedToken = process.env.GITHUB_TOKEN;
+      const savedOptOut = process.env.ALLOW_TOKENLESS_WORKER;
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.ALLOW_TOKENLESS_WORKER;
+      try {
+        const worker = new RemoteSwarmWorker({
+          coordinatorUrl: 'http://127.0.0.1:1',
+          workerId: 'runner-no-token',
+          sharedSecret: 'swarm-secret-token-999',
+        });
+        await assert.rejects(() => worker.start(), /GITHUB_TOKEN is not set/);
+      } finally {
+        if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = savedToken;
+        if (savedOptOut === undefined) delete process.env.ALLOW_TOKENLESS_WORKER;
+        else process.env.ALLOW_TOKENLESS_WORKER = savedOptOut;
       }
     });
   });

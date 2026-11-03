@@ -65,7 +65,7 @@ tests/
 ## 4. Running the Suite
 
 ```bash
-# Everything: unit + e2e (233 tests across 55 suites)
+# Everything: unit + e2e (240 tests across 56 suites)
 npm test
 
 # Unit only
