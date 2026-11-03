@@ -231,7 +231,7 @@ export class WebhookNotifier implements Notifier {
     if (this.statuses.length > 100) this.statuses.shift();
 
     const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
-    const isTerminal = ['completed', 'failed', 'aborted'].includes(step);
+    const isTerminal = ['completed', 'no_changes', 'failed', 'aborted'].includes(step);
     const isInitial = step === 'polling' || step === 'waking';
 
     // Only broadcast initial dispatch and final completion to webhooks

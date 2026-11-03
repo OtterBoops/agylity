@@ -654,10 +654,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       this.rawDb
         .prepare(
           `DELETE FROM swarm_tasks
-           WHERE status IN ('completed', 'failed', 'aborted')
+           WHERE status IN ('completed', 'no_changes', 'failed', 'aborted')
              AND id NOT IN (
                SELECT id FROM swarm_tasks
-               WHERE status IN ('completed', 'failed', 'aborted')
+               WHERE status IN ('completed', 'no_changes', 'failed', 'aborted')
                ORDER BY updated_at DESC
                LIMIT ?
              )`
@@ -859,6 +859,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     // Guard against status updates on already terminal tasks
     const existingTerminal =
       existing.status === 'completed' ||
+      existing.status === 'no_changes' ||
       existing.status === 'failed' ||
       existing.status === 'aborted';
     if (existingTerminal) {
@@ -883,7 +884,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
 
     const now = new Date().toISOString();
     const isTerminal =
-      patch.status === 'completed' || patch.status === 'failed' || patch.status === 'aborted';
+      patch.status === 'completed' ||
+      patch.status === 'no_changes' ||
+      patch.status === 'failed' ||
+      patch.status === 'aborted';
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
     const durationMs =
       patch.durationMs !== undefined

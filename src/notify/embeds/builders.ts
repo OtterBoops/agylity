@@ -95,6 +95,7 @@ interface StepVisualConfig {
 
 const STEP_VISUALS: Record<string, StepVisualConfig> = {
   completed: { title: '[Task: Completed]', color: 0x31748f }, // Pine
+  no_changes: { title: '[Task: No Changes]', color: 0x908caa }, // Muted
   failed: { title: '[Task: Failed]', color: 0xeb6f92 }, // Love
   aborted: { title: '[Task: Aborted]', color: 0xf6c177 }, // Gold
   polling: { title: '[Task: Queued]', color: 0x908caa }, // Muted
@@ -119,7 +120,7 @@ export const formatDurationHuman = (durationMs?: number): string => {
 export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): StandardEmbed => {
   const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
   const visual = STEP_VISUALS[step] ?? DEFAULT_STEP_VISUAL;
-  const isTerminal = ['completed', 'failed', 'aborted'].includes(step);
+  const isTerminal = ['completed', 'no_changes', 'failed', 'aborted'].includes(step);
 
   let title = visual.title;
   if (isTerminal && typeof status.durationMs === 'number' && status.durationMs > 0) {

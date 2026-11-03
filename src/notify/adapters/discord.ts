@@ -363,7 +363,7 @@ export class DiscordNotifier implements Notifier {
         // Safe catch on interaction update
       }
       const st = String(status.status || status.step || '').toLowerCase();
-      if (['completed', 'failed', 'aborted'].includes(st)) {
+      if (['completed', 'no_changes', 'failed', 'aborted'].includes(st)) {
         if (taskKey) this.activeInteractions.delete(taskKey);
         if (repoKey) this.activeInteractions.delete(repoKey);
       }
@@ -378,7 +378,7 @@ export class DiscordNotifier implements Notifier {
       if (!channel || !channel.isTextBased?.()) return;
 
       const st = String(status.status || status.step || '').toLowerCase();
-      const isTerminal = ['completed', 'failed', 'aborted'].includes(st);
+      const isTerminal = ['completed', 'no_changes', 'failed', 'aborted'].includes(st);
       const isInitial = st === 'polling' || st === 'waking';
 
       // Only notify on initial dispatch and final completion

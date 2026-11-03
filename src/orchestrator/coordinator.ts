@@ -501,18 +501,22 @@ export class OrchestratorCoordinator {
     const statusStep =
       updated.status === 'completed'
         ? 'completed'
-        : updated.status === 'failed'
-          ? 'failed'
-          : updated.status === 'aborted'
-            ? 'aborted'
-            : 'executing';
+        : updated.status === 'no_changes'
+          ? 'no_changes'
+          : updated.status === 'failed'
+            ? 'failed'
+            : updated.status === 'aborted'
+              ? 'aborted'
+              : 'executing';
 
     const defaultMsg =
       updated.status === 'completed'
         ? `Completed task ${updated.id} on branch ${updated.branchName || 'continuation'} (${updated.model})`
-        : updated.status === 'failed'
-          ? `Task ${updated.id} failed: ${updated.error || 'Unknown error'}`
-          : `Executing task ${updated.id} on ${updated.repositoryName} (${updated.model})`;
+        : updated.status === 'no_changes'
+          ? `Task ${updated.id} finished with no file changes (${updated.model})`
+          : updated.status === 'failed'
+            ? `Task ${updated.id} failed: ${updated.error || 'Unknown error'}`
+            : `Executing task ${updated.id} on ${updated.repositoryName} (${updated.model})`;
 
     await this.notifier?.notifyDispatchStatus({
       taskId: updated.id,

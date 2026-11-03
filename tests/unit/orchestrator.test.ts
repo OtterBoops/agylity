@@ -424,7 +424,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       );
     });
 
-    it('reports a run that produced no commits as a failure, not a success on the base branch', async () => {
+    it('reports a run that produced no commits as no_changes, not a failure or a success on main', async () => {
       const { dir, cleanup } = makeTempDir('orch_zerodiff_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
 
@@ -453,9 +453,9 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         });
 
         const res = await executor.execute(task);
-        assert.equal(res.success, false);
+        assert.equal(res.noChanges, true);
+        assert.equal(res.success, true);
         assert.notEqual(res.branchName, 'main');
-        assert.ok(res.error?.includes('no file changes'));
       } finally {
         db.close();
         cleanup();
@@ -1332,6 +1332,44 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.equal(result?.applied, false);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
         assert.equal(queue.getTask(task.id)?.workerId, undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('treats no_changes as a terminal success: recorded, stamped, then closed to further patches', () => {
+      const { dir, cleanup } = makeTempDir('orch_nochanges_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Review the current discord bot modals',
+          model: 'claude-sonnet-5-5',
+        });
+        queue.claimNext({ workerId: 'runner-1' });
+
+        const result = queue.updateTaskStatus(task.id, {
+          status: 'no_changes',
+          workerId: 'runner-1',
+          branchName: 'antigravity/task-abc-review-the-modals',
+        });
+        assert.equal(result?.applied, true);
+
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.status, 'no_changes');
+        assert.ok(stored?.completedAt, 'a terminal status must stamp completedAt');
+        assert.notEqual(stored?.branchName, 'main');
+
+        // Terminal means closed: a later patch must be refused.
+        const later = queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          workerId: 'runner-1',
+        });
+        assert.equal(later?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'no_changes');
       } finally {
         db.close();
         cleanup();

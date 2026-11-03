@@ -13,12 +13,14 @@ export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('im
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high']).default('high');
 
-export type TaskStatus = 'queued' | 'claimed' | 'executing' | 'completed' | 'failed' | 'aborted';
+export type TaskStatus =
+  'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
 export const TaskStatusSchema = z.enum([
   'queued',
   'claimed',
   'executing',
   'completed',
+  'no_changes',
   'failed',
   'aborted',
 ]);

@@ -15,11 +15,21 @@ const formatDuration = (ms: number): string => {
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 };
 
+const STATUS_FILTERS = [
+  'all',
+  'queued',
+  'executing',
+  'completed',
+  'no_changes',
+  'failed',
+  'aborted',
+] as const;
+
+type StatusFilter = (typeof STATUS_FILTERS)[number];
+
 export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) => {
   const [tasks, setTasks] = useState<SwarmTask[]>([]);
-  const [filter, setFilter] = useState<
-    'all' | 'queued' | 'executing' | 'completed' | 'failed' | 'aborted'
-  >('all');
+  const [filter, setFilter] = useState<StatusFilter>('all');
   const [selectedTask, setSelectedTask] = useState<SwarmTask | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
@@ -92,22 +102,20 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
         <div class="flex flex-wrap items-center gap-3">
           <div class="flex flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1 2xl:p-1.5">
-            {(['all', 'queued', 'executing', 'completed', 'failed', 'aborted'] as const).map(
-              (f) => (
-                <button
-                  key={f}
-                  type="button"
-                  onClick={() => setFilter(f)}
-                  class={`cursor-pointer rounded-md px-3 py-1 text-xs font-semibold uppercase transition-colors 2xl:px-3.5 2xl:py-1.5 2xl:text-sm ${
-                    filter === f
-                      ? 'bg-pine-iris text-pine-base shadow-xs'
-                      : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
-                  }`}
-                >
-                  {f}
-                </button>
-              )
-            )}
+            {STATUS_FILTERS.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setFilter(f)}
+                class={`cursor-pointer rounded-md px-3 py-1 text-xs font-semibold uppercase transition-colors 2xl:px-3.5 2xl:py-1.5 2xl:text-sm ${
+                  filter === f
+                    ? 'bg-pine-iris text-pine-base shadow-xs'
+                    : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
           </div>
 
           {onOpenDispatch && (

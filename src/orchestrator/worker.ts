@@ -19,6 +19,8 @@ export interface TaskExecutorOptions {
 
 export interface TaskExecutionResult {
   success: boolean;
+  /** Ran cleanly but produced no file changes; a success, not a failure. */
+  noChanges?: boolean;
   branchName: string;
   prUrl?: string;
   output: string;
@@ -392,12 +394,10 @@ export class TaskExecutor {
           // Cleanup best-effort
         }
         return {
-          success: false,
+          success: true,
+          noChanges: true,
           branchName,
           output: combinedOutput,
-          error:
-            'Agent produced no file changes, so there was nothing to commit or push. ' +
-            'It likely answered in text instead of editing files.',
           durationMs: Date.now() - startMs,
         };
       }
@@ -806,7 +806,7 @@ export class RemoteSwarmWorker {
     }
 
     await this.reportStatus(baseUrl, headers, task.id, {
-      status: result.success ? 'completed' : 'failed',
+      status: result.noChanges ? 'no_changes' : result.success ? 'completed' : 'failed',
       workerId: this.workerId,
       branchName: result.branchName,
       output: result.output,

@@ -4,13 +4,15 @@ import type { ResolvedConfig } from '../config/schema.js';
 
 export type { QuotaAlert, QuotaSnapshot };
 
-export type DispatchStep = 'waking' | 'polling' | 'executing' | 'completed' | 'aborted' | 'failed';
+export type DispatchStep =
+  'waking' | 'polling' | 'executing' | 'completed' | 'no_changes' | 'aborted' | 'failed';
 
 export const DispatchStepSchema = z.enum([
   'waking',
   'polling',
   'executing',
   'completed',
+  'no_changes',
   'aborted',
   'failed',
 ]);

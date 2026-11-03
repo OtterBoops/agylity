@@ -69,7 +69,7 @@ export const handleGetDispatches = (
   const mapped = tasks.map((t) => ({
     ...t,
     repository: t.repositoryName,
-    success: t.status === 'completed',
+    success: t.status === 'completed' || t.status === 'no_changes',
   }));
   return sendJson(res, 200, mapped, { 'Cache-Control': 'no-store' });
 };

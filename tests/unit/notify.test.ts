@@ -117,7 +117,15 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   /* ==================================================================== */
   describe('1. Notifier Interface Contract & Types', () => {
     it('validates DispatchStepSchema enum values', () => {
-      const validSteps = ['waking', 'polling', 'executing', 'completed', 'aborted', 'failed'];
+      const validSteps = [
+        'waking',
+        'polling',
+        'executing',
+        'completed',
+        'no_changes',
+        'aborted',
+        'failed',
+      ];
       for (const step of validSteps) {
         assert.equal(DispatchStepSchema.parse(step), step);
       }

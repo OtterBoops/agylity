@@ -149,7 +149,7 @@ export interface SwarmTask {
   requiredLabels: string[];
   model: string;
   effort: 'low' | 'medium' | 'high';
-  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'failed' | 'aborted';
+  status: 'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
   workerId?: string;
   claimedByWorkerId?: string;
   branchName?: string;
