@@ -63,6 +63,9 @@ docker compose up -d
 
 When `WEB_UI_ENABLED=true`, access the dashboard at `http://localhost:8484`.
 
+> [!NOTE]
+> The worker container needs `GITHUB_TOKEN` to push task branches. It must be set in the project `.env` **and** named in that project's `compose.yaml` `environment:` list — a `.env` entry alone reaches nothing. Without it the clone still succeeds on a public repository and only the push fails, with `could not read Username for 'https://github.com'`.
+
 ---
 
 ## Technical Documentation
@@ -144,7 +147,27 @@ npm run typecheck
 npm test
 ```
 
-Verification status: **407 / 407 tests passing across 108 suites** (0 failures, 0 skipped, 100% deterministic).
+Verification status: **233 tests passing across 55 suites** (0 failures, 0 skipped, 100% deterministic). Run `npm test` for the current count — this line rots.
+
+---
+
+## Releasing
+
+1. Bump `version` in both `package.json` and `frontend/package.json`, then commit.
+2. Push `main`:
+
+   ```bash
+   git push origin main
+   ```
+
+3. Create and push an **annotated** tag. Its message becomes the release title, so write it as one:
+
+   ```bash
+   git tag -a v1.2.3 -m "v1.2.3 — Short Release Title"
+   git push origin v1.2.3
+   ```
+
+   The publish job reads the title from the tag object. A lightweight tag has no message, so the workflow falls back to the tag name rather than a commit subject.
 
 ---
 
