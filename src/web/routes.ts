@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import { resolveWebUiAuthToken } from '../config/schema.js';
 import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';
@@ -177,7 +178,7 @@ export const handleRequest = async (
       }
     }
 
-    const expectedToken = resolvedConfig?.webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
+    const expectedToken = resolveWebUiAuthToken(resolvedConfig);
     if (expectedToken && isControlPlaneRoute(pathname)) {
       if (isIpRateLimited(clientIp)) {
         logger
@@ -251,16 +252,9 @@ export const handleRequest = async (
       return handleStaticAsset(req, res, pathname, method);
     }
 
-    // Client-side SPA routes (preact-router HTML5 history navigation)
-    const isSpaRoute =
-      pathname === '/' ||
-      pathname === '/overview' ||
-      pathname === '/tasks' ||
-      pathname === '/logs' ||
-      pathname === '/settings' ||
-      pathname.startsWith('/settings/');
-
-    if (isSpaRoute) {
+    // Client-side SPA routes (preact-router HTML5 history navigation). Deriving the fallback
+    // from the path shape keeps a new client route from 404ing on a hard refresh.
+    if (!pathname.startsWith('/api/') && !pathname.slice(1).includes('.')) {
       return handleIndexHtml(req, res, method);
     }
 

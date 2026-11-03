@@ -805,7 +805,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* 6. Route Guards: 404 & 405 Status Codes                              */
   /* ==================================================================== */
   describe('6. Route Guards (404 & 405)', () => {
-    it('returns 404 Not Found for unrecognized URLs', async () => {
+    it('hands unknown client routes to the app and 404s unknown assets', async () => {
       const { dir, cleanup } = makeTempDir('web_test_404_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
       let server: http.Server | undefined;
@@ -818,9 +818,17 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         });
         server = started.server;
 
+        // A client route is the app's to resolve (NotFoundView), not the server's.
+        const shell = await ky.get(`http://127.0.0.1:${started.port}/unknown/path/here`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.notEqual(shell.status, 404);
+
+        // A path naming a file is an asset request, so it still 404s.
         await assert.rejects(
           async () => {
-            await ky.get(`http://127.0.0.1:${started.port}/unknown/path/here`, { retry: 0 });
+            await ky.get(`http://127.0.0.1:${started.port}/unknown/asset.js`, { retry: 0 });
           },
           (err: any) => err.response?.status === 404
         );

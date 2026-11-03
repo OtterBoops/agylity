@@ -29,7 +29,6 @@ export const main = async (): Promise<AgylityDaemon> => {
     const c = daemonRef?.configStore.resolveConfig();
     const secrets: Array<string | undefined> = [
       ...(c ? CANONICAL_SECRET_CONFIG_KEYS.map((k) => c[k] as string | undefined) : []),
-      c?.webUiAuthToken,
       process.env.WEB_UI_AUTH_TOKEN,
       process.env.GITHUB_TOKEN,
       process.env.AGYLITY_SECRET_KEY,

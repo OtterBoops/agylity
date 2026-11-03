@@ -2,7 +2,7 @@ import http from 'node:http';
 import type net from 'node:net';
 import { handleRequest, type WebServerOptions } from './routes.js';
 import { logger } from '../logs/logger.js';
-import { BUILTIN_DEFAULTS } from '../config/schema.js';
+import { resolveWebUiAuthToken, BUILTIN_DEFAULTS } from '../config/schema.js';
 
 export { type WebServerOptions };
 
@@ -51,7 +51,7 @@ export const startWebServer = async (
   const resolved = options.configStore.resolveConfig();
   const host = options.host ?? resolved.webUiHost ?? '0.0.0.0';
   const port = options.port ?? resolved.webUiPort ?? BUILTIN_DEFAULTS.webUiPort;
-  const expectedToken = resolved.webUiAuthToken || process.env.WEB_UI_AUTH_TOKEN;
+  const expectedToken = resolveWebUiAuthToken(resolved);
   const log = options.logger ?? logger.child('web');
 
   if (!expectedToken) {

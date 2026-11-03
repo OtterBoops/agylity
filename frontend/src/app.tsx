@@ -21,6 +21,7 @@ import { NotificationsView } from './views/NotificationsView';
 import { OrchestratorView } from './views/settings/OrchestratorView';
 import { RepositoriesView } from './views/settings/RepositoriesView';
 import { AdvancedView } from './views/settings/AdvancedView';
+import { NotFoundView } from './views/NotFoundView';
 import { checkHealth, getAuthToken } from './api';
 import {
   useStore,
@@ -125,14 +126,22 @@ export const App = () => {
         return;
       }
 
-      if (!isInput && !e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'r') {
+      const dialogOpen = dispatchModalOpen || commandPaletteOpen || sessionModalOpen;
+      if (
+        !isInput &&
+        !dialogOpen &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === 'r'
+      ) {
         e.preventDefault();
         handleManualRefresh();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [refreshCooldown, isRefreshing]);
+  }, [refreshCooldown, isRefreshing, dispatchModalOpen, commandPaletteOpen, sessionModalOpen]);
 
   const handleToggleTheme = () => {
     const sequence: ThemeChoice[] = ['regular', 'moon', 'dawn', 'system'];
@@ -316,6 +325,7 @@ export const App = () => {
                 onChanged={fetchAll}
               />
               <AdvancedView path="/settings/advanced" config={config} onChanged={fetchAll} />
+              <NotFoundView default />
             </Router>
           </main>
         </div>

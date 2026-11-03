@@ -300,6 +300,12 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];
 
+/** The control-plane bearer token, resolved identically wherever it is needed. */
+export const resolveWebUiAuthToken = (
+  config: { webUiAuthToken?: string } | undefined,
+  env: Record<string, string | undefined> = process.env
+): string | undefined => config?.webUiAuthToken || env.WEB_UI_AUTH_TOKEN;
+
 export const SECRET_CONFIG_KEY_ENV_NAMES: Record<string, string> = Object.fromEntries(
   CANONICAL_SECRET_CONFIG_KEYS.map((k) => [k, CONFIG_KEY_ENV_NAMES[k]!])
 );
