@@ -93,6 +93,7 @@ export class OrchestratorCoordinator {
   private readonly log: Logger;
   private readonly bus = new EventEmitter();
   private latestSnapshots: QuotaSnapshot[] = [];
+  private lastSnapshotAt = 0;
 
   constructor(options: OrchestratorCoordinatorOptions) {
     this.configStore = options.configStore;
@@ -108,11 +109,18 @@ export class OrchestratorCoordinator {
   }
 
   public getActivePools(): QuotaSnapshot[] {
-    if (this.latestSnapshots.length > 0) {
+    // A snapshot past its interval is most wrong right after a reset, so it must not
+    // authorise dispatch: return nothing and let eligibility fail closed.
+    const intervalMs = (this.configStore.resolveConfig().quotaCheckIntervalSeconds ?? 60) * 1000;
+    const maxAgeMs = Math.max(intervalMs * 2, 60_000);
+
+    if (this.latestSnapshots.length > 0 && Date.now() - this.lastSnapshotAt <= maxAgeMs) {
       return this.latestSnapshots;
     }
     const state = this.sentryState?.getState();
     if (!state) return [];
+    const probedAt = Date.parse(state.lastProbeAt ?? '');
+    if (!Number.isFinite(probedAt) || Date.now() - probedAt > maxAgeMs) return [];
     return snapshotsFromSentryState(state);
   }
 
@@ -136,6 +144,7 @@ export class OrchestratorCoordinator {
 
   public onQuotaUpdated(snapshots: QuotaSnapshot[]): void {
     this.latestSnapshots = snapshots;
+    this.lastSnapshotAt = Date.now();
     this.reapStaleClaims();
     this.bus.emit('task:available');
   }

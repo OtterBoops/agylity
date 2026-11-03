@@ -1319,6 +1319,38 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.equal(justUnder.code, 'OVERAGE_PROTECTION_TRIGGERED');
     });
 
+    it('ignores telemetry older than twice the probe interval', () => {
+      const { dir, cleanup } = makeTempDir('coord_stale_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        quotaCheckIntervalSeconds: 60,
+      });
+      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+
+      try {
+        sentryState.setState({
+          version: 1,
+          lastProbeAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+          lastProbeSource: 'connect_rpc',
+          pools: {
+            'gemini-flash': {
+              resetTime: new Date(Date.now() + 3600000).toISOString(),
+              remainingFraction: 0.8,
+              firedMilestones: [],
+              lastAlertSentAt: null,
+            },
+          },
+        });
+
+        const coordinator = new OrchestratorCoordinator({ configStore: store, sentryState });
+
+        // A stale 80% is most wrong right after a reset, so it must not authorise dispatch.
+        assert.equal(coordinator.getActivePools().length, 0);
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+
     it('sanitises a repository name containing a colon or at-sign into the derived repository id', async () => {
       const { dir, cleanup } = makeTempDir('coord_repo_id_');
       const store = new ConfigStore(path.join(dir, 'test.db'), { orchestratorEnabled: true });
