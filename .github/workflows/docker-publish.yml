@@ -163,8 +163,15 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         id: release_title
         run: |
-          TITLE=$(git for-each-ref "refs/tags/${{ github.ref_name }}" --format='%(contents:subject)')
-          echo "name=${TITLE:-${{ github.ref_name }}}" >> "$GITHUB_OUTPUT"
+          TAG="${{ github.ref_name }}"
+          # actions/checkout leaves the tag as a lightweight ref, so fetch the annotated object.
+          git fetch --force --no-tags origin "+refs/tags/${TAG}:refs/tags/${TAG}" || true
+          if [ "$(git cat-file -t "refs/tags/${TAG}" 2>/dev/null)" = "tag" ]; then
+            TITLE=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:subject)')
+          else
+            TITLE="$TAG"
+          fi
+          echo "name=${TITLE:-$TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
