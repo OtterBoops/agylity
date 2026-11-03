@@ -101,7 +101,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         </div>
 
         <div class="flex flex-wrap items-center gap-3">
-          <div class="flex flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1 2xl:p-1.5">
+          <div class="flex max-w-full flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1 2xl:p-1.5">
             {STATUS_FILTERS.map((f) => (
               <button
                 key={f}
@@ -132,18 +132,18 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         </div>
       </div>
 
-      <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-        <table class="w-full text-left text-sm 2xl:text-base">
+      <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
+        <table class="w-full min-w-[760px] text-left text-sm 2xl:text-base">
           <thead>
             <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase 2xl:text-sm">
-              <th class="p-3.5 2xl:p-4.5">Status</th>
-              <th class="p-3.5 2xl:p-4.5">Task ID</th>
-              <th class="p-3.5 2xl:p-4.5">Repository</th>
-              <th class="p-3.5 2xl:p-4.5">Model</th>
-              <th class="p-3.5 2xl:p-4.5">Schedule</th>
-              <th class="p-3.5 2xl:p-4.5">Branch / PR</th>
-              <th class="p-3.5 2xl:p-4.5">Duration</th>
-              <th class="p-3.5 text-right 2xl:p-4.5">Actions</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Status</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Task ID</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Repository</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Model</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Schedule</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Branch / PR</th>
+              <th class="p-3.5 whitespace-nowrap 2xl:p-4.5">Duration</th>
+              <th class="p-3.5 text-right whitespace-nowrap 2xl:p-4.5">Actions</th>
             </tr>
           </thead>
           <tbody class="divide-y divide-pine-highlight/40">
@@ -236,7 +236,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           ref={dialogRef}
           onClose={() => setSelectedTask(null)}
           onClick={handleDialogClick}
-          class="fixed inset-0 m-auto w-full max-w-2xl rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/60"
+          class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 sm:p-6"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
             <div>
