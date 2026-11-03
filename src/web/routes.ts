@@ -157,8 +157,8 @@ export const handleRequest = async (
   options: WebServerOptions
 ): Promise<void> => {
   try {
-    const host = req.headers.host || '127.0.0.1';
-    const url = new URL(req.url ?? '/', `http://${host}`);
+    // A constant base: a malformed Host header must not make routing throw.
+    const url = new URL(req.url ?? '/', 'http://localhost');
     const { pathname } = url;
     const method = req.method ?? 'GET';
 

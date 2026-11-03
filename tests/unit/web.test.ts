@@ -841,6 +841,32 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('rejects a malformed path segment with 400 rather than crashing', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_badseg_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // A bare '%' is not a valid escape; decodeURIComponent throws on it.
+        const res = await ky.post(`http://127.0.0.1:${started.port}/api/tasks/%/cancel`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('returns 405 Method Not Allowed for unsupported verbs on valid routes', async () => {
       const { dir, cleanup } = makeTempDir('web_test_405_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});

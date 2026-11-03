@@ -22,7 +22,7 @@ export const handleGetQuota = async (
     } else if (options.sentryState) {
       snapshots = snapshotsFromSentryState(options.sentryState.getState());
     }
-    return sendJson(res, 200, snapshots);
+    return sendJson(res, 200, snapshots, { 'Cache-Control': 'no-store' });
   } catch (err: any) {
     const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
     // The message stays in the log: it can carry absolute paths and SQL detail.

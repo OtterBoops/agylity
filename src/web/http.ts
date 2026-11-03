@@ -31,6 +31,15 @@ export const sendJson = (
   res.end(JSON.stringify(data));
 };
 
+/** Path segments arrive percent-encoded; a malformed escape must be a 400, not a crash. */
+export const safeDecodeSegment = (value: string): string | null => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
 export const methodNotAllowed = (res: http.ServerResponse): void => {
   sendJson(res, 405, { error: 'Method Not Allowed' });
 };

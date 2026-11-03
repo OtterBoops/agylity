@@ -7,11 +7,13 @@ import {
   toTrimmedStringOrUndefined,
   toStringArray,
   toFiniteNumberOrUndefined,
+  safeDecodeSegment,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { OrchestratorCoordinator } from '../../orchestrator/coordinator.js';
+import { RegistrationTokenError } from '../../orchestrator/queue.js';
 import {
   annotateModelsWithQuota,
   ReasoningEffortSchema,
@@ -273,7 +275,7 @@ export const handleTaskStatus = async (
   }
 
   const match = /^\/api\/tasks\/([^/]+)\/status$/.exec(pathname);
-  const taskId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) {
     return sendJson(res, 400, { error: 'taskId is required' });
   }
@@ -329,7 +331,7 @@ export const handleTaskCancel = (
 ): void => {
   if (method !== 'POST') return methodNotAllowed(res);
   const match = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(pathname);
-  const taskId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
 
   const orchestrator = resolveOrchestrator(options);
@@ -352,7 +354,7 @@ export const handleTaskRetry = async (
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
   const match = /^\/api\/tasks\/([^/]+)\/retry$/.exec(pathname);
-  const taskId = match?.[1] ? decodeURIComponent(match[1]) : '';
+  const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
 
   const orchestrator = resolveOrchestrator(options);
@@ -419,7 +421,7 @@ export const handleStandingTaskById = async (
   method: string
 ): Promise<void> => {
   const match = /^\/api\/standing-tasks\/([^/]+)(?:\/(trigger))?$/.exec(pathname);
-  const id = match?.[1] ? decodeURIComponent(match[1]) : '';
+  const id = match?.[1] ? safeDecodeSegment(match[1]) : '';
   const action = match?.[2];
   if (!id) return sendJson(res, 400, { error: 'id is required' });
 
@@ -551,9 +553,12 @@ export const handleRegisterWorker = async (
       { 'Cache-Control': 'no-store' }
     );
   } catch (err: any) {
-    return sendJson(res, 401, {
-      error: err?.message || 'Invalid, expired, or already-consumed registration token',
-    });
+    if (err instanceof RegistrationTokenError) {
+      return sendJson(res, 401, { error: err.message });
+    }
+    // Anything else is an internal fault, not an auth failure, and its detail stays in the log.
+    logger.child('web').error('Worker registration failed: %s', err?.stack ?? err);
+    return sendJson(res, 500, { error: 'Worker registration failed' });
   }
 };
 
@@ -565,7 +570,7 @@ export const handleManageWorkerById = async (
   method: string
 ): Promise<void> => {
   const match = /^\/api\/workers\/([^/]+)$/.exec(pathname);
-  const workerId = match?.[1] ? decodeURIComponent(match[1]).trim() : '';
+  const workerId = match?.[1] ? (safeDecodeSegment(match[1]) ?? '').trim() : '';
   if (!workerId) {
     return sendJson(res, 400, { error: 'workerId is required' });
   }

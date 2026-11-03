@@ -274,6 +274,9 @@ const REGISTRATION_TOKEN_RETENTION = 50;
 
 const TERMINAL_STATUS_SQL = TERMINAL_TASK_STATUSES.map((s) => `'${s}'`).join(', ');
 
+/** Raised for every rejected one-time registration token, so callers can map it to a 401. */
+export class RegistrationTokenError extends Error {}
+
 export class TaskQueue {
   private readonly rawDb: DatabaseSync;
 
@@ -424,7 +427,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return this.inTransaction(() => {
       const rawToken = input.registrationToken?.trim();
       if (!rawToken) {
-        throw new Error('Registration token is required');
+        throw new RegistrationTokenError('Registration token is required');
       }
 
       const tokenHash = hashRunnerToken(rawToken);
@@ -433,16 +436,16 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         .get(tokenHash) as Record<string, any> | undefined;
 
       if (!regRow) {
-        throw new Error('Invalid runner registration token');
+        throw new RegistrationTokenError('Invalid runner registration token');
       }
 
       if (regRow.consumed_by_worker_id) {
-        throw new Error('Runner registration token has already been used');
+        throw new RegistrationTokenError('Runner registration token has already been used');
       }
 
       const expiresEpoch = new Date(String(regRow.expires_at)).getTime();
       if (Number.isNaN(expiresEpoch) || nowMs > expiresEpoch) {
-        throw new Error('Runner registration token has expired');
+        throw new RegistrationTokenError('Runner registration token has expired');
       }
 
       let defaultLabels: string[] = [];

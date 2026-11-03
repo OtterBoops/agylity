@@ -1,5 +1,5 @@
 import type http from 'node:http';
-import { sendJson, methodNotAllowed, readJsonBody } from '../http.js';
+import { sendJson, methodNotAllowed, readJsonBody, safeDecodeSegment } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { isSecretKey, isSecretMask, maskSecret } from '../../storage/crypto.js';
 import { validateConfigOverridePatch } from '../../config/schema.js';
@@ -125,7 +125,8 @@ export const handleDeleteConfigOverride = (
   const key = pathname.slice('/api/config/'.length).trim();
   if (!key || method !== 'DELETE') return methodNotAllowed(res);
 
-  const decodedKey = decodeURIComponent(key);
+  const decodedKey = safeDecodeSegment(key);
+  if (decodedKey === null) return sendJson(res, 400, { error: 'Malformed configuration key' });
   options.configStore.deleteOverride(decodedKey);
   log.info('Configuration override deleted via Web API: %s', decodedKey);
   const resolved = options.configStore.resolveConfig();
