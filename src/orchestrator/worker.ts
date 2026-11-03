@@ -575,8 +575,10 @@ export class RemoteSwarmWorker {
 
   constructor(options: RemoteSwarmWorkerOptions) {
     this.options = options;
-    this.workerId = options.workerId?.trim() || `runner-${os.hostname()}`;
-    this.workerName = options.workerName?.trim() || this.workerId;
+    // Identity must survive a container recreation: os.hostname() is the container id, which changes
+    // on every recreate and leaves a dead row behind in the coordinator's worker list.
+    this.workerName = options.workerName?.trim() || `runner-${os.hostname()}`;
+    this.workerId = options.workerId?.trim() || this.workerName;
     this.labels = options.labels ?? [];
     this.repositories = options.repositories;
     this.runnerToken = options.runnerToken?.trim() || undefined;

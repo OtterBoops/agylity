@@ -674,6 +674,20 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     }
   }
 
+  // Without this the list grows a row every time a container is recreated, since a worker
+  // re-registers on boot. Age-gated rather than immediate so the offline transition stays visible
+  // for a while after the reaper makes it. Live workers are never touched.
+  public pruneOldWorkers(maxOfflineAgeMs = 10 * 60 * 1000): void {
+    try {
+      const cutoff = new Date(Date.now() - maxOfflineAgeMs).toISOString();
+      this.rawDb
+        .prepare("DELETE FROM swarm_workers WHERE status = 'offline' AND last_seen_at < ?")
+        .run(cutoff);
+    } catch {
+      // Best-effort pruning
+    }
+  }
+
   public getTask(id: string): SwarmTask | undefined {
     const row = this.rawDb.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(id) as
       Record<string, any> | undefined;
@@ -1013,6 +1027,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           .run(String(w.worker_id));
       }
     }
+
+    this.pruneOldWorkers();
 
     return reapedTasks;
   }
