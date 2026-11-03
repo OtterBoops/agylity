@@ -1,5 +1,14 @@
 import { format } from 'node:util';
 
+export const LEVEL_PRIORITY: Record<LogLevel, number> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+export const LOG_LEVELS = Object.keys(LEVEL_PRIORITY) as LogLevel[];
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {
@@ -63,9 +72,8 @@ export class LogBuffer {
   /** Entries with id greater than `sinceId`, optionally filtered to a minimum level. */
   since(sinceId = 0, minLevel: LogLevel = 'debug', limit = 500): LogEntry[] {
     if (limit <= 0) return [];
-    const rank: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
     return this.entries
-      .filter((e) => e.id > sinceId && rank[e.level] >= rank[minLevel])
+      .filter((e) => e.id > sinceId && LEVEL_PRIORITY[e.level] >= LEVEL_PRIORITY[minLevel])
       .slice(-limit);
   }
 

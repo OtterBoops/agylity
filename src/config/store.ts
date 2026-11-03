@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { FORBIDDEN_CONFIG_KEYS } from './schema.js';
 import { AppDatabase } from '../storage/db.js';
 import {
   BUILTIN_DEFAULTS,
@@ -16,10 +17,8 @@ export interface IConfigStore {
   resolveConfig(): ResolvedConfig;
 }
 
-const FORBIDDEN_PROTOTYPE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
-
 const normalizeKey = (key: string): keyof AppConfig | string => {
-  if (typeof key !== 'string' || FORBIDDEN_PROTOTYPE_KEYS.has(key)) {
+  if (typeof key !== 'string' || FORBIDDEN_CONFIG_KEYS.has(key)) {
     throw new Error(`Invalid or dangerous configuration key: ${String(key)}`);
   }
   return ENV_TO_CONFIG_KEY[key] ?? key;

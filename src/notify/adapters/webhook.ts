@@ -10,6 +10,7 @@ import type {
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import { normalizeStep, isTerminalStep } from '../embeds/formatters.js';
 import { FAMILY_DEFAULT_MODELS, FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 import {
   buildQuotaAlertEmbed,
@@ -230,8 +231,8 @@ export class WebhookNotifier implements Notifier {
     this.statuses.push(status);
     if (this.statuses.length > 100) this.statuses.shift();
 
-    const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
-    const isTerminal = ['completed', 'no_changes', 'failed', 'aborted'].includes(step);
+    const step = normalizeStep(status);
+    const isTerminal = isTerminalStep(step);
     const isInitial = step === 'polling' || step === 'waking';
 
     // Only broadcast initial dispatch and final completion to webhooks

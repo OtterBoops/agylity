@@ -1,3 +1,13 @@
+import type { DispatchStatusUpdate } from '../types.js';
+
+export const TERMINAL_STEPS = ['completed', 'no_changes', 'failed', 'aborted'];
+
+/** One step derivation, so no adapter can disagree on what a status update says. */
+export const normalizeStep = (status: DispatchStatusUpdate): string =>
+  String(status.status ?? status.step ?? 'executing').toLowerCase();
+
+export const isTerminalStep = (step: string): boolean => TERMINAL_STEPS.includes(step);
+
 // Renders a monospaced block bar, e.g. `▰▰▰▱▱▱▱▱▱▱` **30%**.
 export const renderSquareProgressBar = (fraction: number, totalBars = 10): string => {
   const safeFraction = Number.isFinite(fraction) ? fraction : 0;

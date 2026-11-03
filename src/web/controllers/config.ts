@@ -1,7 +1,7 @@
 import type http from 'node:http';
 import { sendJson, methodNotAllowed, readJsonBody } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { isSecretKey, maskSecret } from '../../storage/crypto.js';
+import { isSecretKey, isSecretMask, maskSecret } from '../../storage/crypto.js';
 import { validateConfigOverridePatch } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
@@ -67,7 +67,7 @@ export const handleConfigEndpoint = async (
 
     const keysToValidate: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patchToValidate)) {
-      if (isSecretKey(k) && (v === '••••••••' || v === '********' || v === null || v === '')) {
+      if (isSecretKey(k) && (isSecretMask(v) || v === null || v === '')) {
         continue;
       }
       keysToValidate[k] = v;
@@ -83,7 +83,7 @@ export const handleConfigEndpoint = async (
 
     const handleSet = (key: string, value: unknown) => {
       if (isSecretKey(key)) {
-        if (value === '••••••••' || value === '********') {
+        if (isSecretMask(value)) {
           return; // preserve existing secret, do not overwrite with mask
         }
         if (value === null || value === '') {

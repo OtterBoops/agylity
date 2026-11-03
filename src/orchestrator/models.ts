@@ -13,6 +13,12 @@ export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('im
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high']).default('high');
 
+export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'aborted'] as const;
+
+/** Terminal task statuses, so no status list can drift from the set. */
+export const isTerminalTaskStatus = (status: string): boolean =>
+  (TERMINAL_TASK_STATUSES as readonly string[]).includes(status);
+
 export type TaskStatus =
   'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
 export const TaskStatusSchema = z.enum([

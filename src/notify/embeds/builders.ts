@@ -1,5 +1,11 @@
 import type { StandardEmbed, EmbedField } from './types.js';
-import { renderSquareProgressBar, formatResetWindow, formatModelPills } from './formatters.js';
+import {
+  formatModelPills,
+  formatResetWindow,
+  isTerminalStep,
+  normalizeStep,
+  renderSquareProgressBar,
+} from './formatters.js';
 import { AGYLITY_VERSION } from '../../version.js';
 import type { QuotaAlert, DispatchStatusUpdate } from '../types.js';
 import {
@@ -131,9 +137,9 @@ export const formatDurationHuman = (durationMs?: number): string => {
 };
 
 export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): StandardEmbed => {
-  const step = String(status.status ?? (status.step as string) ?? 'executing').toLowerCase();
+  const step = normalizeStep(status);
   const visual = STEP_VISUALS[step] ?? DEFAULT_STEP_VISUAL;
-  const isTerminal = ['completed', 'no_changes', 'failed', 'aborted'].includes(step);
+  const isTerminal = isTerminalStep(step);
 
   let title = visual.title;
   if (isTerminal && typeof status.durationMs === 'number' && status.durationMs > 0) {

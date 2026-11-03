@@ -16,24 +16,24 @@ export const booleanEnv = z.preprocess((val) => {
   return val;
 }, z.boolean());
 
+/** Default milestone hours, referenced by the parser, the schema and the evaluator. */
+export const DEFAULT_MILESTONE_HOURS = [24, 12, 3];
+
 // Safe comma-separated milestone parser ("24,12,3" -> [24, 12, 3])
-export const milestoneHoursEnv = z.preprocess(
-  (val) => {
-    if (Array.isArray(val)) {
-      return val.map(Number).filter((n) => !Number.isNaN(n) && n > 0);
-    }
-    if (typeof val === 'string') {
-      const trimmed = val.trim();
-      if (trimmed === '') return [24, 12, 3];
-      return trimmed
-        .split(',')
-        .map((s) => Number(s.trim()))
-        .filter((n) => !Number.isNaN(n) && n > 0);
-    }
-    return val;
-  },
-  z.array(z.number().positive()).min(1).default([24, 12, 3])
-);
+export const milestoneHoursEnv = z.preprocess((val) => {
+  if (Array.isArray(val)) {
+    return val.map(Number).filter((n) => !Number.isNaN(n) && n > 0);
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed === '') return DEFAULT_MILESTONE_HOURS;
+    return trimmed
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => !Number.isNaN(n) && n > 0);
+  }
+  return val;
+}, z.array(z.number().positive()).min(1).default(DEFAULT_MILESTONE_HOURS));
 
 // Repository schema
 export const RepositorySchema = z.preprocess(
@@ -322,7 +322,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   antigravityCsrfToken: undefined,
   quotaCheckIntervalSeconds: 60, // 60 seconds (1 minute default, minimum 30s)
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
-  quotaMilestoneHours: [24, 12, 3],
+  quotaMilestoneHours: DEFAULT_MILESTONE_HOURS,
   minDispatchHeadroomPercent: 10, // 10% safety floor preventing billable overages
   poolPolicies: DEFAULT_POOL_POLICIES,
 
@@ -545,7 +545,8 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
 };
 
-const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+/** Prototype-pollution guard, shared with the store's key normaliser. */
+export const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export const validateConfigOverridePatch = (
   patch: Record<string, unknown>

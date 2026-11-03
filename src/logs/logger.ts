@@ -1,5 +1,5 @@
 import { format } from 'node:util';
-import type { LogBuffer, LogLevel } from './buffer.js';
+import { LEVEL_PRIORITY, type LogBuffer, type LogLevel } from './buffer.js';
 
 export type { LogLevel };
 
@@ -35,13 +35,6 @@ export interface Logger {
   clearSinks(): void;
   setSinks(sinks: LogSink[]): void;
 }
-
-const LEVEL_PRIORITY: Record<LogLevel, number> = {
-  debug: 0,
-  info: 1,
-  warn: 2,
-  error: 3,
-};
 
 let defaultConsoleSinks: LogSink[] | undefined;
 const getDefaultConsoleSinks = (): LogSink[] => (defaultConsoleSinks ??= [createConsoleSink()]);

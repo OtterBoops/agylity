@@ -1,7 +1,7 @@
 import type http from 'node:http';
 import { sendJson, methodNotAllowed } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import type { LogLevel } from '../../logs/buffer.js';
+import { LOG_LEVELS, type LogLevel } from '../../logs/buffer.js';
 
 export const handleGetLogs = (
   _req: http.IncomingMessage,
@@ -14,9 +14,7 @@ export const handleGetLogs = (
 
   const since = Number(url.searchParams.get('since') ?? 0);
   const levelParam = url.searchParams.get('level') ?? 'debug';
-  const level: LogLevel = (['debug', 'info', 'warn', 'error'] as const).includes(
-    levelParam as LogLevel
-  )
+  const level: LogLevel = LOG_LEVELS.includes(levelParam as LogLevel)
     ? (levelParam as LogLevel)
     : 'debug';
 

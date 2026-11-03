@@ -7,6 +7,7 @@ import type {
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { normalizeStep } from '../embeds/formatters.js';
 import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 
 export class ConsoleNotifier implements Notifier {
@@ -58,7 +59,7 @@ export class ConsoleNotifier implements Notifier {
     this.statuses.push(status);
     if (this.statuses.length > 100) this.statuses.shift();
 
-    const step = status.status ?? (status.step as string) ?? 'executing';
+    const step = normalizeStep(status);
     const repo = status.repositoryName ?? 'N/A';
     const branch = status.branchName ?? 'N/A';
     const msg = status.message ?? '';

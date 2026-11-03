@@ -1,5 +1,6 @@
 import type { QuotaAlert, QuotaSnapshot } from './models.js';
 import { calculateHoursUntilReset } from './models.js';
+import { DEFAULT_MILESTONE_HOURS } from '../config/schema.js';
 import type { SentryStateManager } from './state.js';
 
 export interface QuotaEvaluatorOptions {
@@ -18,7 +19,7 @@ export class QuotaEvaluator {
   public alertThresholdPercent: number;
 
   constructor(options: QuotaEvaluatorOptions = {}) {
-    const rawMilestones = options.milestoneHours ?? [24, 12, 3];
+    const rawMilestones = options.milestoneHours ?? DEFAULT_MILESTONE_HOURS;
     // Filter positive numbers, remove duplicates, sort descending: e.g. [24, 12, 3]
     this.milestoneHours = Array.from(
       new Set(rawMilestones.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))

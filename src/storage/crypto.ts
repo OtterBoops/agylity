@@ -136,8 +136,14 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
   }
 };
 
+export const SECRET_MASK = '••••••••';
+
+/** The write path treats a masked value as "keep the stored secret". */
+export const isSecretMask = (value: unknown): boolean =>
+  value === SECRET_MASK || value === '********';
+
 export const maskSecret = (val: unknown): string => {
   if (!val || typeof val !== 'string') return '';
   if (val.trim() === '') return '';
-  return '••••••••';
+  return SECRET_MASK;
 };
