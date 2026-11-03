@@ -220,7 +220,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
-      class={`fixed inset-0 m-auto flex max-h-[92vh] w-full max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-6 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm ${
+      class={`fixed inset-0 m-auto flex max-h-[92vh] w-[calc(100%-2rem)] max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm sm:p-6 ${
         !isOpen ? 'hidden' : ''
       }`}
     >
