@@ -148,6 +148,24 @@ Verification status: **407 / 407 tests passing across 108 suites** (0 failures, 
 
 ---
 
+## Releasing
+
+1. Bump `version` in both `package.json` and `frontend/package.json`, then commit.
+2. Push `main`:
+
+   ```bash
+   git push origin main
+   ```
+
+3. Create and push an annotated tag. The tag message becomes the release title:
+
+   ```bash
+   git tag -a v1.2.3 -m "Release title here"
+   git push origin v1.2.3
+   ```
+
+---
+
 ## For Autonomous Coding Agents
 
 Autonomous agents and AI pair programmers working in this repository must adhere to these invariants:
