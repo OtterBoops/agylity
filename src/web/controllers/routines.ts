@@ -7,12 +7,12 @@ import {
   toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
+  isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { resolveCoordinator } from './dispatch.js';
 import {
   ReasoningEffortSchema,
-  resolveConcreteModelId,
   type ReasoningEffort,
   type TaskActor,
 } from '../../coordinator/models.js';
@@ -90,10 +90,6 @@ export const handleRoutineTaskById = async (
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
 
     const resolved = options.configStore.resolveConfig();
-    const concreteModel = resolveConcreteModelId(
-      rt.models[0] || 'gemini-3.8-flash',
-      resolved.defaultDispatchModel
-    );
 
     const dispatchRes = await coordinator.dispatch({
       repositoryId: rt.repositoryId,
@@ -104,7 +100,7 @@ export const handleRoutineTaskById = async (
       originId: rt.id,
       originNumber: rt.taskNumber,
       originTitle: rt.title,
-      model: concreteModel,
+      models: rt.models,
       effort: rt.effort,
       autoCreatePr: rt.autoCreatePr,
       actor: rt.actor || 'bot',
@@ -120,7 +116,7 @@ export const handleRoutineTaskById = async (
       });
     }
 
-    return sendJson(res, 200, dispatchRes);
+    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
   }
 
   if (method === 'GET') {

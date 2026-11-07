@@ -29,7 +29,7 @@ import {
 } from '../api';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
-import { configStore, saveConfigOverrides } from '../state';
+import { configStore, saveConfigOverrides, useStore } from '../state';
 
 interface TasksViewProps {
   onRefresh?: () => void;
@@ -41,6 +41,7 @@ type TaskTab = 'executions' | 'backlog' | 'routines';
 const STATUS_FILTERS = [
   'all',
   'queued',
+  'claimed',
   'executing',
   'completed',
   'no_changes',
@@ -49,6 +50,20 @@ const STATUS_FILTERS = [
 ] as const;
 
 type StatusFilter = (typeof STATUS_FILTERS)[number];
+
+// An empty optional number means "use the server default". 0 is a real value here (it removes
+// the floor), so `Number('') === 0` must never reach the create call.
+const parseOptionalNumber = (
+  raw: string,
+  min: number,
+  max: number
+): number | undefined | 'invalid' => {
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < min || value > max) return 'invalid';
+  return value;
+};
 
 export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) => {
   const [timeFormat] = useTimeFormat();
@@ -81,10 +96,16 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const executionDialogRef = useRef<HTMLDialogElement>(null);
+  const backlogDialogRef = useRef<HTMLDialogElement>(null);
+  const routineDialogRef = useRef<HTMLDialogElement>(null);
 
   // --- Tier 2: Backlog state ---
   const [backlogTasks, setBacklogTasks] = useState<BacklogTaskRecord[]>([]);
   const [backlogLoading, setBacklogLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  // Deleting a work item loses a hand-written prompt, so the bin needs a second press.
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [syncingGithub, setSyncingGithub] = useState(false);
   const [showCreateBacklog, setShowCreateBacklog] = useState(false);
   const [backlogActionId, setBacklogActionId] = useState<string | null>(null);
@@ -104,8 +125,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [routineRepo, setRoutineRepo] = useState('');
   const [routineModels, setRoutineModels] = useState('gemini-3.8-flash');
   const [routineEffort, setRoutineEffort] = useState<'low' | 'medium' | 'high'>('high');
-  const [routineTriggerHours, setRoutineTriggerHours] = useState(2);
-  const [routineMinHeadroom, setRoutineMinHeadroom] = useState(10);
+  const [routineTriggerHours, setRoutineTriggerHours] = useState('2');
+  const [routineMinHeadroom, setRoutineMinHeadroom] = useState('10');
   const [routineVerifyCommand, setRoutineVerifyCommand] = useState('');
 
   const [notification, setNotification] = useState<{
@@ -113,9 +134,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     message: string;
   } | null>(null);
 
-  const config = configStore.getState().config;
+  const config = useStore(configStore).config;
   const repos = config.resolved?.repositories || [];
-  const defaultRepoId = repos[0]?.id || 'agylity';
+  // No invented fallback: with no repository configured the forms stay unsubmittable.
+  const defaultRepoId = repos[0]?.id || '';
   const defaultModel = config.resolved?.defaultDispatchModel || 'gemini-3.8-flash';
   const routinesEnabled = config.resolved?.routinesEnabled !== false;
 
@@ -127,8 +149,11 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   // --- Data Loaders ---
   const loadExecutions = useCallback(() => {
     getTasks(100)
-      .then((res) => setTasks(res))
-      .catch(() => {});
+      .then((res) => {
+        setTasks(res);
+        setLoadError(null);
+      })
+      .catch((err) => setLoadError(err?.message || String(err)));
   }, []);
 
   const loadBacklog = useCallback(async () => {
@@ -136,6 +161,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     try {
       const list = await getBacklogTasks();
       setBacklogTasks(list);
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.message || String(err));
     } finally {
       setBacklogLoading(false);
     }
@@ -146,37 +174,78 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     try {
       const list = await getRoutines();
       setRoutines(list);
+      setLoadError(null);
+    } catch (err: any) {
+      setLoadError(err?.message || String(err));
     } finally {
       setRoutinesLoading(false);
     }
   }, []);
 
+  // The tab lives in a ref so switching tabs does not tear down the poll and refetch everything.
+  const activeTabRef = useRef<TaskTab>(activeTab);
+  activeTabRef.current = activeTab;
+
   useEffect(() => {
     loadExecutions();
+    // Loaded once for the tab counters; the badge must not claim 0 while items exist.
     void loadBacklog();
     void loadRoutines();
-
     const timer = setInterval(() => {
       loadExecutions();
-      if (activeTab === 'backlog') void loadBacklog();
-      if (activeTab === 'routines') void loadRoutines();
+      if (activeTabRef.current === 'backlog') void loadBacklog();
+      if (activeTabRef.current === 'routines') void loadRoutines();
     }, 4000);
 
     return () => clearInterval(timer);
-  }, [activeTab, loadExecutions, loadBacklog, loadRoutines]);
+  }, [loadExecutions, loadBacklog, loadRoutines]);
 
-  // Deep-link selection via ?id=...
+  // Each list loads on first paint of its tab, and on every tab switch.
   useEffect(() => {
+    if (activeTab === 'backlog') void loadBacklog();
+    if (activeTab === 'routines') void loadRoutines();
+  }, [activeTab, loadBacklog, loadRoutines]);
+
+  // ?id= is applied once. Left in the URL it is re-matched on every poll, which re-opens the
+  // inspector the user just dismissed.
+  const deepLinkConsumed = useRef(false);
+  useEffect(() => {
+    if (deepLinkConsumed.current) return;
+    let searchId: string | null = null;
     try {
-      const searchId = new URLSearchParams(window.location.search).get('id');
-      if (searchId && tasks.length > 0) {
-        const found = tasks.find((t) => t.id === searchId || t.originId === searchId);
-        if (found) {
-          setSelectedTask(found);
-        }
+      searchId = new URLSearchParams(window.location.search).get('id');
+    } catch {
+      searchId = null;
+    }
+    if (!searchId) return;
+
+    if (activeTab === 'executions') {
+      const found = tasks.find((t) => t.id === searchId || t.originId === searchId);
+      if (!found) return;
+      setSelectedTask(found);
+      deepLinkConsumed.current = true;
+      return;
+    }
+
+    const row = document.getElementById(`task-row-${searchId}`);
+    if (!row) return;
+    row.scrollIntoView({ block: 'center' });
+    setHighlightedId(searchId);
+    deepLinkConsumed.current = true;
+    const timer = setTimeout(() => setHighlightedId(null), 2500);
+    return () => clearTimeout(timer);
+  }, [tasks, activeTab, backlogTasks, routines]);
+
+  const closeInspector = () => {
+    setSelectedTask(null);
+    try {
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('id')) {
+        url.searchParams.delete('id');
+        window.history.replaceState({}, '', url.toString());
       }
     } catch {}
-  }, [tasks]);
+  };
 
   useEffect(() => {
     const dialog = executionDialogRef.current;
@@ -188,6 +257,17 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     }
   }, [selectedTask]);
 
+  // `open` renders the form outside the top layer: no backdrop, no Escape, no focus trap.
+  useEffect(() => {
+    for (const [ref, shown] of [
+      [backlogDialogRef, showCreateBacklog],
+      [routineDialogRef, showCreateRoutine],
+    ] as const) {
+      const dialog = ref.current;
+      if (shown && dialog && !dialog.open) dialog.showModal();
+    }
+  }, [showCreateBacklog, showCreateRoutine]);
+
   // --- Handlers: Executions ---
   const handleCancelTask = async (taskId: string) => {
     setActionLoading(true);
@@ -195,7 +275,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       await cancelTask(taskId);
       loadExecutions();
       onRefresh?.();
-      setSelectedTask(null);
+      closeInspector();
       showNotification('success', `Task ${taskId} cancelled`);
     } catch (err: any) {
       showNotification('error', `Cancel failed: ${err?.message || String(err)}`);
@@ -225,9 +305,11 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     try {
       const res = await syncGithubBacklog();
       await loadBacklog();
+      const canceled = res.canceledCount ? `, ${res.canceledCount} closed upstream` : '';
+      const failed = res.failedRepos?.length ? ` — failed: ${res.failedRepos.join(', ')}` : '';
       showNotification(
-        'success',
-        `GitHub sync complete: imported ${res.importedCount} new issue(s) matching label '${res.label}'`
+        res.success ? 'success' : 'error',
+        `GitHub sync: imported ${res.importedCount} new issue(s) matching label '${res.label}'${canceled}${failed}`
       );
     } catch (err: any) {
       showNotification('error', `GitHub sync failed: ${err?.message || String(err)}`);
@@ -239,6 +321,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const handleCreateBacklog = async (e: Event) => {
     e.preventDefault();
     if (!backlogTitle.trim() || !backlogPrompt.trim()) return;
+    if (!(backlogRepo || defaultRepoId)) {
+      showNotification('error', 'Add a repository in Settings before creating work items.');
+      return;
+    }
 
     const modelsList = backlogModels
       .split(',')
@@ -270,9 +356,16 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       const res = await dispatchBacklogTask(item.id);
       await loadBacklog();
       loadExecutions();
+      if (!res.success || !res.taskId) {
+        showNotification(
+          'error',
+          res.error || `Dispatch refused for backlog task #${item.taskNumber}`
+        );
+        return;
+      }
       showNotification(
         'success',
-        `Dispatched backlog task #${item.taskNumber} to queue (${res.taskId || 'queued'})`
+        `Dispatched backlog task #${item.taskNumber} to queue (${res.taskId})`
       );
     } catch (err: any) {
       showNotification('error', `Failed to dispatch backlog task: ${err?.message || String(err)}`);
@@ -322,10 +415,11 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       const res = await triggerRoutine(routine.id);
       await loadRoutines();
       loadExecutions();
-      showNotification(
-        'success',
-        `Triggered routine "${routine.title}" (${res.taskId || 'queued'})`
-      );
+      if (!res.success || !res.taskId) {
+        showNotification('error', res.error || `Trigger refused for routine "${routine.title}"`);
+        return;
+      }
+      showNotification('success', `Triggered routine "${routine.title}" (${res.taskId})`);
     } catch (err: any) {
       showNotification('error', `Failed to trigger routine: ${err?.message || String(err)}`);
     } finally {
@@ -349,6 +443,17 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const handleCreateRoutine = async (e: Event) => {
     e.preventDefault();
     if (!routineTitle.trim() || !routinePrompt.trim()) return;
+    if (!(routineRepo || defaultRepoId)) {
+      showNotification('error', 'Add a repository in Settings before creating routines.');
+      return;
+    }
+
+    const triggerHours = parseOptionalNumber(routineTriggerHours, 1, 24);
+    const minHeadroom = parseOptionalNumber(routineMinHeadroom, 1, 90);
+    if (triggerHours === 'invalid' || minHeadroom === 'invalid') {
+      showNotification('error', 'Trigger window must be 1-24h and headroom floor 1-90%.');
+      return;
+    }
 
     const modelsList = routineModels
       .split(',')
@@ -362,8 +467,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         repositoryId: routineRepo || defaultRepoId,
         models: modelsList.length > 0 ? modelsList : [defaultModel],
         effort: routineEffort,
-        triggerBeforeResetHours: routineTriggerHours,
-        minHeadroomPercent: routineMinHeadroom,
+        triggerBeforeResetHours: triggerHours,
+        minHeadroomPercent: minHeadroom,
         verifyCommand: routineVerifyCommand.trim() || undefined,
         enabled: true,
         autoCreatePr: true,
@@ -590,7 +695,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 {visibleTasks.length === 0 ? (
                   <tr>
                     <td colSpan={9} class="p-8 text-center text-sm text-pine-muted">
-                      No executions matching the selected filter.
+                      {loadError
+                        ? `Could not load executions: ${loadError}`
+                        : 'No executions matching the selected filter.'}
                     </td>
                   </tr>
                 ) : (
@@ -598,6 +705,12 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     <tr
                       key={t.id}
                       onClick={() => setSelectedTask(t)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          setSelectedTask(t);
+                        }
+                      }}
                       tabIndex={0}
                       aria-label={`Open details for ${t.id}`}
                       class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
@@ -717,12 +830,20 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 ) : backlogTasks.length === 0 ? (
                   <tr>
                     <td colSpan={9} class="p-8 text-center text-sm text-pine-muted">
-                      No backlog work items queued. Add one manually or click 'Sync GitHub'.
+                      {loadError
+                        ? `Could not load backlog: ${loadError}`
+                        : "No backlog work items queued. Add one manually or click 'Sync GitHub'."}
                     </td>
                   </tr>
                 ) : (
                   backlogTasks.map((item) => (
-                    <tr key={item.id} class="align-top transition-colors hover:bg-pine-overlay/20">
+                    <tr
+                      key={item.id}
+                      id={`task-row-${item.id}`}
+                      class={`align-top transition-colors hover:bg-pine-overlay/20 ${
+                        highlightedId === item.id ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
+                      }`}
+                    >
                       <td class="p-3.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
                         #{item.taskNumber}
                       </td>
@@ -764,6 +885,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       </td>
                       <td class="p-3.5 font-mono text-xs whitespace-nowrap">
                         <span
+                          title="Autonomous retry budget. A manual dispatch is always allowed."
                           class={
                             item.attemptCount >= item.maxAttempts
                               ? 'font-bold text-pine-love'
@@ -816,15 +938,39 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                               Dispatch
                             </button>
                           ) : null}
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteBacklog(item.id)}
-                            disabled={backlogActionId === item.id}
-                            class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted transition-colors hover:text-pine-love"
-                            title="Delete work item"
-                          >
-                            <Icon icon={faTrash} class="size-3.5" />
-                          </button>
+                          {pendingDelete === item.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingDelete(null);
+                                  void handleDeleteBacklog(item.id);
+                                }}
+                                disabled={backlogActionId === item.id}
+                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-[11px] font-bold whitespace-nowrap text-pine-love"
+                              >
+                                Delete?
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted hover:text-pine-text"
+                                aria-label="Cancel delete"
+                              >
+                                <Icon icon={faTimes} class="size-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setPendingDelete(item.id)}
+                              disabled={backlogActionId === item.id}
+                              class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted transition-colors hover:text-pine-love"
+                              title="Delete work item"
+                            >
+                              <Icon icon={faTrash} class="size-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -864,15 +1010,19 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 ) : routines.length === 0 ? (
                   <tr>
                     <td colSpan={9} class="p-8 text-center text-sm text-pine-muted">
-                      No routines configured. Create one to automatically burn quota before weekly
-                      resets.
+                      {loadError
+                        ? `Could not load routines: ${loadError}`
+                        : 'No routines configured. Create one to automatically burn quota before weekly resets.'}
                     </td>
                   </tr>
                 ) : (
                   routines.map((routine) => (
                     <tr
                       key={routine.id}
-                      class="align-top transition-colors hover:bg-pine-overlay/20"
+                      id={`task-row-${routine.id}`}
+                      class={`align-top transition-colors hover:bg-pine-overlay/20 ${
+                        highlightedId === routine.id ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
+                      }`}
                     >
                       <td class="p-3.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
                         #{routine.taskNumber}
@@ -943,15 +1093,39 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                           >
                             Trigger
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteRoutine(routine.id)}
-                            disabled={routineActionId === routine.id}
-                            class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted transition-colors hover:text-pine-love"
-                            title="Delete routine"
-                          >
-                            <Icon icon={faTrash} class="size-3.5" />
-                          </button>
+                          {pendingDelete === routine.id ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPendingDelete(null);
+                                  void handleDeleteRoutine(routine.id);
+                                }}
+                                disabled={routineActionId === routine.id}
+                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-[11px] font-bold whitespace-nowrap text-pine-love"
+                              >
+                                Delete?
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setPendingDelete(null)}
+                                class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted hover:text-pine-text"
+                                aria-label="Cancel delete"
+                              >
+                                <Icon icon={faTimes} class="size-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setPendingDelete(routine.id)}
+                              disabled={routineActionId === routine.id}
+                              class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted transition-colors hover:text-pine-love"
+                              title="Delete routine"
+                            >
+                              <Icon icon={faTrash} class="size-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -967,8 +1141,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {selectedTask && (
         <dialog
           ref={executionDialogRef}
-          onClose={() => setSelectedTask(null)}
-          onClick={dialogBackdropClickHandler(executionDialogRef, () => setSelectedTask(null))}
+          onClose={closeInspector}
+          onClick={dialogBackdropClickHandler(executionDialogRef, closeInspector)}
           class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 sm:p-6"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
@@ -992,7 +1166,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             </div>
             <button
               type="button"
-              onClick={() => setSelectedTask(null)}
+              onClick={closeInspector}
               class="cursor-pointer rounded-lg border border-pine-highlight p-1.5 text-xs text-pine-subtle hover:text-pine-text"
             >
               <Icon icon={faTimes} class="size-4" />
@@ -1091,7 +1265,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* --- MODAL: CREATE BACKLOG TASK --- */}
       {showCreateBacklog && (
         <dialog
-          open
+          ref={backlogDialogRef}
+          onClose={() => setShowCreateBacklog(false)}
+          onClick={dialogBackdropClickHandler(backlogDialogRef, () => setShowCreateBacklog(false))}
           class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
@@ -1188,7 +1364,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* --- MODAL: CREATE ROUTINE --- */}
       {showCreateRoutine && (
         <dialog
-          open
+          ref={routineDialogRef}
+          onClose={() => setShowCreateRoutine(false)}
+          onClick={dialogBackdropClickHandler(routineDialogRef, () => setShowCreateRoutine(false))}
           class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
@@ -1261,9 +1439,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     min={1}
                     max={24}
                     value={routineTriggerHours}
-                    onInput={(e) =>
-                      setRoutineTriggerHours(Number((e.target as HTMLInputElement).value))
-                    }
+                    onInput={(e) => setRoutineTriggerHours((e.target as HTMLInputElement).value)}
                     class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-pine-text focus:border-pine-iris focus:outline-hidden"
                   />
                   <span class="font-medium text-pine-muted">hours</span>
@@ -1277,9 +1453,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     min={1}
                     max={90}
                     value={routineMinHeadroom}
-                    onInput={(e) =>
-                      setRoutineMinHeadroom(Number((e.target as HTMLInputElement).value))
-                    }
+                    onInput={(e) => setRoutineMinHeadroom((e.target as HTMLInputElement).value)}
                     class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-pine-text focus:border-pine-iris focus:outline-hidden"
                   />
                   <span class="font-medium text-pine-muted">%</span>

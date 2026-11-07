@@ -18,6 +18,9 @@ description: >-
   - Process Execution: Native `node:child_process.execFile` with array arguments.
 - **Zod v4 API Invariant:**
   - Validation error collections in Zod v4 must strictly be accessed via `result.error.issues` (`result.error.errors` does not exist in Zod v4).
+- **Nullable SQLite Identifier Coercion Invariant:**
+  - In SQLite schema update patches and mappers, optional external numeric identifiers (such as `github_issue_number`) must strictly distinguish `undefined` (retain existing), `null` (explicitly unlinked), and positive integers (`> 0`).
+  - Never use naive default coercion `coerceNumber(val, existing ?? 0)` on nullable foreign keys or external IDs, as storing `0` creates false-positive issue references (`#0`) in UI badges and search queries.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
@@ -152,7 +155,7 @@ Agylity implements a pull-based runner swarm designed for zero inbound firewall 
 
 ```
 Coordinator (Homelab / Cloud)
-  ├── SQLite Task Queue (P0 Urgent, P1 Scheduled, P2 Quota-Burn)
+  ├── SQLite Task Queue (tier: immediate | backlog | routine, scheduleMode: immediate | pre_reset)
   ├── Discord Bot (/dispatch modal & /quota commands)
   ├── Web Control Plane (/api/dispatch & /api/runners)
   └── Runner API (/api/tasks/poll, /api/runners/register)
@@ -185,9 +188,18 @@ Coordinator (Homelab / Cloud)
   with either of them the "allowlist" is arbitrary code execution under the runner's identity.
 - **Inline-Code Rejection**: `-e`, `--eval` and `-c` are rejected for the remaining interpreters.
 
-### 4. Opportunistic Quota Burning (P2)
+### 4. Task Tiers: Immediate, Backlog, Routine
 
-- Low-priority background tasks only dispatch when remaining time to reset is short (`< 2h`) and headroom is healthy (`> 30%`), utilizing free allowance before it expires.
+Three tiers, and only the first is human-initiated per run:
+
+- **`immediate`** — a direct dispatch from the Web UI, Discord or `POST /api/dispatch`. Sets the autonomy quench timestamp when `actor !== 'bot'`.
+- **`backlog`** (`backlog_tasks`) — queued work items, created by hand or by the GitHub label sync. The evaluator dispatches at most one per quota probe, gated on headroom of at least `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
+- **`routine`** (`routine_tasks`, migrated from `standing_tasks`) — recurring templates released inside `trigger_before_reset_hours`, once per pool reset cycle, gated on `max(min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`.
+
+- **The autonomy quench is 2 hours** after a manual immediate dispatch, persisted in `runtime_state` so a restart cannot re-arm it.
+- **Both autonomous tiers carry an ordered `models[]`** and dispatch the first candidate whose pool clears the floor (`evaluateModelPreferenceChain`); the manual dispatch routes pass the same chain to `coordinator.dispatch`. A model id mapping to no pool is refused, never charged to another family.
+- **Origin settlement has two call sites** — the runner status report and `reconcileBacklogOrigins` — both strictly funneled through `applyBacklogOutcome`. Backlog rows never mutate terminal states (`completed`, `failed`, `canceled`) on late runner callbacks or redundant sweeps. A backlog row left on `dispatched` is picked by nothing.
+- **Every refusal is a 4xx.** A safety-floor or telemetry block on a dispatch is HTTP 400; a cancel of an already-terminal task is 409.
 
 ---
 

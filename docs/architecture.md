@@ -229,7 +229,7 @@ Agylity's execution model is a **Pull-Based Runner Swarm**:
 
 ```
 Coordinator (Homelab / Cloud)
-  ├── SQLite Task Queue (scheduleMode: immediate | pre_reset)
+  ├── SQLite Task Queue (tier: immediate | backlog | routine, scheduleMode: immediate | pre_reset)
   ├── Discord Bot (/dispatch modal)
   └── REST API (/api/tasks/poll)
         ▲
@@ -252,6 +252,38 @@ Coordinator (Homelab / Cloud)
    - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested family, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 5. **Alerting-First Operational Mode**:
    - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
+
+### 7.2. Task Taxonomy: Three Tiers
+
+| Tier        | Source row      | Created through                                         | First dispatched by                                       |
+| :---------- | :-------------- | :------------------------------------------------------ | :-------------------------------------------------------- |
+| `immediate` | `swarm_tasks`   | Web UI, Discord, `POST /api/dispatch`                   | `coordinator.dispatch`                                    |
+| `backlog`   | `backlog_tasks` | `POST /api/backlog`, GitHub label sync                  | autonomous evaluator, or `POST /api/backlog/:id/dispatch` |
+| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | pre-reset evaluator, or `POST /api/routines/:id/trigger`  |
+
+Every `swarm_tasks` row carries `tier`, `origin_id`, `origin_number` and `origin_title`, which is what
+lets the dashboard link a run back to the item that produced it.
+
+- **Autonomy quench**: the autonomous evaluator runs on each quota probe but stays quiet for two hours
+  after a manual (`actor: 'user'`) immediate dispatch. The timestamp lives in `runtime_state`, so a
+  redeploy does not re-arm autonomous work.
+- **Tier 2 (backlog)**: at most one item per probe, gated on effective headroom of at least
+  `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
+- **Tier 3 (routine)**: at most one execution per pool reset cycle (stamped in
+  `last_triggered_reset_time`), released only inside `trigger_before_reset_hours` and only while
+  headroom is at least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. Needs
+  `COORDINATOR_ENABLED` and `ROUTINES_ENABLED`.
+- **Model preference chains**: both autonomous tiers store an ordered `models[]` and dispatch the
+  first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
+  to no pool is refused rather than charged to another family's headroom.
+- **Origin settlement**: a backlog item closes on `completed`/`no_changes`, returns to `pending` while
+  `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
+  from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
+  user cancel — none of those produce a runner report.
+- **Routes**: `GET|POST /api/backlog`, `GET|PATCH|DELETE /api/backlog/:id`,
+  `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
+  `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor
+  is HTTP 400 on every one of them, including the two single-item dispatch routes.
 
 ---
 

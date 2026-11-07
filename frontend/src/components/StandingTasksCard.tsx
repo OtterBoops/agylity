@@ -52,9 +52,12 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
 
   const handleToggleEnabled = async (task: StandingTaskRecord) => {
     setActionId(task.id);
+    setStatusMessage(null);
     try {
       await updateStandingTask(task.id, { enabled: !task.enabled });
       await refreshTasks();
+    } catch (err: any) {
+      setStatusMessage(`[Error] Failed to toggle routine: ${err?.message || String(err)}`);
     } finally {
       setActionId(null);
     }
@@ -62,9 +65,12 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
 
   const handleDelete = async (id: string) => {
     setActionId(id);
+    setStatusMessage(null);
     try {
       await deleteStandingTask(id);
       await refreshTasks();
+    } catch (err: any) {
+      setStatusMessage(`[Error] Failed to delete routine: ${err?.message || String(err)}`);
     } finally {
       setActionId(null);
     }
@@ -75,9 +81,14 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
     setStatusMessage(null);
     try {
       const res = await triggerStandingTask(task.id);
-      setStatusMessage(
-        `[Success] Dispatched standing task ${task.id} (Task ID: ${res.taskId || 'queued'})`
-      );
+      if (!res.success || !res.taskId) {
+        setStatusMessage(
+          `[Blocked] Routine ${task.id} was not dispatched: ${res.error || 'no task was queued'}`
+        );
+        await refreshTasks();
+        return;
+      }
+      setStatusMessage(`[Success] Dispatched routine ${task.id} (Task ID: ${res.taskId})`);
       await refreshTasks();
     } catch (err: any) {
       setStatusMessage(`[Error] Failed to trigger standing task: ${err?.message || String(err)}`);

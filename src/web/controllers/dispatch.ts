@@ -8,6 +8,7 @@ import {
   toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
+  isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
@@ -16,6 +17,7 @@ import { Coordinator } from '../../coordinator/coordinator.js';
 import { RegistrationTokenError } from '../../coordinator/queue.js';
 import {
   annotateModelsWithQuota,
+  isTerminalTaskStatus,
   ReasoningEffortSchema,
   ScheduleModeSchema,
   TaskStatusSchema,
@@ -172,6 +174,7 @@ export const handlePostDispatch = async (
     scheduleMode,
     requiredLabels,
     model: toStringOrUndefined(payload.model),
+    models: toStringArray(payload.models),
     effort,
     allowOverage: Boolean(payload.allowOverage),
     pushBranch: typeof payload.pushBranch === 'boolean' ? payload.pushBranch : true,
@@ -181,10 +184,7 @@ export const handlePostDispatch = async (
     verifyCommand: toStringOrUndefined(payload.verifyCommand),
   });
 
-  if (
-    !result.success &&
-    (result.code === 'OVERAGE_PROTECTION_TRIGGERED' || result.code === 'TELEMETRY_UNAVAILABLE')
-  ) {
+  if (!result.success && isSafetyBlockCode(result.code)) {
     return sendJson(res, 400, result);
   }
 
@@ -338,27 +338,29 @@ export const handleTaskStatus = async (
   return sendJson(res, 200, { success: true, task: result.task });
 };
 
-export const handleTaskCancel = (
+export const handleTaskCancel = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,
   method: string
-): void => {
+): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
   const match = /^\/api\/tasks\/([^/]+)\/cancel$/.exec(pathname);
   const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
 
   const coordinator = resolveCoordinator(options);
-  const task = coordinator.queue.getTask(taskId);
-  if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
-
-  const updated = coordinator.queue.updateTaskStatus(taskId, {
-    status: 'aborted',
-    error: 'Task aborted by user',
-  });
-  return sendJson(res, 200, { success: true, task: updated?.task });
+  const result = await coordinator.cancelTask(taskId);
+  if (!result) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+  if (!result.applied) {
+    return sendJson(res, 409, {
+      error: `Task ${taskId} cannot be cancelled; current status is ${result.task.status}`,
+      status: result.task.status,
+      task: result.task,
+    });
+  }
+  return sendJson(res, 200, { success: true, task: result.task });
 };
 
 export const handleTaskRetry = async (
@@ -376,6 +378,12 @@ export const handleTaskRetry = async (
   const coordinator = resolveCoordinator(options);
   const task = coordinator.queue.getTask(taskId);
   if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+  if (!isTerminalTaskStatus(task.status)) {
+    return sendJson(res, 409, {
+      error: `Task ${taskId} is still ${task.status}; only a finished task can be retried`,
+      status: task.status,
+    });
+  }
 
   const retryRes = await coordinator.dispatch({
     repositoryId: task.repositoryId,
@@ -383,6 +391,11 @@ export const handleTaskRetry = async (
     repositoryPath: task.repositoryPath,
     cloneUrl: task.cloneUrl,
     prompt: task.prompt,
+    title: task.title,
+    tier: task.tier,
+    originId: task.originId,
+    originNumber: task.originNumber,
+    originTitle: task.originTitle,
     requestedBy: 'web-ui (retry)',
     actor: task.actor,
     botPrPolicy: task.botPrPolicy,

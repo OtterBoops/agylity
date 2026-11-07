@@ -5,6 +5,9 @@ import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schem
 import type { QuotaFamily } from '../sentry/models.js';
 import type { BotPrPolicy } from '../config/schema.js';
 import {
+  BacklogStatusSchema,
+  ReasoningEffortSchema,
+  TaskActorSchema,
   resolvePoolFamilyForModel,
   type BacklogStatus,
   type ReasoningEffort,
@@ -369,12 +372,19 @@ const RUNNER_REGISTRATION_COLUMNS: readonly ColumnSpec[] = [
   { name: 'consumed_at', ddl: 'consumed_at TEXT' },
 ];
 
+const RUNTIME_STATE_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'key', ddl: 'key TEXT PRIMARY KEY' },
+  { name: 'value', ddl: 'value TEXT' },
+  { name: 'updated_at', ddl: 'updated_at TEXT NOT NULL' },
+];
+
 const SCHEMA_TABLES: ReadonlyArray<{ name: string; columns: readonly ColumnSpec[] }> = [
   { name: 'swarm_tasks', columns: SWARM_TASK_COLUMNS },
   { name: 'backlog_tasks', columns: BACKLOG_TASK_COLUMNS },
   { name: 'routine_tasks', columns: ROUTINE_TASK_COLUMNS },
   { name: 'swarm_runners', columns: SWARM_RUNNER_COLUMNS },
   { name: 'swarm_runner_registrations', columns: RUNNER_REGISTRATION_COLUMNS },
+  { name: 'runtime_state', columns: RUNTIME_STATE_COLUMNS },
 ];
 
 const SCHEMA_VERSION = 4;
@@ -382,6 +392,44 @@ const SCHEMA_VERSION = 4;
 const REGISTRATION_TOKEN_RETENTION = 50;
 
 const TERMINAL_STATUS_SQL = TERMINAL_TASK_STATUSES.map((s) => `'${s}'`).join(', ');
+
+// Patches are untyped JSON: a string `models` would make `models[0]` a single character.
+const coerceModelList = (value: unknown, fallback: string[]): string[] => {
+  if (!Array.isArray(value)) return fallback;
+  const list = value.map((v) => String(v).trim()).filter(Boolean);
+  return list.length > 0 ? list : fallback;
+};
+
+const coerceNumber = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+const coerceNullableNumber = (value: unknown, fallback: number | null): number | null => {
+  if (value === null) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  return fallback;
+};
+
+// The schemas carry defaults, so `undefined` must not be parsed: it means "keep the fallback".
+const coerceEffort = (value: unknown, fallback: ReasoningEffort): ReasoningEffort => {
+  if (value === undefined) return fallback;
+  const parsed = ReasoningEffortSchema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+};
+
+const coerceActor = (value: unknown, fallback: TaskActor): TaskActor => {
+  if (value === undefined) return fallback;
+  const parsed = TaskActorSchema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+};
+
+const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogStatus => {
+  if (value === undefined) return fallback;
+  const parsed = BacklogStatusSchema.safeParse(value);
+  return parsed.success ? parsed.data : fallback;
+};
+
+const coerceNullableString = (value: unknown, fallback: string | null): string | null =>
+  typeof value === 'string' ? value : fallback;
 
 /** Raised for every rejected one-time registration token, so callers can map it to a 401. */
 export class RegistrationTokenError extends Error {}
@@ -434,12 +482,16 @@ ${renderColumns(SWARM_RUNNER_COLUMNS)}
       CREATE TABLE IF NOT EXISTS swarm_runner_registrations (
 ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       );
+
+      CREATE TABLE IF NOT EXISTS runtime_state (
+${renderColumns(RUNTIME_STATE_COLUMNS)}
+      );
     `);
 
     this.migrateSchema();
   }
 
-  // Additively upgrades an existing database to the current schema. Never drops or rewrites a
+  // Additively upgrades an existing database, except the two legacy renames that copy then drop.
   private migrateSchema(): void {
     // 1. Migrate legacy swarm_workers table to swarm_runners if present
     try {
@@ -453,15 +505,23 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           DROP TABLE swarm_workers;
         `);
       }
-    } catch {
-      // Best-effort table migration
+    } catch (err) {
+      logger.warn('Legacy swarm_workers migration failed: %s', err);
     }
 
+    // worker_id only exists in pre-runner databases, so the statement is invalid elsewhere.
     try {
-      this.rawDb.exec(`
-        UPDATE swarm_tasks SET runner_id = worker_id WHERE runner_id IS NULL AND worker_id IS NOT NULL;
-      `);
-    } catch {}
+      const hasWorkerColumn = (
+        this.rawDb.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name?: string }>
+      ).some((column) => column.name === 'worker_id');
+      if (hasWorkerColumn) {
+        this.rawDb.exec(
+          'UPDATE swarm_tasks SET runner_id = worker_id WHERE runner_id IS NULL AND worker_id IS NOT NULL'
+        );
+      }
+    } catch (err) {
+      logger.warn('Legacy worker_id backfill failed: %s', err);
+    }
 
     // 2. Migrate legacy standing_tasks to routine_tasks if present
     try {
@@ -505,8 +565,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         }
         this.rawDb.exec('DROP TABLE standing_tasks');
       }
-    } catch {
-      // Best-effort table migration
+    } catch (err) {
+      logger.warn('Legacy standing_tasks migration failed: %s', err);
     }
 
     const versionRow = this.rawDb.prepare('PRAGMA user_version').get() as
@@ -535,7 +595,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         )
         WHERE task_number IS NULL OR task_number = 0;
       `);
-    } catch {}
+    } catch (err) {
+      logger.warn('task_number backfill failed: %s', err);
+    }
 
     // 4. Backfill human-readable title on swarm_tasks if empty
     try {
@@ -554,7 +616,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           .prepare('UPDATE swarm_tasks SET title = ? WHERE id = ?')
           .run(firstLine || 'Task', r.id);
       }
-    } catch {}
+    } catch (err) {
+      logger.warn('title backfill failed: %s', err);
+    }
 
     // 5. Backfill tier and origin information from legacy standing task runs
     try {
@@ -578,11 +642,29 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
             .run(originId, routine?.task_number ?? null, routine?.title ?? null, r.id);
         }
       }
-    } catch {}
+    } catch (err) {
+      logger.warn('tier/origin backfill failed: %s', err);
+    }
 
     if (currentVersion < SCHEMA_VERSION) {
       this.rawDb.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
+  }
+
+  // Runtime counters that outlive a restart, kept out of `settings` so they never look like overrides.
+  public getRuntimeValue(key: string): string | undefined {
+    const row = this.rawDb.prepare('SELECT value FROM runtime_state WHERE key = ?').get(key) as
+      { value?: string } | undefined;
+    return row?.value ?? undefined;
+  }
+
+  public setRuntimeValue(key: string, value: string): void {
+    this.rawDb
+      .prepare(
+        `INSERT INTO runtime_state (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+      )
+      .run(key, value, new Date().toISOString());
   }
 
   // One-time registration token: plaintext is returned once, only its SHA-256 hash is persisted.
@@ -840,7 +922,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const repoName = input.repositoryName.trim();
     const repoPath = (input.repositoryPath || `/repos/${repoId}`).trim();
     const defaultBranch = (input.defaultBranch || 'main').trim();
-    const prompt = input.prompt.slice(0, 4000);
+    // Bounded, not truncated for real input: GitHub's own issue body limit is 65536.
+    const prompt = input.prompt.slice(0, 20000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
     const actor: TaskActor = input.actor ?? 'user';
     const botPrPolicy = input.botPrPolicy ?? null;
@@ -1500,6 +1583,16 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return row ? this.mapRowToBacklogTask(row) : undefined;
   }
 
+  // Dispatched rows, for the reconciler that settles the ones no runner ever reported.
+  public listDispatchedBacklogTasks(): BacklogTaskRecord[] {
+    const rows = this.rawDb
+      .prepare(
+        "SELECT * FROM backlog_tasks WHERE status = 'dispatched' AND swarm_task_id IS NOT NULL"
+      )
+      .all() as Array<Record<string, any>>;
+    return rows.map((r) => this.mapRowToBacklogTask(r));
+  }
+
   public createBacklogTask(input: {
     id?: string;
     taskNumber?: number;
@@ -1522,12 +1615,12 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       .prepare('SELECT MAX(task_number) as max_num FROM backlog_tasks')
       .get() as { max_num?: number } | undefined;
     const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-    const models = input.models && input.models.length > 0 ? input.models : ['gemini-3.8-flash'];
-    const effort: ReasoningEffort = input.effort ?? 'high';
+    const models = coerceModelList(input.models, ['gemini-3.8-flash']);
+    const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
-    const actor: TaskActor = input.actor ?? 'bot';
-    const priorityOrder = input.priorityOrder ?? 0;
-    const maxAttempts = input.maxAttempts ?? 2;
+    const actor: TaskActor = coerceActor(input.actor, 'bot');
+    const priorityOrder = coerceNumber(input.priorityOrder, 0);
+    const maxAttempts = coerceNumber(input.maxAttempts, 2);
 
     this.rawDb
       .prepare(
@@ -1589,36 +1682,34 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const prompt = patch.prompt !== undefined ? patch.prompt.trim() : existing.prompt;
     const repositoryId =
       patch.repositoryId !== undefined ? patch.repositoryId.trim() : existing.repositoryId;
-    const modelsJson =
-      patch.models !== undefined ? JSON.stringify(patch.models) : JSON.stringify(existing.models);
-    const effort = patch.effort !== undefined ? patch.effort : existing.effort;
-    const verifyCommand =
-      patch.verifyCommand !== undefined ? patch.verifyCommand : (existing.verifyCommand ?? null);
+    const modelsJson = JSON.stringify(
+      patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
+    );
+    const effort = coerceEffort(patch.effort ?? existing.effort, existing.effort);
+    const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
     const autoCreatePr =
-      patch.autoCreatePr !== undefined
+      typeof patch.autoCreatePr === 'boolean'
         ? patch.autoCreatePr
           ? 1
           : 0
         : existing.autoCreatePr
           ? 1
           : 0;
-    const actor = patch.actor !== undefined ? patch.actor : existing.actor;
-    const priorityOrder =
-      patch.priorityOrder !== undefined ? patch.priorityOrder : existing.priorityOrder;
-    const status = patch.status !== undefined ? patch.status : existing.status;
-    const attemptCount =
-      patch.attemptCount !== undefined ? patch.attemptCount : existing.attemptCount;
-    const maxAttempts = patch.maxAttempts !== undefined ? patch.maxAttempts : existing.maxAttempts;
-    const lastError =
-      patch.lastError !== undefined ? patch.lastError : (existing.lastError ?? null);
-    const swarmTaskId =
-      patch.swarmTaskId !== undefined ? patch.swarmTaskId : (existing.swarmTaskId ?? null);
-    const githubIssueNumber =
-      patch.githubIssueNumber !== undefined
-        ? patch.githubIssueNumber
-        : (existing.githubIssueNumber ?? null);
-    const githubIssueUrl =
-      patch.githubIssueUrl !== undefined ? patch.githubIssueUrl : (existing.githubIssueUrl ?? null);
+    const actor = coerceActor(patch.actor ?? existing.actor, existing.actor);
+    const priorityOrder = coerceNumber(patch.priorityOrder, existing.priorityOrder);
+    const status = coerceBacklogStatus(patch.status ?? existing.status, existing.status);
+    const attemptCount = coerceNumber(patch.attemptCount, existing.attemptCount);
+    const maxAttempts = coerceNumber(patch.maxAttempts, existing.maxAttempts);
+    const lastError = coerceNullableString(patch.lastError, existing.lastError ?? null);
+    const swarmTaskId = coerceNullableString(patch.swarmTaskId, existing.swarmTaskId ?? null);
+    const githubIssueNumber = coerceNullableNumber(
+      patch.githubIssueNumber,
+      existing.githubIssueNumber ?? null
+    );
+    const githubIssueUrl = coerceNullableString(
+      patch.githubIssueUrl,
+      existing.githubIssueUrl ?? null
+    );
 
     this.rawDb
       .prepare(
@@ -1700,7 +1791,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       lastError: r.last_error ? String(r.last_error) : undefined,
       swarmTaskId: r.swarm_task_id ? String(r.swarm_task_id) : undefined,
       githubIssueNumber:
-        r.github_issue_number !== null && r.github_issue_number !== undefined
+        r.github_issue_number !== null &&
+        r.github_issue_number !== undefined &&
+        Number(r.github_issue_number) > 0
           ? Number(r.github_issue_number)
           : undefined,
       githubIssueUrl: r.github_issue_url ? String(r.github_issue_url) : undefined,
@@ -1748,14 +1841,14 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       .prepare('SELECT MAX(task_number) as max_num FROM routine_tasks')
       .get() as { max_num?: number } | undefined;
     const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-    const models = input.models && input.models.length > 0 ? input.models : ['gemini-3.8-flash'];
-    const effort: ReasoningEffort = input.effort ?? 'high';
+    const models = coerceModelList(input.models, ['gemini-3.8-flash']);
+    const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
-    const actor: TaskActor = input.actor ?? 'bot';
+    const actor: TaskActor = coerceActor(input.actor, 'bot');
     const enabled = input.enabled !== false ? 1 : 0;
-    const sortOrder = input.sortOrder ?? 0;
-    const triggerHours = input.triggerBeforeResetHours ?? 2;
-    const minHeadroom = input.minHeadroomPercent ?? 10;
+    const sortOrder = coerceNumber(input.sortOrder, 0);
+    const triggerHours = coerceNumber(input.triggerBeforeResetHours, 2);
+    const minHeadroom = coerceNumber(input.minHeadroomPercent, 10);
 
     this.rawDb
       .prepare(
@@ -1814,37 +1907,33 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const prompt = patch.prompt !== undefined ? patch.prompt.trim() : existing.prompt;
     const repositoryId =
       patch.repositoryId !== undefined ? patch.repositoryId.trim() : existing.repositoryId;
-    const modelsJson =
-      patch.models !== undefined ? JSON.stringify(patch.models) : JSON.stringify(existing.models);
-    const effort = patch.effort !== undefined ? patch.effort : existing.effort;
-    const verifyCommand =
-      patch.verifyCommand !== undefined ? patch.verifyCommand : (existing.verifyCommand ?? null);
+    const modelsJson = JSON.stringify(
+      patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
+    );
+    const effort = coerceEffort(patch.effort ?? existing.effort, existing.effort);
+    const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
     const autoCreatePr =
-      patch.autoCreatePr !== undefined
+      typeof patch.autoCreatePr === 'boolean'
         ? patch.autoCreatePr
           ? 1
           : 0
         : existing.autoCreatePr
           ? 1
           : 0;
-    const actor = patch.actor !== undefined ? patch.actor : existing.actor;
+    const actor = coerceActor(patch.actor ?? existing.actor, existing.actor);
     const enabled =
-      patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
-    const sortOrder = patch.sortOrder !== undefined ? patch.sortOrder : existing.sortOrder;
-    const triggerHours =
-      patch.triggerBeforeResetHours !== undefined
-        ? patch.triggerBeforeResetHours
-        : existing.triggerBeforeResetHours;
-    const minHeadroom =
-      patch.minHeadroomPercent !== undefined
-        ? patch.minHeadroomPercent
-        : existing.minHeadroomPercent;
-    const lastReset =
-      patch.lastTriggeredResetTime !== undefined
-        ? patch.lastTriggeredResetTime
-        : (existing.lastTriggeredResetTime ?? null);
-    const lastTaskId =
-      patch.lastTaskId !== undefined ? patch.lastTaskId : (existing.lastTaskId ?? null);
+      typeof patch.enabled === 'boolean' ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
+    const sortOrder = coerceNumber(patch.sortOrder, existing.sortOrder);
+    const triggerHours = coerceNumber(
+      patch.triggerBeforeResetHours,
+      existing.triggerBeforeResetHours
+    );
+    const minHeadroom = coerceNumber(patch.minHeadroomPercent, existing.minHeadroomPercent);
+    const lastReset = coerceNullableString(
+      patch.lastTriggeredResetTime,
+      existing.lastTriggeredResetTime ?? null
+    );
+    const lastTaskId = coerceNullableString(patch.lastTaskId, existing.lastTaskId ?? null);
 
     this.rawDb
       .prepare(

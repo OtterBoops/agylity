@@ -80,8 +80,8 @@ Agylity container images published to GitHub Container Registry (`ghcr.io/otterb
 
 | Tag             | Channel            | Description                                                                                                                               |
 | --------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.4.0`). Recommended for production homelabs and compose stacks.             |
-| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.4.0`, `0.4`).                                                                                              |
+| `latest`        | **Stable Release** | Points strictly to the most recent stable release tag (e.g. `0.4.1`). Recommended for production homelabs and compose stacks.             |
+| `<version>`     | **Fixed Version**  | Exact release version (e.g. `0.4.1`, `0.4`).                                                                                              |
 | `edge` / `main` | **Development**    | Built from the tip of the `main` branch on every commit. Contains intermediate changes between formal releases without touching `latest`. |
 | `sha-<hash>`    | **Immutable**      | Commit-specific immutable image digest tag (e.g. `sha-9d62b78`).                                                                          |
 

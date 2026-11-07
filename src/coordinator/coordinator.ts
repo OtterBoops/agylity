@@ -15,11 +15,13 @@ import {
   evaluateModelPreferenceChain,
   resolveConcreteModelId,
   resolvePoolFamilyForModel,
+  isTerminalTaskStatus,
   resolveReasoningEffortForModel,
   type ModelEligibilityResult,
   type ReasoningEffort,
   type ScheduleMode,
   type TaskActor,
+  type TaskStatus,
   type TaskTier,
 } from './models.js';
 import {
@@ -52,6 +54,8 @@ export interface DispatchTaskRequest {
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model?: string;
+  /** Ordered fallback chain; the first entry whose pool clears the floor is dispatched. */
+  models?: string[];
   effort?: ReasoningEffort;
   allowOverage?: boolean;
   pushBranch?: boolean;
@@ -119,6 +123,9 @@ export class Coordinator {
     this.notifier = options.notifier;
     this.log = options.logger ?? logger.child('coordinator');
     this.bus.setMaxListeners(100);
+    // The 2h autonomy quench must survive a redeploy, or every restart re-arms autonomous work.
+    this.lastManualDispatchAt =
+      Number(this.queue.getRuntimeValue('lastManualDispatchAt') ?? 0) || 0;
   }
 
   public setNotifier(notifier: Notifier): void {
@@ -131,6 +138,7 @@ export class Coordinator {
 
   public setLastManualDispatchAt(timestampMs: number): void {
     this.lastManualDispatchAt = timestampMs;
+    this.queue.setRuntimeValue('lastManualDispatchAt', String(timestampMs));
   }
 
   public getActivePools(): QuotaSnapshot[] {
@@ -151,6 +159,7 @@ export class Coordinator {
 
   public reapStaleClaims(): SwarmTask[] {
     const expiredTasks = this.queue.reapStaleClaims();
+    this.reconcileBacklogOrigins();
     if (expiredTasks.length > 0) {
       this.log.info('Reaped %d expired runner task lease(s)', expiredTasks.length);
       for (const t of expiredTasks) {
@@ -205,7 +214,7 @@ export class Coordinator {
           models: nextBacklog.models,
           defaultModel: resolved.defaultDispatchModel,
           pools: snapshots,
-          minHeadroomPercent: 40,
+          minHeadroomPercent: Math.max(40, resolved.minDispatchHeadroomPercent ?? 0),
           isPoolDispatchEnabled: (fam) => resolved.poolPolicies?.[fam]?.dispatchEnabled !== false,
         });
 
@@ -339,7 +348,10 @@ export class Coordinator {
 
         // Check headroom: must have quota remaining to burn
         const headroom = calculateEffectiveHeadroomPercent(pool);
-        const minHeadroom = rt.minHeadroomPercent ?? (resolved.quotaBurnMinHeadroomPercent || 10);
+        const minHeadroom = Math.max(
+          rt.minHeadroomPercent ?? 10,
+          resolved.minDispatchHeadroomPercent ?? 0
+        );
 
         if (headroom === null || headroom < minHeadroom) {
           continue;
@@ -480,11 +492,29 @@ export class Coordinator {
     }
 
     // 1. Evaluate model & safety floor before coordinator gate so overage blocks are caught consistently
-    const eligibility = this.evaluateEligibility({
-      model: req.model,
+    const candidates: Array<string | undefined> =
+      req.models && req.models.length > 0 ? req.models : [req.model];
+    let eligibility = this.evaluateEligibility({
+      model: candidates[0],
       scheduleMode,
       allowOverage,
     });
+    // Walk the chain only on block codes a different pool could actually clear.
+    for (let i = 1; i < candidates.length; i++) {
+      if (eligibility.allowed) break;
+      if (
+        eligibility.code !== 'OVERAGE_PROTECTION_TRIGGERED' &&
+        eligibility.code !== 'TELEMETRY_UNAVAILABLE'
+      ) {
+        break;
+      }
+      const next = this.evaluateEligibility({
+        model: candidates[i],
+        scheduleMode,
+        allowOverage,
+      });
+      if (next.allowed) eligibility = next;
+    }
 
     if (!eligibility.allowed && eligibility.code === 'OVERAGE_PROTECTION_TRIGGERED') {
       // Both a safety-floor breach and a pool-policy disable carry this code, so log the reason.
@@ -499,7 +529,7 @@ export class Coordinator {
         success: false,
         repo: repositoryName,
         model: eligibility.resolvedModel,
-        poolFamily: eligibility.family,
+        poolFamily: eligibility.family ?? undefined,
         error: eligibility.reason,
         code: 'OVERAGE_PROTECTION_TRIGGERED',
         minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
@@ -532,7 +562,7 @@ export class Coordinator {
         success: false,
         repo: repositoryName,
         model: eligibility.resolvedModel,
-        poolFamily: eligibility.family,
+        poolFamily: eligibility.family ?? undefined,
         error: eligibility.reason,
         code: 'TELEMETRY_UNAVAILABLE',
         minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
@@ -556,7 +586,7 @@ export class Coordinator {
     const cloneUrl = req.cloneUrl || matchedRepo?.cloneUrl;
     const defaultBranch = matchedRepo?.defaultBranch || 'main';
 
-    const concreteModel = resolveConcreteModelId(req.model, resolved.defaultDispatchModel);
+    const concreteModel = eligibility.resolvedModel;
     const effort: ReasoningEffort = resolveReasoningEffortForModel(
       concreteModel,
       req.effort ?? resolved.defaultDispatchEffort
@@ -570,7 +600,7 @@ export class Coordinator {
     const title = req.title;
 
     if (tier === 'immediate' && req.actor !== 'bot') {
-      this.lastManualDispatchAt = Date.now();
+      this.setLastManualDispatchAt(Date.now());
     }
 
     // 4. Enqueue task in SQLite swarm_tasks queue
@@ -809,6 +839,87 @@ export class Coordinator {
     });
   }
 
+  // Backlog rows only change state here, so no terminal task path can leave one stranded.
+  private applyBacklogOutcome(originId: string, status: TaskStatus, error?: string): void {
+    try {
+      const backlogTask = this.queue.getBacklogTask(originId);
+      if (
+        !backlogTask ||
+        backlogTask.status === 'completed' ||
+        backlogTask.status === 'failed' ||
+        backlogTask.status === 'canceled'
+      ) {
+        return;
+      }
+
+      if (status === 'completed' || status === 'no_changes') {
+        this.queue.updateBacklogTask(originId, { status: 'completed', lastError: null });
+        this.log.info(
+          'Backlog task #%d (%s) marked completed',
+          backlogTask.taskNumber,
+          backlogTask.title
+        );
+        return;
+      }
+
+      if (status !== 'failed' && status !== 'aborted') return;
+
+      if (backlogTask.attemptCount < backlogTask.maxAttempts) {
+        this.queue.updateBacklogTask(originId, {
+          status: 'pending',
+          lastError: error || 'Execution failed',
+        });
+        this.log.warn(
+          'Backlog task #%d (%s) returned to pending for retry (attempt %d/%d)',
+          backlogTask.taskNumber,
+          backlogTask.title,
+          backlogTask.attemptCount,
+          backlogTask.maxAttempts
+        );
+      } else {
+        this.queue.updateBacklogTask(originId, {
+          status: 'failed',
+          lastError: error || 'Max retry attempts exceeded',
+        });
+        this.log.warn(
+          'Backlog task #%d (%s) marked failed after exhausting %d attempts',
+          backlogTask.taskNumber,
+          backlogTask.title,
+          backlogTask.maxAttempts
+        );
+      }
+    } catch (backlogStatusErr) {
+      this.log.error('Error updating backlog task status: %s', backlogStatusErr);
+    }
+  }
+
+  // A task can end without a runner report (reaped lease, expiry, cancel), so rows are swept.
+  public reconcileBacklogOrigins(): number {
+    let settled = 0;
+    for (const origin of this.queue.listDispatchedBacklogTasks()) {
+      const swarmTask = origin.swarmTaskId ? this.queue.getTask(origin.swarmTaskId) : undefined;
+      if (swarmTask && !isTerminalTaskStatus(swarmTask.status)) continue;
+      this.applyBacklogOutcome(
+        origin.id,
+        swarmTask ? swarmTask.status : 'failed',
+        swarmTask?.error || 'Task ended without a status report'
+      );
+      if (this.queue.getBacklogTask(origin.id)?.status !== 'dispatched') settled++;
+    }
+    return settled;
+  }
+
+  // A cancel is a status transition like any other: it notifies, emits and settles the origin.
+  public async cancelTask(
+    taskId: string
+  ): Promise<{ task: SwarmTask; applied: boolean } | undefined> {
+    return this.reportTaskStatus(taskId, {
+      status: 'aborted',
+      error: 'Task aborted by user',
+      message: `Task ${taskId} cancelled`,
+    });
+  }
+
   public async reportTaskStatus(
     taskId: string,
     patch: TaskStatusPatch & { message?: string }
@@ -862,50 +973,7 @@ export class Coordinator {
 
     // Update Backlog task status on terminal swarm outcomes
     if (updated.tier === 'backlog' && updated.originId) {
-      try {
-        const backlogTask = this.queue.getBacklogTask(updated.originId);
-        if (backlogTask) {
-          if (updated.status === 'completed' || updated.status === 'no_changes') {
-            this.queue.updateBacklogTask(updated.originId, {
-              status: 'completed',
-              lastError: null,
-            });
-            this.log.info(
-              'Backlog task #%d ("%s") marked completed after swarm task %s',
-              backlogTask.taskNumber,
-              backlogTask.title,
-              updated.id
-            );
-          } else if (updated.status === 'failed' || updated.status === 'aborted') {
-            if (backlogTask.attemptCount < backlogTask.maxAttempts) {
-              this.queue.updateBacklogTask(updated.originId, {
-                status: 'pending',
-                lastError: updated.error || 'Execution failed',
-              });
-              this.log.warn(
-                'Backlog task #%d ("%s") returned to pending for retry (attempt %d/%d)',
-                backlogTask.taskNumber,
-                backlogTask.title,
-                backlogTask.attemptCount,
-                backlogTask.maxAttempts
-              );
-            } else {
-              this.queue.updateBacklogTask(updated.originId, {
-                status: 'failed',
-                lastError: updated.error || 'Max retry attempts exceeded',
-              });
-              this.log.warn(
-                'Backlog task #%d ("%s") marked failed after exhausting %d attempts',
-                backlogTask.taskNumber,
-                backlogTask.title,
-                backlogTask.maxAttempts
-              );
-            }
-          }
-        }
-      } catch (backlogStatusErr) {
-        this.log.error('Error updating backlog task status: %s', backlogStatusErr);
-      }
+      this.applyBacklogOutcome(updated.originId, updated.status, updated.error);
     }
 
     return result;

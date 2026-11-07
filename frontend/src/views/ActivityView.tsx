@@ -236,9 +236,9 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                         >
                           {dispatchOutcomeLabel(d.success)}
                         </span>
-                        {d.branch && (
+                        {d.branchName && (
                           <div class="mt-1 font-mono text-xs text-pine-muted 2xl:text-sm">
-                            {d.branch}
+                            {d.branchName}
                           </div>
                         )}
                       </td>
@@ -321,11 +321,11 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                 </div>
               </div>
 
-              {selectedDispatch.branch && (
+              {selectedDispatch.branchName && (
                 <div class="flex items-center gap-2 text-xs">
                   <span class="text-pine-muted">Target Branch:</span>
                   <span class="rounded-sm border border-pine-highlight bg-pine-overlay px-2 py-0.5 font-mono text-pine-foam">
-                    {selectedDispatch.branch}
+                    {selectedDispatch.branchName}
                   </span>
                 </div>
               )}

@@ -8,6 +8,7 @@ import {
   toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
+  isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { resolveCoordinator } from './dispatch.js';
@@ -93,7 +94,6 @@ export const handleBacklogTaskById = async (
     const task = coordinator.queue.getBacklogTask(id);
     if (!task) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
 
-    const concreteModel = task.models[0] || 'gemini-3.8-flash';
     const resolved = options.configStore.resolveConfig();
 
     const dispatchRes = await coordinator.dispatch({
@@ -105,7 +105,7 @@ export const handleBacklogTaskById = async (
       originId: task.id,
       originNumber: task.taskNumber,
       originTitle: task.title,
-      model: concreteModel,
+      models: task.models,
       effort: task.effort,
       autoCreatePr: task.autoCreatePr,
       actor: task.actor,
@@ -120,10 +120,16 @@ export const handleBacklogTaskById = async (
         status: 'dispatched',
         attemptCount: task.attemptCount + 1,
         swarmTaskId: dispatchRes.taskId,
+        lastError: null,
       });
+      return sendJson(res, 200, dispatchRes);
     }
 
-    return sendJson(res, 200, dispatchRes);
+    // A refusal must not read as a queued task; keep the reason on the row for the dashboard.
+    coordinator.queue.updateBacklogTask(task.id, {
+      lastError: dispatchRes.error || 'Dispatch refused',
+    });
+    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
   }
 
   if (method === 'GET') {
@@ -165,6 +171,8 @@ export const handleSyncGithubBacklog = async (
   const ghToken = process.env.GITHUB_TOKEN?.trim();
 
   let importedCount = 0;
+  let canceledCount = 0;
+  const failedRepos: string[] = [];
   const existingBacklog = coordinator.queue.listBacklogTasks();
   const existingKeys = new Set(
     existingBacklog
@@ -183,105 +191,140 @@ export const handleSyncGithubBacklog = async (
     }
     if (!repoSlug) continue;
 
+    const issues = await listOpenIssues(repoSlug, targetLabel, ghToken, options.logger);
+    if (!issues) {
+      failedRepos.push(repo.id);
+      continue;
+    }
+
     try {
-      let issues: Array<{
-        number: number;
-        title: string;
-        body?: string;
-        html_url?: string;
-        url?: string;
-      }> = [];
-
-      if (ghToken) {
-        try {
-          const resp = await ky
-            .get(`https://api.github.com/repos/${repoSlug}/issues`, {
-              headers: {
-                Authorization: `Bearer ${ghToken}`,
-                Accept: 'application/vnd.github+json',
-                'User-Agent': 'Agylity-Backlog-Sync',
-              },
-              searchParams: {
-                labels: targetLabel,
-                state: 'open',
-                per_page: 50,
-              },
-              timeout: 15000,
-            })
-            .json<any[]>();
-
-          issues = resp.filter((item) => !item.pull_request);
-        } catch (apiErr) {
-          options.logger?.warn?.(
-            'GitHub REST sync failed for %s, falling back to gh CLI: %s',
-            repoSlug,
-            apiErr
-          );
-        }
-      }
-
-      if (issues.length === 0) {
-        try {
-          const { stdout } = await defaultExecFileAsync(
-            'gh',
-            [
-              'issue',
-              'list',
-              '--repo',
-              repoSlug,
-              '--label',
-              targetLabel,
-              '--state',
-              'open',
-              '--json',
-              'number,title,body,url',
-            ],
-            { timeout: 15000 }
-          );
-          if (stdout && stdout.trim()) {
-            issues = JSON.parse(stdout);
-          }
-        } catch (ghCliErr) {
-          options.logger?.debug?.('gh CLI sync failed for %s: %s', repoSlug, ghCliErr);
-        }
-      }
-
       for (const issue of issues) {
         const key = `${repo.id}#${issue.number}`;
         if (existingKeys.has(key)) continue;
 
-        const title = issue.title.trim();
-        const prompt = (issue.body || issue.title).trim();
-        const issueUrl = issue.html_url || issue.url;
-
         coordinator.queue.createBacklogTask({
-          title: `[GH #${issue.number}] ${title}`,
-          prompt,
+          title: `[GH #${issue.number}] ${issue.title.trim()}`,
+          prompt: (issue.body || issue.title).trim(),
           repositoryId: repo.id,
           models: [config.defaultDispatchModel || 'gemini-3.8-flash'],
           effort: config.defaultDispatchEffort || 'high',
           autoCreatePr: true,
           actor: 'bot',
           githubIssueNumber: issue.number,
-          githubIssueUrl: issueUrl,
+          githubIssueUrl: issue.html_url || issue.url,
           maxAttempts: 2,
         });
 
         existingKeys.add(key);
         importedCount++;
       }
+
+      // A fetched repo proves which of its issues are still open, so a row whose issue is gone
+      // must not stay queued. Dispatched rows are left alone: their task is in flight.
+      const openNumbers = new Set(issues.map((issue) => issue.number));
+      for (const row of existingBacklog) {
+        if (row.repositoryId !== repo.id || row.githubIssueNumber === undefined) continue;
+        if (openNumbers.has(row.githubIssueNumber)) continue;
+        if (row.status === 'dispatched' || row.status === 'canceled') continue;
+        coordinator.queue.updateBacklogTask(row.id, {
+          status: 'canceled',
+          lastError: 'Issue closed upstream',
+        });
+        canceledCount++;
+      }
     } catch (err: any) {
       options.logger?.error?.(
-        'Failed to sync GitHub backlog for repo %s: %s',
+        'Failed to import GitHub backlog for repo %s: %s',
         repo.id,
         err?.message ?? err
       );
+      failedRepos.push(repo.id);
     }
   }
 
   return sendJson(res, 200, {
-    success: true,
+    success: failedRepos.length === 0,
     importedCount,
+    canceledCount,
     label: targetLabel,
+    failedRepos,
   });
+};
+
+interface GithubIssue {
+  number: number;
+  title: string;
+  body?: string;
+  html_url?: string;
+  url?: string;
+}
+
+const GITHUB_ISSUE_PAGES = 5;
+const GITHUB_ISSUE_PAGE_SIZE = 100;
+
+const listOpenIssues = async (
+  repoSlug: string,
+  label: string,
+  ghToken: string | undefined,
+  logger?: WebServerOptions['logger']
+): Promise<GithubIssue[] | undefined> => {
+  if (ghToken) {
+    try {
+      const issues: GithubIssue[] = [];
+      for (let page = 1; page <= GITHUB_ISSUE_PAGES; page++) {
+        const batch = await ky
+          .get(`https://api.github.com/repos/${repoSlug}/issues`, {
+            headers: {
+              Authorization: `Bearer ${ghToken}`,
+              Accept: 'application/vnd.github+json',
+              'User-Agent': 'Agylity-Backlog-Sync',
+            },
+            searchParams: {
+              labels: label,
+              state: 'open',
+              per_page: GITHUB_ISSUE_PAGE_SIZE,
+              page,
+            },
+            timeout: 15000,
+          })
+          .json<GithubIssue[]>();
+
+        // The issues endpoint also returns pull requests.
+        issues.push(...batch.filter((item: any) => !item.pull_request));
+        if (batch.length < GITHUB_ISSUE_PAGE_SIZE) break;
+      }
+      return issues;
+    } catch (apiErr) {
+      logger?.warn?.(
+        'GitHub REST sync failed for %s, falling back to gh CLI: %s',
+        repoSlug,
+        apiErr
+      );
+    }
+  }
+
+  try {
+    const { stdout } = await defaultExecFileAsync(
+      'gh',
+      [
+        'issue',
+        'list',
+        '--repo',
+        repoSlug,
+        '--label',
+        label,
+        '--state',
+        'open',
+        '--limit',
+        '500',
+        '--json',
+        'number,title,body,url',
+      ],
+      { timeout: 20000 }
+    );
+    return stdout && stdout.trim() ? (JSON.parse(stdout) as GithubIssue[]) : [];
+  } catch (ghCliErr) {
+    logger?.debug?.('gh CLI sync failed for %s: %s', repoSlug, ghCliErr);
+    return undefined;
+  }
 };

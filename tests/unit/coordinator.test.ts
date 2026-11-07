@@ -258,11 +258,17 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.ok(result.branchName.startsWith('agy/'));
         assert.notEqual(result.branchName, 'main');
 
-        // 1a. First cleans worktree and switches back to default base branch ('main')
+        // 1a. Stashes a dirty tree, then switches back to the default base branch ('main')
         assert.equal(invocations[0]?.file, 'git');
-        assert.deepEqual(invocations[0]?.args, ['clean', '-fd']);
+        assert.deepEqual(invocations[0]?.args, ['status', '--porcelain']);
         assert.equal(invocations[1]?.file, 'git');
-        assert.deepEqual(invocations[1]?.args, ['reset', '--hard', 'HEAD']);
+        assert.deepEqual(invocations[1]?.args, [
+          'stash',
+          'push',
+          '--include-untracked',
+          '-m',
+          `agylity ${task.id}`,
+        ]);
         assert.equal(invocations[2]?.file, 'git');
         assert.deepEqual(invocations[2]?.args, ['checkout', 'main']);
         assert.equal(invocations[3]?.file, 'git');
@@ -2323,7 +2329,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.ok(res.output.includes('src/auth.ts'));
 
         // Branch was deleted and no git push occurred
-        assert.ok(!gitInvocations.some((args) => args.includes('push')));
+        assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
         assert.ok(gitInvocations.some((args) => args[0] === 'branch' && args[1] === '-D'));
       } finally {
         db.close();
@@ -2372,7 +2378,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(res.success, true);
         assert.equal(res.noChanges, undefined);
         assert.equal(res.prUrl, 'https://github.com/OtterBoops/agylity/pull/42');
-        assert.ok(gitInvocations.some((args) => args.includes('push')));
+        assert.ok(gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
       } finally {
         db.close();
         cleanup();
@@ -2414,7 +2420,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(res.success, true);
         assert.equal(res.noChanges, true);
         assert.ok(res.output.includes("[Policy Guard] Bot PR suppressed: bot PR policy is 'none'"));
-        assert.ok(!gitInvocations.some((args) => args.includes('push')));
+        assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
       } finally {
         db.close();
         cleanup();

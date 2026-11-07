@@ -100,7 +100,6 @@ export interface DispatchRecord {
   status?: TaskStatus;
   model?: string;
   effort?: string;
-  branch?: string;
   branchName?: string;
   prUrl?: string;
   output?: string;

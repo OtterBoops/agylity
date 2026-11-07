@@ -154,10 +154,7 @@ export const retryTask = (id: string): Promise<{ success: boolean }> =>
   api.post(`tasks/${encodeURIComponent(id)}/retry`).json<{ success: boolean }>();
 
 export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
-  api
-    .get(`tasks?limit=${limit}`)
-    .json<SwarmTask[]>()
-    .catch(() => []);
+  api.get(`tasks?limit=${limit}`).json<SwarmTask[]>();
 
 export const triggerDispatch = (payload: {
   repositoryId: string;
@@ -239,10 +236,7 @@ export const getLogs = (
 // --- Routines API ---
 
 export const getRoutines = (): Promise<RoutineTaskRecord[]> =>
-  api
-    .get('routines')
-    .json<RoutineTaskRecord[]>()
-    .catch(() => []);
+  api.get('routines').json<RoutineTaskRecord[]>();
 
 export const createRoutine = (
   input: Partial<RoutineTaskRecord> & {
@@ -265,10 +259,12 @@ export const deleteRoutine = (id: string): Promise<boolean> =>
     .json<{ success: boolean; deleted: boolean }>()
     .then((r) => r.success);
 
-export const triggerRoutine = (id: string): Promise<{ success: boolean; taskId?: string }> =>
+export const triggerRoutine = (
+  id: string
+): Promise<{ success: boolean; taskId?: string; error?: string; code?: string }> =>
   api
     .post(`routines/${encodeURIComponent(id)}/trigger`)
-    .json<{ success: boolean; taskId?: string }>();
+    .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
 // Backwards-compatible aliases during UI migration
 export const getStandingTasks = getRoutines;
@@ -286,8 +282,7 @@ export const triggerStandingTask = triggerRoutine;
 export const getBacklogTasks = (status?: string): Promise<BacklogTaskRecord[]> =>
   api
     .get(`backlog${status ? `?status=${encodeURIComponent(status)}` : ''}`)
-    .json<BacklogTaskRecord[]>()
-    .catch(() => []);
+    .json<BacklogTaskRecord[]>();
 
 export const createBacklogTask = (
   input: Partial<BacklogTaskRecord> & {
@@ -310,16 +305,24 @@ export const deleteBacklogTask = (id: string): Promise<boolean> =>
     .json<{ success: boolean; deleted: boolean }>()
     .then((r) => r.success);
 
-export const dispatchBacklogTask = (id: string): Promise<{ success: boolean; taskId?: string }> =>
+export const dispatchBacklogTask = (
+  id: string
+): Promise<{ success: boolean; taskId?: string; error?: string; code?: string }> =>
   api
     .post(`backlog/${encodeURIComponent(id)}/dispatch`)
-    .json<{ success: boolean; taskId?: string }>();
+    .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
 export const syncGithubBacklog = (): Promise<{
   success: boolean;
   importedCount: number;
+  canceledCount?: number;
   label: string;
+  failedRepos?: string[];
 }> =>
-  api
-    .post('backlog/sync-github')
-    .json<{ success: boolean; importedCount: number; label: string }>();
+  api.post('backlog/sync-github').json<{
+    success: boolean;
+    importedCount: number;
+    canceledCount?: number;
+    label: string;
+    failedRepos?: string[];
+  }>();

@@ -272,6 +272,10 @@ export const toTrimmedStringOrUndefined = (value: unknown): string | undefined =
 };
 
 /** Array of trimmed, non-empty strings, or undefined when the field is not an array. */
+/** A dispatch refused by the safety floor or missing telemetry is a 4xx, not a 200 body. */
+export const isSafetyBlockCode = (code?: string): boolean =>
+  code === 'OVERAGE_PROTECTION_TRIGGERED' || code === 'TELEMETRY_UNAVAILABLE';
+
 export const toStringArray = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : undefined;
 

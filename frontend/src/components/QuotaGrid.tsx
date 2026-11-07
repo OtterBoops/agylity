@@ -216,16 +216,16 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
               <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="font-mono text-xs font-semibold text-pine-love">
-                    Paused (Weekly 0%)
+                  <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-muted">
+                    Not applicable
                   </span>
                 </div>
                 <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
-                  <div class="h-full rounded-full bg-pine-love/40" style={{ width: '0%' }} />
+                  <div class="h-full rounded-full bg-pine-muted/30" style={{ width: '0%' }} />
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
                   <span>Capacity throttle</span>
-                  <span>Paused until weekly reset</span>
+                  <span>Reported disabled by the quota server</span>
                 </div>
               </div>
             ) : shortTerm && shortTermPct !== null ? (

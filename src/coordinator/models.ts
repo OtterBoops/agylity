@@ -138,15 +138,21 @@ export const resolveReasoningEffortForModel = (
   return supported.includes(normalized) ? normalized : defaultEffort;
 };
 
-export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily => {
-  if (!modelOrFamily) return 'gemini-argon';
+// `null` for an unrecognised id: eligibility must fail closed rather than charge another
+// pool's headroom for a model nobody can attribute.
+export const resolvePoolFamilyForModelOrNull = (modelOrFamily?: string): QuotaFamily | null => {
+  if (!modelOrFamily) return null;
   const normalized = modelOrFamily.trim().toLowerCase();
   const alias = FAMILY_ALIASES[normalized];
   if (alias) return alias;
 
   const resolved = resolveModelFamily({ modelId: normalized, label: normalized });
-  return resolved?.family ?? 'gemini-argon';
+  return resolved?.family ?? null;
 };
+
+// Display/bookkeeping default only — never use this to authorise a dispatch.
+export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =>
+  resolvePoolFamilyForModelOrNull(modelOrFamily) ?? 'gemini-argon';
 
 // Resolves to an explicit `agy --model` identifier; never returns 'auto'.
 export const resolveConcreteModelId = (
@@ -264,7 +270,8 @@ export interface ModelEligibilityOptions {
 export interface ModelEligibilityResult {
   allowed: boolean;
   resolvedModel: string;
-  family: QuotaFamily;
+  /** null when the requested model id maps to no known pool. */
+  family: QuotaFamily | null;
   effectiveHeadroomPercent: number;
   hoursUntilReset: number | null;
   code?: 'OVERAGE_PROTECTION_TRIGGERED' | 'QUOTA_BURN_CONDITIONS_NOT_MET' | 'TELEMETRY_UNAVAILABLE';
@@ -275,13 +282,25 @@ export const evaluateModelDispatchEligibility = (
   options: ModelEligibilityOptions
 ): ModelEligibilityResult => {
   const resolvedModel = resolveConcreteModelId(options.requestedModel, options.defaultModel);
-  const family = resolvePoolFamilyForModel(resolvedModel);
+  const family = resolvePoolFamilyForModelOrNull(resolvedModel);
   const scheduleMode: ScheduleMode = options.scheduleMode ?? 'immediate';
   const minHeadroom = options.minDispatchHeadroomPercent ?? 10;
   const allowOverage = Boolean(options.allowOverage);
   const quotaBurnMaxHours = options.quotaBurnMaxHours ?? 2;
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
+
+  if (family === null) {
+    return {
+      allowed: false,
+      resolvedModel,
+      family,
+      effectiveHeadroomPercent: 0,
+      hoursUntilReset: null,
+      code: 'TELEMETRY_UNAVAILABLE',
+      reason: `Unknown model '${resolvedModel}': it maps to no quota pool, so headroom cannot be verified. Dispatch locked.`,
+    };
+  }
 
   if (pools.length === 0) {
     if (scheduleMode === 'pre_reset' && !allowOverage) {
@@ -471,7 +490,11 @@ export const evaluateModelPreferenceChain = (options: {
 
   for (const rawCandidate of candidates) {
     const resolvedModel = resolveConcreteModelId(rawCandidate, options.defaultModel);
-    const family = resolvePoolFamilyForModel(resolvedModel);
+    const family = resolvePoolFamilyForModelOrNull(resolvedModel);
+    if (family === null) {
+      rejectionReasons.push(`${resolvedModel}: unknown model id, no quota pool`);
+      continue;
+    }
 
     if (options.isPoolDispatchEnabled && !options.isPoolDispatchEnabled(family)) {
       rejectionReasons.push(`${resolvedModel} (${family}): pool dispatch disabled`);

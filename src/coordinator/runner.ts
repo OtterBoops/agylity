@@ -312,8 +312,19 @@ export class TaskExecutor {
       // 1a. Switch back to the repository's default base branch and fast-forward if possible
       // so sequential tasks on the same runner never stack onto previous task branches.
       try {
-        await this.execFileFn('git', ['clean', '-fd'], { cwd, timeout: 15000 });
-        await this.execFileFn('git', ['reset', '--hard', 'HEAD'], { cwd, timeout: 15000 });
+        // `/repos/<id>` can be a real working copy, so uncommitted state is stashed, never deleted.
+        const { stdout: dirtyOut } = await this.execFileFn('git', ['status', '--porcelain'], {
+          cwd,
+          timeout: 15000,
+        });
+        if (dirtyOut && dirtyOut.trim() !== '') {
+          await this.execFileFn(
+            'git',
+            ['stash', 'push', '--include-untracked', '-m', `agylity ${task.id}`],
+            { cwd, timeout: 30000 }
+          );
+          this.log.warn('Stashed uncommitted changes in %s before task %s', cwd, task.id);
+        }
         await this.execFileFn('git', ['checkout', baseBranch], {
           cwd,
           timeout: 30000,
