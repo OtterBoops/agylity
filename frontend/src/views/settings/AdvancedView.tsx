@@ -1,7 +1,7 @@
 import type { ConfigData } from '../../types';
 import { GeneralSettingsCard } from '../../components/GeneralSettingsCard';
-import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
 import { SettingsForm } from '../../components/SettingsForm';
+import { SettingsLayout } from '../../components/SettingsLayout';
 import { SENTRY_FIELDS } from '../../config/fields';
 
 interface AdvancedViewProps {
@@ -10,9 +10,11 @@ interface AdvancedViewProps {
 }
 
 export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
-  <div class="flex flex-col gap-6">
+  <SettingsLayout
+    activeTab="advanced"
+    coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
+  >
     <GeneralSettingsCard />
-    <PoolPoliciesCard config={config} onSaved={onChanged} />
     <SettingsForm
       title="Sentry &amp; Quota Safeguards"
       description="Fine-tune quota polling frequency, milestone warnings, Language Server Connect-RPC, and overcharge safety floor."
@@ -20,5 +22,5 @@ export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
       config={config}
       onSaved={onChanged}
     />
-  </div>
+  </SettingsLayout>
 );

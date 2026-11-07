@@ -11,6 +11,7 @@ import {
   type ChannelId,
 } from '../components/NotificationChannelCard';
 import { NotificationActionBar } from '../components/NotificationActionBar';
+import { SettingsLayout } from '../components/SettingsLayout';
 import { StatusBanner } from '../components/StatusBanner';
 
 interface NotificationsViewProps {
@@ -434,7 +435,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   };
 
   return (
-    <div class="flex flex-col gap-6">
+    <SettingsLayout
+      activeTab="notifications"
+      coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
+    >
       {/* Page Header */}
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-3">
@@ -559,6 +563,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
         {toast && <StatusBanner status={toast} />}
       </form>
-    </div>
+    </SettingsLayout>
   );
 };

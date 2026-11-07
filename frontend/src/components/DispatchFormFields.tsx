@@ -130,7 +130,7 @@ export const DispatchFormFields = ({
             }
           >
             <option value="immediate">Run Immediately</option>
-            <option value="pre_reset">Pre-Reset Quota Burn</option>
+            <option value="pre_reset">Pre-Reset Window (Opportunistic)</option>
           </select>
         </div>
       </div>

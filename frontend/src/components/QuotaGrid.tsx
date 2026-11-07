@@ -138,7 +138,7 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
           velocityLabel = (
             <span
               class="inline-flex items-center gap-1 font-mono text-xs font-semibold text-pine-iris"
-              title="Target quota burn rate to fully utilize pool before reset"
+              title="Target consumption pace to fully utilize pool before reset"
             >
               ~{burnRate}%/hr pace
             </span>

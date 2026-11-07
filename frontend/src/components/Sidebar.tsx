@@ -35,13 +35,6 @@ interface NavItem {
   badge?: string;
 }
 
-const MONITOR: NavItem[] = [{ href: '/overview', label: 'Overview', icon: faChartPie }];
-
-const SYSTEM: NavItem[] = [
-  { href: '/logs', label: 'Logs', icon: faList },
-  { href: '/settings/advanced', label: 'Advanced', icon: faSliders },
-];
-
 export const Sidebar = ({
   coordinatorEnabled = false,
   lastProbeSource,
@@ -98,8 +91,12 @@ export const Sidebar = ({
     };
   }, []);
 
+  const monitorItems: NavItem[] = [
+    { href: '/overview', label: 'Overview', icon: faChartPie },
+    ...(coordinatorEnabled ? [{ href: '/tasks', label: 'Tasks', icon: faCheckToSlot }] : []),
+  ];
+
   const configurationItems: NavItem[] = [
-    { href: '/settings/notifications', label: 'Notifications', icon: faBell },
     {
       href: '/settings/coordinator',
       label: 'Coordinator',
@@ -107,12 +104,13 @@ export const Sidebar = ({
       badge: coordinatorEnabled ? 'Active' : undefined,
     },
     ...(coordinatorEnabled
-      ? [
-          { href: '/tasks', label: 'Tasks', icon: faCheckToSlot },
-          { href: '/settings/repositories', label: 'Repositories', icon: faCodeBranch },
-        ]
+      ? [{ href: '/settings/repositories', label: 'Repositories', icon: faCodeBranch }]
       : []),
+    { href: '/settings/notifications', label: 'Notifications', icon: faBell },
+    { href: '/settings/advanced', label: 'Advanced', icon: faSliders },
   ];
+
+  const systemItems: NavItem[] = [{ href: '/logs', label: 'Logs', icon: faList }];
 
   const [timeFormat] = useTimeFormat();
 
@@ -208,11 +206,11 @@ export const Sidebar = ({
       {mobileOpen && (
         <div class="border-b border-pine-highlight bg-pine-surface p-4 md:hidden">
           <nav class="flex flex-col gap-4">
-            {renderNavSection('Monitor', MONITOR, false, () => setMobileOpen(false))}
+            {renderNavSection('Monitor', monitorItems, false, () => setMobileOpen(false))}
             {renderNavSection('Configuration', configurationItems, false, () =>
               setMobileOpen(false)
             )}
-            {renderNavSection('System', SYSTEM, false, () => setMobileOpen(false))}
+            {renderNavSection('System', systemItems, false, () => setMobileOpen(false))}
           </nav>
 
           {/* Mobile Telemetry & Version Footer */}
@@ -321,9 +319,9 @@ export const Sidebar = ({
           </div>
 
           <nav class="flex flex-col gap-4">
-            {renderNavSection('Monitor', MONITOR, isCollapsed)}
+            {renderNavSection('Monitor', monitorItems, isCollapsed)}
             {renderNavSection('Configuration', configurationItems, isCollapsed)}
-            {renderNavSection('System', SYSTEM, isCollapsed)}
+            {renderNavSection('System', systemItems, isCollapsed)}
           </nav>
         </div>
 

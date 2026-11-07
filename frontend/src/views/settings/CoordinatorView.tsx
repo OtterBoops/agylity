@@ -1,13 +1,19 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { faMinus, faNetworkWired, faPlus } from '@fortawesome/free-solid-svg-icons';
+import {
+  faArrowRight,
+  faMinus,
+  faNetworkWired,
+  faPlus,
+  faRotate,
+} from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData, SwarmRunnerRecord } from '../../types';
 import { getRunners, revokeRunner, setRunnerEnabled, updateConfig } from '../../api';
 import { Icon } from '../../components/Icon';
 import { RunnerRegistrationPanel } from '../../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../../components/SwarmRunnersGrid';
 import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
-import { StandingTasksCard } from '../../components/StandingTasksCard';
 import { SettingsForm } from '../../components/SettingsForm';
+import { SettingsLayout } from '../../components/SettingsLayout';
 import { COORDINATOR_FIELDS } from '../../config/fields';
 
 interface CoordinatorViewProps {
@@ -59,7 +65,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
       : 'http://agylity:8484';
 
   return (
-    <div class="flex flex-col gap-6">
+    <SettingsLayout activeTab="coordinator" coordinatorEnabled={isCoordinatorEnabled}>
       <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
@@ -132,17 +138,39 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
 
       {isCoordinatorEnabled && <PoolPoliciesCard config={config} onSaved={onChanged} />}
 
-      {isCoordinatorEnabled && <StandingTasksCard config={config} />}
+      {isCoordinatorEnabled && (
+        <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-highlight/60 bg-pine-overlay/30 p-4">
+          <div class="flex items-center gap-3">
+            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-pine-overlay text-pine-iris">
+              <Icon icon={faRotate} class="size-4" />
+            </div>
+            <div>
+              <div class="text-xs font-semibold text-pine-text">Tier 3: Maintenance Routines</div>
+              <p class="text-[11px] text-pine-subtle">
+                Routines automatically execute prompt templates before quota pool resets. Managed
+                under the Tasks tab.
+              </p>
+            </div>
+          </div>
+          <a
+            href="/tasks?tab=routines"
+            class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-semibold text-pine-text transition-colors hover:border-pine-iris hover:text-pine-iris"
+          >
+            <span>View Routines</span>
+            <Icon icon={faArrowRight} class="size-3" />
+          </a>
+        </div>
+      )}
 
       {isCoordinatorEnabled && (
         <SettingsForm
           title="Model Selection &amp; Swarm Queue Parameters"
-          description="Configure the explicit default dispatch model, fallback runner secret, and P2 opportunistic quota-burn thresholds."
+          description="Configure the explicit default dispatch model, fallback runner secret, and routine pre-reset trigger thresholds."
           fields={COORDINATOR_FIELDS}
           config={config}
           onSaved={onChanged}
         />
       )}
-    </div>
+    </SettingsLayout>
   );
 };
