@@ -1,10 +1,15 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { SentryStateManager } from '../sentry/state.js';
-import { snapshotsFromSentryState, type QuotaSnapshot } from '../sentry/models.js';
+import {
+  calculateHoursUntilReset,
+  snapshotsFromSentryState,
+  type QuotaSnapshot,
+} from '../sentry/models.js';
 import type { Notifier } from '../notify/types.js';
 import { logger, type Logger } from '../logs/logger.js';
 import {
+  calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
   resolveConcreteModelId,
   resolvePoolFamilyForModel,
@@ -146,7 +151,125 @@ export class OrchestratorCoordinator {
     this.latestSnapshots = snapshots;
     this.lastSnapshotAt = Date.now();
     this.reapStaleClaims();
+    void this.triggerEligibleStandingTasks(snapshots);
     this.bus.emit('task:available');
+  }
+
+  // Evaluates enabled standing tasks against live quota pools and triggers any due for pre-reset burn.
+  public async triggerEligibleStandingTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
+    if (snapshots.length > 0) {
+      this.latestSnapshots = snapshots;
+      this.lastSnapshotAt = Date.now();
+    }
+
+    const resolved = this.configStore.resolveConfig();
+    if (!resolved.orchestratorEnabled) {
+      return [];
+    }
+
+    const standingTasks = this.queue.listStandingTasks().filter((t) => t.enabled);
+    if (standingTasks.length === 0 || snapshots.length === 0) {
+      return [];
+    }
+
+    const spawned: SwarmTask[] = [];
+
+    for (const st of standingTasks) {
+      const concreteModel = resolveConcreteModelId(st.model, resolved.defaultDispatchModel);
+      const family = resolvePoolFamilyForModel(concreteModel);
+
+      // Check per-pool dispatchEnabled policy
+      const policy = resolved.poolPolicies?.[family];
+      if (policy && !policy.dispatchEnabled) {
+        continue;
+      }
+
+      const targetPool = snapshots.find(
+        (p) =>
+          p.family === family ||
+          p.poolId === family ||
+          resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+      );
+      if (!targetPool) continue;
+
+      const resetTime = targetPool.resetTime;
+      const hoursUntilReset =
+        typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
+          ? targetPool.hoursUntilReset
+          : calculateHoursUntilReset(targetPool.resetTime, Date.now());
+
+      if (!resetTime || hoursUntilReset === null || hoursUntilReset <= 0) {
+        continue;
+      }
+
+      // At most one execution per reset cycle
+      if (st.lastTriggeredResetTime && st.lastTriggeredResetTime === resetTime) {
+        continue;
+      }
+
+      // Check trigger window: task's triggerBeforeResetHours, or global quotaBurnMaxHours
+      const triggerHours =
+        st.triggerBeforeResetHours && st.triggerBeforeResetHours > 0
+          ? st.triggerBeforeResetHours
+          : (resolved.quotaBurnMaxHours ?? 2);
+
+      if (hoursUntilReset > triggerHours) {
+        continue;
+      }
+
+      // Check headroom: must have quota remaining to burn
+      const headroom = calculateEffectiveHeadroomPercent(targetPool);
+      const minBurnHeadroom =
+        resolved.quotaBurnMinHeadroomPercent !== undefined &&
+        resolved.quotaBurnMinHeadroomPercent > 0
+          ? resolved.quotaBurnMinHeadroomPercent
+          : Math.max(1, resolved.minDispatchHeadroomPercent ?? 10);
+
+      if (headroom === null || headroom < minBurnHeadroom) {
+        continue;
+      }
+
+      this.log.info(
+        'Auto-triggering standing task %s ("%s") for pool %s (reset in %sh, headroom=%d%%)',
+        st.id,
+        st.title,
+        family,
+        hoursUntilReset.toFixed(1),
+        headroom
+      );
+
+      const dispatchRes = await this.dispatch({
+        repositoryId: st.repositoryId,
+        repositoryName: st.repositoryId,
+        prompt: st.prompt,
+        model: concreteModel,
+        effort: st.effort,
+        autoCreatePr: st.autoCreatePr,
+        verifyCommand: st.verifyCommand,
+        standingTaskId: st.id,
+        scheduleMode: 'immediate',
+        requestedBy: `standing-task:${st.id}`,
+      });
+
+      if (dispatchRes.success && dispatchRes.taskId) {
+        this.queue.updateStandingTask(st.id, {
+          lastTriggeredResetTime: resetTime,
+          lastTaskId: dispatchRes.taskId,
+        });
+        const createdTask = this.queue.getTask(dispatchRes.taskId);
+        if (createdTask) {
+          spawned.push(createdTask);
+        }
+      } else {
+        this.log.warn(
+          'Failed to dispatch standing task %s: %s',
+          st.id,
+          dispatchRes.error || 'Unknown dispatch error'
+        );
+      }
+    }
+
+    return spawned;
   }
 
   public evaluateEligibility(params: {
@@ -180,6 +303,7 @@ export class OrchestratorCoordinator {
       minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
       allowOverage: params.allowOverage,
       quotaBurnMaxHours: resolved.quotaBurnMaxHours,
+      quotaBurnMinHeadroomPercent: resolved.quotaBurnMinHeadroomPercent,
     });
   }
 

@@ -6,6 +6,7 @@ import { Icon } from '../../components/Icon';
 import { RunnerRegistrationPanel } from '../../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../../components/SwarmRunnersGrid';
 import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
+import { StandingTasksCard } from '../../components/StandingTasksCard';
 import { SettingsForm } from '../../components/SettingsForm';
 import { ORCHESTRATOR_FIELDS } from '../../config/fields';
 
@@ -130,6 +131,8 @@ export const OrchestratorView = ({ config, onChanged }: OrchestratorViewProps) =
       </div>
 
       {isOrchestratorEnabled && <PoolPoliciesCard config={config} onSaved={onChanged} />}
+
+      {isOrchestratorEnabled && <StandingTasksCard config={config} />}
 
       {isOrchestratorEnabled && (
         <SettingsForm

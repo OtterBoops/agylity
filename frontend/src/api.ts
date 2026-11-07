@@ -9,6 +9,7 @@ import type {
   SwarmWorkerRecord,
   RunnerRegistrationTokenResult,
   SwarmTask,
+  StandingTaskRecord,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -233,3 +234,36 @@ export const getLogs = (
   api
     .get(`logs?since=${since}&level=${level}`)
     .json<{ enabled: boolean; latestId?: number; entries: LogEntry[] }>();
+
+export const getStandingTasks = (): Promise<StandingTaskRecord[]> =>
+  api
+    .get('standing-tasks')
+    .json<StandingTaskRecord[]>()
+    .catch(() => []);
+
+export const createStandingTask = (
+  input: Partial<StandingTaskRecord> & {
+    title: string;
+    prompt: string;
+    repositoryId: string;
+    model: string;
+  }
+): Promise<StandingTaskRecord> =>
+  api.post('standing-tasks', { json: input }).json<StandingTaskRecord>();
+
+export const updateStandingTask = (
+  id: string,
+  patch: Partial<StandingTaskRecord>
+): Promise<StandingTaskRecord> =>
+  api.patch(`standing-tasks/${encodeURIComponent(id)}`, { json: patch }).json<StandingTaskRecord>();
+
+export const deleteStandingTask = (id: string): Promise<boolean> =>
+  api
+    .delete(`standing-tasks/${encodeURIComponent(id)}`)
+    .json<{ success: boolean; deleted: boolean }>()
+    .then((r) => r.success);
+
+export const triggerStandingTask = (id: string): Promise<{ success: boolean; taskId?: string }> =>
+  api
+    .post(`standing-tasks/${encodeURIComponent(id)}/trigger`)
+    .json<{ success: boolean; taskId?: string }>();
