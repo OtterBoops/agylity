@@ -139,6 +139,9 @@ export interface RunnerRegistrationTokenResult {
 export type TaskStatus =
   'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
 
+export type BotPrPolicy = 'docs_only' | 'all' | 'none';
+export type TaskActor = 'user' | 'bot';
+
 export interface SwarmTask {
   id: string;
   createdAt: string;
@@ -150,6 +153,8 @@ export interface SwarmTask {
   defaultBranch?: string;
   prompt: string;
   requestedBy: string;
+  actor?: TaskActor;
+  botPrPolicy?: BotPrPolicy;
   scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
   model: string;
@@ -174,6 +179,7 @@ export interface StandingTaskRecord {
   effort: 'low' | 'medium' | 'high';
   verifyCommand?: string;
   autoCreatePr: boolean;
+  actor?: TaskActor;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;

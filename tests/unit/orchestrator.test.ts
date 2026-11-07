@@ -17,6 +17,7 @@ import {
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
+  isDocumentationFile,
   resolveConcreteModelId,
   TaskQueue,
   TaskExecutor,
@@ -2066,6 +2067,243 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const spawned = await coordinator.triggerEligibleStandingTasks(snapshots);
         assert.equal(spawned.length, 0);
       } finally {
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 12. Bot vs. User Actor Separation & Bot PR Governance Policy        */
+  /* ==================================================================== */
+  describe('12. Bot vs. User Actor Separation & Bot PR Governance Policy', () => {
+    it('isDocumentationFile accurately identifies documentation files and paths', () => {
+      // Documentation files
+      assert.equal(isDocumentationFile('README.md'), true);
+      assert.equal(isDocumentationFile('README'), true);
+      assert.equal(isDocumentationFile('LICENSE'), true);
+      assert.equal(isDocumentationFile('LICENSE.txt'), true);
+      assert.equal(isDocumentationFile('CONTRIBUTING.md'), true);
+      assert.equal(isDocumentationFile('docs/guide.md'), true);
+      assert.equal(isDocumentationFile('docs/images/diagram.svg'), true);
+      assert.equal(isDocumentationFile('.github/ISSUE_TEMPLATE/bug.md'), true);
+
+      // Non-documentation code / config / workflow files
+      assert.equal(isDocumentationFile('src/index.ts'), false);
+      assert.equal(isDocumentationFile('package.json'), false);
+      assert.equal(isDocumentationFile('compose.yaml'), false);
+      assert.equal(isDocumentationFile('Dockerfile'), false);
+      assert.equal(isDocumentationFile('.github/workflows/ci.yml'), false);
+      assert.equal(isDocumentationFile('scripts/build.sh'), false);
+    });
+
+    it('sets default actor properly in TaskQueue for swarm tasks and standing tasks', () => {
+      const { dir, cleanup } = makeTempDir('orch_actor_defaults_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+
+        // Swarm task defaults actor to 'user'
+        const userTask = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'User task',
+          model: 'gemini-3.8-flash',
+        });
+        assert.equal(userTask.actor, 'user');
+
+        // Standing task defaults actor to 'bot'
+        const standing = queue.createStandingTask({
+          title: 'Claude Audit',
+          prompt: 'Audit codebase',
+          repositoryId: 'agylity',
+          model: 'claude-sonnet-5-5',
+        });
+        assert.equal(standing.actor, 'bot');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('enforces agylity[bot] Git commit authorship when task.actor is bot', async () => {
+      const { dir, cleanup } = makeTempDir('orch_bot_commit_author_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Bot task',
+          model: 'gemini-3.8-flash',
+          actor: 'bot',
+        });
+
+        let capturedEnv: Record<string, string | undefined> | undefined;
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          botPrPolicy: 'all',
+          execFileFn: async (file, args, opts) => {
+            if (file === 'git' && args[0] === 'status') {
+              return { stdout: ' M README.md\n', stderr: '' };
+            }
+            if (file === 'git' && args[0] === 'commit') {
+              capturedEnv = opts?.env as Record<string, string | undefined>;
+              return { stdout: '[main 1234567] commit', stderr: '' };
+            }
+            return { stdout: 'done', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, true);
+        assert.ok(capturedEnv);
+        assert.equal(capturedEnv.GIT_AUTHOR_NAME, 'agylity[bot]');
+        assert.equal(capturedEnv.GIT_AUTHOR_EMAIL, 'agylity@users.noreply.github.com');
+        assert.equal(capturedEnv.GIT_COMMITTER_NAME, 'agylity[bot]');
+        assert.equal(capturedEnv.GIT_COMMITTER_EMAIL, 'agylity@users.noreply.github.com');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('blocks bot PRs and deletes branch when bot modifies code under botPrPolicy=docs_only', async () => {
+      const { dir, cleanup } = makeTempDir('orch_bot_docs_only_block_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Refactor auth',
+          model: 'claude-sonnet-5-5',
+          actor: 'bot',
+          pushBranch: true,
+          autoCreatePr: true,
+        });
+
+        const gitInvocations: string[][] = [];
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          botPrPolicy: 'docs_only',
+          execFileFn: async (file, args) => {
+            if (file === 'git') {
+              gitInvocations.push(args as string[]);
+              if (args[0] === 'status') {
+                return { stdout: ' M src/auth.ts\n', stderr: '' };
+              }
+              if (args[0] === 'diff' && args.includes('--name-only')) {
+                // Returns modified code file
+                return { stdout: 'src/auth.ts\n', stderr: '' };
+              }
+            }
+            return { stdout: 'done', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, true);
+        assert.equal(res.noChanges, true);
+        assert.ok(res.output.includes('[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only'));
+        assert.ok(res.output.includes('src/auth.ts'));
+
+        // Branch was deleted and no git push occurred
+        assert.ok(!gitInvocations.some((args) => args.includes('push')));
+        assert.ok(gitInvocations.some((args) => args[0] === 'branch' && args[1] === '-D'));
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('allows bot PRs when bot modifies only documentation under botPrPolicy=docs_only', async () => {
+      const { dir, cleanup } = makeTempDir('orch_bot_docs_only_allow_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Update docs',
+          model: 'claude-sonnet-5-5',
+          actor: 'bot',
+          pushBranch: true,
+          autoCreatePr: true,
+        });
+
+        const gitInvocations: string[][] = [];
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          botPrPolicy: 'docs_only',
+          execFileFn: async (file, args) => {
+            if (file === 'git') {
+              gitInvocations.push(args as string[]);
+              if (args[0] === 'status') {
+                return { stdout: ' M docs/guide.md\n', stderr: '' };
+              }
+              if (args[0] === 'diff' && args.includes('--name-only')) {
+                return { stdout: 'docs/guide.md\n', stderr: '' };
+              }
+            }
+            if (file === 'gh' && args[0] === 'pr') {
+              return { stdout: 'https://github.com/OtterBoops/agylity/pull/42\n', stderr: '' };
+            }
+            return { stdout: 'done', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, true);
+        assert.equal(res.noChanges, undefined);
+        assert.equal(res.prUrl, 'https://github.com/OtterBoops/agylity/pull/42');
+        assert.ok(gitInvocations.some((args) => args.includes('push')));
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('suppresses all PRs and pushes when botPrPolicy=none', async () => {
+      const { dir, cleanup } = makeTempDir('orch_bot_policy_none_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Audit only',
+          model: 'claude-sonnet-5-5',
+          actor: 'bot',
+          pushBranch: true,
+          autoCreatePr: true,
+        });
+
+        const gitInvocations: string[][] = [];
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          botPrPolicy: 'none',
+          execFileFn: async (file, args) => {
+            if (file === 'git') {
+              gitInvocations.push(args as string[]);
+              if (args[0] === 'status') {
+                return { stdout: ' M README.md\n', stderr: '' };
+              }
+            }
+            return { stdout: 'done', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, true);
+        assert.equal(res.noChanges, true);
+        assert.ok(res.output.includes("[Policy Guard] Bot PR suppressed: bot PR policy is 'none'"));
+        assert.ok(!gitInvocations.some((args) => args.includes('push')));
+      } finally {
+        db.close();
         cleanup();
       }
     });

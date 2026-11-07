@@ -7,6 +7,7 @@ import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmTask, SwarmWorkerRecord, TaskStatusPatch } from './queue.js';
 import { resolveReasoningEffortForModel } from './models.js';
+import type { BotPrPolicy } from '../config/schema.js';
 
 export interface TaskExecutorOptions {
   agyBinPath?: string;
@@ -14,6 +15,7 @@ export interface TaskExecutorOptions {
   execFileFn?: ExecFileAsyncFn;
   dirExistsFn?: (dirPath: string) => boolean;
   logger?: Logger;
+  botPrPolicy?: BotPrPolicy;
   onStatusUpdate?: (patch: TaskStatusPatch & { message?: string }) => Promise<void> | void;
 }
 
@@ -101,6 +103,52 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
   return `antigravity/task-${shortId}-${slug || 'work'}`;
 };
 
+const DOC_EXTENSIONS = new Set([
+  '.md',
+  '.markdown',
+  '.mdown',
+  '.mkdn',
+  '.txt',
+  '.rst',
+  '.adoc',
+]);
+
+const DOC_SPECIAL_BASENAMES = new Set([
+  'license',
+  'licence',
+  'notice',
+  'copying',
+  'authors',
+  'contributors',
+  'changelog',
+  'changes',
+  'code_of_conduct',
+  'contributing',
+  'security',
+]);
+
+export const isDocumentationFile = (filePath: string): boolean => {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const baseName = path.basename(normalized);
+  const ext = path.extname(baseName).toLowerCase();
+  const nameWithoutExt = ext ? baseName.slice(0, -ext.length).toLowerCase() : baseName.toLowerCase();
+
+  if (nameWithoutExt.startsWith('readme') || DOC_SPECIAL_BASENAMES.has(nameWithoutExt)) {
+    if (!ext || DOC_EXTENSIONS.has(ext)) return true;
+  }
+
+  if (DOC_EXTENSIONS.has(ext)) {
+    return true;
+  }
+
+  if (normalized.startsWith('docs/') || normalized.startsWith('doc/')) {
+    const docAssetExts = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
+    if (docAssetExts.has(ext)) return true;
+  }
+
+  return false;
+};
+
 export const collectRunnerSystemInfo = (): RunnerSystemInfo => ({
   hostname: os.hostname(),
   platform: process.platform,
@@ -173,6 +221,7 @@ export class TaskExecutor {
   private readonly execFileFn: ExecFileAsyncFn;
   private readonly dirExistsFn: (dirPath: string) => boolean;
   private readonly log: Logger;
+  private readonly botPrPolicy: BotPrPolicy;
   private readonly onStatusUpdate?: (
     patch: TaskStatusPatch & { message?: string }
   ) => Promise<void> | void;
@@ -183,6 +232,9 @@ export class TaskExecutor {
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('worker');
+    this.botPrPolicy =
+      options.botPrPolicy ??
+      ((process.env.BOT_PR_POLICY as BotPrPolicy) || 'docs_only');
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
@@ -364,8 +416,13 @@ export class TaskExecutor {
         });
         if (statusOut && statusOut.trim() !== '') {
           await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
-          const authorName = process.env.GIT_AUTHOR_NAME || 'agylity[bot]';
-          const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'agylity@users.noreply.github.com';
+          const isBot = task.actor === 'bot';
+          const authorName = isBot
+            ? 'agylity[bot]'
+            : (process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User');
+          const authorEmail = isBot
+            ? 'agylity@users.noreply.github.com'
+            : (process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com');
           await this.execFileFn(
             'git',
             ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
@@ -376,8 +433,8 @@ export class TaskExecutor {
                 ...process.env,
                 GIT_AUTHOR_NAME: authorName,
                 GIT_AUTHOR_EMAIL: authorEmail,
-                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
-                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+                GIT_COMMITTER_NAME: isBot ? authorName : (process.env.GIT_COMMITTER_NAME || authorName),
+                GIT_COMMITTER_EMAIL: isBot ? authorEmail : (process.env.GIT_COMMITTER_EMAIL || authorEmail),
               },
             }
           );
@@ -430,6 +487,86 @@ export class TaskExecutor {
       }
 
       let prUrl: string | undefined;
+
+      // Policy Guard: Check Bot PR policy before pushing branches or creating PRs
+      const isBot = task.actor === 'bot';
+      const effectiveBotPrPolicy: BotPrPolicy =
+        task.botPrPolicy ?? this.botPrPolicy ?? 'docs_only';
+
+      if (isBot) {
+        if (effectiveBotPrPolicy === 'none') {
+          this.log.info(
+            'Bot PR policy is "none": suppressing branch push and PR creation for task %s on %s',
+            task.id,
+            branchName
+          );
+          try {
+            await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
+            await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
+          } catch {
+            // Cleanup best-effort
+          }
+          const telemetry = parseAgyTelemetry(agyStdout);
+          return {
+            success: true,
+            noChanges: true,
+            branchName,
+            output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot PR policy is 'none'.`,
+            durationMs: Date.now() - startMs,
+            numTurns: telemetry.numTurns,
+            totalTokens: telemetry.totalTokens,
+            thinkingTokens: telemetry.thinkingTokens,
+          };
+        }
+
+        if (effectiveBotPrPolicy === 'docs_only') {
+          let nonDocFiles: string[] = [];
+          try {
+            const { stdout: diffOut } = await this.execFileFn(
+              'git',
+              ['diff', '--name-only', `${baseBranch}..HEAD`],
+              { cwd, timeout: 15000 }
+            );
+            const changedFiles = diffOut
+              .split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter(Boolean);
+            nonDocFiles = changedFiles.filter((f) => !isDocumentationFile(f));
+          } catch (diffErr: any) {
+            this.log.warn(
+              'Failed to inspect commit diff for bot policy check on %s: %s',
+              branchName,
+              diffErr?.message ?? diffErr
+            );
+          }
+
+          if (nonDocFiles.length > 0) {
+            this.log.info(
+              'Bot PR policy "docs_only" blocked PR for task %s on %s (non-doc files modified: %s)',
+              task.id,
+              branchName,
+              nonDocFiles.join(', ')
+            );
+            try {
+              await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
+              await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
+            } catch {
+              // Cleanup best-effort
+            }
+            const telemetry = parseAgyTelemetry(agyStdout);
+            return {
+              success: true,
+              noChanges: true,
+              branchName,
+              output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only (botPrPolicy='docs_only'). Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`,
+              durationMs: Date.now() - startMs,
+              numTurns: telemetry.numTurns,
+              totalTokens: telemetry.totalTokens,
+              thinkingTokens: telemetry.thinkingTokens,
+            };
+          }
+        }
+      }
 
       // 5. Push continuation branch to origin if pushBranch is enabled
       if (task.pushBranch) {
@@ -555,6 +692,7 @@ export interface RemoteSwarmWorkerOptions {
   execFileFn?: ExecFileAsyncFn;
   pollTimeoutMs?: number;
   idlePollIntervalMs?: number;
+  botPrPolicy?: BotPrPolicy;
   executor?: TaskExecutor;
   logger?: Logger;
 }
@@ -592,6 +730,7 @@ export class RemoteSwarmWorker {
         agyBinPath: options.agyBinPath || 'agy',
         execFileFn: options.execFileFn,
         logger: this.log,
+        botPrPolicy: options.botPrPolicy,
         onStatusUpdate: async (status) => {
           if (this.currentExecutingTaskId) {
             await this.reportStatus(
