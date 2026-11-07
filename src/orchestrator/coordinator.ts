@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
+import type { BotPrPolicy } from '../config/schema.js';
 import type { SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
@@ -17,6 +18,7 @@ import {
   type ModelEligibilityResult,
   type ReasoningEffort,
   type ScheduleMode,
+  type TaskActor,
 } from './models.js';
 import {
   TaskQueue,
@@ -38,6 +40,8 @@ export interface DispatchTaskRequest {
   prompt: string;
   requestedBy?: string;
   requestedByUserId?: string;
+  actor?: TaskActor;
+  botPrPolicy?: BotPrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model?: string;
@@ -245,6 +249,8 @@ export class OrchestratorCoordinator {
         model: concreteModel,
         effort: st.effort,
         autoCreatePr: st.autoCreatePr,
+        actor: st.actor || 'bot',
+        botPrPolicy: resolved.botPrPolicy,
         verifyCommand: st.verifyCommand,
         standingTaskId: st.id,
         scheduleMode: 'immediate',
@@ -425,6 +431,8 @@ export class OrchestratorCoordinator {
       defaultBranch,
       prompt: req.prompt,
       requestedBy: req.requestedBy || 'web-ui',
+      actor: req.actor ?? 'user',
+      botPrPolicy: req.botPrPolicy ?? resolved.botPrPolicy,
       scheduleMode,
       requiredLabels,
       model: concreteModel,
@@ -517,6 +525,8 @@ export class OrchestratorCoordinator {
       prompt: params.prompt,
       requestedBy: params.requestedBy || parentTask?.requestedBy,
       requestedByUserId: params.requestedByUserId,
+      actor: parentTask?.actor ?? 'user',
+      botPrPolicy: parentTask?.botPrPolicy,
       effort: params.effort || parentTask?.effort,
       model: params.model || parentTask?.model,
       scheduleMode: params.scheduleMode || parentTask?.scheduleMode,

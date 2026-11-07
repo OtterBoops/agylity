@@ -157,6 +157,13 @@ export const handlePostDispatch = async (
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
+    actor: payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : undefined,
+    botPrPolicy:
+      payload.botPrPolicy === 'docs_only' ||
+      payload.botPrPolicy === 'all' ||
+      payload.botPrPolicy === 'none'
+        ? payload.botPrPolicy
+        : undefined,
     scheduleMode,
     requiredLabels,
     model: toStringOrUndefined(payload.model),
@@ -372,6 +379,8 @@ export const handleTaskRetry = async (
     cloneUrl: task.cloneUrl,
     prompt: task.prompt,
     requestedBy: 'web-ui (retry)',
+    actor: task.actor,
+    botPrPolicy: task.botPrPolicy,
     scheduleMode: task.scheduleMode,
     model: task.model,
     effort: task.effort,
@@ -441,6 +450,7 @@ export const handleStandingTaskById = async (
       model: st.model,
       effort: st.effort,
       autoCreatePr: st.autoCreatePr,
+      actor: st.actor || 'bot',
       verifyCommand: st.verifyCommand,
       standingTaskId: st.id,
       scheduleMode: 'immediate',

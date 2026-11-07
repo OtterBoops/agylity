@@ -10,6 +10,9 @@ import {
 export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
+export type TaskActor = 'user' | 'bot';
+export const TaskActorSchema = z.enum(['user', 'bot']).default('user');
+
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high']).default('high');
 

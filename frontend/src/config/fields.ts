@@ -17,6 +17,15 @@ export const EFFORT_OPTIONS: Array<{
   { value: 'high', label: 'High' },
 ];
 
+export const BOT_PR_POLICY_OPTIONS: Array<{
+  value: 'docs_only' | 'all' | 'none';
+  label: string;
+}> = [
+  { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
+  { value: 'all', label: 'All files (Allow code & doc PRs)' },
+  { value: 'none', label: 'None (Disable bot PRs & branch pushes)' },
+];
+
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
 
 /** Collapses a configured model string (e.g. 'gemini-3.8-flash-high') to a catalog id. */
@@ -73,6 +82,13 @@ export const ORCHESTRATOR_FIELDS: FieldDef[] = [
     type: 'select',
     options: EFFORT_OPTIONS,
     hint: 'Reasoning effort level passed to agy --effort.',
+  },
+  {
+    key: 'botPrPolicy',
+    label: 'Bot Pull Request policy',
+    type: 'select',
+    options: BOT_PR_POLICY_OPTIONS,
+    hint: 'Restricts automated bot tasks (standing tasks, pre-reset quota burns) from opening code PRs. Code issues are filed as GitHub Issues instead.',
   },
   {
     key: 'quotaBurnMaxHours',

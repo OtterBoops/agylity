@@ -3,15 +3,19 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schema.js';
 import type { QuotaFamily } from '../sentry/models.js';
+import type { BotPrPolicy } from '../config/schema.js';
 import {
   resolvePoolFamilyForModel,
   type ReasoningEffort,
   type ScheduleMode,
+  type TaskActor,
   type TaskStatus,
   TERMINAL_TASK_STATUSES,
   isTerminalTaskStatus,
 } from './models.js';
 import { logger } from '../logs/logger.js';
+
+export type { TaskActor };
 
 export interface RunnerSystemInfo {
   hostname?: string;
@@ -30,6 +34,8 @@ export interface SwarmTask {
   defaultBranch: string;
   prompt: string;
   requestedBy: string;
+  actor: TaskActor;
+  botPrPolicy?: BotPrPolicy;
   scheduleMode: ScheduleMode;
   requiredLabels: string[];
   model: string;
@@ -65,6 +71,8 @@ export interface EnqueueTaskInput {
   defaultBranch?: string;
   prompt: string;
   requestedBy?: string;
+  actor?: TaskActor;
+  botPrPolicy?: BotPrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model: string;
@@ -148,6 +156,7 @@ export interface StandingTaskRecord {
   effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
+  actor: TaskActor;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;
@@ -179,6 +188,8 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'default_branch', ddl: "default_branch TEXT NOT NULL DEFAULT 'main'" },
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'requested_by', ddl: "requested_by TEXT NOT NULL DEFAULT 'web-ui'" },
+  { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'user'" },
+  { name: 'bot_pr_policy', ddl: 'bot_pr_policy TEXT' },
   { name: 'schedule_mode', ddl: "schedule_mode TEXT NOT NULL DEFAULT 'immediate'" },
   { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'model', ddl: 'model TEXT NOT NULL' },
@@ -214,6 +225,7 @@ const STANDING_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
+  { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'bot'" },
   { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
   { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
   { name: 'trigger_before_reset_hours', ddl: 'trigger_before_reset_hours REAL NOT NULL DEFAULT 2' },
@@ -268,7 +280,7 @@ const SCHEMA_TABLES: ReadonlyArray<{ name: string; columns: readonly ColumnSpec[
   { name: 'swarm_runner_registrations', columns: RUNNER_REGISTRATION_COLUMNS },
 ];
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const REGISTRATION_TOKEN_RETENTION = 50;
 
@@ -607,6 +619,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const defaultBranch = (input.defaultBranch || 'main').trim();
     const prompt = input.prompt.slice(0, 4000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
+    const actor: TaskActor = input.actor ?? 'user';
+    const botPrPolicy = input.botPrPolicy ?? null;
     const scheduleMode: ScheduleMode = input.scheduleMode ?? 'immediate';
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
@@ -622,10 +636,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       .prepare(
         `INSERT INTO swarm_tasks (
           id, created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, schedule_mode,
+          clone_url, default_branch, prompt, requested_by, actor, bot_pr_policy, schedule_mode,
           required_labels_json, model, pool_family, effort, allow_overage, push_branch,
           auto_create_pr, expires_at, standing_task_id, verify_command, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
       )
       .run(
         id,
@@ -638,6 +652,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         defaultBranch,
         prompt,
         requestedBy,
+        actor,
+        botPrPolicy,
         scheduleMode,
         JSON.stringify(requiredLabels),
         model,
@@ -1155,6 +1171,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       defaultBranch: String(row.default_branch || 'main'),
       prompt: String(row.prompt),
       requestedBy: String(row.requested_by || 'web-ui'),
+      actor: (row.actor as TaskActor) || 'user',
+      botPrPolicy: (row.bot_pr_policy as BotPrPolicy) || undefined,
       scheduleMode: (row.schedule_mode as ScheduleMode) || 'immediate',
       requiredLabels,
       model: String(row.model),
@@ -1213,6 +1231,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     effort?: ReasoningEffort;
     verifyCommand?: string;
     autoCreatePr?: boolean;
+    actor?: TaskActor;
     enabled?: boolean;
     sortOrder?: number;
     triggerBeforeResetHours?: number;
@@ -1221,6 +1240,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const now = new Date().toISOString();
     const effort: ReasoningEffort = input.effort ?? 'high';
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
+    const actor: TaskActor = input.actor ?? 'bot';
     const enabled = input.enabled !== false ? 1 : 0;
     const sortOrder = input.sortOrder ?? 0;
     const triggerHours = input.triggerBeforeResetHours ?? 2;
@@ -1229,9 +1249,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       .prepare(
         `INSERT INTO standing_tasks (
           id, title, prompt, repository_id, model, effort, verify_command,
-          auto_create_pr, enabled, sort_order, trigger_before_reset_hours,
+          auto_create_pr, actor, enabled, sort_order, trigger_before_reset_hours,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1242,6 +1262,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         effort,
         input.verifyCommand ?? null,
         autoCreatePr,
+        actor,
         enabled,
         sortOrder,
         triggerHours,
@@ -1262,6 +1283,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       effort: ReasoningEffort;
       verifyCommand: string | null;
       autoCreatePr: boolean;
+      actor: TaskActor;
       enabled: boolean;
       sortOrder: number;
       triggerBeforeResetHours: number;
@@ -1289,6 +1311,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         : existing.autoCreatePr
           ? 1
           : 0;
+    const actor = patch.actor !== undefined ? patch.actor : existing.actor;
     const enabled =
       patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
     const sortOrder = patch.sortOrder !== undefined ? patch.sortOrder : existing.sortOrder;
@@ -1313,6 +1336,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
              effort = ?,
              verify_command = ?,
              auto_create_pr = ?,
+             actor = ?,
              enabled = ?,
              sort_order = ?,
              trigger_before_reset_hours = ?,
@@ -1329,6 +1353,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         effort,
         verifyCommand,
         autoCreatePr,
+        actor,
         enabled,
         sortOrder,
         triggerHours,
@@ -1358,6 +1383,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       effort: (r.effort as ReasoningEffort) || 'high',
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
+      actor: (r.actor as TaskActor) || 'bot',
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),
       triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? 2),

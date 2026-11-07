@@ -1,6 +1,7 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
 import { RemoteSwarmWorker } from './orchestrator/worker.js';
+import type { BotPrPolicy } from './config/schema.js';
 
 export interface WorkerCliOptions {
   coordinatorUrl: string;
@@ -15,6 +16,7 @@ export interface WorkerCliOptions {
   agyBinPath: string;
   pollTimeoutMs: number;
   idlePollIntervalMs: number;
+  botPrPolicy?: BotPrPolicy;
 }
 
 const parseCsvList = (value?: string): string[] => {
@@ -98,6 +100,11 @@ export const parseWorkerCliArgs = (
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
   const pollTimeoutMs = Number(env.WORKER_POLL_TIMEOUT_MS ?? 25000);
   const idlePollIntervalMs = Number(env.WORKER_IDLE_INTERVAL_MS ?? 2000);
+  const botPrPolicy = (
+    args['bot-pr-policy'] ||
+    env.BOT_PR_POLICY ||
+    ''
+  ).trim() as BotPrPolicy | undefined;
 
   return {
     coordinatorUrl,
@@ -112,6 +119,7 @@ export const parseWorkerCliArgs = (
     agyBinPath,
     pollTimeoutMs: Number.isFinite(pollTimeoutMs) ? pollTimeoutMs : 25000,
     idlePollIntervalMs: Number.isFinite(idlePollIntervalMs) ? idlePollIntervalMs : 2000,
+    botPrPolicy: botPrPolicy || undefined,
   };
 };
 
@@ -142,6 +150,7 @@ export const runWorkerCli = async (): Promise<void> => {
     agyBinPath: opts.agyBinPath,
     pollTimeoutMs: opts.pollTimeoutMs,
     idlePollIntervalMs: opts.idlePollIntervalMs,
+    botPrPolicy: opts.botPrPolicy,
     logger: log,
   });
 
