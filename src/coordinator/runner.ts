@@ -100,7 +100,7 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
   }
 
   // Fallback covers a prompt whose first word already exceeds the budget.
-  return `antigravity/task-${shortId}-${slug || 'work'}`;
+  return `agy/${shortId}-${slug || 'work'}`;
 };
 
 const DOC_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn', '.txt', '.rst', '.adoc']);
@@ -602,9 +602,35 @@ export class TaskExecutor {
           };
         }
 
+        const telemetry = parseAgyTelemetry(agyStdout);
+
         // Automatic PR Creation via native gh CLI if autoCreatePr is enabled
         if (task.autoCreatePr) {
           try {
+            const provenanceLines: string[] = [
+              '',
+              '---',
+              '### Runtime Provenance',
+              `- **Model:** \`${task.model}\`${task.effort ? ` (effort: \`${task.effort}\`)` : ''}`,
+            ];
+            if (telemetry.numTurns) {
+              provenanceLines.push(`- **Turns:** ${telemetry.numTurns}`);
+            }
+            if (telemetry.totalTokens) {
+              const thinkingPart = telemetry.thinkingTokens
+                ? ` (${telemetry.thinkingTokens.toLocaleString()} thinking)`
+                : '';
+              provenanceLines.push(
+                `- **Tokens:** ${telemetry.totalTokens.toLocaleString()}${thinkingPart}`
+              );
+            }
+
+            const prBody = [
+              `Automated pull request dispatched by Agylity for task \`${task.id}\`.\n`,
+              `### Task Prompt\n${task.prompt}`,
+              ...provenanceLines,
+            ].join('\n');
+
             const { stdout: prOut } = await this.execFileFn(
               'gh',
               [
@@ -617,7 +643,7 @@ export class TaskExecutor {
                 '--title',
                 `[Agylity] Task ${task.id}: ${task.prompt.slice(0, 70)}`,
                 '--body',
-                `Automated pull request dispatched by Agylity for task \`${task.id}\`.\n\n### Task Prompt\n${task.prompt}`,
+                prBody,
               ],
               {
                 cwd,

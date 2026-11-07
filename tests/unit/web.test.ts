@@ -573,7 +573,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const res = await ky
           .post(`http://127.0.0.1:${started.port}/api/dispatch`, {
             json: {
-              repositoryName: 'agylity',
+              repositoryId: 'agylity',
               prompt: 'Run security audit',
               requestedBy: 'admin',
             },
@@ -607,7 +607,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const res = await ky
           .post(`http://127.0.0.1:${started.port}/api/dispatch`, {
             json: {
-              repositoryName: 'agylity',
+              repositoryId: 'agylity',
               prompt: 'Run security audit',
               requestedBy: 'admin',
             },
@@ -626,7 +626,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
-    it('POST /api/dispatch rejects missing repositoryName with 400', async () => {
+    it('POST /api/dispatch rejects missing repositoryId with 400', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_bad_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
       let server: http.Server | undefined;
@@ -686,7 +686,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         await assert.rejects(
           async () => {
             await ky.post(`http://127.0.0.1:${port}/api/dispatch`, {
-              json: { repositoryName: 'agylity', prompt: 'Continue work' },
+              json: { repositoryId: 'agylity', prompt: 'Continue work' },
               retry: 0,
             });
           },
@@ -700,7 +700,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         // and reports dispatch disabled in alerting-only mode
         const res = await ky
           .post(`http://127.0.0.1:${port}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'Continue work', allowOverage: true },
+            json: { repositoryId: 'agylity', prompt: 'Continue work', allowOverage: true },
             retry: 0,
           })
           .json<any>();
@@ -1067,7 +1067,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         server = started.server;
 
         const oversizedPayload = JSON.stringify({
-          repositoryName: 'agylity',
+          repositoryId: 'agylity',
           prompt: 'x'.repeat(65 * 1024),
         });
 
@@ -1328,7 +1328,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
-              repositoryName: 'agylity',
+              repositoryId: 'agylity',
               prompt: 'Fail then report completed',
               allowOverage: true,
             },
@@ -1389,7 +1389,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const baseUrl = `http://127.0.0.1:${port}`;
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'Owned by runner-a' },
+            json: { repositoryId: 'agylity', prompt: 'Owned by runner-a' },
           })
           .json<any>();
 
@@ -1448,7 +1448,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const baseUrl = `http://127.0.0.1:${port}`;
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'PR task', allowOverage: true },
+            json: { repositoryId: 'agylity', prompt: 'PR task', allowOverage: true },
           })
           .json<any>();
 
@@ -1488,7 +1488,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
-              repositoryName: 'agylity',
+              repositoryId: 'agylity',
               prompt: 'Telemetry task',
               allowOverage: true,
             },

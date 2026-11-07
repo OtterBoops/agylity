@@ -60,16 +60,16 @@ export const DispatchStatusUpdateSchema = z.object({
 });
 
 export interface DispatchRequest {
-  repositoryName: string;
+  repositoryId: string;
+  repositoryName?: string;
   repositoryPath?: string;
   cloneUrl?: string;
   prompt: string;
   requestedBy: string;
   requestedByUserId?: string;
-  repositoryId?: string;
   model?: string;
   effort?: 'low' | 'medium' | 'high';
-  workerMode?: 'headless' | 'visible' | 'any';
+  runnerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
   requiredLabels?: string[];
   allowOverage?: boolean;
@@ -78,13 +78,13 @@ export interface DispatchRequest {
 }
 
 export const DispatchRequestSchema = z.object({
-  repositoryName: z.string().min(1),
+  repositoryId: z.string().min(1),
+  repositoryName: z.string().optional(),
   repositoryPath: z.string().optional(),
   cloneUrl: z.string().url().optional(),
   prompt: z.string().min(1).max(4000),
   requestedBy: z.string().min(1),
   requestedByUserId: z.string().optional(),
-  repositoryId: z.string().optional(),
   model: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high']).optional(),
   workerMode: z.enum(['headless', 'visible', 'any']).optional(),

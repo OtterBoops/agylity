@@ -197,7 +197,7 @@ async function main() {
     const dispatchRes = await ky
       .post(`${baseUrl}/api/dispatch`, {
         json: {
-          repositoryName: 'Target Project',
+          repositoryId: 'test-project',
           prompt: samplePrompt,
           model: 'gemini-3.8-flash',
           effort: 'medium',

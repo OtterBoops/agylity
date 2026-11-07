@@ -159,8 +159,8 @@ export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
     .catch(() => []);
 
 export const triggerDispatch = (payload: {
-  repositoryName: string;
-  repositoryId?: string;
+  repositoryId: string;
+  repositoryName?: string;
   repositoryPath?: string;
   cloneUrl?: string;
   prompt: string;

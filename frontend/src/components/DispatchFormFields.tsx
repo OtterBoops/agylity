@@ -72,7 +72,7 @@ export const DispatchFormFields = ({
         </label>
         <select
           id="repoSelect"
-          name="repositoryName"
+          name="repositoryId"
           class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
           value={selectedRepo}
           onChange={(e) => onRepoChange((e.target as HTMLSelectElement).value)}
@@ -80,7 +80,7 @@ export const DispatchFormFields = ({
         >
           <option value="">-- Select Pre-Configured Repository --</option>
           {repos.map((r) => (
-            <option key={r.name} value={r.name}>
+            <option key={r.id} value={r.id}>
               {r.name} ({r.path || 'default'})
             </option>
           ))}

@@ -255,7 +255,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         const result = await executor.execute(task);
         assert.equal(result.success, true);
-        assert.ok(result.branchName.startsWith('antigravity/task-'));
+        assert.ok(result.branchName.startsWith('agy/'));
         assert.notEqual(result.branchName, 'main');
 
         // 1a. First switches back to default base branch ('main') and fast-forwards so sequential tasks do not stack branches
@@ -417,14 +417,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         'task-1793630699721-a4eb1c',
         'Tasks table is fucked on mobile. Possibly others too.'
       );
-      assert.equal(branch, 'antigravity/task-a4eb1c-tasks-table-is-fucked-on-mobile');
+      assert.equal(branch, 'agy/a4eb1c-tasks-table-is-fucked-on-mobile');
       assert.ok(!branch.endsWith('-'));
 
       // A word too long for the budget is dropped rather than sliced mid-word.
-      assert.equal(
-        buildContinuationBranchName('task-1-abc', 'x'.repeat(80)),
-        'antigravity/task-abc-work'
-      );
+      assert.equal(buildContinuationBranchName('task-1-abc', 'x'.repeat(80)), 'agy/abc-work');
     });
 
     it('reports a run that produced no commits as no_changes, not a failure or a success on main', async () => {
@@ -531,7 +528,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const dispRes = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
-              repositoryName: 'Agylity',
+              repositoryId: 'agylity',
               prompt: 'Refactor Connect-RPC discovery',
               model: 'gemini-3.8-flash-high',
               workerMode: 'headless',
@@ -573,7 +570,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // 5. Verify task is marked completed in GET /api/tasks and GET /api/dispatches
         const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
         assert.equal(tasks[0]?.status, 'completed');
-        assert.ok(tasks[0]?.branchName?.startsWith('antigravity/task-'));
+        assert.ok(tasks[0]?.branchName?.startsWith('agy/'));
 
         const dispatches = await ky.get(`${baseUrl}/api/dispatches`).json<any[]>();
         assert.equal(dispatches.length, 1);
@@ -707,7 +704,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const gpuDispatch = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
-              repositoryName: 'Agylity',
+              repositoryId: 'agylity',
               prompt: 'Run GPU shader compilation benchmark',
               workerMode: 'visible',
               requiredLabels: ['gpu'],
@@ -726,7 +723,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const headlessDispatch = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
-              repositoryName: 'Agylity',
+              repositoryId: 'agylity',
               prompt: 'Headless container task',
               workerMode: 'headless',
               requiredLabels: ['docker'],
@@ -1046,7 +1043,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const coordinator = new Coordinator({ configStore: store });
 
       const blocked = await coordinator.dispatch({
-        repositoryName: 'Agylity',
+        repositoryId: 'Agylity',
         prompt: 'Unauthorized task',
         requestedByUserId: 'intruder-456',
       });
@@ -1376,7 +1373,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       ]);
 
       const res = await coordinator.dispatch({
-        repositoryName: 'my:repo@v1',
+        repositoryId: 'my:repo@v1',
         prompt: 'Sanitise the derived repository id',
       });
       assert.equal(res.success, true);

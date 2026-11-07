@@ -134,7 +134,7 @@ const handleDispatchCommand = async (
     }
   }
 
-  const repositoryName = interaction.options?.getString?.('repository') ?? '';
+  const repositoryId = interaction.options?.getString?.('repository') ?? '';
   const prompt = interaction.options?.getString?.('prompt') ?? '';
   const model = interaction.options?.getString?.('model') || undefined;
   const effort = interaction.options?.getString?.('effort') || undefined;
@@ -164,7 +164,8 @@ const handleDispatchCommand = async (
   const requestedByUserId = interaction.user?.id;
   try {
     const result = await onDispatch({
-      repositoryName,
+      repositoryId,
+      repositoryName: repositoryId,
       prompt: prompt.trim(),
       requestedBy,
       requestedByUserId,
@@ -181,7 +182,7 @@ const handleDispatchCommand = async (
     if (!result.success) {
       content = `[Error] Dispatch failed: ${result.error ?? 'Unknown error'}`;
     } else if (isQueued) {
-      content = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` queued for \`${repositoryName}\` — waiting for swarm runner...`;
+      content = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` queued for \`${repositoryId}\` — waiting for swarm runner...`;
     } else {
       const branch = result.branchName ? ` on branch \`${result.branchName}\`` : '';
       content = `[Success] Antigravity continuation complete${branch}.`;
