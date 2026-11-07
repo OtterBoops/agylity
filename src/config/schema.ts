@@ -175,6 +175,8 @@ export const RawEnvSchema = z.object({
 
   /* Optional Coordinator */
   COORDINATOR_ENABLED: z.string().optional(),
+  ROUTINES_ENABLED: z.string().optional(),
+  GITHUB_BACKLOG_LABEL: z.string().optional(),
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
   DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
   RUNNER_SHARED_SECRET: z.string().optional(),
@@ -224,6 +226,8 @@ export interface AppConfig {
   repositories: RepositoryEntry[];
 
   coordinatorEnabled: boolean;
+  routinesEnabled: boolean;
+  githubBacklogLabel: string;
   defaultDispatchModel: string;
   defaultDispatchEffort: 'low' | 'medium' | 'high';
   runnerSharedSecret?: string;
@@ -267,6 +271,8 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   minDispatchHeadroomPercent: 'MIN_DISPATCH_HEADROOM_PERCENT',
   repositories: 'REPOSITORIES_JSON',
   coordinatorEnabled: 'COORDINATOR_ENABLED',
+  routinesEnabled: 'ROUTINES_ENABLED',
+  githubBacklogLabel: 'GITHUB_BACKLOG_LABEL',
   defaultDispatchModel: 'DEFAULT_DISPATCH_MODEL',
   defaultDispatchEffort: 'DEFAULT_DISPATCH_EFFORT',
   runnerSharedSecret: 'RUNNER_SHARED_SECRET',
@@ -345,6 +351,8 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   repositories: [],
 
   coordinatorEnabled: false,
+  routinesEnabled: true,
+  githubBacklogLabel: 'backlog',
   defaultDispatchModel: 'gemini-3.8-flash',
   defaultDispatchEffort: 'medium',
   runnerSharedSecret: undefined,
@@ -486,6 +494,16 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
       warnEnvFallback('COORDINATOR_ENABLED', 'invalid boolean value');
     }
   }
+  if (parsed.ROUTINES_ENABLED !== undefined && parsed.ROUTINES_ENABLED.trim() !== '') {
+    try {
+      result.routinesEnabled = booleanEnv.parse(parsed.ROUTINES_ENABLED);
+    } catch {
+      warnEnvFallback('ROUTINES_ENABLED', 'invalid boolean value');
+    }
+  }
+  if (parsed.GITHUB_BACKLOG_LABEL && parsed.GITHUB_BACKLOG_LABEL.trim() !== '') {
+    result.githubBacklogLabel = parsed.GITHUB_BACKLOG_LABEL.trim();
+  }
   if (parsed.DEFAULT_DISPATCH_MODEL && parsed.DEFAULT_DISPATCH_MODEL.trim() !== '') {
     result.defaultDispatchModel = parsed.DEFAULT_DISPATCH_MODEL.trim();
   }
@@ -556,6 +574,8 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   poolPolicies: PoolPoliciesSchema,
   repositories: z.array(RepositorySchema),
   coordinatorEnabled: z.boolean(),
+  routinesEnabled: z.boolean(),
+  githubBacklogLabel: z.string().min(1),
   defaultDispatchModel: z.string(),
   defaultDispatchEffort: z.enum(['low', 'medium', 'high']),
   runnerSharedSecret: z.string().optional(),

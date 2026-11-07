@@ -156,6 +156,11 @@ export const handlePostDispatch = async (
     repositoryPath: toStringOrUndefined(payload.repositoryPath),
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,
+    title: toStringOrUndefined(payload.title),
+    tier: payload.tier === 'backlog' || payload.tier === 'routine' ? payload.tier : 'immediate',
+    originId: toStringOrUndefined(payload.originId),
+    originNumber: toFiniteNumberOrUndefined(payload.originNumber),
+    originTitle: toStringOrUndefined(payload.originTitle),
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
     actor: payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : undefined,
     botPrPolicy:
@@ -394,86 +399,6 @@ export const handleTaskRetry = async (
   });
 
   return sendJson(res, 200, retryRes);
-};
-
-export const handleStandingTasks = async (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  options: WebServerOptions,
-  _url: URL,
-  method: string
-): Promise<void> => {
-  const coordinator = resolveCoordinator(options);
-
-  if (method === 'GET') {
-    const list = coordinator.queue.listStandingTasks();
-    return sendJson(res, 200, list, { 'Cache-Control': 'no-store' });
-  }
-
-  if (method === 'POST') {
-    const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
-    if (!parsed.ok) return;
-    const payload: any = parsed.body;
-    if (!payload?.title || !payload?.prompt || !payload?.repositoryId || !payload?.model) {
-      return sendJson(res, 400, {
-        error: 'title, prompt, repositoryId, and model are required for standing task',
-      });
-    }
-    const created = coordinator.queue.createStandingTask(payload);
-    return sendJson(res, 201, created);
-  }
-
-  return methodNotAllowed(res);
-};
-
-export const handleStandingTaskById = async (
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  options: WebServerOptions,
-  pathname: string,
-  method: string
-): Promise<void> => {
-  const match = /^\/api\/standing-tasks\/([^/]+)(?:\/(trigger))?$/.exec(pathname);
-  const id = match?.[1] ? safeDecodeSegment(match[1]) : '';
-  const action = match?.[2];
-  if (!id) return sendJson(res, 400, { error: 'id is required' });
-
-  const coordinator = resolveCoordinator(options);
-
-  if (action === 'trigger' && method === 'POST') {
-    const st = coordinator.queue.getStandingTask(id);
-    if (!st) return sendJson(res, 404, { error: `Standing task ${id} not found` });
-    const dispatchRes = await coordinator.dispatch({
-      repositoryId: st.repositoryId,
-      repositoryName: st.repositoryId,
-      prompt: st.prompt,
-      model: st.model,
-      effort: st.effort,
-      autoCreatePr: st.autoCreatePr,
-      actor: st.actor || 'bot',
-      verifyCommand: st.verifyCommand,
-      standingTaskId: st.id,
-      scheduleMode: 'immediate',
-    });
-    return sendJson(res, 200, dispatchRes);
-  }
-
-  if (method === 'PATCH') {
-    const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
-    if (!parsed.ok) return;
-    const patch: any = parsed.body;
-    const updated = coordinator.queue.updateStandingTask(id, patch);
-    if (!updated) return sendJson(res, 404, { error: `Standing task ${id} not found` });
-    return sendJson(res, 200, updated);
-  }
-
-  if (method === 'DELETE') {
-    const deleted = coordinator.queue.deleteStandingTask(id);
-    if (!deleted) return sendJson(res, 404, { error: `Standing task ${id} not found` });
-    return sendJson(res, 200, { success: true, deleted: true });
-  }
-
-  return methodNotAllowed(res);
 };
 
 export const handleGetRunners = (

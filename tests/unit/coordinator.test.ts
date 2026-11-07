@@ -258,19 +258,23 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.ok(result.branchName.startsWith('agy/'));
         assert.notEqual(result.branchName, 'main');
 
-        // 1a. First switches back to default base branch ('main') and fast-forwards so sequential tasks do not stack branches
+        // 1a. First cleans worktree and switches back to default base branch ('main')
         assert.equal(invocations[0]?.file, 'git');
-        assert.deepEqual(invocations[0]?.args, ['checkout', 'main']);
+        assert.deepEqual(invocations[0]?.args, ['clean', '-fd']);
         assert.equal(invocations[1]?.file, 'git');
-        assert.deepEqual(invocations[1]?.args, ['pull', '--ff-only']);
+        assert.deepEqual(invocations[1]?.args, ['reset', '--hard', 'HEAD']);
+        assert.equal(invocations[2]?.file, 'git');
+        assert.deepEqual(invocations[2]?.args, ['checkout', 'main']);
+        assert.equal(invocations[3]?.file, 'git');
+        assert.deepEqual(invocations[3]?.args, ['pull', '--ff-only']);
 
         // 1b. Then checks out isolated continuation branch
-        assert.equal(invocations[2]?.file, 'git');
-        assert.deepEqual(invocations[2]?.args, ['checkout', '-B', result.branchName]);
+        assert.equal(invocations[4]?.file, 'git');
+        assert.deepEqual(invocations[4]?.args, ['checkout', '-B', result.branchName]);
 
         // 2. Next command must be official agy CLI with explicit --model and --effort
-        assert.equal(invocations[3]?.file, 'agy');
-        assert.deepEqual(invocations[3]?.args, [
+        assert.equal(invocations[5]?.file, 'agy');
+        assert.deepEqual(invocations[5]?.args, [
           '-p',
           'Implement swarm poller unit tests',
           '--mode',
@@ -1897,32 +1901,32 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
   });
 
   describe('8. Standing Tasks & Automated Pre-Reset Quota-Burn Scheduler', () => {
-    it('performs CRUD operations on standing tasks in TaskQueue', () => {
-      const { dir, cleanup } = makeTempDir('orch_standing_crud_');
+    it('performs CRUD operations on routine tasks in TaskQueue', () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_crud_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        assert.deepEqual(queue.listStandingTasks(), []);
+        assert.deepEqual(queue.listRoutineTasks(), []);
 
-        const created = queue.createStandingTask({
+        const created = queue.createRoutineTask({
           title: 'Claude Bug Hunter',
           prompt: 'Audit repo and submit issue',
           repositoryId: 'agylity',
-          model: 'claude-sonnet-5-5',
+          models: ['claude-sonnet-5-5'],
           effort: 'high',
           triggerBeforeResetHours: 12,
         });
 
-        assert.ok(created.id.startsWith('standing-'));
+        assert.ok(created.id.startsWith('routine-'));
         assert.equal(created.title, 'Claude Bug Hunter');
-        assert.equal(created.model, 'claude-sonnet-5-5');
+        assert.deepEqual(created.models, ['claude-sonnet-5-5']);
         assert.equal(created.triggerBeforeResetHours, 12);
         assert.equal(created.enabled, true);
 
-        const fetched = queue.getStandingTask(created.id);
+        const fetched = queue.getRoutineTask(created.id);
         assert.equal(fetched?.id, created.id);
 
-        const updated = queue.updateStandingTask(created.id, {
+        const updated = queue.updateRoutineTask(created.id, {
           title: 'Claude Bug Hunter v2',
           triggerBeforeResetHours: 14,
           enabled: false,
@@ -1933,16 +1937,63 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(updated?.enabled, false);
         assert.equal(updated?.lastTriggeredResetTime, '2026-11-08T01:30:44Z');
 
-        const deleted = queue.deleteStandingTask(created.id);
+        const deleted = queue.deleteRoutineTask(created.id);
         assert.equal(deleted, true);
-        assert.equal(queue.getStandingTask(created.id), undefined);
+        assert.equal(queue.getRoutineTask(created.id), undefined);
       } finally {
         cleanup();
       }
     });
 
-    it('auto-triggers eligible standing tasks when pool reset is imminent and dedupes per cycle', async () => {
-      const { dir, cleanup } = makeTempDir('orch_standing_sched_');
+    it('performs CRUD operations on backlog tasks in TaskQueue', () => {
+      const { dir, cleanup } = makeTempDir('orch_backlog_crud_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        assert.deepEqual(queue.listBacklogTasks(), []);
+
+        const created = queue.createBacklogTask({
+          title: 'Implement feature X',
+          prompt: 'Full prompt details',
+          repositoryId: 'agylity',
+          models: ['gemini-3.8-flash', 'gemini-4-argon'],
+          priorityOrder: 1,
+        });
+
+        assert.ok(created.id.startsWith('backlog-'));
+        assert.equal(created.taskNumber, 1);
+        assert.equal(created.title, 'Implement feature X');
+        assert.deepEqual(created.models, ['gemini-3.8-flash', 'gemini-4-argon']);
+        assert.equal(created.status, 'pending');
+        assert.equal(created.attemptCount, 0);
+
+        const fetched = queue.getBacklogTask(created.id);
+        assert.equal(fetched?.id, created.id);
+
+        const next = queue.getNextEligibleBacklogTask();
+        assert.equal(next?.id, created.id);
+
+        const updated = queue.updateBacklogTask(created.id, {
+          title: 'Implement feature X (revised)',
+          status: 'dispatched',
+          attemptCount: 1,
+          swarmTaskId: 'task-123',
+        });
+        assert.equal(updated?.title, 'Implement feature X (revised)');
+        assert.equal(updated?.status, 'dispatched');
+        assert.equal(updated?.attemptCount, 1);
+        assert.equal(updated?.swarmTaskId, 'task-123');
+
+        const deleted = queue.deleteBacklogTask(created.id);
+        assert.equal(deleted, true);
+        assert.equal(queue.getBacklogTask(created.id), undefined);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('quenches autonomous tasks when manual dispatch occurred within past 2 hours', async () => {
+      const { dir, cleanup } = makeTempDir('orch_quench_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const configStore = new ConfigStore(db, {
@@ -1965,11 +2016,71 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         const coordinator = new Coordinator({ configStore });
 
-        const st = coordinator.queue.createStandingTask({
+        coordinator.queue.createRoutineTask({
+          title: 'Routine 1',
+          prompt: 'Work',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+
+        // Set lastManualDispatchAt to 30 minutes ago (within 2h window)
+        coordinator.setLastManualDispatchAt(Date.now() - 30 * 60 * 1000);
+
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime: '2026-11-08T01:30:44Z',
+            hoursUntilReset: 1,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(snapshots);
+        assert.equal(spawned.length, 0); // Quenched!
+
+        // Move manual dispatch to 2.5 hours ago (>2h quench window)
+        coordinator.setLastManualDispatchAt(Date.now() - 2.5 * 3600 * 1000);
+        const spawnedAfterQuench = await coordinator.triggerEligibleAutonomousTasks(snapshots);
+        assert.equal(spawnedAfterQuench.length, 1);
+        assert.equal(spawnedAfterQuench[0]?.tier, 'routine');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('auto-triggers eligible routine tasks when pool reset is imminent and dedupes per cycle', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_sched_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            {
+              id: 'agylity',
+              name: 'OtterBoops/agylity',
+              path: dir,
+              cloneUrl: 'https://github.com/OtterBoops/agylity',
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const rt = coordinator.queue.createRoutineTask({
           title: 'Claude Pre-Reset Burn',
           prompt: 'Audit code and test',
           repositoryId: 'agylity',
-          model: 'claude-sonnet-5-5',
+          models: ['claude-sonnet-5-5'],
           effort: 'medium',
           triggerBeforeResetHours: 12,
         });
@@ -1988,11 +2099,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             models: ['Claude Sonnet'],
           },
         ];
-        const spawnedFar = await coordinator.triggerEligibleStandingTasks(farSnapshots);
+        const spawnedFar = await coordinator.triggerEligibleRoutines(farSnapshots);
         assert.equal(spawnedFar.length, 0);
-        assert.equal(coordinator.queue.getStandingTask(st.id)?.lastTriggeredResetTime, undefined);
+        assert.equal(coordinator.queue.getRoutineTask(rt.id)?.lastTriggeredResetTime, undefined);
 
-        // 2. When pool is 10h away (<=12h), scheduler TRIGGERS the standing task
+        // 2. When pool is 10h away (<=12h), scheduler TRIGGERS the routine task
         const imminentSnapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
@@ -2004,29 +2115,30 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             models: ['Claude Sonnet'],
           },
         ];
-        const spawned = await coordinator.triggerEligibleStandingTasks(imminentSnapshots);
+        const spawned = await coordinator.triggerEligibleRoutines(imminentSnapshots);
         assert.equal(spawned.length, 1);
         const task = spawned[0]!;
-        assert.equal(task.standingTaskId, st.id);
+        assert.equal(task.tier, 'routine');
+        assert.equal(task.originId, rt.id);
         assert.equal(task.model, 'claude-sonnet-5-5');
         assert.equal(task.scheduleMode, 'immediate');
         assert.equal(task.status, 'queued');
 
-        // Verify standing task was stamped with lastTriggeredResetTime and lastTaskId
-        const updatedSt = coordinator.queue.getStandingTask(st.id);
-        assert.equal(updatedSt?.lastTriggeredResetTime, resetTime);
-        assert.equal(updatedSt?.lastTaskId, task.id);
+        // Verify routine task was stamped with lastTriggeredResetTime and lastTaskId
+        const updatedRt = coordinator.queue.getRoutineTask(rt.id);
+        assert.equal(updatedRt?.lastTriggeredResetTime, resetTime);
+        assert.equal(updatedRt?.lastTaskId, task.id);
 
         // 3. Second run with the same resetTime cycle must DEDUPE (no re-triggering)
-        const recheck = await coordinator.triggerEligibleStandingTasks(imminentSnapshots);
+        const recheck = await coordinator.triggerEligibleRoutines(imminentSnapshots);
         assert.equal(recheck.length, 0);
       } finally {
         cleanup();
       }
     });
 
-    it('skips disabled standing tasks or pools with disabled dispatch', async () => {
-      const { dir, cleanup } = makeTempDir('orch_standing_disabled_');
+    it('skips disabled routine tasks or pools with disabled dispatch', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_disabled_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const configStore = new ConfigStore(db, {
@@ -2039,11 +2151,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         const coordinator = new Coordinator({ configStore });
 
-        coordinator.queue.createStandingTask({
+        coordinator.queue.createRoutineTask({
           title: 'Claude Burn',
           prompt: 'Audit code',
           repositoryId: 'agylity',
-          model: 'claude-sonnet-5-5',
+          models: ['claude-sonnet-5-5'],
           triggerBeforeResetHours: 12,
           enabled: true,
         });
@@ -2061,7 +2173,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         ];
 
         // Skipped because pool policy has dispatchEnabled: false
-        const spawned = await coordinator.triggerEligibleStandingTasks(snapshots);
+        const spawned = await coordinator.triggerEligibleRoutines(snapshots);
         assert.equal(spawned.length, 0);
       } finally {
         cleanup();
@@ -2108,14 +2220,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         assert.equal(userTask.actor, 'user');
 
-        // Standing task defaults actor to 'bot'
-        const standing = queue.createStandingTask({
+        // Routine task defaults actor to 'bot'
+        const routine = queue.createRoutineTask({
           title: 'Claude Audit',
           prompt: 'Audit codebase',
           repositoryId: 'agylity',
-          model: 'claude-sonnet-5-5',
+          models: ['claude-sonnet-5-5'],
         });
-        assert.equal(standing.actor, 'bot');
+        assert.equal(routine.actor, 'bot');
       } finally {
         db.close();
         cleanup();

@@ -9,7 +9,8 @@ import type {
   SwarmRunnerRecord,
   RunnerRegistrationTokenResult,
   SwarmTask,
-  StandingTaskRecord,
+  BacklogTaskRecord,
+  RoutineTaskRecord,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -235,35 +236,90 @@ export const getLogs = (
     .get(`logs?since=${since}&level=${level}`)
     .json<{ enabled: boolean; latestId?: number; entries: LogEntry[] }>();
 
-export const getStandingTasks = (): Promise<StandingTaskRecord[]> =>
+// --- Routines API ---
+
+export const getRoutines = (): Promise<RoutineTaskRecord[]> =>
   api
-    .get('standing-tasks')
-    .json<StandingTaskRecord[]>()
+    .get('routines')
+    .json<RoutineTaskRecord[]>()
     .catch(() => []);
 
-export const createStandingTask = (
-  input: Partial<StandingTaskRecord> & {
+export const createRoutine = (
+  input: Partial<RoutineTaskRecord> & {
     title: string;
     prompt: string;
     repositoryId: string;
-    model: string;
+    models?: string[];
   }
-): Promise<StandingTaskRecord> =>
-  api.post('standing-tasks', { json: input }).json<StandingTaskRecord>();
+): Promise<RoutineTaskRecord> => api.post('routines', { json: input }).json<RoutineTaskRecord>();
 
-export const updateStandingTask = (
+export const updateRoutine = (
   id: string,
-  patch: Partial<StandingTaskRecord>
-): Promise<StandingTaskRecord> =>
-  api.patch(`standing-tasks/${encodeURIComponent(id)}`, { json: patch }).json<StandingTaskRecord>();
+  patch: Partial<RoutineTaskRecord>
+): Promise<RoutineTaskRecord> =>
+  api.patch(`routines/${encodeURIComponent(id)}`, { json: patch }).json<RoutineTaskRecord>();
 
-export const deleteStandingTask = (id: string): Promise<boolean> =>
+export const deleteRoutine = (id: string): Promise<boolean> =>
   api
-    .delete(`standing-tasks/${encodeURIComponent(id)}`)
+    .delete(`routines/${encodeURIComponent(id)}`)
     .json<{ success: boolean; deleted: boolean }>()
     .then((r) => r.success);
 
-export const triggerStandingTask = (id: string): Promise<{ success: boolean; taskId?: string }> =>
+export const triggerRoutine = (id: string): Promise<{ success: boolean; taskId?: string }> =>
   api
-    .post(`standing-tasks/${encodeURIComponent(id)}/trigger`)
+    .post(`routines/${encodeURIComponent(id)}/trigger`)
     .json<{ success: boolean; taskId?: string }>();
+
+// Backwards-compatible aliases during UI migration
+export const getStandingTasks = getRoutines;
+export const createStandingTask = (input: any) =>
+  createRoutine({
+    ...input,
+    models: input.models || (input.model ? [input.model] : undefined),
+  });
+export const updateStandingTask = updateRoutine;
+export const deleteStandingTask = deleteRoutine;
+export const triggerStandingTask = triggerRoutine;
+
+// --- Backlog API ---
+
+export const getBacklogTasks = (status?: string): Promise<BacklogTaskRecord[]> =>
+  api
+    .get(`backlog${status ? `?status=${encodeURIComponent(status)}` : ''}`)
+    .json<BacklogTaskRecord[]>()
+    .catch(() => []);
+
+export const createBacklogTask = (
+  input: Partial<BacklogTaskRecord> & {
+    title: string;
+    prompt: string;
+    repositoryId: string;
+    models?: string[];
+  }
+): Promise<BacklogTaskRecord> => api.post('backlog', { json: input }).json<BacklogTaskRecord>();
+
+export const updateBacklogTask = (
+  id: string,
+  patch: Partial<BacklogTaskRecord>
+): Promise<BacklogTaskRecord> =>
+  api.patch(`backlog/${encodeURIComponent(id)}`, { json: patch }).json<BacklogTaskRecord>();
+
+export const deleteBacklogTask = (id: string): Promise<boolean> =>
+  api
+    .delete(`backlog/${encodeURIComponent(id)}`)
+    .json<{ success: boolean; deleted: boolean }>()
+    .then((r) => r.success);
+
+export const dispatchBacklogTask = (id: string): Promise<{ success: boolean; taskId?: string }> =>
+  api
+    .post(`backlog/${encodeURIComponent(id)}/dispatch`)
+    .json<{ success: boolean; taskId?: string }>();
+
+export const syncGithubBacklog = (): Promise<{
+  success: boolean;
+  importedCount: number;
+  label: string;
+}> =>
+  api
+    .post('backlog/sync-github')
+    .json<{ success: boolean; importedCount: number; label: string }>();

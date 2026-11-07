@@ -37,13 +37,17 @@ import {
   handleTaskStatus,
   handleTaskCancel,
   handleTaskRetry,
-  handleStandingTasks,
-  handleStandingTaskById,
   handleGetRunners,
   handleCreateRegistrationToken,
   handleRegisterRunner,
   handleManageRunnerById,
 } from './controllers/dispatch.js';
+import {
+  handleBacklogTasks,
+  handleBacklogTaskById,
+  handleSyncGithubBacklog,
+} from './controllers/backlog.js';
+import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
 
 export type { WebServerOptions };
 export {
@@ -328,13 +332,26 @@ export const handleRequest = async (
       return handleTaskRetry(req, res, options, pathname, method);
     }
 
-    // Standing Tasks CRUD & Trigger
-    if (pathname === '/api/standing-tasks') {
-      return handleStandingTasks(req, res, options, url, method);
+    // Backlog Tasks CRUD, Trigger & GitHub Sync
+    if (pathname === '/api/backlog/sync-github') {
+      return handleSyncGithubBacklog(req, res, options, method);
     }
 
-    if (pathname.startsWith('/api/standing-tasks/')) {
-      return handleStandingTaskById(req, res, options, pathname, method);
+    if (pathname === '/api/backlog') {
+      return handleBacklogTasks(req, res, options, url, method);
+    }
+
+    if (pathname.startsWith('/api/backlog/')) {
+      return handleBacklogTaskById(req, res, options, pathname, method);
+    }
+
+    // Routine Tasks CRUD & Trigger
+    if (pathname === '/api/routines') {
+      return handleRoutineTasks(req, res, options, url, method);
+    }
+
+    if (pathname.startsWith('/api/routines/')) {
+      return handleRoutineTaskById(req, res, options, pathname, method);
     }
 
     // Registered Swarm Runners & Runner Registration Flow
