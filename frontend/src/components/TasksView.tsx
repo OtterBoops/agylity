@@ -79,18 +79,24 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
   const [activeTab, setActiveTab] = useState<TaskTab>(getTabFromUrl);
 
-  const setTab = (tab: TaskTab) => {
+  const setTab = (tab: TaskTab, id?: string) => {
     setActiveTab(tab);
     try {
       const url = new URL(window.location.href);
       url.searchParams.set('tab', tab);
-      url.searchParams.delete('id');
+      if (id) {
+        url.searchParams.set('id', id);
+        handledSearchId.current = null;
+      } else {
+        url.searchParams.delete('id');
+      }
       window.history.replaceState({}, '', url.toString());
     } catch {}
   };
 
   // --- Tier 1: Executions state ---
   const [tasks, setTasks] = useState<SwarmTask[]>([]);
+  const [executionsInitialLoaded, setExecutionsInitialLoaded] = useState(false);
   const [filter, setFilter] = useState<StatusFilter>('all');
   const [selectedTask, setSelectedTask] = useState<SwarmTask | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
@@ -102,6 +108,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   // --- Tier 2: Backlog state ---
   const [backlogTasks, setBacklogTasks] = useState<BacklogTaskRecord[]>([]);
   const [backlogLoading, setBacklogLoading] = useState(false);
+  const [backlogInitialLoaded, setBacklogInitialLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   // Deleting a work item loses a hand-written prompt, so the bin needs a second press.
@@ -118,6 +125,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   // --- Tier 3: Routines state ---
   const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
   const [routinesLoading, setRoutinesLoading] = useState(false);
+  const [routinesInitialLoaded, setRoutinesInitialLoaded] = useState(false);
   const [showCreateRoutine, setShowCreateRoutine] = useState(false);
   const [routineActionId, setRoutineActionId] = useState<string | null>(null);
   const [routineTitle, setRoutineTitle] = useState('');
@@ -152,8 +160,12 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       .then((res) => {
         setTasks(res);
         setLoadError(null);
+        setExecutionsInitialLoaded(true);
       })
-      .catch((err) => setLoadError(err?.message || String(err)));
+      .catch((err) => {
+        setLoadError(err?.message || String(err));
+        setExecutionsInitialLoaded(true);
+      });
   }, []);
 
   const loadBacklog = useCallback(async () => {
@@ -166,6 +178,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       setLoadError(err?.message || String(err));
     } finally {
       setBacklogLoading(false);
+      setBacklogInitialLoaded(true);
     }
   }, []);
 
@@ -179,6 +192,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       setLoadError(err?.message || String(err));
     } finally {
       setRoutinesLoading(false);
+      setRoutinesInitialLoaded(true);
     }
   }, []);
 
@@ -206,35 +220,89 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     if (activeTab === 'routines') void loadRoutines();
   }, [activeTab, loadBacklog, loadRoutines]);
 
-  // ?id= is applied once. Left in the URL it is re-matched on every poll, which re-opens the
-  // inspector the user just dismissed.
-  const deepLinkConsumed = useRef(false);
+  // ?id= is applied once per targeted id. Left in the URL it is re-matched on every poll,
+  // which re-opens the inspector or re-scrolls rows the user moved away from.
+  const handledSearchId = useRef<string | null>(null);
   useEffect(() => {
-    if (deepLinkConsumed.current) return;
     let searchId: string | null = null;
     try {
       searchId = new URLSearchParams(window.location.search).get('id');
     } catch {
       searchId = null;
     }
-    if (!searchId) return;
+    if (!searchId) {
+      handledSearchId.current = null;
+      return;
+    }
+    if (handledSearchId.current === searchId) return;
+
+    const clearUrlId = () => {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete('id');
+        window.history.replaceState({}, '', url.toString());
+      } catch {}
+    };
 
     if (activeTab === 'executions') {
+      if (!executionsInitialLoaded) return;
       const found = tasks.find((t) => t.id === searchId || t.originId === searchId);
-      if (!found) return;
-      setSelectedTask(found);
-      deepLinkConsumed.current = true;
+      handledSearchId.current = searchId;
+      if (found) {
+        setSelectedTask(found);
+      } else {
+        clearUrlId();
+        showNotification('error', 'The requested task was not found.');
+      }
       return;
     }
 
-    const row = document.getElementById(`task-row-${searchId}`);
-    if (!row) return;
-    row.scrollIntoView({ block: 'center' });
-    setHighlightedId(searchId);
-    deepLinkConsumed.current = true;
-    const timer = setTimeout(() => setHighlightedId(null), 2500);
-    return () => clearTimeout(timer);
-  }, [tasks, activeTab, backlogTasks, routines]);
+    if (activeTab === 'routines') {
+      if (!routinesInitialLoaded) return;
+      const found = routines.some((r) => r.id === searchId);
+      handledSearchId.current = searchId;
+      if (found) {
+        const row = document.getElementById(`task-row-${searchId}`);
+        if (row) {
+          row.scrollIntoView({ block: 'center' });
+          setHighlightedId(searchId);
+          const timer = setTimeout(() => setHighlightedId(null), 2500);
+          return () => clearTimeout(timer);
+        }
+      } else {
+        clearUrlId();
+        showNotification('error', 'The requested routine was deleted or not found.');
+      }
+      return;
+    }
+
+    if (activeTab === 'backlog') {
+      if (!backlogInitialLoaded) return;
+      const found = backlogTasks.some((b) => b.id === searchId);
+      handledSearchId.current = searchId;
+      if (found) {
+        const row = document.getElementById(`task-row-${searchId}`);
+        if (row) {
+          row.scrollIntoView({ block: 'center' });
+          setHighlightedId(searchId);
+          const timer = setTimeout(() => setHighlightedId(null), 2500);
+          return () => clearTimeout(timer);
+        }
+      } else {
+        clearUrlId();
+        showNotification('error', 'The requested backlog task was deleted or not found.');
+      }
+      return;
+    }
+  }, [
+    tasks,
+    activeTab,
+    backlogTasks,
+    routines,
+    executionsInitialLoaded,
+    routinesInitialLoaded,
+    backlogInitialLoaded,
+  ]);
 
   const closeInspector = () => {
     setSelectedTask(null);
@@ -378,6 +446,13 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     setBacklogActionId(id);
     try {
       await deleteBacklogTask(id);
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('id') === id) {
+          url.searchParams.delete('id');
+          window.history.replaceState({}, '', url.toString());
+        }
+      } catch {}
       await loadBacklog();
       showNotification('success', `Deleted backlog task`);
     } catch (err: any) {
@@ -431,6 +506,13 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     setRoutineActionId(id);
     try {
       await deleteRoutine(id);
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('id') === id) {
+          url.searchParams.delete('id');
+          window.history.replaceState({}, '', url.toString());
+        }
+      } catch {}
       await loadRoutines();
       showNotification('success', `Deleted routine`);
     } catch (err: any) {
@@ -486,17 +568,32 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
   const renderOriginLink = (t: SwarmTask) => {
     if (t.tier === 'backlog' || (t.requestedBy && t.requestedBy.startsWith('backlog:'))) {
+      const originId = t.originId || t.requestedBy?.replace(/^backlog:/, '');
+      const exists =
+        !backlogInitialLoaded || (originId ? backlogTasks.some((b) => b.id === originId) : false);
       const label = t.originNumber
         ? `Backlog: Task #${t.originNumber}`
         : t.originTitle
           ? `Backlog: ${t.originTitle}`
           : 'Backlog: Task';
+
+      if (backlogInitialLoaded && !exists) {
+        return (
+          <span
+            class="font-medium whitespace-nowrap text-pine-subtle"
+            title="Origin backlog task was deleted"
+          >
+            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+          </span>
+        );
+      }
+
       return (
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            setTab('backlog');
+            setTab('backlog', originId);
           }}
           class="cursor-pointer text-left font-medium whitespace-nowrap text-pine-iris hover:underline"
         >
@@ -509,17 +606,32 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       (t.requestedBy &&
         (t.requestedBy.startsWith('routine:') || t.requestedBy.startsWith('standing-task:')))
     ) {
+      const originId = t.originId || t.requestedBy?.replace(/^routine:|^standing-task:/, '');
+      const exists =
+        !routinesInitialLoaded || (originId ? routines.some((r) => r.id === originId) : false);
       const label = t.originTitle
         ? `Routine: ${t.originTitle}`
         : t.originNumber
           ? `Routine #${t.originNumber}`
           : 'Routine';
+
+      if (routinesInitialLoaded && !exists) {
+        return (
+          <span
+            class="font-medium whitespace-nowrap text-pine-subtle"
+            title="Origin routine was deleted"
+          >
+            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+          </span>
+        );
+      }
+
       return (
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            setTab('routines');
+            setTab('routines', originId);
           }}
           class="cursor-pointer text-left font-medium whitespace-nowrap text-pine-iris hover:underline"
         >

@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { faCheck, faCopy, faTimes } from '@fortawesome/free-solid-svg-icons';
-import type { DispatchRecord, SentryAlertState, SwarmTask } from '../types';
+import type {
+  BacklogTaskRecord,
+  DispatchRecord,
+  RoutineTaskRecord,
+  SentryAlertState,
+  SwarmTask,
+} from '../types';
 import { AlertsTable } from '../components/AlertsTable';
-import { getDispatches, getTasks } from '../api';
+import { getBacklogTasks, getDispatches, getRoutines, getTasks } from '../api';
 import { Icon } from '../components/Icon';
 import {
   dispatchOutcomeBadgeClass,
@@ -20,6 +26,9 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
   const [timeFormat] = useTimeFormat();
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [tasks, setTasks] = useState<SwarmTask[]>([]);
+  const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
+  const [backlogTasks, setBacklogTasks] = useState<BacklogTaskRecord[]>([]);
+  const [metadataLoaded, setMetadataLoaded] = useState(false);
   const [selectedDispatch, setSelectedDispatch] = useState<DispatchRecord | null>(null);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -37,11 +46,14 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      Promise.all([getDispatches(50), getTasks(20)])
-        .then(([records, taskList]) => {
+      Promise.all([getDispatches(50), getTasks(20), getRoutines(), getBacklogTasks()])
+        .then(([records, taskList, routineList, backlogList]) => {
           if (!cancelled) {
             setDispatches(records);
             setTasks(taskList);
+            setRoutines(routineList);
+            setBacklogTasks(backlogList);
+            setMetadataLoaded(true);
           }
         })
         .catch(() => {});
@@ -75,11 +87,25 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
   const renderOriginLink = (d: DispatchRecord) => {
     if (d.tier === 'backlog' || (d.requestedBy && d.requestedBy.startsWith('backlog:'))) {
       const originId = d.originId || d.requestedBy.replace(/^backlog:/, '');
+      const exists =
+        !metadataLoaded || (originId ? backlogTasks.some((b) => b.id === originId) : false);
       const label = d.originNumber
         ? `Backlog: Task #${d.originNumber}`
         : d.originTitle
           ? `Backlog: ${d.originTitle}`
           : 'Backlog: Task';
+
+      if (metadataLoaded && !exists) {
+        return (
+          <span
+            class="font-medium whitespace-nowrap text-pine-subtle"
+            title="Origin backlog task was deleted"
+          >
+            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+          </span>
+        );
+      }
+
       return (
         <a
           href={`/tasks?tab=backlog&id=${encodeURIComponent(originId)}`}
@@ -96,11 +122,25 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
         (d.requestedBy.startsWith('routine:') || d.requestedBy.startsWith('standing-task:')))
     ) {
       const originId = d.originId || d.requestedBy.replace(/^routine:|^standing-task:/, '');
+      const exists =
+        !metadataLoaded || (originId ? routines.some((r) => r.id === originId) : false);
       const label = d.originTitle
         ? `Routine: ${d.originTitle}`
         : d.originNumber
           ? `Routine #${d.originNumber}`
           : 'Routine';
+
+      if (metadataLoaded && !exists) {
+        return (
+          <span
+            class="font-medium whitespace-nowrap text-pine-subtle"
+            title="Origin routine was deleted"
+          >
+            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+          </span>
+        );
+      }
+
       return (
         <a
           href={`/tasks?tab=routines&id=${encodeURIComponent(originId)}`}
