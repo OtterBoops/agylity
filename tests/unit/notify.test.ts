@@ -131,16 +131,16 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
     it('validates DispatchRequestSchema boundaries', () => {
       const validRequest: DispatchRequest = {
-        repositoryName: 'agylity',
+        repositoryId: 'agylity',
         repositoryPath: '/opt/agylity',
         prompt: 'Fix quota sentry timeout bug',
         requestedBy: 'otter',
       };
       assert.deepEqual(DispatchRequestSchema.parse(validRequest), validRequest);
 
-      // Rejects empty prompt or empty repo name
+      // Rejects empty prompt or empty repo id
       assert.throws(() => DispatchRequestSchema.parse({ ...validRequest, prompt: '' }));
-      assert.throws(() => DispatchRequestSchema.parse({ ...validRequest, repositoryName: '' }));
+      assert.throws(() => DispatchRequestSchema.parse({ ...validRequest, repositoryId: '' }));
       // Rejects prompt exceeding 4000 characters
       assert.throws(() =>
         DispatchRequestSchema.parse({ ...validRequest, prompt: 'a'.repeat(4001) })

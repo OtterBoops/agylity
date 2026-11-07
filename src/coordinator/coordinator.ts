@@ -33,8 +33,8 @@ import {
 import { buildContinuationBranchName } from './runner.js';
 
 export interface DispatchTaskRequest {
-  repositoryId?: string;
-  repositoryName: string;
+  repositoryId: string;
+  repositoryName?: string;
   repositoryPath?: string;
   cloneUrl?: string;
   prompt: string;
@@ -316,9 +316,19 @@ export class Coordinator {
   // Main entrypoint for Web UI, REST API, and Discord task dispatches.
   public async dispatch(req: DispatchTaskRequest): Promise<DispatchTaskResponse> {
     const resolved = this.configStore.resolveConfig();
-    const repositoryName = req.repositoryName.trim();
+    const repositoryId = (req.repositoryId || (req as any).repositoryName || '').trim();
+    const repositoryName = req.repositoryName?.trim() || repositoryId;
     const scheduleMode: ScheduleMode = req.scheduleMode ?? 'immediate';
     const allowOverage = Boolean(req.allowOverage);
+
+    if (!repositoryId) {
+      return {
+        success: false,
+        repo: 'unknown',
+        error: 'repositoryId is required',
+        code: 'EXECUTION_FAILED',
+      };
+    }
 
     // 0. Enforce single-user owner binding when requestedByUserId is supplied
     if (
@@ -400,14 +410,12 @@ export class Coordinator {
     // 3. Resolve repository configuration
     const matchedRepo = resolved.repositories.find(
       (r) =>
-        r.id.toLowerCase() === (req.repositoryId || repositoryName).toLowerCase() ||
-        r.name.toLowerCase() === repositoryName.toLowerCase()
+        r.id.toLowerCase() === repositoryId.toLowerCase() ||
+        r.name.toLowerCase() === repositoryId.toLowerCase()
     );
     const repoId =
-      matchedRepo?.id ??
-      req.repositoryId ??
-      (repositoryName.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || 'default');
-    const repoDisplayName = matchedRepo?.name ?? repositoryName;
+      matchedRepo?.id ?? (repositoryId.toLowerCase().replace(/[^a-z0-9_-]/g, '-') || 'default');
+    const repoDisplayName = matchedRepo?.name ?? req.repositoryName ?? repositoryId;
     const repoPath =
       req.repositoryPath && req.repositoryPath.trim() !== ''
         ? req.repositoryPath.trim()
@@ -518,7 +526,8 @@ export class Coordinator {
   }): Promise<DispatchTaskResponse> {
     const parentTask = params.taskId ? this.queue.getTask(params.taskId) : null;
     return this.dispatch({
-      repositoryId: parentTask?.repositoryId || params.repositoryId,
+      repositoryId:
+        parentTask?.repositoryId || params.repositoryId || params.repositoryName || 'default',
       repositoryName: parentTask?.repositoryName || params.repositoryName || 'unknown',
       repositoryPath: parentTask?.repositoryPath,
       cloneUrl: parentTask?.cloneUrl,

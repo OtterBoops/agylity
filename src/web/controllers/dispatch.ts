@@ -121,13 +121,13 @@ export const handlePostDispatch = async (
   if (!parsed.ok) return;
   const payload: any = parsed.body;
 
-  if (!payload || typeof payload !== 'object' || !payload.repositoryName) {
-    return sendJson(res, 400, { error: 'repositoryName is required' });
+  if (!payload || typeof payload !== 'object' || !payload.repositoryId) {
+    return sendJson(res, 400, { error: 'repositoryId is required' });
   }
 
-  const repositoryName = String(payload.repositoryName).trim();
-  if (!repositoryName) {
-    return sendJson(res, 400, { error: 'repositoryName is required' });
+  const repositoryId = String(payload.repositoryId).trim();
+  if (!repositoryId) {
+    return sendJson(res, 400, { error: 'repositoryId is required' });
   }
 
   const prompt = typeof payload.prompt === 'string' ? payload.prompt.trim() : '';
@@ -151,8 +151,8 @@ export const handlePostDispatch = async (
 
   const coordinator = resolveCoordinator(options);
   const result = await coordinator.dispatch({
-    repositoryId: toStringOrUndefined(payload.repositoryId),
-    repositoryName,
+    repositoryId,
+    repositoryName: toStringOrUndefined(payload.repositoryName),
     repositoryPath: toStringOrUndefined(payload.repositoryPath),
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,

@@ -108,7 +108,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       if (!dialog.open) dialog.showModal();
       setAllowOverage(false);
       if (repos.length === 1 && repos[0]) {
-        setSelectedRepo(repos[0].name);
+        setSelectedRepo(repos[0].id || repos[0].name || '');
       }
     } else {
       if (dialog.open) dialog.close();
@@ -167,8 +167,8 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     const matchedRepo = repos.find((r) => r.name === selectedRepo || r.id === selectedRepo);
 
     triggerDispatch({
-      repositoryName: matchedRepo?.name || selectedRepo,
-      repositoryId: matchedRepo?.id,
+      repositoryId: matchedRepo?.id || selectedRepo,
+      repositoryName: matchedRepo?.name,
       repositoryPath: matchedRepo?.path,
       cloneUrl: matchedRepo?.cloneUrl,
       prompt: taskPrompt.trim(),

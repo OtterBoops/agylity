@@ -135,7 +135,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 ### Use Case 3: Autonomous Task Dispatching via Official CLI
 
 - Runner checks out an isolated continuation branch:
-  `git checkout -b antigravity/task-<id>-<slug>`
+  `git checkout -b agy/<shortId>-<slug>`
 - Dispatches prompt via `agy`:
   ```bash
   agy -p "<prompt>" --mode auto --dangerously-skip-permissions --effort high
