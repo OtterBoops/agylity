@@ -82,10 +82,7 @@ export const LogsView = () => {
       const match = e.message.match(/^\[([a-zA-Z0-9_\-:]+)\]/);
       if (match && match[1]) {
         const prefix = match[1].toLowerCase();
-        if (
-          namespace === 'runner' &&
-          (prefix.startsWith('runner') || prefix === 'orchestrator' || prefix === 'worker')
-        )
+        if (namespace === 'runner' && (prefix.startsWith('runner') || prefix === 'coordinator'))
           return true;
         if (prefix.startsWith(namespace)) return true;
       }

@@ -53,7 +53,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
             <div>
               <h1 class="text-base font-bold text-pine-text sm:text-lg">Agylity Control Plane</h1>
               <span class="text-[11px] text-pine-subtle">
-                Autonomous Sentry & Swarm Orchestrator
+                Autonomous Sentry & Swarm Coordinator
               </span>
             </div>
           </div>

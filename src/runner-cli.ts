@@ -1,15 +1,15 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
-import { RemoteSwarmWorker } from './orchestrator/worker.js';
+import { RemoteSwarmRunner } from './coordinator/runner.js';
 import type { BotPrPolicy } from './config/schema.js';
 
-export interface WorkerCliOptions {
+export interface RunnerCliOptions {
   coordinatorUrl: string;
   registrationToken?: string;
   runnerToken?: string;
   sharedSecret?: string;
-  workerId?: string;
-  workerName?: string;
+  runnerId?: string;
+  runnerName?: string;
   labels: string[];
   repositories?: string[];
   runnerStatePath: string;
@@ -27,10 +27,10 @@ const parseCsvList = (value?: string): string[] => {
     .filter(Boolean);
 };
 
-export const parseWorkerCliArgs = (
+export const parseRunnerCliArgs = (
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
-): WorkerCliOptions => {
+): RunnerCliOptions => {
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const raw = argv[i]!;
@@ -82,13 +82,13 @@ export const parseWorkerCliArgs = (
 
   const runnerToken = rawRunnerToken || (rawToken.startsWith('agyr_run_') ? rawToken : undefined);
 
-  const sharedSecret = (args.secret || env.WORKER_SHARED_SECRET || '').trim() || undefined;
-  const workerId = (args.id || args['worker-id'] || env.WORKER_ID || '').trim() || undefined;
-  const workerName =
-    (args.name || args['worker-name'] || env.WORKER_NAME || os.hostname()).trim() || os.hostname();
+  const sharedSecret = (args.secret || env.RUNNER_SHARED_SECRET || '').trim() || undefined;
+  const runnerId = (args.id || args['runner-id'] || env.RUNNER_ID || '').trim() || undefined;
+  const runnerName =
+    (args.name || args['runner-name'] || env.RUNNER_NAME || os.hostname()).trim() || os.hostname();
 
-  const labels = parseCsvList(args.labels || env.WORKER_LABELS);
-  const repoList = parseCsvList(args.repos || args.repositories || env.WORKER_REPOSITORIES);
+  const labels = parseCsvList(args.labels || env.RUNNER_LABELS);
+  const repoList = parseCsvList(args.repos || args.repositories || env.RUNNER_REPOSITORIES);
 
   const runnerStatePath = (
     args.state ||
@@ -98,21 +98,18 @@ export const parseWorkerCliArgs = (
   ).trim();
 
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
-  const pollTimeoutMs = Number(env.WORKER_POLL_TIMEOUT_MS ?? 25000);
-  const idlePollIntervalMs = Number(env.WORKER_IDLE_INTERVAL_MS ?? 2000);
-  const botPrPolicy = (
-    args['bot-pr-policy'] ||
-    env.BOT_PR_POLICY ||
-    ''
-  ).trim() as BotPrPolicy | undefined;
+  const pollTimeoutMs = Number(env.RUNNER_POLL_TIMEOUT_MS ?? 25000);
+  const idlePollIntervalMs = Number(env.RUNNER_IDLE_INTERVAL_MS ?? 2000);
+  const botPrPolicy = (args['bot-pr-policy'] || env.BOT_PR_POLICY || '').trim() as
+    BotPrPolicy | undefined;
 
   return {
     coordinatorUrl,
     registrationToken,
     runnerToken,
     sharedSecret,
-    workerId,
-    workerName,
+    runnerId,
+    runnerName,
     labels,
     repositories: repoList.length > 0 ? repoList : undefined,
     runnerStatePath,
@@ -123,27 +120,27 @@ export const parseWorkerCliArgs = (
   };
 };
 
-export const runWorkerCli = async (): Promise<void> => {
+export const runRunnerCli = async (): Promise<void> => {
   // Never swap agy out from under a running task; the entrypoint refreshes it before this runs.
   process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
 
   const log = logger.child('runner-cli');
-  const opts = parseWorkerCliArgs();
+  const opts = parseRunnerCliArgs();
 
   log.info(
     '[Notice] Starting Agylity Swarm Runner "%s" (coordinator=%s, state=%s)',
-    opts.workerName ?? 'runner',
+    opts.runnerName ?? 'runner',
     opts.coordinatorUrl,
     opts.runnerStatePath
   );
 
-  const worker = new RemoteSwarmWorker({
+  const runner = new RemoteSwarmRunner({
     coordinatorUrl: opts.coordinatorUrl,
     registrationToken: opts.registrationToken,
     runnerToken: opts.runnerToken,
     sharedSecret: opts.sharedSecret,
-    workerId: opts.workerId,
-    workerName: opts.workerName,
+    runnerId: opts.runnerId,
+    runnerName: opts.runnerName,
     labels: opts.labels,
     repositories: opts.repositories,
     runnerStatePath: opts.runnerStatePath,
@@ -156,21 +153,21 @@ export const runWorkerCli = async (): Promise<void> => {
 
   const handleShutdown = (sig: string) => {
     log.info('[Notice] Received %s, stopping Agylity Swarm Runner...', sig);
-    worker.stop();
+    runner.stop();
   };
 
   process.once('SIGINT', () => handleShutdown('SIGINT'));
   process.once('SIGTERM', () => handleShutdown('SIGTERM'));
 
-  await worker.start();
+  await runner.start();
 };
 
 const isDirectEntry =
   process.argv[1] &&
-  (process.argv[1].endsWith('worker-cli.js') || process.argv[1].endsWith('worker-cli.ts'));
+  (process.argv[1].endsWith('runner-cli.js') || process.argv[1].endsWith('runner-cli.ts'));
 
 if (isDirectEntry) {
-  runWorkerCli().catch((err) => {
+  runRunnerCli().catch((err) => {
     logger.error('[Error] Agylity Swarm Runner fatal error: %s', err?.message ?? String(err));
     process.exitCode = 1;
   });

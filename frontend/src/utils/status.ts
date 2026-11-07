@@ -27,7 +27,7 @@ export const dispatchOutcomeBadgeClass = (success: boolean): string =>
 
 export const dispatchOutcomeLabel = (success: boolean): string => (success ? 'Done' : 'Failed');
 
-export const workerStatusBadgeClass = (status: string): string =>
+export const runnerStatusBadgeClass = (status: string): string =>
   status === 'busy'
     ? toneBadgeClass('busy')
     : status === 'offline'

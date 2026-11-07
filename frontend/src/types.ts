@@ -108,8 +108,8 @@ export interface ModelCatalogEntry {
   belowSafetyFloor: boolean;
 }
 
-export interface SwarmWorkerRecord {
-  workerId: string;
+export interface SwarmRunnerRecord {
+  runnerId: string;
   name: string;
   labels: string[];
   repositories: string[];
@@ -160,8 +160,8 @@ export interface SwarmTask {
   model: string;
   effort: 'low' | 'medium' | 'high';
   status: TaskStatus;
-  workerId?: string;
-  claimedByWorkerId?: string;
+  runnerId?: string;
+  claimedByRunnerId?: string;
   branchName?: string;
   autoCreatePr?: boolean;
   prUrl?: string;

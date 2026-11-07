@@ -49,7 +49,7 @@ export interface SwarmTask {
   standingTaskId?: string;
   verifyCommand?: string;
   status: TaskStatus;
-  workerId?: string;
+  runnerId?: string;
   claimedAt?: string;
   heartbeatAt?: string;
   completedAt?: string;
@@ -86,8 +86,8 @@ export interface EnqueueTaskInput {
 }
 
 export interface ClaimTaskOptions {
-  workerId: string;
-  workerName?: string;
+  runnerId: string;
+  runnerName?: string;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
@@ -96,7 +96,7 @@ export interface ClaimTaskOptions {
 
 export interface TaskStatusPatch {
   status: TaskStatus;
-  workerId?: string;
+  runnerId?: string;
   branchName?: string;
   prUrl?: string;
   output?: string;
@@ -107,8 +107,8 @@ export interface TaskStatusPatch {
   thinkingTokens?: number;
 }
 
-export interface SwarmWorkerRecord {
-  workerId: string;
+export interface SwarmRunnerRecord {
+  runnerId: string;
   name: string;
   labels: string[];
   repositories: string[];
@@ -140,8 +140,8 @@ export interface RunnerRegistrationTokenResult {
 
 export interface ExchangeRegistrationTokenInput {
   registrationToken: string;
-  workerId?: string;
-  workerName?: string;
+  runnerId?: string;
+  runnerName?: string;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
@@ -203,7 +203,7 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'standing_task_id', ddl: 'standing_task_id TEXT' },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'queued'" },
-  { name: 'worker_id', ddl: 'worker_id TEXT' },
+  { name: 'runner_id', ddl: 'runner_id TEXT' },
   { name: 'claimed_at', ddl: 'claimed_at TEXT' },
   { name: 'heartbeat_at', ddl: 'heartbeat_at TEXT' },
   { name: 'completed_at', ddl: 'completed_at TEXT' },
@@ -241,8 +241,8 @@ const STANDING_TASK_COLUMNS: readonly ColumnSpec[] = [
   },
 ];
 
-const SWARM_WORKER_COLUMNS: readonly ColumnSpec[] = [
-  { name: 'worker_id', ddl: 'worker_id TEXT PRIMARY KEY' },
+const SWARM_RUNNER_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'runner_id', ddl: 'runner_id TEXT PRIMARY KEY' },
   { name: 'name', ddl: 'name TEXT NOT NULL' },
   { name: 'token_hash', ddl: 'token_hash TEXT' },
   { name: 'labels_json', ddl: "labels_json TEXT NOT NULL DEFAULT '[]'" },
@@ -269,18 +269,18 @@ const RUNNER_REGISTRATION_COLUMNS: readonly ColumnSpec[] = [
   { name: 'repositories_json', ddl: "repositories_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'expires_at', ddl: 'expires_at TEXT NOT NULL' },
   { name: 'created_at', ddl: 'created_at TEXT NOT NULL' },
-  { name: 'consumed_by_worker_id', ddl: 'consumed_by_worker_id TEXT' },
+  { name: 'consumed_by_runner_id', ddl: 'consumed_by_runner_id TEXT' },
   { name: 'consumed_at', ddl: 'consumed_at TEXT' },
 ];
 
 const SCHEMA_TABLES: ReadonlyArray<{ name: string; columns: readonly ColumnSpec[] }> = [
   { name: 'swarm_tasks', columns: SWARM_TASK_COLUMNS },
   { name: 'standing_tasks', columns: STANDING_TASK_COLUMNS },
-  { name: 'swarm_workers', columns: SWARM_WORKER_COLUMNS },
+  { name: 'swarm_runners', columns: SWARM_RUNNER_COLUMNS },
   { name: 'swarm_runner_registrations', columns: RUNNER_REGISTRATION_COLUMNS },
 ];
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const REGISTRATION_TOKEN_RETENTION = 50;
 
@@ -326,8 +326,8 @@ ${renderColumns(SWARM_TASK_COLUMNS)}
 ${renderColumns(STANDING_TASK_COLUMNS)}
       );
 
-      CREATE TABLE IF NOT EXISTS swarm_workers (
-${renderColumns(SWARM_WORKER_COLUMNS)}
+      CREATE TABLE IF NOT EXISTS swarm_runners (
+${renderColumns(SWARM_RUNNER_COLUMNS)}
       );
 
       CREATE TABLE IF NOT EXISTS swarm_runner_registrations (
@@ -340,6 +340,28 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
 
   // Additively upgrades an existing database to the current schema. Never drops or rewrites a
   private migrateSchema(): void {
+    // Migrate legacy swarm_workers table to swarm_runners if present
+    try {
+      const hasOldWorkers = this.rawDb
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='swarm_workers'")
+        .get();
+      if (hasOldWorkers) {
+        this.rawDb.exec(`
+          INSERT OR IGNORE INTO swarm_runners (runner_id, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)
+          SELECT worker_id, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at FROM swarm_workers;
+          DROP TABLE swarm_workers;
+        `);
+      }
+    } catch {
+      // Best-effort table migration
+    }
+
+    try {
+      this.rawDb.exec(`
+        UPDATE swarm_tasks SET runner_id = worker_id WHERE runner_id IS NULL AND worker_id IS NOT NULL;
+      `);
+    } catch {}
+
     const versionRow = this.rawDb.prepare('PRAGMA user_version').get() as
       { user_version?: number } | undefined;
     const currentVersion = Number(versionRow?.user_version ?? 0);
@@ -417,10 +439,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       this.rawDb
         .prepare(
           `DELETE FROM swarm_runner_registrations
-           WHERE (consumed_by_worker_id IS NOT NULL OR expires_at <= ?)
+           WHERE (consumed_by_runner_id IS NOT NULL OR expires_at <= ?)
              AND id NOT IN (
                SELECT id FROM swarm_runner_registrations
-               WHERE consumed_by_worker_id IS NOT NULL OR expires_at <= ?
+               WHERE consumed_by_runner_id IS NOT NULL OR expires_at <= ?
                ORDER BY created_at DESC, rowid DESC
                LIMIT ?
              )`
@@ -435,7 +457,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
   public exchangeRegistrationToken(
     input: ExchangeRegistrationTokenInput,
     nowMs = Date.now()
-  ): { worker: SwarmWorkerRecord; runnerToken: string } {
+  ): { runner: SwarmRunnerRecord; runnerToken: string } {
     return this.inTransaction(() => {
       const rawToken = input.registrationToken?.trim();
       if (!rawToken) {
@@ -451,7 +473,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         throw new RegistrationTokenError('Invalid runner registration token');
       }
 
-      if (regRow.consumed_by_worker_id) {
+      if (regRow.consumed_by_runner_id) {
         throw new RegistrationTokenError('Runner registration token has already been used');
       }
 
@@ -469,11 +491,11 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         defaultRepos = JSON.parse(String(regRow.repositories_json || '[]'));
       } catch {}
 
-      const workerId = input.workerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
-      const workerName =
-        input.workerName?.trim() ||
+      const runnerId = input.runnerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
+      const runnerName =
+        input.runnerName?.trim() ||
         (regRow.name_hint ? String(regRow.name_hint) : undefined) ||
-        workerId;
+        runnerId;
       const labels = Array.from(
         new Set(
           (input.labels && input.labels.length > 0 ? input.labels : defaultLabels)
@@ -497,18 +519,18 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       this.rawDb
         .prepare(
           `UPDATE swarm_runner_registrations
-           SET consumed_by_worker_id = ?, consumed_at = ?
+           SET consumed_by_runner_id = ?, consumed_at = ?
            WHERE id = ?`
         )
-        .run(workerId, nowIso, String(regRow.id));
+        .run(runnerId, nowIso, String(regRow.id));
 
       this.rawDb
         .prepare(
-          `INSERT INTO swarm_workers (
-            worker_id, name, token_hash, labels_json, repositories_json,
+          `INSERT INTO swarm_runners (
+            runner_id, name, token_hash, labels_json, repositories_json,
             system_info_json, enabled, active_task_id, status, registered_at, last_seen_at
           ) VALUES (?, ?, ?, ?, ?, ?, 1, NULL, 'idle', ?, ?)
-          ON CONFLICT(worker_id) DO UPDATE SET
+          ON CONFLICT(runner_id) DO UPDATE SET
             name = excluded.name,
             token_hash = excluded.token_hash,
             labels_json = excluded.labels_json,
@@ -519,8 +541,8 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
             last_seen_at = excluded.last_seen_at`
         )
         .run(
-          workerId,
-          workerName,
+          runnerId,
+          runnerName,
           runnerTokenHash,
           JSON.stringify(labels),
           JSON.stringify(repositories),
@@ -530,7 +552,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         );
 
       return {
-        worker: this.getWorker(workerId)!,
+        runner: this.getRunner(runnerId)!,
         runnerToken,
       };
     });
@@ -540,7 +562,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
   public authenticateRunner(
     providedToken: string | undefined,
     fallbackSharedSecret?: string
-  ): { authenticated: boolean; worker?: SwarmWorkerRecord; viaSharedSecret?: boolean } {
+  ): { authenticated: boolean; runner?: SwarmRunnerRecord; viaSharedSecret?: boolean } {
     const cleanToken = providedToken?.trim() || '';
     const cleanShared = fallbackSharedSecret?.trim() || '';
 
@@ -548,10 +570,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     if (cleanToken) {
       const tokenHash = hashRunnerToken(cleanToken);
       const row = this.rawDb
-        .prepare('SELECT * FROM swarm_workers WHERE token_hash = ?')
+        .prepare('SELECT * FROM swarm_runners WHERE token_hash = ?')
         .get(tokenHash) as Record<string, any> | undefined;
       if (row) {
-        return { authenticated: true, worker: this.mapRowToWorker(row) };
+        return { authenticated: true, runner: this.mapRowToRunner(row) };
       }
 
       if (cleanShared) {
@@ -568,28 +590,28 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return { authenticated: false };
   }
 
-  public getWorker(workerId: string): SwarmWorkerRecord | undefined {
+  public getRunner(runnerId: string): SwarmRunnerRecord | undefined {
     const row = this.rawDb
-      .prepare('SELECT * FROM swarm_workers WHERE worker_id = ?')
-      .get(workerId) as Record<string, any> | undefined;
-    return row ? this.mapRowToWorker(row) : undefined;
+      .prepare('SELECT * FROM swarm_runners WHERE runner_id = ?')
+      .get(runnerId) as Record<string, any> | undefined;
+    return row ? this.mapRowToRunner(row) : undefined;
   }
 
-  public setWorkerEnabled(workerId: string, enabled: boolean): SwarmWorkerRecord | undefined {
-    const existing = this.getWorker(workerId);
+  public setRunnerEnabled(runnerId: string, enabled: boolean): SwarmRunnerRecord | undefined {
+    const existing = this.getRunner(runnerId);
     if (!existing) return undefined;
 
     this.rawDb
-      .prepare('UPDATE swarm_workers SET enabled = ? WHERE worker_id = ?')
-      .run(enabled ? 1 : 0, workerId);
+      .prepare('UPDATE swarm_runners SET enabled = ? WHERE runner_id = ?')
+      .run(enabled ? 1 : 0, runnerId);
 
-    return this.getWorker(workerId);
+    return this.getRunner(runnerId);
   }
 
-  // Revokes a runner, deleting its record and credentials from `swarm_workers`.
-  public revokeWorker(workerId: string): boolean {
+  // Revokes a runner, deleting its record and credentials from `swarm_runners`.
+  public revokeRunner(runnerId: string): boolean {
     return this.inTransaction(() => {
-      const existing = this.getWorker(workerId);
+      const existing = this.getRunner(runnerId);
       if (!existing) return false;
 
       const now = new Date().toISOString();
@@ -597,15 +619,15 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         .prepare(
           `UPDATE swarm_tasks
            SET status = 'queued',
-               worker_id = NULL,
+               runner_id = NULL,
                claimed_at = NULL,
                heartbeat_at = NULL,
                updated_at = ?
-           WHERE worker_id = ? AND status IN ('claimed', 'executing')`
+           WHERE runner_id = ? AND status IN ('claimed', 'executing')`
         )
-        .run(now, workerId);
+        .run(now, runnerId);
 
-      this.rawDb.prepare('DELETE FROM swarm_workers WHERE worker_id = ?').run(workerId);
+      this.rawDb.prepare('DELETE FROM swarm_runners WHERE runner_id = ?').run(runnerId);
       return true;
     });
   }
@@ -690,14 +712,14 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     }
   }
 
-  // Without this the list grows a row every time a container is recreated, since a worker
+  // Without this the list grows a row every time a container is recreated, since a runner
   // re-registers on boot. Age-gated rather than immediate so the offline transition stays visible
-  // for a while after the reaper makes it. Live workers are never touched.
-  public pruneOldWorkers(maxOfflineAgeMs = 10 * 60 * 1000): void {
+  // for a while after the reaper makes it. Live runners are never touched.
+  public pruneOldRunners(maxOfflineAgeMs = 10 * 60 * 1000): void {
     try {
       const cutoff = new Date(Date.now() - maxOfflineAgeMs).toISOString();
       this.rawDb
-        .prepare("DELETE FROM swarm_workers WHERE status = 'offline' AND last_seen_at < ?")
+        .prepare("DELETE FROM swarm_runners WHERE status = 'offline' AND last_seen_at < ?")
         .run(cutoff);
     } catch {
       // Best-effort pruning
@@ -741,24 +763,24 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     return rows.map((r) => this.mapRowToTask(r));
   }
 
-  // Atomically claims the next eligible queued task for a worker.
+  // Atomically claims the next eligible queued task for a runner.
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
-      const existingWorker = this.getWorker(options.workerId);
-      // A registered worker's scope is its registration; the poll payload may only narrow
+      const existingRunner = this.getRunner(options.runnerId);
+      // A registered runner's scope is its registration; the poll payload may only narrow
       // an unregistered (shared-secret) runner's view, and must never widen a registration.
       const effectiveLabels =
-        existingWorker?.labels ??
+        existingRunner?.labels ??
         (options.labels && options.labels.length > 0 ? options.labels : []);
-      const workerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
+      const runnerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
 
       const effectiveRepos =
-        existingWorker?.repositories ??
+        existingRunner?.repositories ??
         (options.repositories && options.repositories.length > 0 ? options.repositories : []);
-      if (existingWorker && !existingWorker.enabled) {
-        this.registerWorkerHeartbeat({
-          workerId: options.workerId,
-          name: options.workerName,
+      if (existingRunner && !existingRunner.enabled) {
+        this.registerRunnerHeartbeat({
+          runnerId: options.runnerId,
+          name: options.runnerName,
           labels: effectiveLabels,
           repositories: effectiveRepos,
           systemInfo: options.systemInfo,
@@ -802,17 +824,17 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           }
         }
 
-        // Check required labels (if task specifies labels, worker must have all of them)
+        // Check required labels (if task specifies labels, runner must have all of them)
         if (task.requiredLabels.length > 0) {
           const hasAllLabels = task.requiredLabels.every((reqLabel) =>
-            workerLabelSet.has(reqLabel.toLowerCase())
+            runnerLabelSet.has(reqLabel.toLowerCase())
           );
           if (!hasAllLabels) {
             continue;
           }
         }
 
-        // Check repository capability filter if worker specified a subset
+        // Check repository capability filter if runner specified a subset
         if (
           repoFilter &&
           !repoFilter.has(task.repositoryId.toLowerCase()) &&
@@ -837,7 +859,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           .prepare(
             `UPDATE swarm_tasks
              SET status = 'claimed',
-                 worker_id = ?,
+                 runner_id = ?,
                  model = ?,
                  pool_family = ?,
                  claimed_at = ?,
@@ -846,7 +868,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
              WHERE id = ? AND status = 'queued'`
           )
           .run(
-            options.workerId,
+            options.runnerId,
             updatedModel,
             resolvePoolFamilyForModel(updatedModel),
             now,
@@ -856,9 +878,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           ) as unknown as { changes?: number };
 
         if ((updateResult?.changes ?? 0) > 0) {
-          this.registerWorkerHeartbeat({
-            workerId: options.workerId,
-            name: options.workerName,
+          this.registerRunnerHeartbeat({
+            runnerId: options.runnerId,
+            name: options.runnerName,
             labels: effectiveLabels,
             repositories: effectiveRepos,
             systemInfo: options.systemInfo,
@@ -869,9 +891,9 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         }
       }
 
-      this.registerWorkerHeartbeat({
-        workerId: options.workerId,
-        name: options.workerName,
+      this.registerRunnerHeartbeat({
+        runnerId: options.runnerId,
+        name: options.runnerName,
         labels: effectiveLabels,
         repositories: effectiveRepos,
         systemInfo: options.systemInfo,
@@ -885,7 +907,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
   public updateTaskStatus(
     taskId: string,
     patch: TaskStatusPatch,
-    options: { preserveWorkerLastSeen?: boolean } = {}
+    options: { preserveRunnerLastSeen?: boolean } = {}
   ): { task: SwarmTask; applied: boolean } | undefined {
     const existing = this.getTask(taskId);
     if (!existing) return undefined;
@@ -904,11 +926,11 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       return refused;
     }
 
-    // Ownership: a worker patch must match the row's current owner; an unowned row may only be
+    // Ownership: a runner patch must match the row's current owner; an unowned row may only be
     // patched while it is still queued.
-    if (patch.workerId) {
-      if (existing.workerId !== undefined) {
-        if (existing.workerId !== patch.workerId) return refused;
+    if (patch.runnerId) {
+      if (existing.runnerId !== undefined) {
+        if (existing.runnerId !== patch.runnerId) return refused;
       } else if (existing.status !== 'queued') {
         return refused;
       }
@@ -929,7 +951,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     const output =
       patch.output !== undefined ? patch.output.slice(0, 16000) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
-    const workerId = patch.workerId ?? existing.workerId ?? null;
+    const runnerId = patch.runnerId ?? existing.runnerId ?? null;
     const numTurns = patch.numTurns !== undefined ? patch.numTurns : (existing.numTurns ?? null);
     const totalTokens =
       patch.totalTokens !== undefined ? patch.totalTokens : (existing.totalTokens ?? null);
@@ -941,7 +963,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       .prepare(
         `UPDATE swarm_tasks
          SET status = ?,
-             worker_id = ?,
+             runner_id = ?,
              branch_name = ?,
              pr_url = ?,
              output = ?,
@@ -954,12 +976,12 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
              completed_at = ?,
              updated_at = ?
          WHERE id = ?
-           AND (worker_id IS NULL OR worker_id = ?)
+           AND (runner_id IS NULL OR runner_id = ?)
            AND NOT (status = 'queued' AND ? IN ('claimed', 'executing'))`
       )
       .run(
         patch.status,
-        workerId,
+        runnerId,
         branchName,
         prUrl,
         output,
@@ -972,7 +994,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         completedAt,
         now,
         taskId,
-        workerId,
+        runnerId,
         patch.status
       ) as unknown as { changes?: number };
 
@@ -984,21 +1006,21 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       this.pruneOldTasks();
     }
 
-    if (workerId && this.getWorker(workerId)) {
-      this.registerWorkerHeartbeat(
+    if (runnerId && this.getRunner(runnerId)) {
+      this.registerRunnerHeartbeat(
         {
-          workerId,
+          runnerId,
           activeTaskId: isTerminal ? null : taskId,
           status: isTerminal ? 'idle' : 'busy',
         },
-        { touchLastSeen: !options.preserveWorkerLastSeen }
+        { touchLastSeen: !options.preserveRunnerLastSeen }
       );
     }
 
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
-  // Fails tasks whose worker lease heartbeat has expired and marks stale workers offline.
+  // Fails tasks whose runner lease heartbeat has expired and marks stale runners offline.
   public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {
     const activeRows = this.rawDb
       .prepare("SELECT * FROM swarm_tasks WHERE status IN ('claimed', 'executing')")
@@ -1017,41 +1039,41 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           task.id,
           {
             status: 'failed',
-            error: `Worker lease expired after ${Math.round(leaseTimeoutMs / 1000)}s without heartbeat`,
+            error: `Runner lease expired after ${Math.round(leaseTimeoutMs / 1000)}s without heartbeat`,
             durationMs: Math.max(0, durationMs),
           },
-          // The reaper must not refresh last_seen_at, or the offline sweep below misses the dead worker.
-          { preserveWorkerLastSeen: true }
+          // The reaper must not refresh last_seen_at, or the offline sweep below misses the dead runner.
+          { preserveRunnerLastSeen: true }
         );
         if (updated?.applied) reapedTasks.push(updated.task);
       }
     }
 
-    // Mark workers that haven't sent a heartbeat within threshold as offline
-    const workerOfflineThresholdMs = Math.min(leaseTimeoutMs, 2 * 60 * 1000);
-    const workerRows = this.rawDb
-      .prepare("SELECT * FROM swarm_workers WHERE status != 'offline'")
+    // Mark runners that haven't sent a heartbeat within threshold as offline
+    const runnerOfflineThresholdMs = Math.min(leaseTimeoutMs, 2 * 60 * 1000);
+    const runnerRows = this.rawDb
+      .prepare("SELECT * FROM swarm_runners WHERE status != 'offline'")
       .all() as Array<Record<string, any>>;
-    for (const w of workerRows) {
+    for (const w of runnerRows) {
       const seenEpoch = new Date(String(w.last_seen_at)).getTime();
-      const threshold = w.status === 'busy' ? leaseTimeoutMs : workerOfflineThresholdMs;
+      const threshold = w.status === 'busy' ? leaseTimeoutMs : runnerOfflineThresholdMs;
       if (!Number.isNaN(seenEpoch) && nowMs - seenEpoch > threshold) {
         this.rawDb
           .prepare(
-            "UPDATE swarm_workers SET status = 'offline', active_task_id = NULL WHERE worker_id = ?"
+            "UPDATE swarm_runners SET status = 'offline', active_task_id = NULL WHERE runner_id = ?"
           )
-          .run(String(w.worker_id));
+          .run(String(w.runner_id));
       }
     }
 
-    this.pruneOldWorkers();
+    this.pruneOldRunners();
 
     return reapedTasks;
   }
 
-  public registerWorkerHeartbeat(
+  public registerRunnerHeartbeat(
     info: {
-      workerId: string;
+      runnerId: string;
       name?: string;
       labels?: string[];
       repositories?: string[];
@@ -1063,10 +1085,10 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
   ): void {
     const now = new Date().toISOString();
     const existing = this.rawDb
-      .prepare('SELECT * FROM swarm_workers WHERE worker_id = ?')
-      .get(info.workerId) as Record<string, any> | undefined;
+      .prepare('SELECT * FROM swarm_runners WHERE runner_id = ?')
+      .get(info.runnerId) as Record<string, any> | undefined;
 
-    const name = info.name ?? existing?.name ?? info.workerId;
+    const name = info.name ?? existing?.name ?? info.runnerId;
     const labelsJson =
       info.labels !== undefined
         ? JSON.stringify(info.labels.map((l) => l.trim().toLowerCase()).filter(Boolean))
@@ -1086,16 +1108,16 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
         : info.activeTaskId !== undefined
           ? info.activeTaskId
           : (existing?.active_task_id ?? null);
-    // Preserving last_seen_at keeps the offline sweep honest when the reaper updates worker state.
+    // Preserving last_seen_at keeps the offline sweep honest when the reaper updates runner state.
     const lastSeenAt = options.touchLastSeen === false ? (existing?.last_seen_at ?? now) : now;
 
     this.rawDb
       .prepare(
-        `INSERT INTO swarm_workers (
-          worker_id, name, labels_json, repositories_json, system_info_json,
+        `INSERT INTO swarm_runners (
+          runner_id, name, labels_json, repositories_json, system_info_json,
           active_task_id, status, registered_at, last_seen_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(worker_id) DO UPDATE SET
+        ON CONFLICT(runner_id) DO UPDATE SET
           name = excluded.name,
           labels_json = excluded.labels_json,
           repositories_json = excluded.repositories_json,
@@ -1105,7 +1127,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
           last_seen_at = excluded.last_seen_at`
       )
       .run(
-        info.workerId,
+        info.runnerId,
         name,
         labelsJson,
         reposJson,
@@ -1117,15 +1139,15 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       );
   }
 
-  public listWorkers(): SwarmWorkerRecord[] {
+  public listRunners(): SwarmRunnerRecord[] {
     const rows = this.rawDb
-      .prepare('SELECT * FROM swarm_workers ORDER BY last_seen_at DESC')
+      .prepare('SELECT * FROM swarm_runners ORDER BY last_seen_at DESC')
       .all() as Array<Record<string, any>>;
 
-    return rows.map((r) => this.mapRowToWorker(r));
+    return rows.map((r) => this.mapRowToRunner(r));
   }
 
-  private mapRowToWorker(r: Record<string, any>): SwarmWorkerRecord {
+  private mapRowToRunner(r: Record<string, any>): SwarmRunnerRecord {
     let labels: string[] = [];
     let repositories: string[] = [];
     let systemInfo: RunnerSystemInfo = {};
@@ -1140,7 +1162,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
     } catch {}
 
     return {
-      workerId: String(r.worker_id),
+      runnerId: String(r.runner_id || r.worker_id),
       name: String(r.name),
       labels,
       repositories,
@@ -1186,7 +1208,7 @@ ${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
       standingTaskId: row.standing_task_id ? String(row.standing_task_id) : undefined,
       verifyCommand: row.verify_command ? String(row.verify_command) : undefined,
       status: (row.status as TaskStatus) || 'queued',
-      workerId: row.worker_id ? String(row.worker_id) : undefined,
+      runnerId: row.runner_id ? String(row.runner_id) : undefined,
       claimedAt: row.claimed_at ? String(row.claimed_at) : undefined,
       heartbeatAt: row.heartbeat_at ? String(row.heartbeat_at) : undefined,
       completedAt: row.completed_at ? String(row.completed_at) : undefined,

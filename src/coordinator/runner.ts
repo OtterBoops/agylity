@@ -5,7 +5,7 @@ import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
 import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
-import type { RunnerSystemInfo, SwarmTask, SwarmWorkerRecord, TaskStatusPatch } from './queue.js';
+import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask, TaskStatusPatch } from './queue.js';
 import { resolveReasoningEffortForModel } from './models.js';
 import type { BotPrPolicy } from '../config/schema.js';
 
@@ -34,8 +34,8 @@ export interface TaskExecutionResult {
 }
 
 export interface PersistedRunnerState {
-  workerId: string;
-  workerName: string;
+  runnerId: string;
+  runnerName: string;
   labels: string[];
   repositories: string[];
   runnerToken: string;
@@ -43,13 +43,13 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
-// A tokenless worker clones anonymously, runs the whole task, then fails the push -- burning a full
+// A tokenless runner clones anonymously, runs the whole task, then fails the push -- burning a full
 // agent run for nothing. Fail at boot instead. Opt out only for non-GitHub remotes.
-export const assertWorkerGitCredentials = (
+export const assertRunnerGitCredentials = (
   repositories: string[] | undefined,
   env: NodeJS.ProcessEnv = process.env
 ): void => {
-  if (env.ALLOW_TOKENLESS_WORKER?.trim().toLowerCase() === 'true') return;
+  if (env.ALLOW_TOKENLESS_RUNNER?.trim().toLowerCase() === 'true') return;
   const token = env.GITHUB_TOKEN?.trim();
   if (token) return;
 
@@ -59,10 +59,10 @@ export const assertWorkerGitCredentials = (
       : 'unscoped, so it may claim any repository the coordinator offers';
 
   throw new Error(
-    `GITHUB_TOKEN is not set on this worker (${scope}). Without it the clone is anonymous and ` +
+    `GITHUB_TOKEN is not set on this runner (${scope}). Without it the clone is anonymous and ` +
       'git push fails after the task has already spent its quota, so refusing to start. ' +
       'Note that env_file alone does not put a variable in the container environment -- the token ' +
-      'must also be named under environment: in compose.yaml. Set ALLOW_TOKENLESS_WORKER=true to ' +
+      'must also be named under environment: in compose.yaml. Set ALLOW_TOKENLESS_RUNNER=true to ' +
       'run without a token against a non-GitHub remote.'
   );
 };
@@ -103,15 +103,7 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
   return `antigravity/task-${shortId}-${slug || 'work'}`;
 };
 
-const DOC_EXTENSIONS = new Set([
-  '.md',
-  '.markdown',
-  '.mdown',
-  '.mkdn',
-  '.txt',
-  '.rst',
-  '.adoc',
-]);
+const DOC_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn', '.txt', '.rst', '.adoc']);
 
 const DOC_SPECIAL_BASENAMES = new Set([
   'license',
@@ -131,7 +123,9 @@ export const isDocumentationFile = (filePath: string): boolean => {
   const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
   const baseName = path.basename(normalized);
   const ext = path.extname(baseName).toLowerCase();
-  const nameWithoutExt = ext ? baseName.slice(0, -ext.length).toLowerCase() : baseName.toLowerCase();
+  const nameWithoutExt = ext
+    ? baseName.slice(0, -ext.length).toLowerCase()
+    : baseName.toLowerCase();
 
   if (nameWithoutExt.startsWith('readme') || DOC_SPECIAL_BASENAMES.has(nameWithoutExt)) {
     if (!ext || DOC_EXTENSIONS.has(ext)) return true;
@@ -231,10 +225,9 @@ export class TaskExecutor {
     this.timeoutMs = options.timeoutMs ?? 30 * 60 * 1000; // 30 minutes default
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
-    this.log = options.logger ?? logger.child('worker');
+    this.log = options.logger ?? logger.child('runner');
     this.botPrPolicy =
-      options.botPrPolicy ??
-      ((process.env.BOT_PR_POLICY as BotPrPolicy) || 'docs_only');
+      options.botPrPolicy ?? ((process.env.BOT_PR_POLICY as BotPrPolicy) || 'docs_only');
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
@@ -419,10 +412,10 @@ export class TaskExecutor {
           const isBot = task.actor === 'bot';
           const authorName = isBot
             ? 'agylity[bot]'
-            : (process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User');
+            : process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
           const authorEmail = isBot
             ? 'agylity@users.noreply.github.com'
-            : (process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com');
+            : process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
           await this.execFileFn(
             'git',
             ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
@@ -433,8 +426,12 @@ export class TaskExecutor {
                 ...process.env,
                 GIT_AUTHOR_NAME: authorName,
                 GIT_AUTHOR_EMAIL: authorEmail,
-                GIT_COMMITTER_NAME: isBot ? authorName : (process.env.GIT_COMMITTER_NAME || authorName),
-                GIT_COMMITTER_EMAIL: isBot ? authorEmail : (process.env.GIT_COMMITTER_EMAIL || authorEmail),
+                GIT_COMMITTER_NAME: isBot
+                  ? authorName
+                  : process.env.GIT_COMMITTER_NAME || authorName,
+                GIT_COMMITTER_EMAIL: isBot
+                  ? authorEmail
+                  : process.env.GIT_COMMITTER_EMAIL || authorEmail,
               },
             }
           );
@@ -490,8 +487,7 @@ export class TaskExecutor {
 
       // Policy Guard: Check Bot PR policy before pushing branches or creating PRs
       const isBot = task.actor === 'bot';
-      const effectiveBotPrPolicy: BotPrPolicy =
-        task.botPrPolicy ?? this.botPrPolicy ?? 'docs_only';
+      const effectiveBotPrPolicy: BotPrPolicy = task.botPrPolicy ?? this.botPrPolicy ?? 'docs_only';
 
       if (isBot) {
         if (effectiveBotPrPolicy === 'none') {
@@ -600,7 +596,7 @@ export class TaskExecutor {
             branchName,
             output: combinedOutput,
             error: noToken
-              ? `Git push to origin/${branchName} failed: ${pushErrMsg} (this worker has no GITHUB_TOKEN set)`
+              ? `Git push to origin/${branchName} failed: ${pushErrMsg} (this runner has no GITHUB_TOKEN set)`
               : `Git push to origin/${branchName} failed: ${pushErrMsg}`,
             durationMs: Date.now() - startMs,
           };
@@ -678,10 +674,10 @@ export class TaskExecutor {
   }
 }
 
-export interface RemoteSwarmWorkerOptions {
+export interface RemoteSwarmRunnerOptions {
   coordinatorUrl: string;
-  workerId?: string;
-  workerName?: string;
+  runnerId?: string;
+  runnerName?: string;
   labels?: string[];
   repositories?: string[];
   registrationToken?: string;
@@ -697,13 +693,13 @@ export interface RemoteSwarmWorkerOptions {
   logger?: Logger;
 }
 
-// Outbound long-polling swarm runner client (`agylity-worker`) that exchanges
-export class RemoteSwarmWorker {
-  private readonly options: RemoteSwarmWorkerOptions;
+// Outbound long-polling swarm runner client (`agylity-runner`) that exchanges
+export class RemoteSwarmRunner {
+  private readonly options: RemoteSwarmRunnerOptions;
   private readonly executor: TaskExecutor;
   private readonly log: Logger;
-  private workerId: string;
-  private workerName: string;
+  private runnerId: string;
+  private runnerName: string;
   private labels: string[];
   private repositories?: string[];
   private runnerToken?: string;
@@ -714,16 +710,16 @@ export class RemoteSwarmWorker {
   private authBlockedUntil = 0;
   private warnedAuthRequired = false;
 
-  constructor(options: RemoteSwarmWorkerOptions) {
+  constructor(options: RemoteSwarmRunnerOptions) {
     this.options = options;
     // Identity must survive a container recreation: os.hostname() is the container id, which changes
-    // on every recreate and leaves a dead row behind in the coordinator's worker list.
-    this.workerName = options.workerName?.trim() || `runner-${os.hostname()}`;
-    this.workerId = options.workerId?.trim() || this.workerName;
+    // on every recreate and leaves a dead row behind in the coordinator's runner list.
+    this.runnerName = options.runnerName?.trim() || `runner-${os.hostname()}`;
+    this.runnerId = options.runnerId?.trim() || this.runnerName;
     this.labels = options.labels ?? [];
     this.repositories = options.repositories;
     this.runnerToken = options.runnerToken?.trim() || undefined;
-    this.log = options.logger ?? logger.child(`runner:${this.workerId}`);
+    this.log = options.logger ?? logger.child(`runner:${this.runnerId}`);
     this.executor =
       options.executor ??
       new TaskExecutor({
@@ -739,7 +735,7 @@ export class RemoteSwarmWorker {
               this.currentExecutingTaskId,
               {
                 status: status.status,
-                workerId: this.workerId,
+                runnerId: this.runnerId,
                 branchName: status.branchName,
                 message: status.message,
               }
@@ -790,8 +786,12 @@ export class RemoteSwarmWorker {
     }
   }
 
-  public getWorkerId(): string {
-    return this.workerId;
+  public getRunnerId(): string {
+    return this.runnerId;
+  }
+
+  public getRunnerName(): string {
+    return this.runnerName;
   }
 
   public getRunnerToken(): string | undefined {
@@ -808,11 +808,11 @@ export class RemoteSwarmWorker {
       if (parsed.runnerToken && typeof parsed.runnerToken === 'string') {
         this.runnerToken = parsed.runnerToken;
       }
-      if (parsed.workerId && typeof parsed.workerId === 'string') {
-        this.workerId = parsed.workerId;
+      if (parsed.runnerId && typeof parsed.runnerId === 'string') {
+        this.runnerId = parsed.runnerId;
       }
-      if (parsed.workerName && typeof parsed.workerName === 'string') {
-        this.workerName = parsed.workerName;
+      if (parsed.runnerName && typeof parsed.runnerName === 'string') {
+        this.runnerName = parsed.runnerName;
       }
       if (
         Array.isArray(parsed.labels) &&
@@ -851,7 +851,7 @@ export class RemoteSwarmWorker {
   }
 
   // Exchanges a one-time `registrationToken` (`agyr_reg_...`) for a persistent `runnerToken` (`agyr_run_...`)
-  public async registerIfNeeded(): Promise<SwarmWorkerRecord | null> {
+  public async registerIfNeeded(): Promise<SwarmRunnerRecord | null> {
     if (this.runnerToken) {
       return null;
     }
@@ -863,11 +863,11 @@ export class RemoteSwarmWorker {
 
     const baseUrl = this.options.coordinatorUrl.replace(/\/+$/, '');
     const res = await ky
-      .post(`${baseUrl}/api/workers/register`, {
+      .post(`${baseUrl}/api/runners/register`, {
         json: {
           registrationToken: regToken,
-          workerId: this.options.workerId?.trim(),
-          workerName: this.options.workerName?.trim() || undefined,
+          runnerId: this.options.runnerId?.trim(),
+          runnerName: this.options.runnerName?.trim() || undefined,
           labels:
             this.options.labels && this.options.labels.length > 0 ? this.options.labels : undefined,
           repositories:
@@ -879,34 +879,34 @@ export class RemoteSwarmWorker {
         retry: 0,
         timeout: 15000,
       })
-      .json<{ worker: SwarmWorkerRecord; runnerToken: string }>();
+      .json<{ runner: SwarmRunnerRecord; runnerToken: string }>();
 
-    this.workerId = res.worker.workerId;
-    this.workerName = res.worker.name;
-    this.labels = res.worker.labels;
-    if (res.worker.repositories.length > 0) {
-      this.repositories = res.worker.repositories;
+    this.runnerId = res.runner.runnerId;
+    this.runnerName = res.runner.name;
+    this.labels = res.runner.labels;
+    if (res.runner.repositories.length > 0) {
+      this.repositories = res.runner.repositories;
     }
     this.runnerToken = res.runnerToken;
 
     this.savePersistedState({
-      workerId: this.workerId,
-      workerName: this.workerName,
+      runnerId: this.runnerId,
+      runnerName: this.runnerName,
       labels: this.labels,
       repositories: this.repositories ?? [],
       runnerToken: this.runnerToken,
       coordinatorUrl: baseUrl,
-      registeredAt: res.worker.registeredAt,
+      registeredAt: res.runner.registeredAt,
     });
 
     this.log.info(
       'Successfully registered runner "%s" (%s, labels=%s)',
-      this.workerName,
-      this.workerId,
+      this.runnerName,
+      this.runnerId,
       this.labels.join(',') || 'none'
     );
 
-    return res.worker;
+    return res.runner;
   }
 
   private buildAuthHeaders(): Record<string, string> {
@@ -914,7 +914,7 @@ export class RemoteSwarmWorker {
     const token = this.runnerToken || this.options.sharedSecret?.trim();
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
-      headers['x-agylity-worker-token'] = token;
+      headers['x-agylity-runner-token'] = token;
     }
     return headers;
   }
@@ -934,8 +934,8 @@ export class RemoteSwarmWorker {
       .post(`${baseUrl}/api/tasks/poll`, {
         headers,
         json: {
-          workerId: this.workerId,
-          workerName: this.workerName,
+          runnerId: this.runnerId,
+          runnerName: this.runnerName,
           labels: this.labels,
           repositories: this.repositories,
           systemInfo: collectRunnerSystemInfo(),
@@ -952,14 +952,14 @@ export class RemoteSwarmWorker {
 
     await this.reportStatus(baseUrl, headers, task.id, {
       status: 'executing',
-      workerId: this.workerId,
-      message: `Runner ${this.workerName} (${this.workerId}) executing task on ${task.repositoryName}`,
+      runnerId: this.runnerId,
+      message: `Runner ${this.runnerName} (${this.runnerId}) executing task on ${task.repositoryName}`,
     });
 
     const heartbeatTimer = setInterval(() => {
       void this.reportStatus(baseUrl, headers, task.id, {
         status: 'executing',
-        workerId: this.workerId,
+        runnerId: this.runnerId,
       });
     }, 30000);
     heartbeatTimer.unref?.();
@@ -975,7 +975,7 @@ export class RemoteSwarmWorker {
 
     await this.reportStatus(baseUrl, headers, task.id, {
       status: result.noChanges ? 'no_changes' : result.success ? 'completed' : 'failed',
-      workerId: this.workerId,
+      runnerId: this.runnerId,
       branchName: result.branchName,
       prUrl: result.prUrl,
       output: result.output,
@@ -992,7 +992,7 @@ export class RemoteSwarmWorker {
   // Starts the continuous outbound long-poll loop until `stop()` is called.
   public async start(): Promise<void> {
     if (this.isRunning) return;
-    assertWorkerGitCredentials(this.options.repositories);
+    assertRunnerGitCredentials(this.options.repositories);
     this.isRunning = true;
     this.abortController = new AbortController();
 
@@ -1002,7 +1002,7 @@ export class RemoteSwarmWorker {
       // A transient coordinator outage at boot must not be fatal; the poll loop retries.
       this.log.warn(
         'Initial runner registration failed for %s; retrying in the poll loop: %s',
-        this.workerId,
+        this.runnerId,
         err?.message ?? err
       );
     }
@@ -1010,7 +1010,7 @@ export class RemoteSwarmWorker {
     const idleIntervalMs = this.options.idlePollIntervalMs ?? 2000;
     this.log.info(
       'Starting outbound swarm runner loop (%s -> %s)',
-      this.workerId,
+      this.runnerId,
       this.options.coordinatorUrl
     );
 
@@ -1023,7 +1023,7 @@ export class RemoteSwarmWorker {
         }
       } catch (err: any) {
         if (!this.isRunning || this.abortController.signal.aborted) break;
-        this.log.warn('Poll cycle error on runner %s: %s', this.workerId, err?.message ?? err);
+        this.log.warn('Poll cycle error on runner %s: %s', this.runnerId, err?.message ?? err);
         await this.sleep(Math.max(idleIntervalMs, 3000));
       }
     }

@@ -1,27 +1,27 @@
 import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
-import type { SwarmWorkerRecord } from '../types';
+import type { SwarmRunnerRecord } from '../types';
 import { Icon } from './Icon';
-import { workerStatusBadgeClass } from '../utils/status';
+import { runnerStatusBadgeClass } from '../utils/status';
 import { formatTime, useTimeFormat } from '../utils/time';
 
 interface SwarmRunnersGridProps {
-  workers: SwarmWorkerRecord[];
-  onToggleEnabled: (worker: SwarmWorkerRecord) => Promise<void>;
-  onRevoke: (worker: SwarmWorkerRecord) => Promise<void>;
+  runners: SwarmRunnerRecord[];
+  onToggleEnabled: (runner: SwarmRunnerRecord) => Promise<void>;
+  onRevoke: (runner: SwarmRunnerRecord) => Promise<void>;
 }
 
-export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRunnersGridProps) => {
+export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRunnersGridProps) => {
   const [timeFormat] = useTimeFormat();
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const handleToggle = async (w: SwarmWorkerRecord) => {
-    setMutatingId(w.workerId);
+  const handleToggle = async (r: SwarmRunnerRecord) => {
+    setMutatingId(r.runnerId);
     setError(null);
     try {
-      await onToggleEnabled(w);
+      await onToggleEnabled(r);
     } catch (err: any) {
       setError(err?.message || 'Failed to update runner status');
     } finally {
@@ -29,11 +29,11 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
     }
   };
 
-  const handleRevoke = async (w: SwarmWorkerRecord) => {
-    setMutatingId(w.workerId);
+  const handleRevoke = async (r: SwarmRunnerRecord) => {
+    setMutatingId(r.runnerId);
     setError(null);
     try {
-      await onRevoke(w);
+      await onRevoke(r);
       setConfirmRevokeId(null);
     } catch (err: any) {
       setError(err?.message || 'Failed to revoke runner');
@@ -46,7 +46,7 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
     <div class="mt-5 border-t border-pine-highlight pt-4">
       <div class="mb-2.5 flex items-center justify-between">
         <h4 class="text-xs font-semibold tracking-wider text-pine-subtle uppercase">
-          Registered Swarm Runners ({workers.length})
+          Registered Swarm Runners ({runners.length})
         </h4>
       </div>
 
@@ -56,59 +56,59 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
         </div>
       )}
 
-      {workers.length === 0 ? (
+      {runners.length === 0 ? (
         <div class="rounded-lg border border-pine-highlight bg-pine-overlay/25 p-4 text-xs text-pine-muted">
           No runners registered yet. Click <strong class="text-pine-text">New Runner</strong> above
           to generate a registration token and connect a Docker or CLI runner.
         </div>
       ) : (
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {workers.map((w) => {
-            const isMutating = mutatingId === w.workerId;
-            const isConfirmingRevoke = confirmRevokeId === w.workerId;
+          {runners.map((r) => {
+            const isMutating = mutatingId === r.runnerId;
+            const isConfirmingRevoke = confirmRevokeId === r.runnerId;
 
             return (
               <div
-                key={w.workerId}
+                key={r.runnerId}
                 class="flex flex-col justify-between gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-3.5 text-xs"
               >
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
                     <div class="font-mono font-semibold wrap-break-word text-pine-text">
-                      {w.name}
+                      {r.name}
                     </div>
-                    <div class="mt-0.5 font-mono text-xs text-pine-muted">{w.workerId}</div>
+                    <div class="mt-0.5 font-mono text-xs text-pine-muted">{r.runnerId}</div>
                   </div>
 
                   <div class="flex items-center gap-1.5">
-                    {!w.enabled && (
+                    {!r.enabled && (
                       <span class="inline-flex items-center rounded-md border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap text-pine-muted uppercase">
                         Paused
                       </span>
                     )}
                     <span
-                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${workerStatusBadgeClass(w.status)}`}
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
                     >
-                      {w.status}
+                      {r.status}
                     </span>
                   </div>
                 </div>
 
                 <div class="flex flex-wrap items-center gap-1.5 text-xs text-pine-muted">
-                  {w.systemInfo?.platform && (
+                  {r.systemInfo?.platform && (
                     <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono whitespace-nowrap text-pine-subtle">
-                      {w.systemInfo.platform}/{w.systemInfo.arch || 'x64'}
+                      {r.systemInfo.platform}/{r.systemInfo.arch || 'x64'}
                     </span>
                   )}
-                  {w.activeTaskId && (
+                  {r.activeTaskId && (
                     <a
                       href="#tasks"
                       class="rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 font-mono whitespace-nowrap text-pine-gold hover:underline"
                     >
-                      task:{w.activeTaskId.slice(-6)}
+                      task:{r.activeTaskId.slice(-6)}
                     </a>
                   )}
-                  {w.labels?.map((lbl) => (
+                  {r.labels?.map((lbl) => (
                     <span
                       key={lbl}
                       class="rounded-sm bg-pine-iris/15 px-2 py-0.5 font-mono whitespace-nowrap text-pine-iris"
@@ -120,19 +120,19 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
 
                 <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2.5">
                   <span class="font-mono text-xs text-pine-muted">
-                    Seen {formatTime(w.lastSeenAt, { includeSeconds: true, timeFormat })}
+                    Seen {formatTime(r.lastSeenAt, { includeSeconds: true, timeFormat })}
                   </span>
 
                   <div class="flex items-center gap-1.5">
                     <button
                       type="button"
                       disabled={isMutating}
-                      onClick={() => handleToggle(w)}
-                      title={w.enabled ? 'Pause runner' : 'Resume runner'}
+                      onClick={() => handleToggle(r)}
+                      title={r.enabled ? 'Pause runner' : 'Resume runner'}
                       class="flex cursor-pointer items-center gap-1 rounded-sm border border-pine-highlight bg-pine-surface px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
                     >
-                      <Icon icon={w.enabled ? faPause : faPlay} class="size-2.5" />
-                      <span>{w.enabled ? 'Pause' : 'Resume'}</span>
+                      <Icon icon={r.enabled ? faPause : faPlay} class="size-2.5" />
+                      <span>{r.enabled ? 'Pause' : 'Resume'}</span>
                     </button>
 
                     {isConfirmingRevoke ? (
@@ -140,7 +140,7 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                         <button
                           type="button"
                           disabled={isMutating}
-                          onClick={() => handleRevoke(w)}
+                          onClick={() => handleRevoke(r)}
                           class="cursor-pointer rounded-sm border border-pine-love bg-pine-love px-2 py-1 text-xs font-bold whitespace-nowrap text-white transition-opacity hover:opacity-90 disabled:opacity-50"
                         >
                           Confirm
@@ -158,7 +158,7 @@ export const SwarmRunnersGrid = ({ workers, onToggleEnabled, onRevoke }: SwarmRu
                       <button
                         type="button"
                         disabled={isMutating}
-                        onClick={() => setConfirmRevokeId(w.workerId)}
+                        onClick={() => setConfirmRevokeId(r.runnerId)}
                         title="Revoke runner credential and remove"
                         class="flex cursor-pointer items-center gap-1 rounded-sm border border-pine-love/30 bg-pine-love/10 px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-white disabled:opacity-50"
                       >

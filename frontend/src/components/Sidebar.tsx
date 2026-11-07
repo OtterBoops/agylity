@@ -22,7 +22,7 @@ import { formatTime, useTimeFormat } from '../utils/time';
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
 interface SidebarProps {
-  orchestratorEnabled?: boolean;
+  coordinatorEnabled?: boolean;
   lastProbeSource?: string;
   lastProbeAt?: string;
   minHeadroomPercent?: number;
@@ -43,7 +43,7 @@ const SYSTEM: NavItem[] = [
 ];
 
 export const Sidebar = ({
-  orchestratorEnabled = false,
+  coordinatorEnabled = false,
   lastProbeSource,
   lastProbeAt,
   minHeadroomPercent = 10,
@@ -101,12 +101,12 @@ export const Sidebar = ({
   const configurationItems: NavItem[] = [
     { href: '/settings/notifications', label: 'Notifications', icon: faBell },
     {
-      href: '/settings/orchestrator',
-      label: 'Orchestrator',
+      href: '/settings/coordinator',
+      label: 'Coordinator',
       icon: faNetworkWired,
-      badge: orchestratorEnabled ? 'Active' : undefined,
+      badge: coordinatorEnabled ? 'Active' : undefined,
     },
-    ...(orchestratorEnabled
+    ...(coordinatorEnabled
       ? [
           { href: '/tasks', label: 'Tasks', icon: faCheckToSlot },
           { href: '/settings/repositories', label: 'Repositories', icon: faCodeBranch },
@@ -408,7 +408,7 @@ export const Sidebar = ({
         onClose={() => setInspectorOpen(false)}
         lastProbeSource={lastProbeSource}
         lastProbeAt={lastProbeAt}
-        orchestratorEnabled={orchestratorEnabled}
+        coordinatorEnabled={coordinatorEnabled}
         minHeadroomPercent={minHeadroomPercent}
       />
     </>

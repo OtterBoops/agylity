@@ -58,15 +58,15 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
 
   const dockerCommand = generatedReg
     ? [
-        `docker run -d --name ${generatedReg.nameHint || 'agylity-worker-1'} \\`,
+        `docker run -d --name ${generatedReg.nameHint || 'agylity-runner-1'} \\`,
         `  --restart unless-stopped \\`,
         `  -e COORDINATOR_URL=${dockerCoordinatorUrl} \\`,
         `  -e REGISTRATION_TOKEN=${generatedReg.registrationToken} \\`,
         `  -e RUNNER_STATE_PATH=/data/runner.json \\`,
-        labelsArg ? `  -e WORKER_LABELS="${labelsArg}" \\` : null,
-        `  -v agylity-worker-data:/data \\`,
+        labelsArg ? `  -e RUNNER_LABELS="${labelsArg}" \\` : null,
+        `  -v agylity-runner-data:/data \\`,
         `  -v agylity-gemini:/home/node/.gemini \\`,
-        `  ghcr.io/otterboops/agylity-worker:latest`,
+        `  ghcr.io/otterboops/agylity-runner:latest`,
       ]
         .filter(Boolean)
         .join('\n')
@@ -74,7 +74,7 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
 
   const cliCommand = generatedReg
     ? [
-        `node dist/worker-cli.js \\`,
+        `node dist/runner-cli.js \\`,
         `  --url ${coordinatorOrigin} \\`,
         `  --token ${generatedReg.registrationToken} \\`,
         `  --name ${generatedReg.nameHint || 'desktop-runner'}${labelsArg ? ' \\' : ''}`,
@@ -168,7 +168,7 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
             <div class="rounded-lg border border-pine-highlight bg-pine-base p-3">
               <div class="mb-1.5 flex items-center justify-between">
                 <span class="font-semibold text-pine-subtle">
-                  Option A: Container Runner (agylity-worker)
+                  Option A: Container Runner (agylity-runner)
                 </span>
                 <button
                   type="button"

@@ -74,13 +74,13 @@ jobs:
           push: false
           cache-from: type=gha,scope=coordinator
 
-      - name: Build Worker (Dry Run)
+      - name: Build Runner (Dry Run)
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: worker
+          target: runner
           push: false
-          cache-from: type=gha,scope=worker
+          cache-from: type=gha,scope=runner
 
   publish:
     name: Build & Publish Container Image (GHCR)
@@ -132,11 +132,11 @@ jobs:
           cache-from: type=gha,scope=coordinator
           cache-to: type=gha,mode=min,scope=coordinator
 
-      - name: Extract Worker Runner Docker Metadata
-        id: meta_worker
+      - name: Extract Swarm Runner Docker Metadata
+        id: meta_runner
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.repository }}-worker
+          images: ghcr.io/${{ github.repository }}-runner
           flavor: |
             latest=false
           tags: |
@@ -147,16 +147,16 @@ jobs:
             type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
             type=sha,format=short
 
-      - name: Build and Push Worker Runner Image (agylity-worker)
+      - name: Build and Push Swarm Runner Image (agylity-runner)
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: worker
+          target: runner
           push: true
-          tags: ${{ steps.meta_worker.outputs.tags }}
-          labels: ${{ steps.meta_worker.outputs.labels }}
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=min,scope=worker
+          tags: ${{ steps.meta_runner.outputs.tags }}
+          labels: ${{ steps.meta_runner.outputs.labels }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=min,scope=runner
 
       # The annotated tag message IS the release title: git tag -a v0.3.4 -m "v0.3.4 — <themes>"
       - name: Resolve Release Title

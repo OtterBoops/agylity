@@ -5,7 +5,7 @@ import {
   CANONICAL_AGY_MODELS,
   ReasoningEffortSchema,
   resolveConcreteModelId,
-} from '../../orchestrator/models.js';
+} from '../../coordinator/models.js';
 import type { DiscordNotifierOptions } from './types.js';
 import { TaskPromptSchema } from './commands.js';
 import { renderQuotaEmbed } from './embeds.js';
@@ -151,7 +151,7 @@ const handleDispatchCommand = async (
 
   const onDispatch = deps.options.onDispatchRequested || (deps.options as any).onContinueRequested;
   if (!onDispatch) {
-    const errReply = { content: '[Error] Orchestrator dispatch callback is not registered.' };
+    const errReply = { content: '[Error] Coordinator dispatch callback is not registered.' };
     if (canDefer && typeof interaction.editReply === 'function') {
       await interaction.editReply(errReply);
     } else if (typeof interaction.reply === 'function') {
@@ -441,7 +441,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
       }
     } else {
       const msg =
-        `[Notice] Agylity is operating in alerting-first mode. Task dispatch is inactive while swarm worker architecture is finalized.`.slice(
+        `[Notice] Agylity is operating in alerting-first mode. Task dispatch is inactive while swarm runner architecture is finalized.`.slice(
           0,
           2000
         );

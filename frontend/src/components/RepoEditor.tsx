@@ -110,7 +110,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       <div>
         <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
         <p class="mt-0.5 text-xs text-pine-subtle">
-          Connected target repositories for automated worker task execution.
+          Connected target repositories for automated runner task execution.
         </p>
       </div>
 

@@ -13,7 +13,7 @@ import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
 import {
   CANONICAL_AGY_MODELS,
-  assertWorkerGitCredentials,
+  assertRunnerGitCredentials,
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
@@ -21,10 +21,10 @@ import {
   resolveConcreteModelId,
   TaskQueue,
   TaskExecutor,
-  OrchestratorCoordinator,
-  RemoteSwarmWorker,
-} from '../../src/orchestrator/index.js';
-import { parseWorkerCliArgs } from '../../src/worker-cli.js';
+  Coordinator,
+  RemoteSwarmRunner,
+} from '../../src/coordinator/index.js';
+import { parseRunnerCliArgs } from '../../src/runner-cli.js';
 import {
   DiscordNotifier,
   createDispatchModal,
@@ -33,7 +33,7 @@ import {
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
-describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Worker Swarm', () => {
+describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runner Swarm', () => {
   /* ==================================================================== */
   /* 1. Explicit Model Selection & Pool-Targeted Quota Math               */
   /* ==================================================================== */
@@ -190,14 +190,14 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
         // Worker claims first task
         const claimed1 = queue.claimNext({
-          workerId: 'runner-docker-1',
+          runnerId: 'runner-docker-1',
         });
         assert.equal(claimed1?.id, t1.id);
         assert.equal(claimed1?.status, 'claimed');
 
         // Next claim gets second task
         const claimed2 = queue.claimNext({
-          workerId: 'runner-docker-1',
+          runnerId: 'runner-docker-1',
         });
         assert.equal(claimed2?.id, t2.id);
 
@@ -212,7 +212,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.equal(finalTask?.branchName, 'antigravity/task-hotfix');
         assert.equal(finalTask?.status, 'completed');
 
-        const workers = queue.listWorkers();
+        const workers = queue.listRunners();
         assert.equal(workers.length, 1);
       } finally {
         db.close();
@@ -473,8 +473,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
     it('supports fallback shared-secret long-polling, token auth, and status callbacks', async () => {
       const { dir, cleanup } = makeTempDir('orch_web_swarm_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
-        workerSharedSecret: 'swarm-secret-token-999',
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
         repositories: [
           {
             id: 'agylity',
@@ -520,7 +520,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         await assert.rejects(
           async () => {
             await ky.post(`${baseUrl}/api/tasks/poll`, {
-              json: { workerId: 'rogue-worker' },
+              json: { runnerId: 'rogue-worker' },
               retry: 0,
             });
           },
@@ -544,7 +544,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.equal(dispRes.model, 'gemini-3.8-flash');
         assert.ok(dispRes.taskId);
 
-        // 4. RemoteSwarmWorker polls, claims, executes via mock executor, and reports completion
+        // 4. RemoteSwarmRunner polls, claims, executes via mock executor, and reports completion
         const executedTasks: string[] = [];
         const mockExecutor = new TaskExecutor({
           dirExistsFn: () => true,
@@ -557,9 +557,9 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           },
         });
 
-        const worker = new RemoteSwarmWorker({
+        const worker = new RemoteSwarmRunner({
           coordinatorUrl: baseUrl,
-          workerId: 'runner-worker-1',
+          runnerId: 'runner-worker-1',
           sharedSecret: 'swarm-secret-token-999',
           executor: mockExecutor,
         });
@@ -579,9 +579,9 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.equal(dispatches.length, 1);
         assert.equal(dispatches[0]?.success, true);
 
-        const workers = await ky.get(`${baseUrl}/api/workers`).json<any[]>();
+        const workers = await ky.get(`${baseUrl}/api/runners`).json<any[]>();
         assert.equal(workers.length, 1);
-        assert.equal(workers[0]?.workerId, 'runner-worker-1');
+        assert.equal(workers[0]?.runnerId, 'runner-worker-1');
         assert.equal(workers[0]?.status, 'idle');
         assert.equal(workers[0]?.activeTaskId, undefined);
         assert.equal(workers[0]?.systemInfo?.nodeVersion, undefined);
@@ -595,7 +595,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
     it('completes full GitHub-Runner registration flow (one-time agyr_reg_ exchange -> persistent agyr_run_ state -> label routing -> pause/resume -> revoke requeue)', async () => {
       const { dir, cleanup } = makeTempDir('orch_gh_runners_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
+        coordinatorEnabled: true,
         repositories: [
           {
             id: 'agylity',
@@ -636,7 +636,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
         // 1. Generate one-time registration tokens for two distinct runners (linux-runner-1 & desktop-gpu)
         const reg1 = await ky
-          .post(`${baseUrl}/api/workers/registration-token`, {
+          .post(`${baseUrl}/api/runners/registration-token`, {
             json: {
               nameHint: 'linux-runner-1',
               labels: ['docker', 'linux'],
@@ -646,7 +646,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         assert.ok(reg1.registrationToken.startsWith('agyr_reg_'));
 
         const reg2 = await ky
-          .post(`${baseUrl}/api/workers/registration-token`, {
+          .post(`${baseUrl}/api/runners/registration-token`, {
             json: {
               nameHint: 'desktop-gpu',
               labels: ['windows', 'gpu'],
@@ -661,7 +661,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         });
 
         // 2. Runner 1 boots with registrationToken -> exchanges for persistent agyr_run_... and saves runner1.json
-        const worker1 = new RemoteSwarmWorker({
+        const worker1 = new RemoteSwarmRunner({
           coordinatorUrl: baseUrl,
           registrationToken: reg1.registrationToken,
           runnerStatePath: runner1StatePath,
@@ -676,7 +676,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         // 3. Attempting to reuse the consumed one-time registration token is rejected with 401
         await assert.rejects(
           async () => {
-            await ky.post(`${baseUrl}/api/workers/register`, {
+            await ky.post(`${baseUrl}/api/runners/register`, {
               json: { registrationToken: reg1.registrationToken },
               retry: 0,
             });
@@ -685,16 +685,16 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         );
 
         // 4. Restarting Runner 1 from persisted runner1.json works without registrationToken
-        const worker1Restarted = new RemoteSwarmWorker({
+        const worker1Restarted = new RemoteSwarmRunner({
           coordinatorUrl: baseUrl,
           runnerStatePath: runner1StatePath,
           executor: mockExecutor,
         });
-        assert.equal(worker1Restarted.getWorkerId(), worker1.getWorkerId());
+        assert.equal(worker1Restarted.getRunnerId(), worker1.getRunnerId());
         assert.equal(worker1Restarted.getRunnerToken(), worker1.getRunnerToken());
 
         // 5. Register Runner 2
-        const worker2 = new RemoteSwarmWorker({
+        const worker2 = new RemoteSwarmRunner({
           coordinatorUrl: baseUrl,
           registrationToken: reg2.registrationToken,
           runnerStatePath: runner2StatePath,
@@ -722,7 +722,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const claimedByRunner2 = await worker2.pollOnce();
         assert.equal(claimedByRunner2?.id, gpuDispatch.taskId);
 
-        // 7. Pause Runner 1 via PATCH /api/workers/:id -> Runner 1 cannot claim headless docker tasks while paused
+        // 7. Pause Runner 1 via PATCH /api/runners/:id -> Runner 1 cannot claim headless docker tasks while paused
         const headlessDispatch = await ky
           .post(`${baseUrl}/api/dispatch`, {
             json: {
@@ -735,25 +735,25 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           .json<any>();
 
         const pauseRes = await ky
-          .patch(`${baseUrl}/api/workers/${encodeURIComponent(worker1.getWorkerId())}`, {
+          .patch(`${baseUrl}/api/runners/${encodeURIComponent(worker1.getRunnerId())}`, {
             json: { enabled: false },
           })
           .json<any>();
-        assert.equal(pauseRes.worker.enabled, false);
+        assert.equal(pauseRes.runner.enabled, false);
 
         const claimWhilePaused = await worker1Restarted.pollOnce();
         assert.equal(claimWhilePaused, null);
 
         // Resume Runner 1 -> now claims and completes the task
-        await ky.patch(`${baseUrl}/api/workers/${encodeURIComponent(worker1.getWorkerId())}`, {
+        await ky.patch(`${baseUrl}/api/runners/${encodeURIComponent(worker1.getRunnerId())}`, {
           json: { enabled: true },
         });
         const claimAfterResume = await worker1Restarted.pollOnce();
         assert.equal(claimAfterResume?.id, headlessDispatch.taskId);
 
-        // 8. Revoke Runner 1 via DELETE /api/workers/:id -> invalidates token (401 on subsequent poll)
+        // 8. Revoke Runner 1 via DELETE /api/runners/:id -> invalidates token (401 on subsequent poll)
         const delRes = await ky
-          .delete(`${baseUrl}/api/workers/${encodeURIComponent(worker1.getWorkerId())}`)
+          .delete(`${baseUrl}/api/runners/${encodeURIComponent(worker1.getRunnerId())}`)
           .json<any>();
         assert.equal(delRes.revoked, true);
 
@@ -771,7 +771,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
     });
 
     it('parses worker-cli flags and environment variables accurately', () => {
-      const opts = parseWorkerCliArgs(
+      const opts = parseRunnerCliArgs(
         [
           '--url',
           'http://coordinator.example.internal:8484',
@@ -789,7 +789,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.equal(opts.coordinatorUrl, 'http://coordinator.example.internal:8484');
       assert.equal(opts.registrationToken, 'agyr_reg_123456');
       assert.equal(opts.runnerToken, undefined);
-      assert.equal(opts.workerName, 'runner-node-1');
+      assert.equal(opts.runnerName, 'runner-node-1');
       assert.deepEqual(opts.labels, ['docker', 'linux', 'swarm']);
     });
   });
@@ -1037,13 +1037,13 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.ok(secondReply?.content.includes('[Blocked] Single-User Binding'));
     });
 
-    it('OrchestratorCoordinator.dispatch rejects mismatched requestedByUserId when discordOwnerUserId is configured', async () => {
+    it('Coordinator.dispatch rejects mismatched requestedByUserId when discordOwnerUserId is configured', async () => {
       const { dir, cleanup } = makeTempDir('coord_owner_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
+        coordinatorEnabled: true,
         discordOwnerUserId: 'owner-123',
       });
-      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      const coordinator = new Coordinator({ configStore: store });
 
       const blocked = await coordinator.dispatch({
         repositoryName: 'Agylity',
@@ -1134,7 +1134,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
     });
 
     it('parseAgyTelemetry extracts NDJSON and JSON tokens, turns, and conversationId while gracefully falling back to plain text', async () => {
-      const { parseAgyTelemetry } = await import('../../src/orchestrator/worker.js');
+      const { parseAgyTelemetry } = await import('../../src/coordinator/runner.js');
 
       // 1. Plain text returns empty telemetry object
       assert.deepEqual(parseAgyTelemetry('Task completed cleanly'), {});
@@ -1159,11 +1159,11 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       assert.equal(parsed.totalTokens, 1670);
     });
 
-    it('RemoteSwarmWorker pre-claim auth guard pauses polling without claiming or failing tasks when unauthenticated', async () => {
+    it('RemoteSwarmRunner pre-claim auth guard pauses polling without claiming or failing tasks when unauthenticated', async () => {
       let execCalls = 0;
-      const worker = new RemoteSwarmWorker({
+      const worker = new RemoteSwarmRunner({
         coordinatorUrl: 'http://127.0.0.1:8484',
-        workerId: 'guard-test-worker',
+        runnerId: 'guard-test-worker',
         execFileFn: async (file, args) => {
           execCalls++;
           if (file === 'agy' && args.includes('models')) {
@@ -1198,7 +1198,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         defaultDispatchModel: 'claude-sonnet-5-5',
       });
-      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      const coordinator = new Coordinator({ configStore: store });
 
       // An omitted model must use the default model's pool (claude), whose built-in policy disables dispatch
       const omitted = coordinator.evaluateEligibility({});
@@ -1228,7 +1228,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
         },
       });
-      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      const coordinator = new Coordinator({ configStore: store });
       coordinator.onQuotaUpdated([
         {
           poolId: 'gemini-flash',
@@ -1349,7 +1349,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           },
         });
 
-        const coordinator = new OrchestratorCoordinator({ configStore: store, sentryState });
+        const coordinator = new Coordinator({ configStore: store, sentryState });
 
         // A stale 80% is most wrong right after a reset, so it must not authorise dispatch.
         assert.equal(coordinator.getActivePools().length, 0);
@@ -1361,8 +1361,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
 
     it('sanitises a repository name containing a colon or at-sign into the derived repository id', async () => {
       const { dir, cleanup } = makeTempDir('coord_repo_id_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), { orchestratorEnabled: true });
-      const coordinator = new OrchestratorCoordinator({ configStore: store });
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const coordinator = new Coordinator({ configStore: store });
       coordinator.onQuotaUpdated([
         {
           poolId: 'gemini-flash',
@@ -1400,8 +1400,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const queue = new TaskQueue(db);
 
         // Registered with a docker-only scope.
-        queue.registerWorkerHeartbeat({
-          workerId: 'runner-scoped',
+        queue.registerRunnerHeartbeat({
+          runnerId: 'runner-scoped',
           name: 'scoped',
           labels: ['docker'],
           repositories: [],
@@ -1416,10 +1416,10 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         });
 
         // Declaring the extra label at poll time must not widen the registration.
-        const claimed = queue.claimNext({ workerId: 'runner-scoped', labels: ['linux'] });
+        const claimed = queue.claimNext({ runnerId: 'runner-scoped', labels: ['linux'] });
         assert.equal(claimed, null);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
-        assert.deepEqual(queue.getWorker('runner-scoped')?.labels, ['docker']);
+        assert.deepEqual(queue.getRunner('runner-scoped')?.labels, ['docker']);
       } finally {
         db.close();
         cleanup();
@@ -1438,23 +1438,23 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           model: 'gemini-4-argon',
         });
 
-        const claimed = queue.claimNext({ workerId: 'runner-1' });
+        const claimed = queue.claimNext({ runnerId: 'runner-1' });
         assert.equal(claimed?.id, task.id);
         assert.equal(claimed?.status, 'claimed');
 
         // Revoking the runner mid-flight returns the task to the queue.
-        assert.equal(queue.revokeWorker('runner-1'), true);
+        assert.equal(queue.revokeRunner('runner-1'), true);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
-        assert.equal(queue.getTask(task.id)?.workerId, undefined);
+        assert.equal(queue.getTask(task.id)?.runnerId, undefined);
 
         // The still-running runner's heartbeat must not flip the task back to executing.
         const result = queue.updateTaskStatus(task.id, {
           status: 'executing',
-          workerId: 'runner-1',
+          runnerId: 'runner-1',
         });
         assert.equal(result?.applied, false);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
-        assert.equal(queue.getTask(task.id)?.workerId, undefined);
+        assert.equal(queue.getTask(task.id)?.runnerId, undefined);
       } finally {
         db.close();
         cleanup();
@@ -1472,11 +1472,11 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           prompt: 'Review the current discord bot modals',
           model: 'claude-sonnet-5-5',
         });
-        queue.claimNext({ workerId: 'runner-1' });
+        queue.claimNext({ runnerId: 'runner-1' });
 
         const result = queue.updateTaskStatus(task.id, {
           status: 'no_changes',
-          workerId: 'runner-1',
+          runnerId: 'runner-1',
           branchName: 'antigravity/task-abc-review-the-modals',
         });
         assert.equal(result?.applied, true);
@@ -1489,7 +1489,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         // Terminal means closed: a later patch must be refused.
         const later = queue.updateTaskStatus(task.id, {
           status: 'completed',
-          workerId: 'runner-1',
+          runnerId: 'runner-1',
         });
         assert.equal(later?.applied, false);
         assert.equal(queue.getTask(task.id)?.status, 'no_changes');
@@ -1510,17 +1510,17 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           prompt: 'Foreign runner guard',
           model: 'gemini-4-argon',
         });
-        const claimed = queue.claimNext({ workerId: 'runner-owner' });
+        const claimed = queue.claimNext({ runnerId: 'runner-owner' });
         assert.equal(claimed?.status, 'claimed');
 
         // A foreign runner cannot transition a task owned by another runner.
         const foreign = queue.updateTaskStatus(task.id, {
           status: 'executing',
-          workerId: 'runner-intruder',
+          runnerId: 'runner-intruder',
         });
         assert.equal(foreign?.applied, false);
         assert.equal(queue.getTask(task.id)?.status, 'claimed');
-        assert.equal(queue.getTask(task.id)?.workerId, 'runner-owner');
+        assert.equal(queue.getTask(task.id)?.runnerId, 'runner-owner');
 
         // A queued task may never be taken straight to an active state.
         const queued = queue.enqueue({
@@ -1530,16 +1530,16 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         });
         const takeover = queue.updateTaskStatus(queued.id, {
           status: 'executing',
-          workerId: 'runner-intruder',
+          runnerId: 'runner-intruder',
         });
         assert.equal(takeover?.applied, false);
         assert.equal(queue.getTask(queued.id)?.status, 'queued');
-        assert.equal(queue.getTask(queued.id)?.workerId, undefined);
+        assert.equal(queue.getTask(queued.id)?.runnerId, undefined);
 
         // The owning runner may still advance its own task.
         const owned = queue.updateTaskStatus(task.id, {
           status: 'executing',
-          workerId: 'runner-owner',
+          runnerId: 'runner-owner',
         });
         assert.equal(owned?.applied, true);
         assert.equal(owned?.task.status, 'executing');
@@ -1560,7 +1560,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           prompt: 'Reap duration',
           model: 'gemini-4-argon',
         });
-        queue.claimNext({ workerId: 'runner-dead' });
+        queue.claimNext({ runnerId: 'runner-dead' });
 
         const nowMs = Date.now();
         db.getRawDb()
@@ -1583,7 +1583,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           prompt: 'Reap fallback',
           model: 'gemini-4-argon',
         });
-        queue.claimNext({ workerId: 'runner-dead-2' });
+        queue.claimNext({ runnerId: 'runner-dead-2' });
         db.getRawDb()
           .prepare('UPDATE swarm_tasks SET claimed_at = NULL, heartbeat_at = ? WHERE id = ?')
           .run(new Date(nowMs - 20_000).toISOString(), fallback.id);
@@ -1608,8 +1608,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           prompt: 'Reap offline',
           model: 'gemini-4-argon',
         });
-        queue.claimNext({ workerId: 'runner-dead' });
-        assert.equal(queue.getWorker('runner-dead')?.status, 'busy');
+        queue.claimNext({ runnerId: 'runner-dead' });
+        assert.equal(queue.getRunner('runner-dead')?.status, 'busy');
 
         const nowMs = Date.now();
         const staleBeat = new Date(nowMs - 20_000).toISOString();
@@ -1617,12 +1617,12 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           .prepare('UPDATE swarm_tasks SET claimed_at = ?, heartbeat_at = ? WHERE id = ?')
           .run(staleBeat, staleBeat, task.id);
         db.getRawDb()
-          .prepare('UPDATE swarm_workers SET last_seen_at = ? WHERE worker_id = ?')
+          .prepare('UPDATE swarm_runners SET last_seen_at = ? WHERE runner_id = ?')
           .run(staleBeat, 'runner-dead');
 
         const reaped = queue.reapStaleClaims(5_000, nowMs);
         assert.equal(reaped.length, 1);
-        assert.equal(queue.getWorker('runner-dead')?.status, 'offline');
+        assert.equal(queue.getRunner('runner-dead')?.status, 'offline');
       } finally {
         db.close();
         cleanup();
@@ -1640,7 +1640,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           const reg = queue.createRegistrationToken({ nameHint: `runner-${i}` });
           queue.exchangeRegistrationToken({
             registrationToken: reg.registrationToken,
-            workerId: `worker-${i}`,
+            runnerId: `worker-${i}`,
           });
         }
 
@@ -1746,78 +1746,78 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       }
     });
   });
-  describe('6. Worker GitHub Credential Preflight', () => {
+  describe('6. Runner GitHub Credential Preflight', () => {
     it('refuses to start when GITHUB_TOKEN is absent', () => {
-      assert.throws(() => assertWorkerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
+      assert.throws(() => assertRunnerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
     });
 
     it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
-      assert.throws(() => assertWorkerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
+      assert.throws(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
     });
 
     it('names the compose environment: trap, which is how a token gets lost', () => {
       assert.throws(
-        () => assertWorkerGitCredentials(['OtterBoops/agylity'], {}),
+        () => assertRunnerGitCredentials(['OtterBoops/agylity'], {}),
         /environment: in compose\.yaml/
       );
     });
 
     it('accepts a real token', () => {
-      assert.doesNotThrow(() => assertWorkerGitCredentials([], { GITHUB_TOKEN: 'ghp_abc123' }));
+      assert.doesNotThrow(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: 'ghp_abc123' }));
     });
 
     it('allows an explicit opt-out for non-GitHub remotes', () => {
-      assert.doesNotThrow(() => assertWorkerGitCredentials([], { ALLOW_TOKENLESS_WORKER: 'true' }));
+      assert.doesNotThrow(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'true' }));
     });
 
     it('does not let the opt-out be enabled by a truthy-but-wrong value', () => {
-      assert.throws(() => assertWorkerGitCredentials([], { ALLOW_TOKENLESS_WORKER: 'yes' }));
+      assert.throws(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'yes' }));
     });
 
     it('blocks start() before any registration or poll happens', async () => {
       const savedToken = process.env.GITHUB_TOKEN;
-      const savedOptOut = process.env.ALLOW_TOKENLESS_WORKER;
+      const savedOptOut = process.env.ALLOW_TOKENLESS_RUNNER;
       delete process.env.GITHUB_TOKEN;
-      delete process.env.ALLOW_TOKENLESS_WORKER;
+      delete process.env.ALLOW_TOKENLESS_RUNNER;
       try {
-        const worker = new RemoteSwarmWorker({
+        const worker = new RemoteSwarmRunner({
           coordinatorUrl: 'http://127.0.0.1:1',
-          workerId: 'runner-no-token',
+          runnerId: 'runner-no-token',
           sharedSecret: 'swarm-secret-token-999',
         });
         await assert.rejects(() => worker.start(), /GITHUB_TOKEN is not set/);
       } finally {
         if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
         else process.env.GITHUB_TOKEN = savedToken;
-        if (savedOptOut === undefined) delete process.env.ALLOW_TOKENLESS_WORKER;
-        else process.env.ALLOW_TOKENLESS_WORKER = savedOptOut;
+        if (savedOptOut === undefined) delete process.env.ALLOW_TOKENLESS_RUNNER;
+        else process.env.ALLOW_TOKENLESS_RUNNER = savedOptOut;
       }
     });
   });
-  describe('7. Worker Identity Stability & List Hygiene', () => {
+  describe('7. Runner Identity Stability & List Hygiene', () => {
     it('derives the worker id from the configured name, not the container hostname', () => {
-      const w = new RemoteSwarmWorker({
+      const w = new RemoteSwarmRunner({
         coordinatorUrl: 'http://127.0.0.1:1',
-        workerName: 'worker-homelab',
+        runnerName: 'worker-homelab',
       });
       // os.hostname() is the container id, so it changes on every recreate.
-      assert.equal(w.getWorkerId(), 'worker-homelab');
-      assert.ok(!w.getWorkerId().startsWith('runner-'));
+      assert.equal(w.getRunnerId(), 'worker-homelab');
+      assert.ok(!w.getRunnerId().startsWith('runner-'));
     });
 
     it('gives two recreations of the same configured worker the same id', () => {
-      const a = new RemoteSwarmWorker({ coordinatorUrl: 'http://127.0.0.1:1', workerName: 'w1' });
-      const b = new RemoteSwarmWorker({ coordinatorUrl: 'http://127.0.0.1:1', workerName: 'w1' });
-      assert.equal(a.getWorkerId(), b.getWorkerId());
+      const a = new RemoteSwarmRunner({ coordinatorUrl: 'http://127.0.0.1:1', runnerName: 'w1' });
+      const b = new RemoteSwarmRunner({ coordinatorUrl: 'http://127.0.0.1:1', runnerName: 'w1' });
+      assert.equal(a.getRunnerId(), b.getRunnerId());
     });
 
     it('still honours an explicit worker id over the name', () => {
-      const w = new RemoteSwarmWorker({
+      const w = new RemoteSwarmRunner({
         coordinatorUrl: 'http://127.0.0.1:1',
-        workerId: 'explicit-id',
-        workerName: 'worker-homelab',
+        runnerId: 'explicit-id',
+        runnerName: 'worker-homelab',
       });
-      assert.equal(w.getWorkerId(), 'explicit-id');
+      assert.equal(w.getRunnerId(), 'explicit-id');
     });
 
     it('prunes offline workers past the grace period, keeping live ones', () => {
@@ -1825,24 +1825,24 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        queue.registerWorkerHeartbeat({ workerId: 'live-idle', name: 'live-idle', status: 'idle' });
-        queue.registerWorkerHeartbeat({ workerId: 'live-busy', name: 'live-busy', status: 'busy' });
+        queue.registerRunnerHeartbeat({ runnerId: 'live-idle', name: 'live-idle', status: 'idle' });
+        queue.registerRunnerHeartbeat({ runnerId: 'live-busy', name: 'live-busy', status: 'busy' });
         for (let i = 0; i < 30; i++) {
-          queue.registerWorkerHeartbeat({
-            workerId: `dead-${i}`,
+          queue.registerRunnerHeartbeat({
+            runnerId: `dead-${i}`,
             name: `dead-${i}`,
             status: 'offline',
           });
         }
         // Age everything well past the grace period.
         const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-        db.getRawDb().prepare('UPDATE swarm_workers SET last_seen_at = ?').run(stale);
+        db.getRawDb().prepare('UPDATE swarm_runners SET last_seen_at = ?').run(stale);
 
-        queue.pruneOldWorkers();
+        queue.pruneOldRunners();
         assert.deepEqual(
           queue
-            .listWorkers()
-            .map((w) => w.workerId)
+            .listRunners()
+            .map((w) => w.runnerId)
             .sort(),
           ['live-busy', 'live-idle']
         );
@@ -1856,16 +1856,16 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        queue.registerWorkerHeartbeat({
-          workerId: 'dead-now',
+        queue.registerRunnerHeartbeat({
+          runnerId: 'dead-now',
           name: 'dead-now',
           status: 'offline',
         });
         // The reaper marks a worker offline the moment it goes quiet; that transition must be
         // observable rather than deleted in the same cycle.
-        queue.pruneOldWorkers();
-        assert.equal(queue.listWorkers().length, 1);
-        assert.equal(queue.listWorkers()[0]?.status, 'offline');
+        queue.pruneOldRunners();
+        assert.equal(queue.listRunners().length, 1);
+        assert.equal(queue.listRunners()[0]?.status, 'offline');
       } finally {
         cleanup();
       }
@@ -1876,21 +1876,21 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        queue.registerWorkerHeartbeat({ workerId: 'live-1', name: 'live-1', status: 'idle' });
+        queue.registerRunnerHeartbeat({ runnerId: 'live-1', name: 'live-1', status: 'idle' });
         for (let i = 0; i < 5; i++) {
-          queue.registerWorkerHeartbeat({
-            workerId: `dead-${i}`,
+          queue.registerRunnerHeartbeat({
+            runnerId: `dead-${i}`,
             name: `dead-${i}`,
             status: 'offline',
           });
         }
         const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-        db.getRawDb().prepare('UPDATE swarm_workers SET last_seen_at = ?').run(stale);
-        queue.pruneOldWorkers();
-        queue.pruneOldWorkers();
-        queue.pruneOldWorkers();
+        db.getRawDb().prepare('UPDATE swarm_runners SET last_seen_at = ?').run(stale);
+        queue.pruneOldRunners();
+        queue.pruneOldRunners();
+        queue.pruneOldRunners();
         assert.deepEqual(
-          queue.listWorkers().map((w) => w.workerId),
+          queue.listRunners().map((w) => w.runnerId),
           ['live-1']
         );
       } finally {
@@ -1949,7 +1949,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const configStore = new ConfigStore(db, {
-          orchestratorEnabled: true,
+          coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
@@ -1966,7 +1966,7 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
             },
           ],
         });
-        const coordinator = new OrchestratorCoordinator({ configStore });
+        const coordinator = new Coordinator({ configStore });
 
         const st = coordinator.queue.createStandingTask({
           title: 'Claude Pre-Reset Burn',
@@ -2033,14 +2033,14 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const configStore = new ConfigStore(db, {
-          orchestratorEnabled: true,
+          coordinatorEnabled: true,
           poolPolicies: {
             claude: { dispatchEnabled: false, alertsEnabled: true },
             'gemini-argon': { dispatchEnabled: true, alertsEnabled: true },
             'gemini-flash': { dispatchEnabled: true, alertsEnabled: true },
           },
         });
-        const coordinator = new OrchestratorCoordinator({ configStore });
+        const coordinator = new Coordinator({ configStore });
 
         coordinator.queue.createStandingTask({
           title: 'Claude Burn',
@@ -2206,7 +2206,11 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
         const res = await executor.execute(task);
         assert.equal(res.success, true);
         assert.equal(res.noChanges, true);
-        assert.ok(res.output.includes('[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only'));
+        assert.ok(
+          res.output.includes(
+            '[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only'
+          )
+        );
         assert.ok(res.output.includes('src/auth.ts'));
 
         // Branch was deleted and no git push occurred
