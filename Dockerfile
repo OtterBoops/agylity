@@ -39,10 +39,10 @@ COPY frontend/ ./frontend/
 RUN npm run build
 
 # ------------------------------------------------------------------------------
-# Stage 3: Swarm Runner Runtime (Target: worker -> ghcr.io/otterboops/agylity-worker)
+# Stage 3: Swarm Runner Runtime (Target: runner -> ghcr.io/otterboops/agylity-runner)
 # Includes git, openssh-client, curl, gh CLI, and agy CLI
 # ------------------------------------------------------------------------------
-FROM node:26-slim AS worker
+FROM node:26-slim AS runner
 
 WORKDIR /app
 
@@ -79,7 +79,7 @@ ENV NODE_ENV=production \
     RUNNER_STATE_PATH=/data/runner.json
 
 ENTRYPOINT ["/usr/local/bin/agylity-entrypoint.sh"]
-CMD ["node", "--no-warnings", "dist/worker-cli.js"]
+CMD ["node", "--no-warnings", "dist/runner-cli.js"]
 
 # ------------------------------------------------------------------------------
 # Stage 4: Coordinator & Sentry Runtime (Default Target: coordinator -> ghcr.io/otterboops/agylity)

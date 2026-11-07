@@ -17,7 +17,7 @@ interface ConnectionInspectorModalProps {
   onClose: () => void;
   lastProbeSource?: string;
   lastProbeAt?: string;
-  orchestratorEnabled?: boolean;
+  coordinatorEnabled?: boolean;
   minHeadroomPercent?: number;
 }
 
@@ -26,7 +26,7 @@ export const ConnectionInspectorModal = ({
   onClose,
   lastProbeSource,
   lastProbeAt,
-  orchestratorEnabled = false,
+  coordinatorEnabled = false,
   minHeadroomPercent = 10,
 }: ConnectionInspectorModalProps) => {
   const [timeFormat] = useTimeFormat();
@@ -78,7 +78,7 @@ export const ConnectionInspectorModal = ({
       appVersion: APP_VERSION,
       probeSource: lastProbeSource,
       lastProbeAt: lastProbeAt || 'N/A',
-      orchestratorEnabled,
+      coordinatorEnabled,
       minHeadroomPercent,
       url: window.location.href,
       timestamp: new Date().toISOString(),
@@ -154,9 +154,9 @@ export const ConnectionInspectorModal = ({
           </div>
 
           <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Autonomous Orchestrator</span>
+            <span class="text-pine-muted">Autonomous Coordinator</span>
             <div class="mt-0.5 font-medium text-pine-text">
-              {orchestratorEnabled ? (
+              {coordinatorEnabled ? (
                 <span class="font-semibold text-pine-foam">Enabled</span>
               ) : (
                 <span class="text-pine-muted">Disabled</span>
@@ -190,7 +190,7 @@ export const ConnectionInspectorModal = ({
         <div class="rounded-lg border border-pine-highlight bg-pine-overlay/20 p-3 text-xs text-pine-subtle">
           <p>
             Agylity communicates with Google Antigravity Language Server RPC to inspect pool quotas
-            and orchestrates autonomous Git tasks strictly within your safe quota budget.
+            and coordinates autonomous Git tasks strictly within your safe quota budget.
           </p>
         </div>
       </div>

@@ -5,7 +5,7 @@
 
 services:
   # ----------------------------------------------------------------------------
-  # Control Plane: Quota Sentry, Alerting Engine & Swarm Orchestrator
+  # Control Plane: Quota Sentry, Alerting Engine & Swarm Coordinator
   # ----------------------------------------------------------------------------
   agylity:
     build:
@@ -30,7 +30,7 @@ services:
       - WEB_UI_HOST=0.0.0.0
       # Required: the control plane refuses to start on a non-loopback host without a token.
       - WEB_UI_AUTH_TOKEN=${WEB_UI_AUTH_TOKEN}
-      - ORCHESTRATOR_ENABLED=true
+      - COORDINATOR_ENABLED=true
       - NOTIFICATION_CHANNELS=discord,webhook
       - DISCORD_TOKEN=${DISCORD_TOKEN}
       - DISCORD_NOTIFICATION_CHANNEL_ID=${DISCORD_NOTIFICATION_CHANNEL_ID}
@@ -53,30 +53,30 @@ services:
         max-file: '3'
 
   # ----------------------------------------------------------------------------
-  # Ephemeral Swarm Worker: Headless Task Execution Runtime
+  # Ephemeral Swarm Runner: Headless Task Execution Runtime
   # ----------------------------------------------------------------------------
-  agylity-worker:
+  agylity-runner:
     build:
       context: .
       dockerfile: Dockerfile
-      target: worker
-    image: ghcr.io/otterboops/agylity-worker:latest
-    container_name: agylity-worker
+      target: runner
+    image: ghcr.io/otterboops/agylity-runner:latest
+    container_name: agylity-runner
     restart: unless-stopped
 
     # Shared Docker named volume for Antigravity CLI credentials:
     # Authenticate once via: docker exec -it agylity agy
     volumes:
       - agylity-gemini:/home/node/.gemini
-      - agylity-worker-data:/data
+      - agylity-runner-data:/data
       # Optional: Uncomment if you want to cache git clones between tasks instead of cloning fresh.
-      # - worker-repos:/repos
+      # - runner-repos:/repos
 
     environment:
       - NODE_ENV=production
       - COORDINATOR_URL=http://agylity:8484
       - RUNNER_STATE_PATH=/data/runner.json
-      - WORKER_NAME=agylity-worker-1
+      - RUNNER_NAME=agylity-runner-1
       - RUNNER_TOKEN=${RUNNER_TOKEN}
       # Git identity & GitHub token for zero-mount authenticated git clone/push
       - GITHUB_TOKEN=${GITHUB_TOKEN}
@@ -98,9 +98,9 @@ services:
 volumes:
   # High-performance Docker-managed volume for SQLite database (agylity.db) & alert state
   agylity-data:
-  # Shared credential volume for agy CLI across coordinator and worker
+  # Shared credential volume for agy CLI across coordinator and runner
   agylity-gemini:
-  # Persistent volume for worker runner registration token & runner.json state
-  agylity-worker-data:
-  # Optional cache volume for git repos across worker task executions
-  # worker-repos:
+  # Persistent volume for runner registration token & runner.json state
+  agylity-runner-data:
+  # Optional cache volume for git repos across runner task executions
+  # runner-repos:

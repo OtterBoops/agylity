@@ -15,7 +15,7 @@ interface TopBarProps {
   subtitle?: string;
   isRefreshing: boolean;
   refreshCooldown: number;
-  orchestratorEnabled?: boolean;
+  coordinatorEnabled?: boolean;
   remainingCredits?: number | null;
   theme: ThemeChoice;
   onThemeChange: (theme: ThemeChoice) => void;

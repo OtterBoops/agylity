@@ -2,7 +2,7 @@
 name: agylity
 description: >-
   Authoritative architecture, language server RPC protocols, ToS compliance guardrails,
-  and operational use cases for Agylity (autonomous Antigravity quota sentry & swarm task orchestrator).
+  and operational use cases for Agylity (autonomous Antigravity quota sentry & swarm task coordinator).
   Trigger whenever developing, debugging, extending, or automating Antigravity, quota monitoring, or agy tasks.
 ---
 
@@ -22,7 +22,7 @@ description: >-
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
 - **Web UI & Control-Plane Security & Lock Invariant:**
-  - `WEB_UI_AUTH_TOKEN`: When configured, control-plane endpoints enforce constant-time Bearer token verification (`crypto.timingSafeEqual`) and anti-brute-force sliding-window rate limiting (HTTP 429 after 10 failed attempts within 60s). Runner endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`) use dedicated runner authentication tokens.
+  - `WEB_UI_AUTH_TOKEN`: When configured, control-plane endpoints enforce constant-time Bearer token verification (`crypto.timingSafeEqual`) and anti-brute-force sliding-window rate limiting (HTTP 429 after 10 failed attempts within 60s). Runner endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/runners/register`) use dedicated runner authentication tokens.
   - Zero-DOM-Leak Lock Screen: Unauthenticated requests or locked sessions unmount the application shell completely, rendering a dedicated full-screen `<ControlPlaneGate />`. Zero private views, sidebars, or settings forms are exposed in the DOM.
 - **Application-Native IP Filtering & Anti-Spoofing (CWE-290):**
   - `ALLOWED_IP_RANGES`: Zero-dependency IPv4/IPv6 and CIDR allowlist engine. Dynamically active only when entries exist.
@@ -34,10 +34,10 @@ description: >-
   - Discord and generic webhooks render clean rich embeds without duplicating text content (`delete outgoingPayload.content`).
   - Intermediate runner progress heartbeats (`executing`, polling) are suppressed from webhooks, delivering discrete initial dispatch and final completion embeds with elapsed duration metrics.
 - **Self-Contained Container Swarm Architecture:**
-  - **Baked Container Binaries:** Coordinator and worker images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
+  - **Baked Container Binaries:** Coordinator and runner images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
   - **Coordinator Isolation:** The coordinator operates as a control plane with baked telemetry binaries and requires only its persistent data volume (`agylity-data:/app/data`). It does not run task loops, git commands, or agent processes, and requires zero runner or host credential mounts.
-  - **Worker as an Extra Container:** On container hosts (e.g. homelab Docker / Arcane), the worker is simply an extra container (`agylity-worker:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `WORKER_SHARED_SECRET` in `.env`.
-  - **Zero Host Credential Mounts:** Workers execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never bind-mount user host credentials (`~/.gemini` or host `~/.gitconfig`) into containers.
+  - **Runner as an Extra Container:** On container hosts (e.g. homelab Docker / Arcane), the runner is simply an extra container (`agylity-runner:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `RUNNER_SHARED_SECRET` in `.env`.
+  - **Zero Host Credential Mounts:** Runners execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never bind-mount user host credentials (`~/.gemini` or host `~/.gitconfig`) into containers.
   - **Host Diagnostics:** Probing host processes and listening ports (e.g. sniffing local IDE Connect-RPC tokens/ports on developer workstations) is supported for host/desktop runners, but containers rely on explicit environment variables and internal network resolution.
   - **Lightweight Healthcheck:** Container healthchecks must strictly use native `curl -fsS http://127.0.0.1:8484/api/health`. Never spawn Node.js or Python runtime processes inside container healthchecks.
 - **Responsive Dashboard Architecture:**
@@ -134,7 +134,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ### Use Case 3: Autonomous Task Dispatching via Official CLI
 
-- Worker checks out an isolated continuation branch:
+- Runner checks out an isolated continuation branch:
   `git checkout -b antigravity/task-<id>-<slug>`
 - Dispatches prompt via `agy`:
   ```bash
@@ -146,26 +146,26 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ---
 
-## 5. Swarm & Task Orchestrator Architecture
+## 5. Swarm & Task Coordinator Architecture
 
-Agylity implements a pull-based worker swarm designed for zero inbound firewall ports:
+Agylity implements a pull-based runner swarm designed for zero inbound firewall ports:
 
 ```
 Coordinator (Homelab / Cloud)
   ├── SQLite Task Queue (P0 Urgent, P1 Scheduled, P2 Quota-Burn)
   ├── Discord Bot (/dispatch modal & /quota commands)
-  ├── Web Control Plane (/api/dispatch & /api/workers)
-  └── Runner API (/api/tasks/poll, /api/workers/register)
+  ├── Web Control Plane (/api/dispatch & /api/runners)
+  └── Runner API (/api/tasks/poll, /api/runners/register)
         ▲
         │ (Outbound HTTPS Long-Poll via ky)
-        ├── Container Runner (agylity-worker:latest) -> Unattended tasks
-        └── Host / Desktop Runner (dist/worker-cli.js) -> Supervised desktop tasks
+        ├── Container Runner (agylity-runner:latest) -> Unattended tasks
+        └── Host / Desktop Runner (dist/runner-cli.js) -> Supervised desktop tasks
 ```
 
 ### 1. Runner Token Lifecycle
 
 - **Registration Token (`agyr_reg_...`)**: Short-lived (1-hour expiration) token generated via Web UI or API.
-- **Exchange**: On first boot, worker POSTs to `/api/workers/register` exchanging the registration token for a permanent runner credential (`agyr_run_...`).
+- **Exchange**: On first boot, runner POSTs to `/api/runners/register` exchanging the registration token for a permanent runner credential (`agyr_run_...`).
 - **Persistence**: Runner credential persisted to `runner.json` (or `/data/runner.json` in containers via volume mount).
 
 ### 2. Isolated Git Checkout & Subprocess Credential Hygiene
@@ -216,8 +216,8 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
 - **Key Tables & State:**
   - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
-  - `swarm_tasks`: `(id TEXT PRIMARY KEY, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, schedule_mode, required_labels_json, model, pool_family, effort, allow_overage, push_branch, auto_create_pr, pr_url, expires_at, standing_task_id, verify_command, status, worker_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. There is no `title` column.
-  - `swarm_workers`: `(worker_id TEXT PRIMARY KEY, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)` - registered runner nodes and heartbeat telemetry. Labels and repositories are JSON columns, not `labels`/`worker_mode`.
+  - `swarm_tasks`: `(id TEXT PRIMARY KEY, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, schedule_mode, required_labels_json, model, pool_family, effort, allow_overage, push_branch, auto_create_pr, pr_url, expires_at, standing_task_id, verify_command, status, runner_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. There is no `title` column.
+  - `swarm_runners`: `(runner_id TEXT PRIMARY KEY, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)` - registered runner nodes and heartbeat telemetry. Labels and repositories are JSON columns, not `labels`/`worker_mode`.
   - `swarm_runner_registrations`: one row per one-time registration token; consumed and expired rows are pruned by `pruneRegistrationTokens()`.
   - `standing_tasks`: recurring task definitions triggered by the pre-reset window.
   - Legacy leftovers from an older schema (`dispatches`, and the `dispatch_id`, `priority`, `priority_rank`, `worker_mode` columns) are no longer written and are intentionally not dropped.

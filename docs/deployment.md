@@ -41,7 +41,7 @@ Access the web dashboard at `http://localhost:8484` (when `WEB_UI_ENABLED=true`)
 For homelabs managed via GitOps, Portainer, or Dockge:
 
 1. Store secrets in your container management stack or local environment file.
-2. In your compose stack, add the coordinator and — if you want unattended execution — the worker. They are **separate images**, so a coordinator-only stack cannot claim tasks:
+2. In your compose stack, add the coordinator and — if you want unattended execution — the runner. They are **separate images**, so a coordinator-only stack cannot claim tasks:
    ```yaml
    services:
      agylity:
@@ -55,22 +55,22 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        env_file:
          - /opt/agylity/.env
 
-     agylity-worker:
-       image: ghcr.io/otterboops/agylity-worker:latest
-       container_name: agylity-worker
+     agylity-runner:
+       image: ghcr.io/otterboops/agylity-runner:latest
+       container_name: agylity-runner
        restart: unless-stopped
        env_file:
          - /opt/agylity/.env
        environment:
-         # The worker pushes branches, so the token must be named here as well as in .env —
+         # The runner pushes branches, so the token must be named here as well as in .env —
          # `env_file` alone does not put it in the container environment.
          - GITHUB_TOKEN=${GITHUB_TOKEN}
        volumes:
-         - agylity-worker-data:/app/data
+         - agylity-runner-data:/app/data
 
    volumes:
      agylity-data:
-     agylity-worker-data:
+     agylity-runner-data:
    ```
 3. Deploy the stack.
 

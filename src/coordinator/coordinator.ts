@@ -26,11 +26,11 @@ import {
   type ExchangeRegistrationTokenInput,
   type RunnerRegistrationTokenResult,
   type RunnerSystemInfo,
+  type SwarmRunnerRecord,
   type SwarmTask,
-  type SwarmWorkerRecord,
   type TaskStatusPatch,
 } from './queue.js';
-import { buildContinuationBranchName } from './worker.js';
+import { buildContinuationBranchName } from './runner.js';
 
 export interface DispatchTaskRequest {
   repositoryId?: string;
@@ -68,7 +68,7 @@ export interface DispatchTaskResponse {
   output?: string;
   error?: string;
   code?:
-    | 'ORCHESTRATOR_DISABLED'
+    | 'COORDINATOR_DISABLED'
     | 'OVERAGE_PROTECTION_TRIGGERED'
     | 'QUOTA_BURN_QUEUED'
     | 'TELEMETRY_UNAVAILABLE'
@@ -78,23 +78,23 @@ export interface DispatchTaskResponse {
   durationMs?: number;
 }
 
-export interface WorkerPollRequest {
-  workerId: string;
-  workerName?: string;
+export interface RunnerPollRequest {
+  runnerId: string;
+  runnerName?: string;
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
   timeoutMs?: number;
 }
 
-export interface OrchestratorCoordinatorOptions {
+export interface CoordinatorOptions {
   configStore: ConfigStore;
   sentryState?: SentryStateManager;
   notifier?: Notifier;
   logger?: Logger;
 }
 
-export class OrchestratorCoordinator {
+export class Coordinator {
   public readonly queue: TaskQueue;
   private readonly configStore: ConfigStore;
   private readonly sentryState?: SentryStateManager;
@@ -104,12 +104,12 @@ export class OrchestratorCoordinator {
   private latestSnapshots: QuotaSnapshot[] = [];
   private lastSnapshotAt = 0;
 
-  constructor(options: OrchestratorCoordinatorOptions) {
+  constructor(options: CoordinatorOptions) {
     this.configStore = options.configStore;
     this.queue = new TaskQueue(options.configStore.getDatabase());
     this.sentryState = options.sentryState;
     this.notifier = options.notifier;
-    this.log = options.logger ?? logger.child('orchestrator');
+    this.log = options.logger ?? logger.child('coordinator');
     this.bus.setMaxListeners(100);
   }
 
@@ -136,7 +136,7 @@ export class OrchestratorCoordinator {
   public reapStaleClaims(): SwarmTask[] {
     const expiredTasks = this.queue.reapStaleClaims();
     if (expiredTasks.length > 0) {
-      this.log.info('Reaped %d expired worker task lease(s)', expiredTasks.length);
+      this.log.info('Reaped %d expired runner task lease(s)', expiredTasks.length);
       for (const t of expiredTasks) {
         void this.notifier?.notifyDispatchStatus({
           taskId: t.id,
@@ -144,7 +144,7 @@ export class OrchestratorCoordinator {
           status: 'failed',
           durationMs: t.durationMs,
           createdAt: t.createdAt,
-          error: t.error || 'Worker heartbeat lease expired',
+          error: t.error || 'Runner heartbeat lease expired',
         });
       }
     }
@@ -167,7 +167,7 @@ export class OrchestratorCoordinator {
     }
 
     const resolved = this.configStore.resolveConfig();
-    if (!resolved.orchestratorEnabled) {
+    if (!resolved.coordinatorEnabled) {
       return [];
     }
 
@@ -336,7 +336,7 @@ export class OrchestratorCoordinator {
       };
     }
 
-    // 1. Evaluate model & safety floor before orchestrator gate so overage blocks are caught consistently
+    // 1. Evaluate model & safety floor before coordinator gate so overage blocks are caught consistently
     const eligibility = this.evaluateEligibility({
       model: req.model,
       scheduleMode,
@@ -364,13 +364,13 @@ export class OrchestratorCoordinator {
       };
     }
 
-    // 2. Check if task orchestrator is enabled
-    if (!resolved.orchestratorEnabled) {
+    // 2. Check if coordinator is enabled
+    if (!resolved.coordinatorEnabled) {
       return {
         success: false,
         error:
-          'Task orchestrator is disabled while running in alerting-only mode. Enable orchestrator in settings or set ORCHESTRATOR_ENABLED=true.',
-        code: 'ORCHESTRATOR_DISABLED',
+          'Coordinator is disabled while running in alerting-only mode. Enable coordinator in settings or set COORDINATOR_ENABLED=true.',
+        code: 'COORDINATOR_DISABLED',
         dispatchId: `disp-${Date.now()}`,
         repo: repositoryName,
       };
@@ -548,16 +548,16 @@ export class OrchestratorCoordinator {
 
   // Exchanges a one-time registration token for a persistent runner identity and `agyr_run_...` token.
   public registerRunner(input: ExchangeRegistrationTokenInput): {
-    worker: SwarmWorkerRecord;
+    runner: SwarmRunnerRecord;
     runnerToken: string;
   } | null {
     const result = this.queue.exchangeRegistrationToken(input);
     if (result) {
       this.log.info(
         'Registered swarm runner "%s" (%s, labels=%s)',
-        result.worker.name,
-        result.worker.workerId,
-        result.worker.labels.join(',') || 'none'
+        result.runner.name,
+        result.runner.runnerId,
+        result.runner.labels.join(',') || 'none'
       );
     }
     return result;
@@ -566,12 +566,12 @@ export class OrchestratorCoordinator {
   // Authenticates an incoming runner request via its persistent `agyr_run_...` token
   public authenticateRunner(providedToken?: string): {
     authenticated: boolean;
-    worker?: SwarmWorkerRecord;
+    runner?: SwarmRunnerRecord;
     viaSharedSecret?: boolean;
     isSharedSecret?: boolean;
   } {
     const resolved = this.configStore.resolveConfig();
-    const res = this.queue.authenticateRunner(providedToken, resolved.workerSharedSecret);
+    const res = this.queue.authenticateRunner(providedToken, resolved.runnerSharedSecret);
     return {
       ...res,
       isSharedSecret: res.viaSharedSecret,
@@ -580,13 +580,13 @@ export class OrchestratorCoordinator {
 
   // Long-poll claim handler for outbound runners (`POST /api/tasks/poll`).
   public async pollForTask(
-    pollReq: WorkerPollRequest,
+    pollReq: RunnerPollRequest,
     abortSignal?: AbortSignal
   ): Promise<SwarmTask | null> {
     const tryClaim = (): SwarmTask | null => {
       return this.queue.claimNext({
-        workerId: pollReq.workerId,
-        workerName: pollReq.workerName,
+        runnerId: pollReq.runnerId,
+        runnerName: pollReq.runnerName,
         labels: pollReq.labels,
         repositories: pollReq.repositories,
         systemInfo: pollReq.systemInfo,
@@ -659,7 +659,7 @@ export class OrchestratorCoordinator {
     const result = this.queue.updateTaskStatus(taskId, patch);
     if (!result) return undefined;
 
-    // A refused update (terminal task or cross-worker patch) must not notify or emit
+    // A refused update (terminal task or cross-runner patch) must not notify or emit
     const { task: updated, applied } = result;
     if (!applied) return result;
 
@@ -705,14 +705,14 @@ export class OrchestratorCoordinator {
     return result;
   }
 
-  public listWorkers(): SwarmWorkerRecord[] {
-    return this.queue.listWorkers();
+  public listRunners(): SwarmRunnerRecord[] {
+    return this.queue.listRunners();
   }
 
-  public setWorkerEnabled(workerId: string, enabled: boolean): SwarmWorkerRecord | undefined {
-    const updated = this.queue.setWorkerEnabled(workerId, enabled);
+  public setRunnerEnabled(runnerId: string, enabled: boolean): SwarmRunnerRecord | undefined {
+    const updated = this.queue.setRunnerEnabled(runnerId, enabled);
     if (updated) {
-      this.log.info('Swarm runner "%s" (%s) enabled=%s', updated.name, workerId, String(enabled));
+      this.log.info('Swarm runner "%s" (%s) enabled=%s', updated.name, runnerId, String(enabled));
       if (enabled) {
         this.bus.emit('task:available');
       }
@@ -720,10 +720,10 @@ export class OrchestratorCoordinator {
     return updated;
   }
 
-  public revokeWorker(workerId: string): boolean {
-    const revoked = this.queue.revokeWorker(workerId);
+  public revokeRunner(runnerId: string): boolean {
+    const revoked = this.queue.revokeRunner(runnerId);
     if (revoked) {
-      this.log.info('Revoked swarm runner %s and returned any active claims to queue', workerId);
+      this.log.info('Revoked swarm runner %s and returned any active claims to queue', runnerId);
       this.bus.emit('task:available');
     }
     return revoked;

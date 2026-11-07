@@ -127,7 +127,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     }
   }, [isOpen]);
 
-  const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
+  const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const minHeadroom = config.resolved?.minDispatchHeadroomPercent ?? 10;
 
   // Determine the selected model's pool family and effective headroom
@@ -150,11 +150,11 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
 
   const handleDispatch = (e: Event) => {
     e.preventDefault();
-    if (!isOrchestratorEnabled) {
+    if (!isCoordinatorEnabled) {
       setStatus({
         type: 'error',
         message:
-          'Task orchestrator is disabled. Enable it in Settings > Orchestrator or set ORCHESTRATOR_ENABLED=true.',
+          'Task coordinator is disabled. Enable it in Settings > Coordinator or set COORDINATOR_ENABLED=true.',
       });
       return;
     }
@@ -184,7 +184,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
           setStatus({
             type: 'error',
             message:
-              data.error || 'Task orchestrator is disabled while running in alerting-only mode.',
+              data.error || 'Task coordinator is disabled while running in alerting-only mode.',
           });
           return;
         }
@@ -240,13 +240,13 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
           </button>
         </div>
 
-        {!isOrchestratorEnabled && (
+        {!isCoordinatorEnabled && (
           <div class="flex items-start gap-2.5 rounded-lg border border-pine-gold bg-pine-gold/15 p-3 text-xs font-medium text-pine-gold">
             <Icon icon={faTriangleExclamation} class="mt-0.5 size-4 shrink-0" />
             <span>
-              <strong>Orchestrator Inactive:</strong> Task orchestrator is currently disabled
-              (Agylity is operating purely as a 24/7 quota sentry). You can enable it anytime under{' '}
-              <strong>Settings &gt; Orchestrator</strong>.
+              <strong>Coordinator Inactive:</strong> Task coordinator is currently disabled (Agylity
+              is operating purely as a 24/7 quota sentry). You can enable it anytime under{' '}
+              <strong>Settings &gt; Coordinator</strong>.
             </span>
           </div>
         )}
@@ -297,7 +297,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
               type="submit"
               class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
               disabled={
-                !isOrchestratorEnabled ||
+                !isCoordinatorEnabled ||
                 isDispatching ||
                 !selectedRepo ||
                 !taskPrompt.trim() ||

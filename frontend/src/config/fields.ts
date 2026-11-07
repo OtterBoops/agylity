@@ -68,7 +68,7 @@ export const resolveModelEffort = (
   };
 };
 
-export const ORCHESTRATOR_FIELDS: FieldDef[] = [
+export const COORDINATOR_FIELDS: FieldDef[] = [
   {
     key: 'defaultDispatchModel',
     label: 'Default dispatch model',
@@ -105,7 +105,7 @@ export const ORCHESTRATOR_FIELDS: FieldDef[] = [
     hint: 'Minimum remaining pool quota required to release P2 opportunistic tasks (default: 30%).',
   },
   {
-    key: 'workerSharedSecret',
+    key: 'runnerSharedSecret',
     label: 'Fallback shared runner secret (optional)',
     type: 'password',
     colSpan: 2,

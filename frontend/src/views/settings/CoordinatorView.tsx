@@ -1,56 +1,56 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { faMinus, faNetworkWired, faPlus } from '@fortawesome/free-solid-svg-icons';
-import type { ConfigData, SwarmWorkerRecord } from '../../types';
-import { getWorkers, revokeWorker, setWorkerEnabled, updateConfig } from '../../api';
+import type { ConfigData, SwarmRunnerRecord } from '../../types';
+import { getRunners, revokeRunner, setRunnerEnabled, updateConfig } from '../../api';
 import { Icon } from '../../components/Icon';
 import { RunnerRegistrationPanel } from '../../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../../components/SwarmRunnersGrid';
 import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
 import { StandingTasksCard } from '../../components/StandingTasksCard';
 import { SettingsForm } from '../../components/SettingsForm';
-import { ORCHESTRATOR_FIELDS } from '../../config/fields';
+import { COORDINATOR_FIELDS } from '../../config/fields';
 
-interface OrchestratorViewProps {
+interface CoordinatorViewProps {
   config: ConfigData;
   onChanged: () => void;
 }
 
-export const OrchestratorView = ({ config, onChanged }: OrchestratorViewProps) => {
-  const [isTogglingOrchestrator, setIsTogglingOrchestrator] = useState(false);
-  const [workers, setWorkers] = useState<SwarmWorkerRecord[]>([]);
+export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => {
+  const [isTogglingCoordinator, setIsTogglingCoordinator] = useState(false);
+  const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
   const [showRegisterPanel, setShowRegisterPanel] = useState(false);
 
-  const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
+  const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
 
-  const refreshWorkers = useCallback(() => {
-    getWorkers().then((list) => setWorkers(list));
+  const refreshRunners = useCallback(() => {
+    getRunners().then((list) => setRunners(list));
   }, []);
 
   useEffect(() => {
-    if (!isOrchestratorEnabled) return;
-    refreshWorkers();
-    const timer = setInterval(refreshWorkers, 8000);
+    if (!isCoordinatorEnabled) return;
+    refreshRunners();
+    const timer = setInterval(refreshRunners, 8000);
     return () => clearInterval(timer);
-  }, [isOrchestratorEnabled, refreshWorkers]);
+  }, [isCoordinatorEnabled, refreshRunners]);
 
-  const handleToggleOrchestrator = async () => {
-    setIsTogglingOrchestrator(true);
+  const handleToggleCoordinator = async () => {
+    setIsTogglingCoordinator(true);
     try {
-      await updateConfig({ orchestratorEnabled: !isOrchestratorEnabled });
+      await updateConfig({ coordinatorEnabled: !isCoordinatorEnabled });
       onChanged();
     } finally {
-      setIsTogglingOrchestrator(false);
+      setIsTogglingCoordinator(false);
     }
   };
 
-  const handleToggleWorkerEnabled = async (worker: SwarmWorkerRecord) => {
-    await setWorkerEnabled(worker.workerId, !worker.enabled);
-    refreshWorkers();
+  const handleToggleRunnerEnabled = async (runner: SwarmRunnerRecord) => {
+    await setRunnerEnabled(runner.runnerId, !runner.enabled);
+    refreshRunners();
   };
 
-  const handleRevokeWorker = async (worker: SwarmWorkerRecord) => {
-    await revokeWorker(worker.workerId);
-    refreshWorkers();
+  const handleRevokeRunner = async (runner: SwarmRunnerRecord) => {
+    await revokeRunner(runner.runnerId);
+    refreshRunners();
   };
 
   const coordinatorOrigin =
@@ -66,16 +66,16 @@ export const OrchestratorView = ({ config, onChanged }: OrchestratorViewProps) =
             <div class="mb-1 flex flex-wrap items-center gap-2">
               <Icon icon={faNetworkWired} class="size-5 text-pine-iris" />
               <h3 class="text-lg font-semibold text-pine-text">
-                Task Orchestrator &amp; Swarm Runners
+                Task Coordinator &amp; Swarm Runners
               </h3>
               <span
                 class={`rounded-full border px-2.5 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${
-                  isOrchestratorEnabled
+                  isCoordinatorEnabled
                     ? 'border-pine-pine bg-pine-pine/20 text-pine-foam'
                     : 'border-pine-highlight bg-pine-overlay text-pine-subtle'
                 }`}
               >
-                {isOrchestratorEnabled ? 'Enabled' : 'Disabled'}
+                {isCoordinatorEnabled ? 'Enabled' : 'Disabled'}
               </span>
             </div>
             <p class="text-xs text-pine-subtle">
@@ -85,7 +85,7 @@ export const OrchestratorView = ({ config, onChanged }: OrchestratorViewProps) =
           </div>
 
           <div class="flex flex-wrap items-center gap-2.5">
-            {isOrchestratorEnabled && (
+            {isCoordinatorEnabled && (
               <button
                 type="button"
                 onClick={() => setShowRegisterPanel(!showRegisterPanel)}
@@ -98,47 +98,47 @@ export const OrchestratorView = ({ config, onChanged }: OrchestratorViewProps) =
 
             <button
               type="button"
-              disabled={isTogglingOrchestrator}
-              onClick={handleToggleOrchestrator}
+              disabled={isTogglingCoordinator}
+              onClick={handleToggleCoordinator}
               class={`cursor-pointer rounded-lg px-4 py-2 text-xs font-semibold whitespace-nowrap transition-colors sm:text-sm ${
-                isOrchestratorEnabled
+                isCoordinatorEnabled
                   ? 'border border-pine-love/40 bg-pine-love/15 text-pine-love hover:bg-pine-love hover:text-white'
                   : 'bg-pine-iris text-pine-base hover:opacity-90'
               }`}
             >
-              {isTogglingOrchestrator
+              {isTogglingCoordinator
                 ? 'Updating...'
-                : isOrchestratorEnabled
-                  ? 'Disable Orchestrator'
-                  : 'Enable Orchestrator'}
+                : isCoordinatorEnabled
+                  ? 'Disable Coordinator'
+                  : 'Enable Coordinator'}
             </button>
           </div>
         </div>
 
-        {isOrchestratorEnabled && showRegisterPanel && (
+        {isCoordinatorEnabled && showRegisterPanel && (
           <div class="mt-5">
             <RunnerRegistrationPanel coordinatorOrigin={coordinatorOrigin} />
           </div>
         )}
 
-        {isOrchestratorEnabled && (
+        {isCoordinatorEnabled && (
           <SwarmRunnersGrid
-            workers={workers}
-            onToggleEnabled={handleToggleWorkerEnabled}
-            onRevoke={handleRevokeWorker}
+            runners={runners}
+            onToggleEnabled={handleToggleRunnerEnabled}
+            onRevoke={handleRevokeRunner}
           />
         )}
       </div>
 
-      {isOrchestratorEnabled && <PoolPoliciesCard config={config} onSaved={onChanged} />}
+      {isCoordinatorEnabled && <PoolPoliciesCard config={config} onSaved={onChanged} />}
 
-      {isOrchestratorEnabled && <StandingTasksCard config={config} />}
+      {isCoordinatorEnabled && <StandingTasksCard config={config} />}
 
-      {isOrchestratorEnabled && (
+      {isCoordinatorEnabled && (
         <SettingsForm
           title="Model Selection &amp; Swarm Queue Parameters"
           description="Configure the explicit default dispatch model, fallback runner secret, and P2 opportunistic quota-burn thresholds."
-          fields={ORCHESTRATOR_FIELDS}
+          fields={COORDINATOR_FIELDS}
           config={config}
           onSaved={onChanged}
         />

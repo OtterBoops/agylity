@@ -39,10 +39,10 @@ import {
   handleTaskRetry,
   handleStandingTasks,
   handleStandingTaskById,
-  handleGetWorkers,
+  handleGetRunners,
   handleCreateRegistrationToken,
-  handleRegisterWorker,
-  handleManageWorkerById,
+  handleRegisterRunner,
+  handleManageRunnerById,
 } from './controllers/dispatch.js';
 
 export type { WebServerOptions };
@@ -142,10 +142,10 @@ export const clearAuthFailures = (clientIp: string): void => {
 const isControlPlaneRoute = (pathname: string): boolean => {
   if (!pathname.startsWith('/api/')) return false;
   if (pathname === '/api/health') return false;
-  // Outbound pull-worker runner endpoints (authenticated independently via runnerToken)
+  // Outbound pull-runner endpoints (authenticated independently via runnerToken)
   if (pathname === '/api/tasks/poll') return false;
   if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) return false;
-  if (pathname === '/api/workers/register') return false;
+  if (pathname === '/api/runners/register') return false;
 
   // All other API routes require WEB_UI_AUTH_TOKEN
   return true;
@@ -337,21 +337,21 @@ export const handleRequest = async (
       return handleStandingTaskById(req, res, options, pathname, method);
     }
 
-    // Registered Swarm Workers & Runner Registration Flow
-    if (pathname === '/api/workers') {
-      return handleGetWorkers(req, res, options, method);
+    // Registered Swarm Runners & Runner Registration Flow
+    if (pathname === '/api/runners') {
+      return handleGetRunners(req, res, options, method);
     }
 
-    if (pathname === '/api/workers/registration-token') {
+    if (pathname === '/api/runners/registration-token') {
       return handleCreateRegistrationToken(req, res, options, method);
     }
 
-    if (pathname === '/api/workers/register') {
-      return handleRegisterWorker(req, res, options, method);
+    if (pathname === '/api/runners/register') {
+      return handleRegisterRunner(req, res, options, method);
     }
 
-    if (pathname.startsWith('/api/workers/')) {
-      return handleManageWorkerById(req, res, options, pathname, method);
+    if (pathname.startsWith('/api/runners/')) {
+      return handleManageRunnerById(req, res, options, pathname, method);
     }
 
     // Route Guard 404

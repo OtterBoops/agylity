@@ -42,7 +42,7 @@ This document details the core architectural subsystems, Connect-RPC integration
                          +----------------------+----------------------+
                          |                                             |
              +-----------+------------+                   +------------+-----------+
-             | Headless Worker        |                   | Visible Worker         |
+             | Headless Runner        |                   | Visible Runner         |
              | (Docker on Homelab/VPS)|                   | (Workstation Terminal) |
              +------------------------+                   +------------------------+
 ```
@@ -87,7 +87,7 @@ Frontier models in Antigravity are governed by two distinct limits:
 
 > **Under NO condition shall an automated task fallback to local headless execution on the monitoring daemon host.**
 
-Continuation tasks are designed to be executed strictly on designated worker machines or homelab containers via pull-based swarm workers, never headlessly on the monitoring daemon host.
+Continuation tasks are designed to be executed strictly on designated runner machines or homelab containers via pull-based swarm runners, never headlessly on the monitoring daemon host.
 
 #### Operational Rationale:
 
@@ -131,7 +131,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 `WEB_UI_AUTH_TOKEN` is mandatory for a non-loopback `WEB_UI_HOST`: the server refuses to start without it, and only warns for a loopback bind. When configured:
 
-- **Route Lockdown**: All `/api/*` routes require Bearer token authorization, except public `/api/health` and runner-authenticated endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/workers/register`).
+- **Route Lockdown**: All `/api/*` routes require Bearer token authorization, except public `/api/health` and runner-authenticated endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/runners/register`).
 - **Timing-Safe Verification**: Bearer tokens and runner shared secrets are verified using constant-time `crypto.timingSafeEqual` with buffer length validation.
 - **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP. 10 failures within 60s temporarily blocks the IP with HTTP 429 (`Retry-After: 60`).
 
@@ -167,7 +167,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`24h`, `12h`, `3h`), and atomic alert state deduplication (`data/state.json`).
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
-4. **Optional Swarm Orchestrator**: Decoupled and optional (`orchestratorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
+4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
 6. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
 
@@ -223,9 +223,9 @@ Agylity incorporates a lightweight, universal logging subsystem designed for pro
 
 ---
 
-## 7. Pull-Based Worker Swarm Architecture
+## 7. Pull-Based Runner Swarm Architecture
 
-Agylity's execution model is a **Pull-Based Worker Swarm**:
+Agylity's execution model is a **Pull-Based Runner Swarm**:
 
 ```
 Coordinator (Homelab / Cloud)
@@ -234,24 +234,24 @@ Coordinator (Homelab / Cloud)
   └── REST API (/api/tasks/poll)
         ▲
         │ (Outbound HTTPS Long-Poll)
-        ├── Headless Worker (Docker on homelab/VPS) -> Unattended tasks
-        └── Visible Worker (Home Desktop PC)        -> Supervised tasks in active terminal
+        ├── Headless Runner (Docker on homelab/VPS) -> Unattended tasks
+        └── Visible Runner (Home Desktop PC)        -> Supervised tasks in active terminal
 ```
 
 ### 7.1. Architectural Principles & Invariants
 
 1. **Outbound Long-Polling (Inbound Firewall Invariant)**:
-   - Worker machines connect outbound via HTTPS to `/api/tasks/poll`.
-   - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on worker nodes.
+   - Runner machines connect outbound via HTTPS to `/api/tasks/poll`.
+   - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on runner nodes.
 2. **Task Scheduling**: every task carries a `scheduleMode`.
-   - **`immediate`**: run as soon as a matching worker polls.
+   - **`immediate`**: run as soon as a matching runner polls.
    - **`pre_reset`**: opportunistic quota-burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
 3. **Target Routing by Labels and Repository**:
-   - A task declares `requiredLabels`; a worker claims it only if it holds **all** of them, and only if the task's repository is in the worker's own scope. A worker's scope comes from its registration — the poll payload may narrow it, never widen it.
+   - A task declares `requiredLabels`; a runner claims it only if it holds **all** of them, and only if the task's repository is in the runner's own scope. A runner's scope comes from its registration — the poll payload may narrow it, never widen it.
 4. **Safety Floor Rule**:
    - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested family, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 5. **Alerting-First Operational Mode**:
-   - `ORCHESTRATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `ORCHESTRATOR_DISABLED` and no execution resources are initialised.
+   - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
 
 ---
 
@@ -278,12 +278,12 @@ agylity/
 │   ├── daemon/                 # Probe scheduler, milestone evaluation & lifecycle
 │   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
 │   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
-│   ├── orchestrator/           # Swarm coordinator, task queue, model routing & worker runner
+│   ├── coordinator/            # Swarm coordinator, task queue, model routing & runner
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
 │   ├── version.ts              # Shared version constant, read from package.json
-│   ├── worker-cli.ts           # Standalone headless swarm worker runner CLI
+│   ├── runner-cli.ts           # Standalone headless swarm runner CLI
 │   └── index.ts                # Daemon bootstrap & graceful shutdown coordinator
 ├── tests/                      # Deterministic test suites (unit + e2e)
 │   ├── e2e/                    # Opaque-box E2E suites & shared mock harness

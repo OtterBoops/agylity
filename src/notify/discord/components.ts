@@ -10,7 +10,7 @@ import {
   CANONICAL_AGY_MODELS,
   resolveConcreteModelId,
   resolveReasoningEffortForModel,
-} from '../../orchestrator/models.js';
+} from '../../coordinator/models.js';
 
 export const createRepoSelectMenu = (
   repositories: Array<{ id: string; name: string; path?: string; description?: string }>,

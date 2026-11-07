@@ -178,7 +178,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       },
     });
 
-    // Subsystems (notify, orchestrator) build loggers from the root singleton, not the daemon child.
+    // Subsystems (notify, coordinator) build loggers from the root singleton, not the daemon child.
     assert.equal(logger.child('notify:webhook').getLevel(), 'debug');
     assert.equal(daemon.logger.getLevel(), 'debug');
 

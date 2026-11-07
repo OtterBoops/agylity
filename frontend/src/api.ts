@@ -6,7 +6,7 @@ import type {
   LogEntry,
   DispatchRecord,
   ModelCatalogEntry,
-  SwarmWorkerRecord,
+  SwarmRunnerRecord,
   RunnerRegistrationTokenResult,
   SwarmTask,
   StandingTaskRecord,
@@ -190,10 +190,10 @@ export const getModels = (): Promise<{
     .json<{ defaultModel: string; defaultEffort: string; models: ModelCatalogEntry[] }>()
     .catch(() => ({ defaultModel: 'gemini-4-argon', defaultEffort: 'high', models: [] }));
 
-export const getWorkers = (): Promise<SwarmWorkerRecord[]> =>
+export const getRunners = (): Promise<SwarmRunnerRecord[]> =>
   api
-    .get('workers')
-    .json<SwarmWorkerRecord[]>()
+    .get('runners')
+    .json<SwarmRunnerRecord[]>()
     .catch(() => []);
 
 export const createRegistrationToken = (payload: {
@@ -201,19 +201,19 @@ export const createRegistrationToken = (payload: {
   labels?: string[];
   repositories?: string[];
 }): Promise<RunnerRegistrationTokenResult> =>
-  api.post('workers/registration-token', { json: payload }).json<RunnerRegistrationTokenResult>();
+  api.post('runners/registration-token', { json: payload }).json<RunnerRegistrationTokenResult>();
 
-export const setWorkerEnabled = (
-  workerId: string,
+export const setRunnerEnabled = (
+  runnerId: string,
   enabled: boolean
-): Promise<{ success: boolean; worker: SwarmWorkerRecord }> =>
+): Promise<{ success: boolean; runner: SwarmRunnerRecord }> =>
   api
-    .patch(`workers/${encodeURIComponent(workerId)}`, { json: { enabled } })
-    .json<{ success: boolean; worker: SwarmWorkerRecord }>();
+    .patch(`runners/${encodeURIComponent(runnerId)}`, { json: { enabled } })
+    .json<{ success: boolean; runner: SwarmRunnerRecord }>();
 
-export const revokeWorker = (workerId: string): Promise<{ success: boolean; revoked: boolean }> =>
+export const revokeRunner = (runnerId: string): Promise<{ success: boolean; revoked: boolean }> =>
   api
-    .delete(`workers/${encodeURIComponent(workerId)}`)
+    .delete(`runners/${encodeURIComponent(runnerId)}`)
     .json<{ success: boolean; revoked: boolean }>();
 
 export const testNotification = (

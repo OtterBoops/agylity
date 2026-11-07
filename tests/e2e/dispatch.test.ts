@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
-import { RemoteSwarmWorker, TaskExecutor } from '../../src/orchestrator/worker.js';
+import { RemoteSwarmRunner, TaskExecutor } from '../../src/coordinator/runner.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../../src/sentry/discovery.js';
 
@@ -50,7 +50,7 @@ async function main() {
     // 2. Initialize Coordinator & Web Server
     console.log('[E2E Test] 2. Booting Agylity Coordinator & HTTP API...');
     configStore = new ConfigStore(dbPath, {
-      orchestratorEnabled: true,
+      coordinatorEnabled: true,
       webUiEnabled: true,
       defaultDispatchModel: 'gemini-3.8-flash',
       defaultDispatchEffort: 'medium',
@@ -101,13 +101,12 @@ async function main() {
       );
     }
 
-    // 3. Generate worker registration token
-    console.log('[E2E Test] 3. Requesting Worker Registration Token...');
+    // 3. Generate runner registration token
+    console.log('[E2E Test] 3. Requesting Runner Registration Token...');
     const tokenRes = await ky
-      .post(`${baseUrl}/api/workers/registration-token`, {
+      .post(`${baseUrl}/api/runners/registration-token`, {
         json: {
           nameHint: 'local-runner-1',
-          workerMode: 'headless',
           labels: ['local', 'windows'],
         },
       })
@@ -170,26 +169,26 @@ async function main() {
       execFileFn: customExecFile,
     });
 
-    const worker = new RemoteSwarmWorker({
+    const runner = new RemoteSwarmRunner({
       coordinatorUrl: baseUrl,
       registrationToken: tokenRes.registrationToken,
       runnerStatePath,
       executor,
     });
 
-    // Worker registers and exchanges agyr_reg_ for agyr_run_
-    const registeredWorker = await worker.registerIfNeeded();
+    // Runner registers and exchanges agyr_reg_ for agyr_run_
+    const registeredRunner = await runner.registerIfNeeded();
     console.log(
-      `[E2E Test] Worker registered successfully: ${registeredWorker?.name} (${registeredWorker?.workerId})`
+      `[E2E Test] Runner registered successfully: ${registeredRunner?.name} (${registeredRunner?.runnerId})`
     );
-    console.log(`[E2E Test] Persistent runner token: ${worker.getRunnerToken()?.slice(0, 16)}...`);
+    console.log(`[E2E Test] Persistent runner token: ${runner.getRunnerToken()?.slice(0, 16)}...`);
 
-    // Verify worker appears in coordinator registry
-    const workersList = await ky.get(`${baseUrl}/api/workers`).json<any>();
-    const workersArr = Array.isArray(workersList) ? workersList : (workersList?.workers ?? []);
-    console.log(`[E2E Test] Coordinator reports ${workersArr.length} active runner(s)`);
-    if (workersArr.length !== 1 || workersArr[0].workerId !== worker.getWorkerId()) {
-      throw new Error('Worker not found in coordinator registry');
+    // Verify runner appears in coordinator registry
+    const runnersList = await ky.get(`${baseUrl}/api/runners`).json<any>();
+    const runnersArr = Array.isArray(runnersList) ? runnersList : (runnersList?.runners ?? []);
+    console.log(`[E2E Test] Coordinator reports ${runnersArr.length} active runner(s)`);
+    if (runnersArr.length !== 1 || runnersArr[0].runnerId !== runner.getRunnerId()) {
+      throw new Error('Runner not found in coordinator registry');
     }
 
     // 5. Dispatch task with instructions/prompt
@@ -220,10 +219,10 @@ async function main() {
       throw new Error(`Expected task to be 'queued', got '${taskRecord?.status}'`);
     }
 
-    // 6. Worker polls for work, claims, and executes
-    console.log('[E2E Test] 6. Worker polling and executing task...');
-    const claimedTask = await worker.pollOnce();
-    console.log(`[E2E Test] Worker claimed and finished processing task: ${claimedTask?.id}`);
+    // 6. Runner polls for work, claims, and executes
+    console.log('[E2E Test] 6. Runner polling and executing task...');
+    const claimedTask = await runner.pollOnce();
+    console.log(`[E2E Test] Runner claimed and finished processing task: ${claimedTask?.id}`);
 
     // 7. Verify task status in coordinator after execution
     tasksRes = await ky.get(`${baseUrl}/api/tasks`).json<any>();

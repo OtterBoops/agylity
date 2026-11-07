@@ -96,7 +96,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         <div>
           <h2 class="text-xl font-bold text-pine-text sm:text-2xl 2xl:text-3xl">Tasks Queue</h2>
           <p class="mt-0.5 text-xs text-pine-subtle sm:text-sm 2xl:text-base">
-            Real-time Swarm tasks, worker assignments, execution telemetry, and lifecycle controls.
+            Real-time Swarm tasks, runner assignments, execution telemetry, and lifecycle controls.
           </p>
         </div>
 
@@ -123,7 +123,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               type="button"
               onClick={onOpenDispatch}
               class="flex cursor-pointer items-center gap-2 rounded-lg bg-pine-iris px-3.5 py-2 text-xs font-semibold text-pine-base shadow-xs transition-opacity hover:opacity-90 2xl:px-4 2xl:py-2.5 2xl:text-sm"
-              title="Dispatch continuation task to worker"
+              title="Dispatch continuation task to runner"
             >
               <Icon icon={faPlus} class="size-3.5" />
               <span>New Task</span>

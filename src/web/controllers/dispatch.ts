@@ -12,8 +12,8 @@ import {
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
-import { OrchestratorCoordinator } from '../../orchestrator/coordinator.js';
-import { RegistrationTokenError } from '../../orchestrator/queue.js';
+import { Coordinator } from '../../coordinator/coordinator.js';
+import { RegistrationTokenError } from '../../coordinator/queue.js';
 import {
   annotateModelsWithQuota,
   ReasoningEffortSchema,
@@ -22,21 +22,21 @@ import {
   type ReasoningEffort,
   type ScheduleMode,
   type TaskStatus,
-} from '../../orchestrator/models.js';
+} from '../../coordinator/models.js';
 
-const coordinatorCache = new WeakMap<WebServerOptions, OrchestratorCoordinator>();
+const coordinatorCache = new WeakMap<WebServerOptions, Coordinator>();
 
-export const resolveOrchestrator = (options: WebServerOptions): OrchestratorCoordinator => {
-  if (options.orchestrator) {
-    return options.orchestrator;
+export const resolveCoordinator = (options: WebServerOptions): Coordinator => {
+  if (options.coordinator) {
+    return options.coordinator;
   }
   let cached = coordinatorCache.get(options);
   if (!cached) {
-    cached = new OrchestratorCoordinator({
+    cached = new Coordinator({
       configStore: options.configStore,
       sentryState: options.sentryState,
       notifier: options.notifier,
-      logger: options.logger ? options.logger.child('orchestrator') : logger.child('orchestrator'),
+      logger: options.logger ? options.logger.child('coordinator') : logger.child('coordinator'),
     });
     coordinatorCache.set(options, cached);
   }
@@ -44,7 +44,7 @@ export const resolveOrchestrator = (options: WebServerOptions): OrchestratorCoor
 };
 
 const extractRunnerToken = (req: http.IncomingMessage): string | undefined => {
-  const headerToken = req.headers['x-agylity-worker-token'];
+  const headerToken = req.headers['x-agylity-runner-token'];
   if (typeof headerToken === 'string' && headerToken.trim() !== '') {
     return headerToken.trim();
   }
@@ -64,9 +64,9 @@ export const handleGetDispatches = (
   method: string
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
   const limit = Number(url.searchParams.get('limit') ?? 50);
-  const tasks = orchestrator.queue.listTasks({
+  const tasks = coordinator.queue.listTasks({
     limit: Number.isFinite(limit) ? limit : 50,
   });
   const mapped = tasks.map((t) => ({
@@ -85,9 +85,9 @@ export const handleGetModels = async (
 ): Promise<void> => {
   if (method !== 'GET') return methodNotAllowed(res);
   const resolved = options.configStore.resolveConfig();
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
 
-  let pools = orchestrator.getActivePools();
+  let pools = coordinator.getActivePools();
   if (pools.length === 0 && options.quotaClient) {
     try {
       pools = await options.quotaClient.fetchQuota(false);
@@ -149,8 +149,8 @@ export const handlePostDispatch = async (
 
   const requiredLabels = toStringArray(payload.requiredLabels);
 
-  const orchestrator = resolveOrchestrator(options);
-  const result = await orchestrator.dispatch({
+  const coordinator = resolveCoordinator(options);
+  const result = await coordinator.dispatch({
     repositoryId: toStringOrUndefined(payload.repositoryId),
     repositoryName,
     repositoryPath: toStringOrUndefined(payload.repositoryPath),
@@ -194,12 +194,12 @@ export const handleGetTasks = (
   method: string
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
   const limit = Number(url.searchParams.get('limit') ?? 50);
   const statusParam = url.searchParams.get('status') ?? undefined;
   const parsedStatus = statusParam ? TaskStatusSchema.safeParse(statusParam) : undefined;
 
-  const tasks = orchestrator.queue.listTasks({
+  const tasks = coordinator.queue.listTasks({
     status: parsedStatus?.success ? parsedStatus.data : undefined,
     limit: Number.isFinite(limit) ? limit : 50,
   });
@@ -216,29 +216,29 @@ export const handlePollTasks = async (
   if (method !== 'POST') return methodNotAllowed(res);
 
   const resolved = options.configStore.resolveConfig();
-  const orchestrator = resolveOrchestrator(options);
-  const auth = orchestrator.authenticateRunner(extractRunnerToken(req));
+  const coordinator = resolveCoordinator(options);
+  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
   if (!auth.authenticated) {
     return sendJson(res, 401, { error: 'Unauthorized runner token' });
   }
 
-  if (!resolved.orchestratorEnabled) {
-    return sendJson(res, 200, { task: null, orchestratorEnabled: false });
+  if (!resolved.coordinatorEnabled) {
+    return sendJson(res, 200, { task: null, coordinatorEnabled: false });
   }
 
   const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
   if (!parsed.ok) return;
   const payload: any = parsed.body;
 
-  // If authenticated via a per-runner token, bind identity strictly to the registered worker record
-  const workerId =
-    auth.worker?.workerId ?? toTrimmedStringOrUndefined(payload?.workerId) ?? 'worker-default';
-  const workerName =
-    auth.worker?.name ?? toTrimmedStringOrUndefined(payload?.workerName) ?? workerId;
+  // If authenticated via a per-runner token, bind identity strictly to the registered runner record
+  const runnerId =
+    auth.runner?.runnerId ?? toTrimmedStringOrUndefined(payload?.runnerId) ?? 'runner-default';
+  const runnerName =
+    auth.runner?.name ?? toTrimmedStringOrUndefined(payload?.runnerName) ?? runnerId;
   // A registered runner's scope comes from its registration, never from the poll payload.
-  const labels = auth.worker ? auth.worker.labels : (toStringArray(payload?.labels) ?? []);
-  const repositories = auth.worker
-    ? auth.worker.repositories
+  const labels = auth.runner ? auth.runner.labels : (toStringArray(payload?.labels) ?? []);
+  const repositories = auth.runner
+    ? auth.runner.repositories
     : (toStringArray(payload?.repositories) ?? []);
   const systemInfo =
     payload?.systemInfo && typeof payload.systemInfo === 'object' ? payload.systemInfo : undefined;
@@ -249,10 +249,10 @@ export const handlePollTasks = async (
   req.once('close', onClose);
 
   try {
-    const task = await orchestrator.pollForTask(
+    const task = await coordinator.pollForTask(
       {
-        workerId,
-        workerName,
+        runnerId,
+        runnerName,
         labels,
         repositories,
         systemInfo,
@@ -278,8 +278,8 @@ export const handleTaskStatus = async (
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
-  const orchestrator = resolveOrchestrator(options);
-  const auth = orchestrator.authenticateRunner(extractRunnerToken(req));
+  const coordinator = resolveCoordinator(options);
+  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
   if (!auth.authenticated) {
     return sendJson(res, 401, { error: 'Unauthorized runner token' });
   }
@@ -299,9 +299,9 @@ export const handleTaskStatus = async (
     return sendJson(res, 400, { error: 'Valid status is required' });
   }
 
-  const result = await orchestrator.reportTaskStatus(taskId, {
+  const result = await coordinator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
-    workerId: auth.worker?.workerId ?? toStringOrUndefined(payload.workerId),
+    runnerId: auth.runner?.runnerId ?? toStringOrUndefined(payload.runnerId),
     branchName: toStringOrUndefined(payload.branchName),
     prUrl: toStringOrUndefined(payload.prUrl),
     output: toStringOrUndefined(payload.output),
@@ -345,11 +345,11 @@ export const handleTaskCancel = (
   const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
 
-  const orchestrator = resolveOrchestrator(options);
-  const task = orchestrator.queue.getTask(taskId);
+  const coordinator = resolveCoordinator(options);
+  const task = coordinator.queue.getTask(taskId);
   if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
 
-  const updated = orchestrator.queue.updateTaskStatus(taskId, {
+  const updated = coordinator.queue.updateTaskStatus(taskId, {
     status: 'aborted',
     error: 'Task aborted by user',
   });
@@ -368,11 +368,11 @@ export const handleTaskRetry = async (
   const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
   if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
 
-  const orchestrator = resolveOrchestrator(options);
-  const task = orchestrator.queue.getTask(taskId);
+  const coordinator = resolveCoordinator(options);
+  const task = coordinator.queue.getTask(taskId);
   if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
 
-  const retryRes = await orchestrator.dispatch({
+  const retryRes = await coordinator.dispatch({
     repositoryId: task.repositoryId,
     repositoryName: task.repositoryName,
     repositoryPath: task.repositoryPath,
@@ -403,10 +403,10 @@ export const handleStandingTasks = async (
   _url: URL,
   method: string
 ): Promise<void> => {
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
 
   if (method === 'GET') {
-    const list = orchestrator.queue.listStandingTasks();
+    const list = coordinator.queue.listStandingTasks();
     return sendJson(res, 200, list, { 'Cache-Control': 'no-store' });
   }
 
@@ -419,7 +419,7 @@ export const handleStandingTasks = async (
         error: 'title, prompt, repositoryId, and model are required for standing task',
       });
     }
-    const created = orchestrator.queue.createStandingTask(payload);
+    const created = coordinator.queue.createStandingTask(payload);
     return sendJson(res, 201, created);
   }
 
@@ -438,12 +438,12 @@ export const handleStandingTaskById = async (
   const action = match?.[2];
   if (!id) return sendJson(res, 400, { error: 'id is required' });
 
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
 
   if (action === 'trigger' && method === 'POST') {
-    const st = orchestrator.queue.getStandingTask(id);
+    const st = coordinator.queue.getStandingTask(id);
     if (!st) return sendJson(res, 404, { error: `Standing task ${id} not found` });
-    const dispatchRes = await orchestrator.dispatch({
+    const dispatchRes = await coordinator.dispatch({
       repositoryId: st.repositoryId,
       repositoryName: st.repositoryId,
       prompt: st.prompt,
@@ -462,13 +462,13 @@ export const handleStandingTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
-    const updated = orchestrator.queue.updateStandingTask(id, patch);
+    const updated = coordinator.queue.updateStandingTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Standing task ${id} not found` });
     return sendJson(res, 200, updated);
   }
 
   if (method === 'DELETE') {
-    const deleted = orchestrator.queue.deleteStandingTask(id);
+    const deleted = coordinator.queue.deleteStandingTask(id);
     if (!deleted) return sendJson(res, 404, { error: `Standing task ${id} not found` });
     return sendJson(res, 200, { success: true, deleted: true });
   }
@@ -476,16 +476,16 @@ export const handleStandingTaskById = async (
   return methodNotAllowed(res);
 };
 
-export const handleGetWorkers = (
+export const handleGetRunners = (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
-  const orchestrator = resolveOrchestrator(options);
-  const workers = orchestrator.listWorkers();
-  return sendJson(res, 200, workers, { 'Cache-Control': 'no-store' });
+  const coordinator = resolveCoordinator(options);
+  const runners = coordinator.listRunners();
+  return sendJson(res, 200, runners, { 'Cache-Control': 'no-store' });
 };
 
 export const handleCreateRegistrationToken = async (
@@ -505,8 +505,8 @@ export const handleCreateRegistrationToken = async (
   const nameHint = toTrimmedStringOrUndefined(payload?.nameHint);
   const ttlMs = toFiniteNumberOrUndefined(payload?.ttlMs);
 
-  const orchestrator = resolveOrchestrator(options);
-  const result = orchestrator.createRegistrationToken({
+  const coordinator = resolveCoordinator(options);
+  const result = coordinator.createRegistrationToken({
     nameHint,
     labels,
     repositories,
@@ -516,7 +516,7 @@ export const handleCreateRegistrationToken = async (
   return sendJson(res, 200, result, { 'Cache-Control': 'no-store' });
 };
 
-export const handleRegisterWorker = async (
+export const handleRegisterRunner = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
@@ -539,12 +539,12 @@ export const handleRegisterWorker = async (
   const systemInfo =
     payload?.systemInfo && typeof payload.systemInfo === 'object' ? payload.systemInfo : undefined;
 
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
   try {
-    const registered = orchestrator.registerRunner({
+    const registered = coordinator.registerRunner({
       registrationToken,
-      workerId: toStringOrUndefined(payload?.workerId),
-      workerName: toStringOrUndefined(payload?.workerName),
+      runnerId: toStringOrUndefined(payload?.runnerId),
+      runnerName: toStringOrUndefined(payload?.runnerName),
       labels,
       repositories,
       systemInfo,
@@ -561,7 +561,7 @@ export const handleRegisterWorker = async (
       200,
       {
         success: true,
-        worker: registered.worker,
+        runner: registered.runner,
         runnerToken: registered.runnerToken,
       },
       { 'Cache-Control': 'no-store' }
@@ -571,32 +571,32 @@ export const handleRegisterWorker = async (
       return sendJson(res, 401, { error: err.message });
     }
     // Anything else is an internal fault, not an auth failure, and its detail stays in the log.
-    logger.child('web').error('Worker registration failed: %s', err?.stack ?? err);
-    return sendJson(res, 500, { error: 'Worker registration failed' });
+    logger.child('web').error('Runner registration failed: %s', err?.stack ?? err);
+    return sendJson(res, 500, { error: 'Runner registration failed' });
   }
 };
 
-export const handleManageWorkerById = async (
+export const handleManageRunnerById = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   pathname: string,
   method: string
 ): Promise<void> => {
-  const match = /^\/api\/workers\/([^/]+)$/.exec(pathname);
-  const workerId = match?.[1] ? (safeDecodeSegment(match[1]) ?? '').trim() : '';
-  if (!workerId) {
-    return sendJson(res, 400, { error: 'workerId is required' });
+  const match = /^\/api\/runners\/([^/]+)$/.exec(pathname);
+  const runnerId = match?.[1] ? (safeDecodeSegment(match[1]) ?? '').trim() : '';
+  if (!runnerId) {
+    return sendJson(res, 400, { error: 'runnerId is required' });
   }
 
-  const orchestrator = resolveOrchestrator(options);
+  const coordinator = resolveCoordinator(options);
 
   if (method === 'DELETE') {
-    const revoked = orchestrator.revokeWorker(workerId);
+    const revoked = coordinator.revokeRunner(runnerId);
     if (!revoked) {
-      return sendJson(res, 404, { error: `Runner ${workerId} not found` });
+      return sendJson(res, 404, { error: `Runner ${runnerId} not found` });
     }
-    return sendJson(res, 200, { success: true, revoked: true, workerId });
+    return sendJson(res, 200, { success: true, revoked: true, runnerId });
   }
 
   if (method === 'PATCH') {
@@ -608,11 +608,11 @@ export const handleManageWorkerById = async (
       return sendJson(res, 400, { error: 'enabled (boolean) is required' });
     }
 
-    const updated = orchestrator.setWorkerEnabled(workerId, payload.enabled);
+    const updated = coordinator.setRunnerEnabled(runnerId, payload.enabled);
     if (!updated) {
-      return sendJson(res, 404, { error: `Runner ${workerId} not found` });
+      return sendJson(res, 404, { error: `Runner ${runnerId} not found` });
     }
-    return sendJson(res, 200, { success: true, worker: updated });
+    return sendJson(res, 200, { success: true, runner: updated });
   }
 
   return methodNotAllowed(res);

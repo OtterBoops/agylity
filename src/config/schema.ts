@@ -173,11 +173,11 @@ export const RawEnvSchema = z.object({
   /* Repositories */
   REPOSITORIES_JSON: z.string().optional(),
 
-  /* Optional Orchestrator */
-  ORCHESTRATOR_ENABLED: z.string().optional(),
+  /* Optional Coordinator */
+  COORDINATOR_ENABLED: z.string().optional(),
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
   DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
-  WORKER_SHARED_SECRET: z.string().optional(),
+  RUNNER_SHARED_SECRET: z.string().optional(),
   BOT_PR_POLICY: BotPrPolicyEnum.optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
@@ -223,10 +223,10 @@ export interface AppConfig {
 
   repositories: RepositoryEntry[];
 
-  orchestratorEnabled: boolean;
+  coordinatorEnabled: boolean;
   defaultDispatchModel: string;
   defaultDispatchEffort: 'low' | 'medium' | 'high';
-  workerSharedSecret?: string;
+  runnerSharedSecret?: string;
   botPrPolicy: BotPrPolicy;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
@@ -266,10 +266,10 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   quotaMilestoneHours: 'QUOTA_MILESTONE_HOURS',
   minDispatchHeadroomPercent: 'MIN_DISPATCH_HEADROOM_PERCENT',
   repositories: 'REPOSITORIES_JSON',
-  orchestratorEnabled: 'ORCHESTRATOR_ENABLED',
+  coordinatorEnabled: 'COORDINATOR_ENABLED',
   defaultDispatchModel: 'DEFAULT_DISPATCH_MODEL',
   defaultDispatchEffort: 'DEFAULT_DISPATCH_EFFORT',
-  workerSharedSecret: 'WORKER_SHARED_SECRET',
+  runnerSharedSecret: 'RUNNER_SHARED_SECRET',
   botPrPolicy: 'BOT_PR_POLICY',
   quotaBurnMaxHours: 'QUOTA_BURN_MAX_HOURS',
   quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
@@ -306,7 +306,7 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'notificationWebhookUrl',
   'webhookSecret',
   'webhookCustomHeaders',
-  'workerSharedSecret',
+  'runnerSharedSecret',
   'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];
 
@@ -344,10 +344,10 @@ export const BUILTIN_DEFAULTS: AppConfig = {
 
   repositories: [],
 
-  orchestratorEnabled: false,
+  coordinatorEnabled: false,
   defaultDispatchModel: 'gemini-3.8-flash',
   defaultDispatchEffort: 'medium',
-  workerSharedSecret: undefined,
+  runnerSharedSecret: undefined,
   botPrPolicy: 'docs_only',
   quotaBurnMaxHours: 2,
   quotaBurnMinHeadroomPercent: 30,
@@ -479,11 +479,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
     result.allowOverage = booleanEnv.parse(parsed.ALLOW_OVERAGE);
   }
 
-  if (parsed.ORCHESTRATOR_ENABLED !== undefined && parsed.ORCHESTRATOR_ENABLED.trim() !== '') {
+  if (parsed.COORDINATOR_ENABLED !== undefined && parsed.COORDINATOR_ENABLED.trim() !== '') {
     try {
-      result.orchestratorEnabled = booleanEnv.parse(parsed.ORCHESTRATOR_ENABLED);
+      result.coordinatorEnabled = booleanEnv.parse(parsed.COORDINATOR_ENABLED);
     } catch {
-      warnEnvFallback('ORCHESTRATOR_ENABLED', 'invalid boolean value');
+      warnEnvFallback('COORDINATOR_ENABLED', 'invalid boolean value');
     }
   }
   if (parsed.DEFAULT_DISPATCH_MODEL && parsed.DEFAULT_DISPATCH_MODEL.trim() !== '') {
@@ -492,8 +492,8 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.DEFAULT_DISPATCH_EFFORT) {
     result.defaultDispatchEffort = parsed.DEFAULT_DISPATCH_EFFORT;
   }
-  if (parsed.WORKER_SHARED_SECRET && !isTemplatePlaceholder(parsed.WORKER_SHARED_SECRET)) {
-    result.workerSharedSecret = parsed.WORKER_SHARED_SECRET;
+  if (parsed.RUNNER_SHARED_SECRET && !isTemplatePlaceholder(parsed.RUNNER_SHARED_SECRET)) {
+    result.runnerSharedSecret = parsed.RUNNER_SHARED_SECRET;
   }
   if (parsed.BOT_PR_POLICY) {
     result.botPrPolicy = parsed.BOT_PR_POLICY;
@@ -555,10 +555,10 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   minDispatchHeadroomPercent: z.number().min(0).max(100),
   poolPolicies: PoolPoliciesSchema,
   repositories: z.array(RepositorySchema),
-  orchestratorEnabled: z.boolean(),
+  coordinatorEnabled: z.boolean(),
   defaultDispatchModel: z.string(),
   defaultDispatchEffort: z.enum(['low', 'medium', 'high']),
-  workerSharedSecret: z.string().optional(),
+  runnerSharedSecret: z.string().optional(),
   botPrPolicy: BotPrPolicyEnum,
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),

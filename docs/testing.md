@@ -31,7 +31,7 @@ tests/
     ├── ip.test.ts              # IP allowlist / CIDR parsing
     ├── logger.test.ts          # Logger, sinks, levels, namespaces, redaction
     ├── notify.test.ts          # Adapters, embeds, components, Discord interaction plumbing
-    ├── orchestrator.test.ts    # Task queue, coordinator, model routing, pull-worker swarm
+    ├── coordinator.test.ts     # Task queue, coordinator, model routing, pull-runner swarm
     ├── sentry.test.ts          # Connect-RPC parsing, CLI fallback, milestone math
     └── web.test.ts             # REST routes, auth guards, 404/405, 64 KB body limit
 ```
@@ -44,17 +44,17 @@ tests/
 
 ### Unit suites (`tests/unit/`)
 
-| File                   | Covers                                                                                                                                               |
-| :--------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `config.test.ts`       | Boolean string traps (`" FALSE "`, `"1"`, `""`), milestone parsing, the `SQLite > env > defaults` hierarchy, prototype-pollution key rejection.      |
-| `db.test.ts`           | WAL mode, key-value overrides, AES-256-GCM round-trips, and that a decryption failure surfaces rather than silently returning an empty secret.       |
-| `ip.test.ts`           | CIDR parsing (a bare `/` must be rejected, never read as `/0`), loopback-only proxy trust.                                                           |
-| `logger.test.ts`       | Level filtering, child namespaces, sink fault isolation.                                                                                             |
-| `notify.test.ts`       | Multi-channel fan-out, webhook signing and retry, embed field limits, Discord modal/select plumbing.                                                 |
-| `orchestrator.test.ts` | Enqueue/claim/status transitions, lease reaping and ownership guards, branch naming, dispatch eligibility and the safety floor, runner registration. |
-| `sentry.test.ts`       | Quota aggregation, dual-window headroom math, milestone evaluation and late-wake reconciliation, CLI fallback parsing.                               |
-| `web.test.ts`          | Every REST route, control-plane auth, IP rate limiting, 404/405 guards, the 64 KB body ceiling (HTTP 413), and status-report refusals.               |
-| `daemon.test.ts`       | Startup, signal handling, scheduler wiring.                                                                                                          |
+| File                  | Covers                                                                                                                                               |
+| :-------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.test.ts`      | Boolean string traps (`" FALSE "`, `"1"`, `""`), milestone parsing, the `SQLite > env > defaults` hierarchy, prototype-pollution key rejection.      |
+| `db.test.ts`          | WAL mode, key-value overrides, AES-256-GCM round-trips, and that a decryption failure surfaces rather than silently returning an empty secret.       |
+| `ip.test.ts`          | CIDR parsing (a bare `/` must be rejected, never read as `/0`), loopback-only proxy trust.                                                           |
+| `logger.test.ts`      | Level filtering, child namespaces, sink fault isolation.                                                                                             |
+| `notify.test.ts`      | Multi-channel fan-out, webhook signing and retry, embed field limits, Discord modal/select plumbing.                                                 |
+| `coordinator.test.ts` | Enqueue/claim/status transitions, lease reaping and ownership guards, branch naming, dispatch eligibility and the safety floor, runner registration. |
+| `sentry.test.ts`      | Quota aggregation, dual-window headroom math, milestone evaluation and late-wake reconciliation, CLI fallback parsing.                               |
+| `web.test.ts`         | Every REST route, control-plane auth, IP rate limiting, 404/405 guards, the 64 KB body ceiling (HTTP 413), and status-report refusals.               |
+| `daemon.test.ts`      | Startup, signal handling, scheduler wiring.                                                                                                          |
 
 ### End-to-end suite (`tests/e2e/`)
 

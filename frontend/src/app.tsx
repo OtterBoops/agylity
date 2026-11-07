@@ -18,7 +18,7 @@ import { TasksView } from './components/TasksView';
 import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
 import { NotificationsView } from './views/NotificationsView';
-import { OrchestratorView } from './views/settings/OrchestratorView';
+import { CoordinatorView } from './views/settings/CoordinatorView';
 import { RepositoriesView } from './views/settings/RepositoriesView';
 import { AdvancedView } from './views/settings/AdvancedView';
 import { NotFoundView } from './views/NotFoundView';
@@ -37,8 +37,8 @@ const TITLES: Record<string, string> = {
   '/overview': 'Overview',
   '/tasks': 'Tasks',
   '/logs': 'Logs',
-  '/settings': 'Orchestrator',
-  '/settings/orchestrator': 'Orchestrator',
+  '/settings': 'Coordinator',
+  '/settings/coordinator': 'Coordinator',
   '/settings/notifications': 'Notifications',
   '/settings/repositories': 'Repositories',
   '/settings/advanced': 'Advanced',
@@ -203,7 +203,7 @@ export const App = () => {
   }, [refreshCooldown]);
 
   const title = TITLES[currentUrl] || 'Overview';
-  const isOrchestratorEnabled = Boolean(config.resolved?.orchestratorEnabled);
+  const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const remainingCredits =
     quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;
 
@@ -232,7 +232,7 @@ export const App = () => {
   return (
     <div class="min-h-dvh bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
       <Sidebar
-        orchestratorEnabled={isOrchestratorEnabled}
+        coordinatorEnabled={isCoordinatorEnabled}
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
@@ -244,7 +244,7 @@ export const App = () => {
             title={title}
             isRefreshing={isRefreshing}
             refreshCooldown={refreshCooldown}
-            orchestratorEnabled={isOrchestratorEnabled}
+            coordinatorEnabled={isCoordinatorEnabled}
             remainingCredits={remainingCredits}
             theme={theme}
             onThemeChange={setTheme}
@@ -308,12 +308,8 @@ export const App = () => {
                 onOpenDispatch={() => setDispatchModalOpen(true)}
               />
               <LogsView path="/logs" />
-              <OrchestratorView path="/settings" config={config} onChanged={fetchAll} />
-              <OrchestratorView
-                path="/settings/orchestrator"
-                config={config}
-                onChanged={fetchAll}
-              />
+              <CoordinatorView path="/settings" config={config} onChanged={fetchAll} />
+              <CoordinatorView path="/settings/coordinator" config={config} onChanged={fetchAll} />
               <NotificationsView
                 path="/settings/notifications"
                 config={config}
@@ -354,7 +350,7 @@ export const App = () => {
         onRefresh={handleManualRefresh}
         onOpenDispatch={() => setDispatchModalOpen(true)}
         onToggleTheme={handleToggleTheme}
-        orchestratorEnabled={isOrchestratorEnabled}
+        coordinatorEnabled={isCoordinatorEnabled}
       />
     </div>
   );

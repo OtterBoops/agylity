@@ -15,7 +15,7 @@ import { createDaemonNotifier } from '../notify/factory.js';
 import { type Notifier } from '../notify/types.js';
 import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
-import { OrchestratorCoordinator } from '../orchestrator/index.js';
+import { Coordinator } from '../coordinator/index.js';
 
 /** Dry-run milestone plan returned by the evaluator; state is recorded only after delivery. */
 interface MilestonePlan {
@@ -31,7 +31,7 @@ export interface AgylityDaemonOptions {
   sentryState?: SentryStateManager;
   sentryEvaluator?: QuotaEvaluator;
   notifier?: Notifier;
-  orchestrator?: OrchestratorCoordinator;
+  coordinator?: Coordinator;
   dbPath?: string;
   statePath?: string;
   autoCheckOnStart?: boolean;
@@ -46,7 +46,7 @@ export class AgylityDaemon {
   public readonly sentryState: SentryStateManager;
   public readonly sentryEvaluator: QuotaEvaluator;
   public readonly notifier: Notifier;
-  public readonly orchestrator: OrchestratorCoordinator;
+  public readonly coordinator: Coordinator;
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
   public readonly logger: Logger;
@@ -70,7 +70,7 @@ export class AgylityDaemon {
     autoCheckOnStart = true,
     logBuffer?: LogBuffer,
     loggerInstance?: Logger,
-    orchestratorInstance?: OrchestratorCoordinator
+    coordinatorInstance?: Coordinator
   ) {
     this.configStore = configStore;
     this.database = configStore.getDatabase();
@@ -81,15 +81,15 @@ export class AgylityDaemon {
     this.autoCheckOnStart = autoCheckOnStart;
     this.logBuffer = logBuffer;
     this.logger = loggerInstance ?? logger.child('daemon');
-    this.orchestrator =
-      orchestratorInstance ??
-      new OrchestratorCoordinator({
+    this.coordinator =
+      coordinatorInstance ??
+      new Coordinator({
         configStore,
         sentryState,
         notifier,
-        logger: this.logger.child('orchestrator'),
+        logger: this.logger.child('coordinator'),
       });
-    this.orchestrator.setNotifier(notifier);
+    this.coordinator.setNotifier(notifier);
     const initialConfig = configStore.resolveConfig();
     if (initialConfig.logLevel) {
       this.applyLogLevel(initialConfig.logLevel);
@@ -164,14 +164,12 @@ export class AgylityDaemon {
         overageEnabledProvider: () => configStore.resolveConfig().allowOverage,
       });
 
-    const orchestrator =
-      options.orchestrator ??
-      new OrchestratorCoordinator({
+    const coordinator =
+      options.coordinator ??
+      new Coordinator({
         configStore,
         sentryState,
-        logger: options.logger
-          ? options.logger.child('orchestrator')
-          : logger.child('orchestrator'),
+        logger: options.logger ? options.logger.child('coordinator') : logger.child('coordinator'),
       });
 
     const notifier =
@@ -188,7 +186,7 @@ export class AgylityDaemon {
         },
         onDispatchRequested: async (req) => {
           const startedAt = Date.now();
-          const disp = await orchestrator.dispatch({
+          const disp = await coordinator.dispatch({
             repositoryId: req.repositoryId,
             repositoryName: req.repositoryName,
             repositoryPath: req.repositoryPath,
@@ -217,7 +215,7 @@ export class AgylityDaemon {
         },
         onContinueRequested: async (req) => {
           const startedAt = Date.now();
-          const disp = await orchestrator.dispatchContinuation({
+          const disp = await coordinator.dispatchContinuation({
             taskId: req.taskId,
             branchName: req.branchName,
             prompt: req.prompt,
@@ -242,7 +240,7 @@ export class AgylityDaemon {
         },
       }));
 
-    orchestrator.setNotifier(notifier);
+    coordinator.setNotifier(notifier);
 
     const autoCheckOnStart = options.autoCheckOnStart ?? true;
 
@@ -255,7 +253,7 @@ export class AgylityDaemon {
       autoCheckOnStart,
       options.logBuffer,
       options.logger,
-      orchestrator
+      coordinator
     );
   }
 
@@ -275,13 +273,13 @@ export class AgylityDaemon {
     await this.notifier.initialize();
     this.logger.info('Active notification adapter initialized (%s).', this.notifier.channelName);
 
-    // 3. Orchestrator Status
-    if (!resolved.orchestratorEnabled) {
+    // 3. Coordinator Status
+    if (!resolved.coordinatorEnabled) {
       this.logger.info(
-        'Orchestrator is disabled (orchestratorEnabled=false). Operating in pure Quota Sentry mode.'
+        'Coordinator is disabled (coordinatorEnabled=false). Operating in pure Quota Sentry mode.'
       );
     } else {
-      this.logger.info('Orchestrator is enabled (orchestratorEnabled=true).');
+      this.logger.info('Coordinator is enabled (coordinatorEnabled=true).');
     }
 
     // 4. Conditional Web UI bootstrap (Zero-Overhead Invariant)
@@ -293,7 +291,7 @@ export class AgylityDaemon {
         sentryState: this.sentryState,
         logBuffer: this.logBuffer,
         notifier: this.notifier,
-        orchestrator: this.orchestrator,
+        coordinator: this.coordinator,
         logger: this.logger.child('web'),
         port: resolved.webUiPort,
         host: resolved.webUiHost,
@@ -326,7 +324,7 @@ export class AgylityDaemon {
     try {
       this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
-      this.orchestrator.onQuotaUpdated(snapshots);
+      this.coordinator.onQuotaUpdated(snapshots);
       reaped = true;
       const plan = this.evaluateMilestonePlan(snapshots);
       const alerts = plan.alerts;
@@ -407,7 +405,7 @@ export class AgylityDaemon {
       try {
         // onQuotaUpdated already reaped; a failed probe still needs its own pass.
         if (!reaped) {
-          this.orchestrator.reapStaleClaims();
+          this.coordinator.reapStaleClaims();
         }
       } catch (reapErr: any) {
         // A reaper failure (e.g. database already closed) must never escape the probe outcome.

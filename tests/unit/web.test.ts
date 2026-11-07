@@ -592,7 +592,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('refuses a dispatch whose quota telemetry cannot be read', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_telemetry_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
+        coordinatorEnabled: true,
       });
       let server: http.Server | undefined;
 
@@ -1291,7 +1291,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
   /* ==================================================================== */
   describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {
-    const authHeaders = { 'x-agylity-worker-token': 'swarm-secret-token-999' };
+    const authHeaders = { 'x-agylity-runner-token': 'swarm-secret-token-999' };
 
     const healthyFlashState = (dir: string): SentryStateManager => {
       const state = new SentryStateManager(path.join(dir, 'state.json'));
@@ -1314,8 +1314,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('returns 409 with the persisted status and leaves a terminal task untouched', async () => {
       const { dir, cleanup } = makeTempDir('web_status_terminal_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
-        workerSharedSecret: 'swarm-secret-token-999',
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
       });
       const { server, port } = await startWebServer({
         configStore: store,
@@ -1372,11 +1372,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
-    it('returns 409 when a status patch comes from a different worker', async () => {
+    it('returns 409 when a status patch comes from a different runner', async () => {
       const { dir, cleanup } = makeTempDir('web_status_crossworker_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
-        workerSharedSecret: 'swarm-secret-token-999',
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
       });
       const { server, port } = await startWebServer({
         configStore: store,
@@ -1389,24 +1389,24 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const baseUrl = `http://127.0.0.1:${port}`;
         const disp = await ky
           .post(`${baseUrl}/api/dispatch`, {
-            json: { repositoryName: 'agylity', prompt: 'Owned by worker-a' },
+            json: { repositoryName: 'agylity', prompt: 'Owned by runner-a' },
           })
           .json<any>();
 
         const poll = await ky
           .post(`${baseUrl}/api/tasks/poll`, {
             headers: authHeaders,
-            json: { workerId: 'worker-a', timeoutMs: 0 },
+            json: { runnerId: 'runner-a', timeoutMs: 0 },
           })
           .json<any>();
         assert.equal(poll.task?.id, disp.taskId);
 
-        // A patch from worker-b must be refused
+        // A patch from runner-b must be refused
         await assert.rejects(
           async () => {
             await ky.post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
               headers: authHeaders,
-              json: { status: 'executing', workerId: 'worker-b' },
+              json: { status: 'executing', runnerId: 'runner-b' },
               retry: 0,
             });
           },
@@ -1416,11 +1416,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           }
         );
 
-        // The owning worker-a patch is still accepted
+        // The owning runner-a patch is still accepted
         const accepted = await ky
           .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
             headers: authHeaders,
-            json: { status: 'executing', workerId: 'worker-a' },
+            json: { status: 'executing', runnerId: 'runner-a' },
           })
           .json<any>();
         assert.equal(accepted.success, true);
@@ -1435,8 +1435,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('persists the PR url a runner reports on completion', async () => {
       const { dir, cleanup } = makeTempDir('web_status_pr_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
-        workerSharedSecret: 'swarm-secret-token-999',
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
       });
       const { server, port } = await startWebServer({
         configStore: store,
@@ -1474,8 +1474,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('persists runner token telemetry (numTurns, totalTokens, thinkingTokens) from a status report', async () => {
       const { dir, cleanup } = makeTempDir('web_status_telemetry_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        orchestratorEnabled: true,
-        workerSharedSecret: 'swarm-secret-token-999',
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
       });
       const { server, port } = await startWebServer({
         configStore: store,

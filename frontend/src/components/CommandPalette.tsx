@@ -32,7 +32,7 @@ interface CommandPaletteProps {
   onRefresh: () => void;
   onOpenDispatch: () => void;
   onToggleTheme: () => void;
-  orchestratorEnabled: boolean;
+  coordinatorEnabled: boolean;
 }
 
 export const CommandPalette = ({
@@ -41,7 +41,7 @@ export const CommandPalette = ({
   onRefresh,
   onOpenDispatch,
   onToggleTheme,
-  orchestratorEnabled,
+  coordinatorEnabled,
 }: CommandPaletteProps) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -80,16 +80,16 @@ export const CommandPalette = ({
       },
     },
     {
-      id: 'nav-orchestrator',
-      title: 'Configure Task Orchestrator',
+      id: 'nav-coordinator',
+      title: 'Configure Task Coordinator',
       category: 'Navigation',
       icon: faNetworkWired,
       action: () => {
-        route('/settings/orchestrator');
+        route('/settings/coordinator');
         onClose();
       },
     },
-    ...(orchestratorEnabled
+    ...(coordinatorEnabled
       ? [
           {
             id: 'nav-tasks',

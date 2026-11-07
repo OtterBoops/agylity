@@ -38,7 +38,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       WEBHOOK_SECRET: 'your_webhook_secret_here',
       WEB_UI_AUTH_TOKEN: 'your_web_ui_auth_token_here',
       ANTIGRAVITY_CSRF_TOKEN: 'your_csrf_token_here',
-      WORKER_SHARED_SECRET: 'your_worker_shared_secret_here',
+      RUNNER_SHARED_SECRET: 'your_runner_shared_secret_here',
     };
     const parsed = parseRawEnv(env);
     assert.equal(parsed.discordToken, undefined);
@@ -46,7 +46,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.equal(parsed.webhookSecret, undefined);
     assert.equal(parsed.webUiAuthToken, undefined);
     assert.equal(parsed.antigravityCsrfToken, undefined);
-    assert.equal(parsed.workerSharedSecret, undefined);
+    assert.equal(parsed.runnerSharedSecret, undefined);
   });
 
   it('validates config patches and rejects unknown, invalid or prototype keys', () => {
@@ -294,13 +294,13 @@ describe('parseRawEnv malformed-value resilience', () => {
   it('falls back to built-in defaults instead of throwing on malformed env values', () => {
     const parsed = parseRawEnv({
       REPOSITORIES_JSON: '{ broken json',
-      ORCHESTRATOR_ENABLED: 'maybe',
+      COORDINATOR_ENABLED: 'maybe',
       WEB_UI_ENABLED: 'sure',
       QUOTA_MILESTONE_HOURS: 'abc,def',
     });
 
     assert.equal(parsed.repositories, undefined);
-    assert.equal(parsed.orchestratorEnabled, undefined);
+    assert.equal(parsed.coordinatorEnabled, undefined);
     assert.equal(parsed.webUiEnabled, undefined);
     assert.deepEqual(parsed.quotaMilestoneHours, [24, 12, 3]);
 
@@ -308,7 +308,7 @@ describe('parseRawEnv malformed-value resilience', () => {
     const store = new ConfigStore(':memory:', parsed);
     const config = store.resolveConfig();
     assert.deepEqual(config.repositories, []);
-    assert.equal(config.orchestratorEnabled, false);
+    assert.equal(config.coordinatorEnabled, false);
     assert.equal(config.webUiEnabled, false);
     assert.deepEqual(config.quotaMilestoneHours, [24, 12, 3]);
     store.close();
@@ -316,13 +316,13 @@ describe('parseRawEnv malformed-value resilience', () => {
 
   it('parses each env field independently so one bad value does not drop the rest', () => {
     const parsed = parseRawEnv({
-      ORCHESTRATOR_ENABLED: 'maybe',
+      COORDINATOR_ENABLED: 'maybe',
       REPOSITORIES_JSON: '{ broken json',
       LOG_LEVEL: 'debug',
       QUOTA_CHECK_INTERVAL_SECONDS: '300',
     });
 
-    assert.equal(parsed.orchestratorEnabled, undefined);
+    assert.equal(parsed.coordinatorEnabled, undefined);
     assert.equal(parsed.repositories, undefined);
     assert.equal(parsed.logLevel, 'debug');
     assert.equal(parsed.quotaCheckIntervalSeconds, 300);

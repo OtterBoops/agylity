@@ -6,7 +6,7 @@ import { createDaemon, type AgylityDaemon } from '../daemon/daemon.js';
 
 // Primary CLI execution entrypoint for standalone daemon process.
 export const main = async (): Promise<AgylityDaemon> => {
-  const banner = `agylity v${AGYLITY_VERSION} — Autonomous Quota Sentry & Remote Task Orchestrator`;
+  const banner = `agylity v${AGYLITY_VERSION} — Autonomous Quota Sentry & Remote Task Coordinator`;
   const rule = '='.repeat(banner.length + 4);
   console.log(rule);
   console.log(`  ${banner}  `);
