@@ -85,7 +85,6 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
         const weeklyPct = Math.round(weeklyFraction * 100);
         const shortTerm = pool.shortTerm;
         const shortTermPct = shortTerm ? Math.round(shortTerm.remainingFraction * 100) : null;
-        const shortTermHours = shortTerm ? shortTerm.hoursUntilReset : null;
 
         // Badges use the effective budget: min(weekly, shortTerm).
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
@@ -213,7 +212,23 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
             </div>
 
             {/* Quota 2: 5-Hour Limit (Capacity Rate Limiter) */}
-            {shortTerm && shortTermPct !== null && shortTermHours !== null ? (
+            {shortTerm?.disabled ? (
+              <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
+                <div class="flex items-center justify-between text-sm sm:text-base">
+                  <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
+                  <span class="font-mono text-xs font-semibold text-pine-love">
+                    Paused (Weekly 0%)
+                  </span>
+                </div>
+                <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
+                  <div class="h-full rounded-full bg-pine-love/40" style={{ width: '0%' }} />
+                </div>
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
+                  <span>Capacity throttle</span>
+                  <span>Paused until weekly reset</span>
+                </div>
+              </div>
+            ) : shortTerm && shortTermPct !== null ? (
               <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
@@ -229,21 +244,23 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
                   <span>Capacity throttle</span>
-                  <span>Refreshes in {getLiveCountdown(shortTerm.resetTime, shortTermHours)}</span>
+                  <span>
+                    Refreshes in {getLiveCountdown(shortTerm.resetTime, shortTerm.hoursUntilReset)}
+                  </span>
                 </div>
               </div>
             ) : (
               <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="text-xs font-medium text-pine-subtle">Unconstrained</span>
+                  <span class="text-xs font-medium text-pine-muted">No 5h cap</span>
                 </div>
                 <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
-                  <div class="size-full rounded-full bg-pine-iris/30" />
+                  <div class="size-full rounded-full bg-pine-muted/20" />
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
                   <span>Capacity throttle</span>
-                  <span class="text-pine-subtle italic">Tier Unconstrained</span>
+                  <span class="text-pine-muted">Uncapped 5h window</span>
                 </div>
               </div>
             )}

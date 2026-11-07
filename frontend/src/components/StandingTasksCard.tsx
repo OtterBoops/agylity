@@ -305,7 +305,7 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
                     {t.repositoryId}
                   </span>
                   <span class="rounded-full border border-pine-iris/30 bg-pine-iris/10 px-2 py-0.5 text-xs whitespace-nowrap text-pine-iris">
-                    {t.model} ({t.effort})
+                    {t.models?.join(', ') || (t as any).model || 'model'} ({t.effort})
                   </span>
                   <span class="rounded-full border border-pine-foam/30 bg-pine-foam/10 px-2 py-0.5 text-xs whitespace-nowrap text-pine-foam">
                     &le; {t.triggerBeforeResetHours}h before reset

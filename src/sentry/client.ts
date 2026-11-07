@@ -690,6 +690,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
             window: b.window,
             remainingFraction: b.remaining_fraction,
             resetTime: b.reset_time,
+            disabled: b.disabled,
           })),
         }));
 

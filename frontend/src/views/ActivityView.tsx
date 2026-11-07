@@ -10,7 +10,7 @@ import {
   taskStatusBadgeClass,
 } from '../utils/status';
 import { dialogBackdropClickHandler } from '../utils/dialog';
-import { formatDuration, formatDateTime, formatTime, useTimeFormat } from '../utils/time';
+import { formatDuration, formatDateTime, useTimeFormat } from '../utils/time';
 
 interface ActivityViewProps {
   alerts: SentryAlertState | null;
@@ -71,6 +71,48 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
   );
 
   const handleDialogClick = dialogBackdropClickHandler(dialogRef, () => setSelectedDispatch(null));
+
+  const renderOriginLink = (d: DispatchRecord) => {
+    if (d.tier === 'backlog' || (d.requestedBy && d.requestedBy.startsWith('backlog:'))) {
+      const originId = d.originId || d.requestedBy.replace(/^backlog:/, '');
+      const label = d.originNumber
+        ? `Backlog: Task #${d.originNumber}`
+        : d.originTitle
+          ? `Backlog: ${d.originTitle}`
+          : 'Backlog: Task';
+      return (
+        <a
+          href={`/tasks?tab=backlog&id=${encodeURIComponent(originId)}`}
+          class="font-medium whitespace-nowrap text-pine-iris hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {label}
+        </a>
+      );
+    }
+    if (
+      d.tier === 'routine' ||
+      (d.requestedBy &&
+        (d.requestedBy.startsWith('routine:') || d.requestedBy.startsWith('standing-task:')))
+    ) {
+      const originId = d.originId || d.requestedBy.replace(/^routine:|^standing-task:/, '');
+      const label = d.originTitle
+        ? `Routine: ${d.originTitle}`
+        : d.originNumber
+          ? `Routine #${d.originNumber}`
+          : 'Routine';
+      return (
+        <a
+          href={`/tasks?tab=routines&id=${encodeURIComponent(originId)}`}
+          class="font-medium whitespace-nowrap text-pine-iris hover:underline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {label}
+        </a>
+      );
+    }
+    return <span class="text-pine-subtle">{d.requestedBy || 'web-ui'}</span>;
+  };
 
   return (
     <div class="flex flex-col gap-2">
@@ -186,7 +228,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                         {d.prompt}
                       </td>
                       <td class="px-4 py-3.5 text-xs text-pine-subtle sm:text-sm 2xl:px-5 2xl:py-4 2xl:text-base">
-                        {d.requestedBy}
+                        {renderOriginLink(d)}
                       </td>
                       <td class="px-4 py-3.5 2xl:px-5 2xl:py-4">
                         <span
@@ -225,13 +267,20 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
           <div class="flex flex-col">
             {/* Modal Header */}
             <div class="flex items-center justify-between border-b border-pine-highlight pb-4">
-              <div class="flex items-center gap-3">
-                <h3 class="text-lg font-bold text-pine-text">Task #{selectedDispatch.id}</h3>
-                <span
-                  class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${dispatchOutcomeBadgeClass(selectedDispatch.success)}`}
-                >
-                  {dispatchOutcomeLabel(selectedDispatch.success)}
-                </span>
+              <div class="flex min-w-0 flex-col gap-1">
+                <div class="flex flex-wrap items-center gap-3">
+                  <h3 class="truncate text-lg font-bold text-pine-text">
+                    {selectedDispatch.title
+                      ? selectedDispatch.title
+                      : `Task #${selectedDispatch.taskNumber ?? selectedDispatch.id}`}
+                  </h3>
+                  <span
+                    class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${dispatchOutcomeBadgeClass(selectedDispatch.success)}`}
+                  >
+                    {dispatchOutcomeLabel(selectedDispatch.success)}
+                  </span>
+                </div>
+                <span class="font-mono text-xs text-pine-muted">ID: {selectedDispatch.id}</span>
               </div>
               <button
                 type="button"
@@ -255,7 +304,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                 <div>
                   <span class="text-pine-muted">Initiated By</span>
                   <div class="mt-0.5 font-medium text-pine-text">
-                    {selectedDispatch.requestedBy}
+                    {renderOriginLink(selectedDispatch)}
                   </div>
                 </div>
                 <div>
@@ -266,8 +315,8 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                 </div>
                 <div>
                   <span class="text-pine-muted">Timestamp</span>
-                  <div class="mt-0.5 font-mono text-xs text-pine-text">
-                    {formatTime(selectedDispatch.createdAt, { includeSeconds: true, timeFormat })}
+                  <div class="mt-0.5 font-mono text-xs whitespace-nowrap text-pine-text">
+                    {formatDateTime(selectedDispatch.createdAt, { timeFormat })}
                   </div>
                 </div>
               </div>
@@ -296,10 +345,22 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                     <span>{copiedPrompt ? 'Copied' : 'Copy Prompt'}</span>
                   </button>
                 </div>
-                <div class="max-h-60 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-overlay/60 p-3.5 font-mono text-xs/relaxed whitespace-pre-wrap text-pine-text">
+                <div class="max-h-60 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-overlay/60 p-3.5 font-mono text-xs/relaxed wrap-break-word break-all whitespace-pre-wrap text-pine-text">
                   {selectedDispatch.prompt}
                 </div>
               </div>
+
+              {/* Model Output Block */}
+              {selectedDispatch.output && (
+                <div class="flex flex-col gap-1.5">
+                  <span class="text-xs font-semibold tracking-wider text-pine-subtle uppercase">
+                    Model Output
+                  </span>
+                  <div class="max-h-60 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-overlay/60 p-3.5 font-mono text-xs/relaxed wrap-break-word break-all whitespace-pre-wrap text-pine-text">
+                    {selectedDispatch.output}
+                  </div>
+                </div>
+              )}
 
               {/* Error Block if any */}
               {selectedDispatch.error && (
@@ -307,7 +368,7 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
                   <span class="text-xs font-semibold tracking-wider text-pine-love uppercase">
                     Failure Diagnostic
                   </span>
-                  <div class="rounded-lg border border-pine-love/40 bg-pine-love/10 p-3 font-mono text-xs whitespace-pre-wrap text-pine-love">
+                  <div class="max-h-60 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/10 p-3 font-mono text-xs/relaxed wrap-break-word break-all whitespace-pre-wrap text-pine-love">
                     {selectedDispatch.error}
                   </div>
                 </div>

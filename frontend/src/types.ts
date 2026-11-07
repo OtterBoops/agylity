@@ -23,9 +23,10 @@ export interface QuotaBucket {
   displayName: string;
   window?: string;
   remainingFraction: number;
-  resetTime: string;
+  resetTime?: string;
   hoursUntilReset: number;
   description?: string;
+  disabled?: boolean;
 }
 
 export interface QuotaSnapshot {
@@ -83,13 +84,26 @@ export interface LogEntry {
 }
 
 export interface DispatchRecord {
-  id: number;
+  id: string | number;
+  taskNumber?: number;
+  title?: string;
+  tier?: 'immediate' | 'backlog' | 'routine';
+  originId?: string;
+  originNumber?: number;
+  originTitle?: string;
   createdAt: string;
   repository: string;
+  repositoryName?: string;
   prompt: string;
   requestedBy: string;
   success: boolean;
+  status?: TaskStatus;
+  model?: string;
+  effort?: string;
   branch?: string;
+  branchName?: string;
+  prUrl?: string;
+  output?: string;
   error?: string;
   durationMs: number;
 }
@@ -141,9 +155,17 @@ export type TaskStatus =
 
 export type BotPrPolicy = 'docs_only' | 'all' | 'none';
 export type TaskActor = 'user' | 'bot';
+export type TaskTier = 'immediate' | 'backlog' | 'routine';
+export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
 
 export interface SwarmTask {
   id: string;
+  taskNumber?: number;
+  title?: string;
+  tier?: TaskTier;
+  originId?: string;
+  originNumber?: number;
+  originTitle?: string;
   createdAt: string;
   updatedAt: string;
   repositoryId?: string;
@@ -170,24 +192,52 @@ export interface SwarmTask {
   durationMs: number;
 }
 
-export interface StandingTaskRecord {
+export interface BacklogTaskRecord {
   id: string;
+  taskNumber: number;
   title: string;
   prompt: string;
   repositoryId: string;
-  model: string;
+  models: string[];
   effort: 'low' | 'medium' | 'high';
   verifyCommand?: string;
   autoCreatePr: boolean;
-  actor?: TaskActor;
+  actor: TaskActor;
+  priorityOrder: number;
+  status: BacklogStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  lastError?: string;
+  swarmTaskId?: string;
+  githubIssueNumber?: number;
+  githubIssueUrl?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RoutineTaskRecord {
+  id: string;
+  taskNumber: number;
+  title: string;
+  prompt: string;
+  repositoryId: string;
+  models: string[];
+  effort: 'low' | 'medium' | 'high';
+  verifyCommand?: string;
+  autoCreatePr: boolean;
+  actor: TaskActor;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;
+  minHeadroomPercent: number;
   lastTriggeredResetTime?: string;
   lastTaskId?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+// Deprecated alias for legacy views transitioning to routines
+export type StandingTaskRecord = RoutineTaskRecord;
 
 export interface RepositoryConfig {
   id: string;

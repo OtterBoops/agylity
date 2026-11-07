@@ -12,6 +12,7 @@ import { logger, type Logger } from '../logs/logger.js';
 import {
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
+  evaluateModelPreferenceChain,
   resolveConcreteModelId,
   resolvePoolFamilyForModel,
   resolveReasoningEffortForModel,
@@ -19,6 +20,7 @@ import {
   type ReasoningEffort,
   type ScheduleMode,
   type TaskActor,
+  type TaskTier,
 } from './models.js';
 import {
   TaskQueue,
@@ -38,6 +40,11 @@ export interface DispatchTaskRequest {
   repositoryPath?: string;
   cloneUrl?: string;
   prompt: string;
+  title?: string;
+  tier?: TaskTier;
+  originId?: string;
+  originNumber?: number;
+  originTitle?: string;
   requestedBy?: string;
   requestedByUserId?: string;
   actor?: TaskActor;
@@ -103,6 +110,7 @@ export class Coordinator {
   private readonly bus = new EventEmitter();
   private latestSnapshots: QuotaSnapshot[] = [];
   private lastSnapshotAt = 0;
+  private lastManualDispatchAt = 0;
 
   constructor(options: CoordinatorOptions) {
     this.configStore = options.configStore;
@@ -115,6 +123,14 @@ export class Coordinator {
 
   public setNotifier(notifier: Notifier): void {
     this.notifier = notifier;
+  }
+
+  public getLastManualDispatchAt(): number {
+    return this.lastManualDispatchAt;
+  }
+
+  public setLastManualDispatchAt(timestampMs: number): void {
+    this.lastManualDispatchAt = timestampMs;
   }
 
   public getActivePools(): QuotaSnapshot[] {
@@ -155,12 +171,12 @@ export class Coordinator {
     this.latestSnapshots = snapshots;
     this.lastSnapshotAt = Date.now();
     this.reapStaleClaims();
-    void this.triggerEligibleStandingTasks(snapshots);
+    void this.triggerEligibleAutonomousTasks(snapshots);
     this.bus.emit('task:available');
   }
 
-  // Evaluates enabled standing tasks against live quota pools and triggers any due for pre-reset burn.
-  public async triggerEligibleStandingTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
+  // Evaluates autonomous tasks (Tier 2 Backlog and Tier 3 Routines) under 2-hour inactivity quench.
+  public async triggerEligibleAutonomousTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
     if (snapshots.length > 0) {
       this.latestSnapshots = snapshots;
       this.lastSnapshotAt = Date.now();
@@ -171,111 +187,228 @@ export class Coordinator {
       return [];
     }
 
-    const standingTasks = this.queue.listStandingTasks().filter((t) => t.enabled);
-    if (standingTasks.length === 0 || snapshots.length === 0) {
+    const now = Date.now();
+    const isQuenched = now - this.lastManualDispatchAt < 2 * 3600 * 1000;
+    if (isQuenched) {
+      this.log.debug('Autonomous task scheduling quenched (manual activity within past 2h)');
       return [];
     }
 
     const spawned: SwarmTask[] = [];
 
-    for (const st of standingTasks) {
-      const concreteModel = resolveConcreteModelId(st.model, resolved.defaultDispatchModel);
-      const family = resolvePoolFamilyForModel(concreteModel);
-
-      // Check per-pool dispatchEnabled policy
-      const policy = resolved.poolPolicies?.[family];
-      if (policy && !policy.dispatchEnabled) {
-        continue;
-      }
-
-      const targetPool = snapshots.find(
-        (p) =>
-          p.family === family ||
-          p.poolId === family ||
-          resolvePoolFamilyForModel(p.poolId || p.displayName) === family
-      );
-      if (!targetPool) continue;
-
-      const resetTime = targetPool.resetTime;
-      const hoursUntilReset =
-        typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
-          ? targetPool.hoursUntilReset
-          : calculateHoursUntilReset(targetPool.resetTime, Date.now());
-
-      if (!resetTime || hoursUntilReset === null || hoursUntilReset <= 0) {
-        continue;
-      }
-
-      // At most one execution per reset cycle
-      if (st.lastTriggeredResetTime && st.lastTriggeredResetTime === resetTime) {
-        continue;
-      }
-
-      // Check trigger window: task's triggerBeforeResetHours, or global quotaBurnMaxHours
-      const triggerHours =
-        st.triggerBeforeResetHours && st.triggerBeforeResetHours > 0
-          ? st.triggerBeforeResetHours
-          : (resolved.quotaBurnMaxHours ?? 2);
-
-      if (hoursUntilReset > triggerHours) {
-        continue;
-      }
-
-      // Check headroom: must have quota remaining to burn
-      const headroom = calculateEffectiveHeadroomPercent(targetPool);
-      const minBurnHeadroom =
-        resolved.quotaBurnMinHeadroomPercent !== undefined &&
-        resolved.quotaBurnMinHeadroomPercent > 0
-          ? resolved.quotaBurnMinHeadroomPercent
-          : Math.max(1, resolved.minDispatchHeadroomPercent ?? 10);
-
-      if (headroom === null || headroom < minBurnHeadroom) {
-        continue;
-      }
-
-      this.log.info(
-        'Auto-triggering standing task %s ("%s") for pool %s (reset in %sh, headroom=%d%%)',
-        st.id,
-        st.title,
-        family,
-        hoursUntilReset.toFixed(1),
-        headroom
-      );
-
-      const dispatchRes = await this.dispatch({
-        repositoryId: st.repositoryId,
-        repositoryName: st.repositoryId,
-        prompt: st.prompt,
-        model: concreteModel,
-        effort: st.effort,
-        autoCreatePr: st.autoCreatePr,
-        actor: st.actor || 'bot',
-        botPrPolicy: resolved.botPrPolicy,
-        verifyCommand: st.verifyCommand,
-        standingTaskId: st.id,
-        scheduleMode: 'immediate',
-        requestedBy: `standing-task:${st.id}`,
-      });
-
-      if (dispatchRes.success && dispatchRes.taskId) {
-        this.queue.updateStandingTask(st.id, {
-          lastTriggeredResetTime: resetTime,
-          lastTaskId: dispatchRes.taskId,
+    // 1. Evaluate Backlog Tasks (Tier 2)
+    try {
+      const nextBacklog = this.queue.getNextEligibleBacklogTask();
+      if (nextBacklog) {
+        // Dual-bucket floor >= 40%
+        const modelChoice = evaluateModelPreferenceChain({
+          models: nextBacklog.models,
+          defaultModel: resolved.defaultDispatchModel,
+          pools: snapshots,
+          minHeadroomPercent: 40,
+          isPoolDispatchEnabled: (fam) => resolved.poolPolicies?.[fam]?.dispatchEnabled !== false,
         });
-        const createdTask = this.queue.getTask(dispatchRes.taskId);
-        if (createdTask) {
-          spawned.push(createdTask);
+
+        if (modelChoice.allowed && modelChoice.selectedModel) {
+          const matchedRepo = resolved.repositories.find(
+            (r) =>
+              r.id.toLowerCase() === nextBacklog.repositoryId.toLowerCase() ||
+              r.name.toLowerCase() === nextBacklog.repositoryId.toLowerCase()
+          );
+          const repoPath = matchedRepo?.path || `/repos/${nextBacklog.repositoryId}`;
+          const cloneUrl = matchedRepo?.cloneUrl;
+          const defaultBranch = matchedRepo?.defaultBranch || 'main';
+
+          const created = this.queue.enqueue({
+            repositoryId: nextBacklog.repositoryId,
+            repositoryName: matchedRepo?.name || nextBacklog.repositoryId,
+            repositoryPath: repoPath,
+            cloneUrl,
+            defaultBranch,
+            prompt: nextBacklog.prompt,
+            title: nextBacklog.title,
+            tier: 'backlog',
+            originId: nextBacklog.id,
+            originNumber: nextBacklog.taskNumber,
+            originTitle: nextBacklog.title,
+            requestedBy: `backlog:${nextBacklog.id}`,
+            actor: nextBacklog.actor || 'bot',
+            botPrPolicy: resolved.botPrPolicy,
+            scheduleMode: 'immediate',
+            model: modelChoice.selectedModel,
+            effort: nextBacklog.effort,
+            autoCreatePr: nextBacklog.autoCreatePr,
+            verifyCommand: nextBacklog.verifyCommand,
+          });
+
+          this.queue.updateBacklogTask(nextBacklog.id, {
+            status: 'dispatched',
+            attemptCount: nextBacklog.attemptCount + 1,
+            swarmTaskId: created.id,
+          });
+
+          spawned.push(created);
+          this.log.info(
+            'Dispatched backlog task #%d ("%s") via model %s (pool=%s, attempt %d/%d)',
+            nextBacklog.taskNumber,
+            nextBacklog.title,
+            modelChoice.selectedModel,
+            modelChoice.family,
+            nextBacklog.attemptCount + 1,
+            nextBacklog.maxAttempts
+          );
         }
-      } else {
-        this.log.warn(
-          'Failed to dispatch standing task %s: %s',
-          st.id,
-          dispatchRes.error || 'Unknown dispatch error'
-        );
+      }
+    } catch (backlogErr) {
+      this.log.error('Error evaluating backlog tasks: %s', backlogErr);
+    }
+
+    // 2. Evaluate Routine Tasks (Tier 3)
+    if (resolved.routinesEnabled !== false) {
+      try {
+        const routineSpawned = await this.triggerEligibleRoutines(snapshots);
+        spawned.push(...routineSpawned);
+      } catch (routineErr) {
+        this.log.error('Error evaluating routine tasks: %s', routineErr);
       }
     }
 
     return spawned;
+  }
+
+  // Evaluates enabled routine tasks against live quota pools and triggers any due for pre-reset burn.
+  public async triggerEligibleRoutines(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
+    const resolved = this.configStore.resolveConfig();
+    if (!resolved.coordinatorEnabled || resolved.routinesEnabled === false) {
+      return [];
+    }
+
+    const routines = this.queue.listRoutineTasks().filter((t) => t.enabled);
+    if (routines.length === 0 || snapshots.length === 0) {
+      return [];
+    }
+
+    const spawned: SwarmTask[] = [];
+
+    for (const rt of routines) {
+      let selectedModel: string | undefined;
+      let targetPool: QuotaSnapshot | undefined;
+
+      for (const m of rt.models) {
+        const concreteModel = resolveConcreteModelId(m, resolved.defaultDispatchModel);
+        const family = resolvePoolFamilyForModel(concreteModel);
+
+        // Check per-pool dispatchEnabled policy
+        const policy = resolved.poolPolicies?.[family];
+        if (policy && !policy.dispatchEnabled) {
+          continue;
+        }
+
+        const pool = snapshots.find(
+          (p) =>
+            p.family === family ||
+            p.poolId === family ||
+            resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+        );
+        if (!pool) continue;
+
+        const resetTime = pool.resetTime;
+        const hoursUntilReset =
+          typeof pool.hoursUntilReset === 'number' && pool.hoursUntilReset > 0
+            ? pool.hoursUntilReset
+            : calculateHoursUntilReset(pool.resetTime, Date.now());
+
+        if (!resetTime || hoursUntilReset === null || hoursUntilReset <= 0) {
+          continue;
+        }
+
+        // At most one execution per reset cycle
+        if (rt.lastTriggeredResetTime && rt.lastTriggeredResetTime === resetTime) {
+          continue;
+        }
+
+        // Check trigger window: routine's triggerBeforeResetHours, or global quotaBurnMaxHours
+        const triggerHours =
+          rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
+            ? rt.triggerBeforeResetHours
+            : (resolved.quotaBurnMaxHours ?? 2);
+
+        if (hoursUntilReset > triggerHours) {
+          continue;
+        }
+
+        // Check headroom: must have quota remaining to burn
+        const headroom = calculateEffectiveHeadroomPercent(pool);
+        const minHeadroom = rt.minHeadroomPercent ?? (resolved.quotaBurnMinHeadroomPercent || 10);
+
+        if (headroom === null || headroom < minHeadroom) {
+          continue;
+        }
+
+        selectedModel = concreteModel;
+        targetPool = pool;
+        break;
+      }
+
+      if (!selectedModel || !targetPool) {
+        continue;
+      }
+
+      this.log.info(
+        'Auto-triggering routine task #%d ("%s") for pool %s with model %s (reset in %sh, headroom=%d%%)',
+        rt.taskNumber,
+        rt.title,
+        targetPool.family,
+        selectedModel,
+        (targetPool.hoursUntilReset ?? 0).toFixed(1),
+        calculateEffectiveHeadroomPercent(targetPool) ?? 0
+      );
+
+      const matchedRepo = resolved.repositories.find(
+        (r) =>
+          r.id.toLowerCase() === rt.repositoryId.toLowerCase() ||
+          r.name.toLowerCase() === rt.repositoryId.toLowerCase()
+      );
+      const repoPath = matchedRepo?.path || `/repos/${rt.repositoryId}`;
+      const cloneUrl = matchedRepo?.cloneUrl;
+      const defaultBranch = matchedRepo?.defaultBranch || 'main';
+
+      const task = this.queue.enqueue({
+        repositoryId: rt.repositoryId,
+        repositoryName: matchedRepo?.name || rt.repositoryId,
+        repositoryPath: repoPath,
+        cloneUrl,
+        defaultBranch,
+        prompt: rt.prompt,
+        title: rt.title,
+        tier: 'routine',
+        originId: rt.id,
+        originNumber: rt.taskNumber,
+        originTitle: rt.title,
+        model: selectedModel,
+        effort: rt.effort,
+        autoCreatePr: rt.autoCreatePr,
+        actor: rt.actor || 'bot',
+        botPrPolicy: resolved.botPrPolicy,
+        verifyCommand: rt.verifyCommand,
+        scheduleMode: 'immediate',
+        requestedBy: `routine:${rt.id}`,
+      });
+
+      this.queue.updateRoutineTask(rt.id, {
+        lastTriggeredResetTime: targetPool.resetTime,
+        lastTaskId: task.id,
+      });
+
+      spawned.push(task);
+    }
+
+    return spawned;
+  }
+
+  // Compatibility bridge for test suites transitioning from standing tasks
+  public async triggerEligibleStandingTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
+    return this.triggerEligibleRoutines(snapshots);
   }
 
   public evaluateEligibility(params: {
@@ -430,6 +563,16 @@ export class Coordinator {
     );
     const requiredLabels = req.requiredLabels ?? [];
 
+    const tier: TaskTier = req.tier ?? 'immediate';
+    const originId = req.originId ?? req.standingTaskId;
+    const originNumber = req.originNumber;
+    const originTitle = req.originTitle;
+    const title = req.title;
+
+    if (tier === 'immediate' && req.actor !== 'bot') {
+      this.lastManualDispatchAt = Date.now();
+    }
+
     // 4. Enqueue task in SQLite swarm_tasks queue
     const task = this.queue.enqueue({
       repositoryId: repoId,
@@ -438,6 +581,11 @@ export class Coordinator {
       cloneUrl,
       defaultBranch,
       prompt: req.prompt,
+      title,
+      tier,
+      originId,
+      originNumber,
+      originTitle,
       requestedBy: req.requestedBy || 'web-ui',
       actor: req.actor ?? 'user',
       botPrPolicy: req.botPrPolicy ?? resolved.botPrPolicy,
@@ -711,6 +859,55 @@ export class Coordinator {
     });
 
     this.bus.emit(`task:updated:${taskId}`, updated);
+
+    // Update Backlog task status on terminal swarm outcomes
+    if (updated.tier === 'backlog' && updated.originId) {
+      try {
+        const backlogTask = this.queue.getBacklogTask(updated.originId);
+        if (backlogTask) {
+          if (updated.status === 'completed' || updated.status === 'no_changes') {
+            this.queue.updateBacklogTask(updated.originId, {
+              status: 'completed',
+              lastError: null,
+            });
+            this.log.info(
+              'Backlog task #%d ("%s") marked completed after swarm task %s',
+              backlogTask.taskNumber,
+              backlogTask.title,
+              updated.id
+            );
+          } else if (updated.status === 'failed' || updated.status === 'aborted') {
+            if (backlogTask.attemptCount < backlogTask.maxAttempts) {
+              this.queue.updateBacklogTask(updated.originId, {
+                status: 'pending',
+                lastError: updated.error || 'Execution failed',
+              });
+              this.log.warn(
+                'Backlog task #%d ("%s") returned to pending for retry (attempt %d/%d)',
+                backlogTask.taskNumber,
+                backlogTask.title,
+                backlogTask.attemptCount,
+                backlogTask.maxAttempts
+              );
+            } else {
+              this.queue.updateBacklogTask(updated.originId, {
+                status: 'failed',
+                lastError: updated.error || 'Max retry attempts exceeded',
+              });
+              this.log.warn(
+                'Backlog task #%d ("%s") marked failed after exhausting %d attempts',
+                backlogTask.taskNumber,
+                backlogTask.title,
+                backlogTask.maxAttempts
+              );
+            }
+          }
+        }
+      } catch (backlogStatusErr) {
+        this.log.error('Error updating backlog task status: %s', backlogStatusErr);
+      }
+    }
+
     return result;
   }
 

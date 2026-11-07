@@ -10,6 +10,14 @@ import {
 export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
+export type TaskTier = 'immediate' | 'backlog' | 'routine';
+export const TaskTierSchema = z.enum(['immediate', 'backlog', 'routine']).default('immediate');
+
+export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
+export const BacklogStatusSchema = z
+  .enum(['pending', 'dispatched', 'completed', 'failed', 'canceled'])
+  .default('pending');
+
 export type TaskActor = 'user' | 'bot';
 export const TaskActorSchema = z.enum(['user', 'bot']).default('user');
 
@@ -425,4 +433,142 @@ export const annotateModelsWithQuota = (
         effectiveHeadroomPercent === null || effectiveHeadroomPercent < minDispatchHeadroomPercent,
     };
   });
+};
+
+export interface ModelPreferenceEvaluationResult {
+  allowed: boolean;
+  selectedModel?: string;
+  family?: QuotaFamily;
+  effectiveHeadroomPercent?: number;
+  weeklyHeadroomPercent?: number;
+  shortTermHeadroomPercent?: number | null;
+  resetTime?: string;
+  hoursUntilReset?: number | null;
+  shortTermResetTime?: string;
+  reason?: string;
+}
+
+/**
+ * Evaluates an ordered preference list of candidate models against live quota pools.
+ * Independently enforces the headroom floor across BOTH the 5-hour rolling bucket (shortTerm)
+ * and the weekly pool (weekly) to prevent rate-limit deadlocks when a manual task depletes 5h quota.
+ */
+export const evaluateModelPreferenceChain = (options: {
+  models: string[];
+  defaultModel?: string;
+  pools: QuotaSnapshot[];
+  minHeadroomPercent: number;
+  maxHoursUntilReset?: number;
+  isPoolDispatchEnabled?: (family: QuotaFamily) => boolean;
+  nowMs?: number;
+}): ModelPreferenceEvaluationResult => {
+  const candidates =
+    options.models.length > 0
+      ? options.models
+      : [options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-flash']];
+  const nowMs = options.nowMs ?? Date.now();
+  const rejectionReasons: string[] = [];
+
+  for (const rawCandidate of candidates) {
+    const resolvedModel = resolveConcreteModelId(rawCandidate, options.defaultModel);
+    const family = resolvePoolFamilyForModel(resolvedModel);
+
+    if (options.isPoolDispatchEnabled && !options.isPoolDispatchEnabled(family)) {
+      rejectionReasons.push(`${resolvedModel} (${family}): pool dispatch disabled`);
+      continue;
+    }
+
+    const targetPool = options.pools.find(
+      (p) =>
+        p.family === family ||
+        p.poolId === family ||
+        resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+    );
+    if (!targetPool) {
+      rejectionReasons.push(`${resolvedModel} (${family}): no telemetry pool`);
+      continue;
+    }
+
+    const weeklyFraction = targetPool.weekly?.remainingFraction ?? targetPool.remainingFraction;
+    const weeklyHeadroomPercent =
+      typeof weeklyFraction === 'number' && Number.isFinite(weeklyFraction)
+        ? Math.floor(Math.max(0, Math.min(1, weeklyFraction)) * 100)
+        : null;
+
+    const isShortTermActive = targetPool.shortTerm && !targetPool.shortTerm.disabled;
+    const shortTermFraction = isShortTermActive
+      ? targetPool.shortTerm?.remainingFraction
+      : undefined;
+    const shortTermHeadroomPercent =
+      typeof shortTermFraction === 'number' && Number.isFinite(shortTermFraction)
+        ? Math.floor(Math.max(0, Math.min(1, shortTermFraction)) * 100)
+        : null;
+
+    const effectiveHeadroomPercent = calculateEffectiveHeadroomPercent(targetPool);
+
+    if (effectiveHeadroomPercent === null || weeklyHeadroomPercent === null) {
+      rejectionReasons.push(`${resolvedModel}: unusable quota telemetry`);
+      continue;
+    }
+
+    // Check active 5-hour rolling bucket explicitly so we log 5h deadlock blocks clearly
+    if (
+      shortTermHeadroomPercent !== null &&
+      shortTermHeadroomPercent < options.minHeadroomPercent
+    ) {
+      const recoveryNote = targetPool.shortTerm?.resetTime
+        ? ` (recovers at ${targetPool.shortTerm.resetTime})`
+        : '';
+      rejectionReasons.push(
+        `${resolvedModel}: 5h bucket at ${shortTermHeadroomPercent}% < ${options.minHeadroomPercent}% floor${recoveryNote}`
+      );
+      continue;
+    }
+
+    if (
+      weeklyHeadroomPercent < options.minHeadroomPercent ||
+      effectiveHeadroomPercent < options.minHeadroomPercent
+    ) {
+      rejectionReasons.push(
+        `${resolvedModel}: weekly/effective headroom at ${effectiveHeadroomPercent}% < ${options.minHeadroomPercent}% floor`
+      );
+      continue;
+    }
+
+    const hoursUntilReset =
+      typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
+        ? targetPool.hoursUntilReset
+        : calculateHoursUntilReset(targetPool.resetTime, nowMs);
+
+    if (options.maxHoursUntilReset !== undefined) {
+      if (
+        !targetPool.resetTime ||
+        hoursUntilReset === null ||
+        hoursUntilReset <= 0 ||
+        hoursUntilReset > options.maxHoursUntilReset
+      ) {
+        rejectionReasons.push(
+          `${resolvedModel}: reset in ${hoursUntilReset ?? 'unknown'}h > ${options.maxHoursUntilReset}h window`
+        );
+        continue;
+      }
+    }
+
+    return {
+      allowed: true,
+      selectedModel: resolvedModel,
+      family,
+      effectiveHeadroomPercent,
+      weeklyHeadroomPercent,
+      shortTermHeadroomPercent,
+      resetTime: targetPool.resetTime,
+      hoursUntilReset,
+      shortTermResetTime: targetPool.shortTerm?.resetTime,
+    };
+  }
+
+  return {
+    allowed: false,
+    reason: rejectionReasons.join('; ') || 'No eligible models in preference chain',
+  };
 };

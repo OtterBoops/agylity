@@ -51,9 +51,10 @@ export const QuotaBucketSchema = z.object({
   displayName: z.string(),
   window: z.string().optional(),
   remainingFraction: z.number().min(0).max(1),
-  resetTime: z.string(),
-  hoursUntilReset: z.number().min(0),
+  resetTime: z.string().optional(),
+  hoursUntilReset: z.number().min(0).nullable().optional(),
   description: z.string().optional(),
+  disabled: z.boolean().optional(),
 });
 
 export type QuotaBucket = z.infer<typeof QuotaBucketSchema>;
@@ -86,7 +87,8 @@ export const RawQuotaBucketSchema = z.object({
   description: z.string().optional(),
   window: z.string().optional(),
   remainingFraction: z.number().min(0).max(1),
-  resetTime: z.string(),
+  resetTime: z.string().optional(),
+  disabled: z.boolean().optional(),
 });
 
 export const RawQuotaGroupSchema = z.object({
@@ -328,15 +330,32 @@ export const aggregateUserQuotaSummary = (
     const resolved = resolveGroupFamily(group.displayName);
     if (!resolved) continue;
 
-    const bucketsWithHours: QuotaBucket[] = (group.buckets || []).map((b) => ({
-      bucketId: b.bucketId,
-      displayName: b.displayName,
-      window: b.window || (b.bucketId.includes('5h') ? '5h' : 'weekly'),
-      remainingFraction: b.remainingFraction,
-      resetTime: b.resetTime,
-      hoursUntilReset: calculateHoursUntilReset(b.resetTime, nowMs),
-      description: b.description,
-    }));
+    // Locate raw weekly bucket first to serve as resetTime fallback for disabled shortTerm buckets
+    const rawWeekly =
+      (group.buckets || []).find(
+        (b) =>
+          b.window === 'weekly' ||
+          b.bucketId.includes('weekly') ||
+          b.displayName.toLowerCase().includes('weekly')
+      ) || group.buckets?.[0];
+
+    const weeklyResetTime = rawWeekly?.resetTime || '';
+    const weeklyHours = weeklyResetTime ? calculateHoursUntilReset(weeklyResetTime, nowMs) : 0;
+
+    const bucketsWithHours: QuotaBucket[] = (group.buckets || []).map((b) => {
+      const bReset = b.resetTime || weeklyResetTime;
+      const bHours = b.resetTime ? calculateHoursUntilReset(b.resetTime, nowMs) : weeklyHours;
+      return {
+        bucketId: b.bucketId,
+        displayName: b.displayName,
+        window: b.window || (b.bucketId.includes('5h') ? '5h' : 'weekly'),
+        remainingFraction: b.remainingFraction,
+        resetTime: bReset,
+        hoursUntilReset: bHours,
+        description: b.description,
+        disabled: b.disabled,
+      };
+    });
 
     // Weekly bucket is the primary evaluation target
     const weeklyBucket =
@@ -375,8 +394,8 @@ export const aggregateUserQuotaSummary = (
           family: resolved.family,
           // The weekly limit is the primary eval target
           remainingFraction: weeklyBucket.remainingFraction,
-          resetTime: weeklyBucket.resetTime,
-          hoursUntilReset: weeklyBucket.hoursUntilReset,
+          resetTime: weeklyBucket.resetTime || '',
+          hoursUntilReset: weeklyBucket.hoursUntilReset ?? 0,
           models: groupModels,
           overageEnabled,
           remainingCredits,
