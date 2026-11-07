@@ -246,6 +246,7 @@ export interface ModelEligibilityOptions {
   minDispatchHeadroomPercent?: number;
   allowOverage?: boolean;
   quotaBurnMaxHours?: number;
+  quotaBurnMinHeadroomPercent?: number;
   nowMs?: number;
 }
 
@@ -349,7 +350,12 @@ export const evaluateModelDispatchEligibility = (
   if (scheduleMode === 'pre_reset' && !allowOverage) {
     const isWindowImminent =
       hoursUntilReset !== null && hoursUntilReset > 0 && hoursUntilReset <= quotaBurnMaxHours;
-    const hasAmpleQuota = effectiveHeadroomPercent >= minHeadroom;
+    const burnMinHeadroom =
+      options.quotaBurnMinHeadroomPercent !== undefined && options.quotaBurnMinHeadroomPercent > 0
+        ? options.quotaBurnMinHeadroomPercent
+        : minHeadroom;
+    const hasAmpleQuota =
+      effectiveHeadroomPercent >= burnMinHeadroom && effectiveHeadroomPercent > 0;
 
     if (!isWindowImminent || !hasAmpleQuota) {
       return {
@@ -359,7 +365,7 @@ export const evaluateModelDispatchEligibility = (
         effectiveHeadroomPercent,
         hoursUntilReset,
         code: 'QUOTA_BURN_CONDITIONS_NOT_MET',
-        reason: `Pre-Reset Quota-Burn conditions not yet met for ${family} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${minHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
+        reason: `Pre-Reset Quota-Burn conditions not yet met for ${family} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${burnMinHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
       };
     }
   }

@@ -1897,4 +1897,177 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
       }
     });
   });
+
+  describe('8. Standing Tasks & Automated Pre-Reset Quota-Burn Scheduler', () => {
+    it('performs CRUD operations on standing tasks in TaskQueue', () => {
+      const { dir, cleanup } = makeTempDir('orch_standing_crud_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        assert.deepEqual(queue.listStandingTasks(), []);
+
+        const created = queue.createStandingTask({
+          title: 'Claude Bug Hunter',
+          prompt: 'Audit repo and submit issue',
+          repositoryId: 'agylity',
+          model: 'claude-sonnet-5-5',
+          effort: 'high',
+          triggerBeforeResetHours: 12,
+        });
+
+        assert.ok(created.id.startsWith('standing-'));
+        assert.equal(created.title, 'Claude Bug Hunter');
+        assert.equal(created.model, 'claude-sonnet-5-5');
+        assert.equal(created.triggerBeforeResetHours, 12);
+        assert.equal(created.enabled, true);
+
+        const fetched = queue.getStandingTask(created.id);
+        assert.equal(fetched?.id, created.id);
+
+        const updated = queue.updateStandingTask(created.id, {
+          title: 'Claude Bug Hunter v2',
+          triggerBeforeResetHours: 14,
+          enabled: false,
+          lastTriggeredResetTime: '2026-11-08T01:30:44Z',
+        });
+        assert.equal(updated?.title, 'Claude Bug Hunter v2');
+        assert.equal(updated?.triggerBeforeResetHours, 14);
+        assert.equal(updated?.enabled, false);
+        assert.equal(updated?.lastTriggeredResetTime, '2026-11-08T01:30:44Z');
+
+        const deleted = queue.deleteStandingTask(created.id);
+        assert.equal(deleted, true);
+        assert.equal(queue.getStandingTask(created.id), undefined);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('auto-triggers eligible standing tasks when pool reset is imminent and dedupes per cycle', async () => {
+      const { dir, cleanup } = makeTempDir('orch_standing_sched_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          orchestratorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            {
+              id: 'agylity',
+              name: 'OtterBoops/agylity',
+              path: dir,
+              cloneUrl: 'https://github.com/OtterBoops/agylity',
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new OrchestratorCoordinator({ configStore });
+
+        const st = coordinator.queue.createStandingTask({
+          title: 'Claude Pre-Reset Burn',
+          prompt: 'Audit code and test',
+          repositoryId: 'agylity',
+          model: 'claude-sonnet-5-5',
+          effort: 'medium',
+          triggerBeforeResetHours: 12,
+        });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+
+        // 1. When pool is 15h away (>12h), scheduler does NOT trigger
+        const farSnapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5, // 50%
+            resetTime,
+            hoursUntilReset: 15,
+            models: ['Claude Sonnet'],
+          },
+        ];
+        const spawnedFar = await coordinator.triggerEligibleStandingTasks(farSnapshots);
+        assert.equal(spawnedFar.length, 0);
+        assert.equal(coordinator.queue.getStandingTask(st.id)?.lastTriggeredResetTime, undefined);
+
+        // 2. When pool is 10h away (<=12h), scheduler TRIGGERS the standing task
+        const imminentSnapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5, // 50%
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+        const spawned = await coordinator.triggerEligibleStandingTasks(imminentSnapshots);
+        assert.equal(spawned.length, 1);
+        const task = spawned[0]!;
+        assert.equal(task.standingTaskId, st.id);
+        assert.equal(task.model, 'claude-sonnet-5-5');
+        assert.equal(task.scheduleMode, 'immediate');
+        assert.equal(task.status, 'queued');
+
+        // Verify standing task was stamped with lastTriggeredResetTime and lastTaskId
+        const updatedSt = coordinator.queue.getStandingTask(st.id);
+        assert.equal(updatedSt?.lastTriggeredResetTime, resetTime);
+        assert.equal(updatedSt?.lastTaskId, task.id);
+
+        // 3. Second run with the same resetTime cycle must DEDUPE (no re-triggering)
+        const recheck = await coordinator.triggerEligibleStandingTasks(imminentSnapshots);
+        assert.equal(recheck.length, 0);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('skips disabled standing tasks or pools with disabled dispatch', async () => {
+      const { dir, cleanup } = makeTempDir('orch_standing_disabled_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          orchestratorEnabled: true,
+          poolPolicies: {
+            claude: { dispatchEnabled: false, alertsEnabled: true },
+            'gemini-argon': { dispatchEnabled: true, alertsEnabled: true },
+            'gemini-flash': { dispatchEnabled: true, alertsEnabled: true },
+          },
+        });
+        const coordinator = new OrchestratorCoordinator({ configStore });
+
+        coordinator.queue.createStandingTask({
+          title: 'Claude Burn',
+          prompt: 'Audit code',
+          repositoryId: 'agylity',
+          model: 'claude-sonnet-5-5',
+          triggerBeforeResetHours: 12,
+          enabled: true,
+        });
+
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime: '2026-11-08T01:30:44Z',
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        // Skipped because pool policy has dispatchEnabled: false
+        const spawned = await coordinator.triggerEligibleStandingTasks(snapshots);
+        assert.equal(spawned.length, 0);
+      } finally {
+        cleanup();
+      }
+    });
+  });
 });

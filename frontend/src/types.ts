@@ -164,3 +164,29 @@ export interface SwarmTask {
   error?: string;
   durationMs: number;
 }
+
+export interface StandingTaskRecord {
+  id: string;
+  title: string;
+  prompt: string;
+  repositoryId: string;
+  model: string;
+  effort: 'low' | 'medium' | 'high';
+  verifyCommand?: string;
+  autoCreatePr: boolean;
+  enabled: boolean;
+  sortOrder: number;
+  triggerBeforeResetHours: number;
+  lastTriggeredResetTime?: string;
+  lastTaskId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RepositoryConfig {
+  id: string;
+  name: string;
+  path: string;
+  cloneUrl?: string;
+  defaultBranch?: string;
+}
