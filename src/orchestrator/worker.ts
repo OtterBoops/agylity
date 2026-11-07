@@ -295,12 +295,15 @@ export class TaskExecutor {
 
       // 2. Dispatch prompt via official `agy` CLI binary with explicit model & effort
       const safeEffort = resolveReasoningEffortForModel(task.model, task.effort);
+      // Unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
       const agyArgs: string[] = [
         '-p',
         task.prompt,
         '--mode',
         'auto',
         '--dangerously-skip-permissions',
+        '--settings',
+        '{"enableTerminalSandbox":false}',
         '--model',
         task.model,
         '--effort',

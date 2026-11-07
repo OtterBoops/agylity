@@ -275,6 +275,8 @@ describe('Unit & Integration Tests: Task Orchestrator, Model Routing & Pull-Work
           '--mode',
           'auto',
           '--dangerously-skip-permissions',
+          '--settings',
+          '{"enableTerminalSandbox":false}',
           '--model',
           'gemini-4-argon-high',
           '--effort',
