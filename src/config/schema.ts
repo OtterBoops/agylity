@@ -190,6 +190,7 @@ export const RawEnvSchema = z.object({
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
   WEB_UI_AUTH_TOKEN: z.string().optional(),
+  BASE_URL: z.string().url().optional().or(z.literal('')),
 
   /* In-App Network & IP Security */
   ALLOWED_IP_RANGES: z.string().optional(),
@@ -236,6 +237,8 @@ export interface AppConfig {
   quotaBurnMinHeadroomPercent: number;
 
   webUiEnabled: boolean;
+  // Public origin of the dashboard; notification embeds carry a link only when this is set.
+  baseUrl?: string;
   /** Whether usage past 0% quota may draw billable credits; the language server does not report this. */
   allowOverage: boolean;
   webUiPort: number;
@@ -284,6 +287,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   webUiPort: 'WEB_UI_PORT',
   webUiHost: 'WEB_UI_HOST',
   webUiAuthToken: 'WEB_UI_AUTH_TOKEN',
+  baseUrl: 'BASE_URL',
   allowedIpRanges: 'ALLOWED_IP_RANGES',
   trustedProxies: 'TRUSTED_PROXIES',
   logLevel: 'LOG_LEVEL',
@@ -365,6 +369,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
   webUiAuthToken: undefined,
+  baseUrl: undefined,
 
   allowedIpRanges: [],
   trustedProxies: false,
@@ -535,6 +540,9 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.WEB_UI_AUTH_TOKEN && !isTemplatePlaceholder(parsed.WEB_UI_AUTH_TOKEN)) {
     result.webUiAuthToken = parsed.WEB_UI_AUTH_TOKEN;
   }
+  if (parsed.BASE_URL && !isTemplatePlaceholder(parsed.BASE_URL)) {
+    result.baseUrl = parsed.BASE_URL.trim();
+  }
 
   if (parsed.ALLOWED_IP_RANGES !== undefined) {
     result.allowedIpRanges = parsed.ALLOWED_IP_RANGES.split(',')
@@ -587,6 +595,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   webUiPort: z.number().int().positive(),
   webUiHost: z.string(),
   webUiAuthToken: z.string().optional(),
+  baseUrl: z.string().url().or(z.literal('')).optional(),
   allowedIpRanges: z.array(z.string()),
   trustedProxies: z.boolean(),
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),

@@ -181,6 +181,7 @@ export class WebhookNotifier implements Notifier {
     const embed = buildQuotaAlertEmbed(alert, {
       ownerUserId: this.config.discordOwnerUserId,
       pingOwner: this.config.discordPingOwner !== false,
+      baseUrl: this.config.baseUrl,
     });
 
     const payload: WebhookPayload = {
@@ -238,7 +239,7 @@ export class WebhookNotifier implements Notifier {
     }
 
     const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
-    const embed = buildDispatchStatusEmbed(status);
+    const embed = buildDispatchStatusEmbed(status, { baseUrl: this.config.baseUrl });
 
     const payload: WebhookPayload = {
       event: 'dispatch_status',
@@ -276,6 +277,7 @@ export class WebhookNotifier implements Notifier {
     const embed = buildTestAlertEmbed(undefined, {
       ownerUserId: this.config.discordOwnerUserId,
       pingOwner: this.config.discordPingOwner !== false,
+      baseUrl: this.config.baseUrl,
     });
 
     const payload: WebhookPayload = {

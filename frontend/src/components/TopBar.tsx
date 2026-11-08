@@ -53,7 +53,7 @@ export const TopBar = ({
   }, [themeMenuOpen]);
 
   return (
-    <header class="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-pine-highlight pb-4 sm:mb-6 sm:gap-4">
+    <div class="flex flex-wrap items-center justify-between gap-3 sm:gap-4">
       <div>
         <h1 class="text-xl font-bold tracking-tight text-pine-text sm:text-2xl">{title}</h1>
         {subtitle && <p class="mt-0.5 text-xs text-pine-subtle sm:text-sm">{subtitle}</p>}
@@ -162,6 +162,6 @@ export const TopBar = ({
           <span>Refresh</span>
         </button>
       </div>
-    </header>
+    </div>
   );
 };

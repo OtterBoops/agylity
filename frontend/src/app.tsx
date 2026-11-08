@@ -209,7 +209,7 @@ export const App = () => {
 
   if (isCheckingAuth) {
     return (
-      <div class="flex min-h-dvh w-full items-center justify-center bg-pine-base text-pine-muted">
+      <div class="flex size-full min-h-full items-center justify-center bg-pine-base text-pine-muted">
         <div class="flex items-center gap-3">
           <div class="size-4 animate-spin rounded-full border-2 border-pine-iris border-t-transparent" />
           <span class="font-mono text-xs">Connecting to Agylity...</span>
@@ -230,7 +230,7 @@ export const App = () => {
   }
 
   return (
-    <div class="min-h-dvh bg-pine-base text-sm text-pine-text md:flex md:h-screen md:overflow-hidden">
+    <div class="min-h-full bg-pine-base text-sm text-pine-text md:flex md:h-full md:overflow-hidden">
       <Sidebar
         coordinatorEnabled={isCoordinatorEnabled}
         lastProbeSource={alerts?.lastProbeSource}
@@ -238,92 +238,104 @@ export const App = () => {
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
       />
 
-      <div class="min-w-0 flex-1 p-4 sm:p-6 md:h-screen md:overflow-y-auto md:p-6 2xl:p-8">
-        <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
-          <TopBar
-            title={title}
-            isRefreshing={isRefreshing}
-            refreshCooldown={refreshCooldown}
-            coordinatorEnabled={isCoordinatorEnabled}
-            remainingCredits={remainingCredits}
-            theme={theme}
-            onThemeChange={setTheme}
-            onRefresh={handleManualRefresh}
-            onOpenCommandPalette={() => setCommandPaletteOpen(true)}
-            onOpenAuthModal={() => setSessionModalOpen(true)}
-          />
+      <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
+        {/* Desktop Header: pinned at top of right pane */}
+        <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-3.5 sm:px-6 md:px-6 2xl:px-8">
+          <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
+            <TopBar
+              title={title}
+              isRefreshing={isRefreshing}
+              refreshCooldown={refreshCooldown}
+              coordinatorEnabled={isCoordinatorEnabled}
+              remainingCredits={remainingCredits}
+              theme={theme}
+              onThemeChange={setTheme}
+              onRefresh={handleManualRefresh}
+              onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+              onOpenAuthModal={() => setSessionModalOpen(true)}
+            />
+          </div>
+        </header>
 
-          {Boolean(
-            alerts?.lastProbeSource === 'auth_required' ||
-            alerts?.authRequired === true ||
-            quotaError?.toLowerCase().includes('authentication required') ||
-            quotaError?.toLowerCase().includes('sign in')
-          ) && (
-            <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 px-4 py-3 text-pine-love shadow-xs">
-              <div class="flex min-w-0 items-center gap-2.5">
-                <span class="rounded-sm bg-pine-love/20 px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
-                  [AUTH REQUIRED]
-                </span>
-                <span class="text-xs font-medium text-pine-text">
-                  Antigravity CLI is not authenticated. Launch the CLI in container to sign in:
-                </span>
-                <code class="hidden rounded-sm border border-pine-highlight bg-pine-base/80 px-2.5 py-1 font-mono text-xs text-pine-text select-all sm:inline">
-                  docker exec -it agylity agy
-                </code>
+        {/* Scrollable View Area: content scrolls cleanly inside this div */}
+        <div class="min-w-0 flex-1 p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
+          <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
+            {Boolean(
+              alerts?.lastProbeSource === 'auth_required' ||
+              alerts?.authRequired === true ||
+              quotaError?.toLowerCase().includes('authentication required') ||
+              quotaError?.toLowerCase().includes('sign in')
+            ) && (
+              <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 px-4 py-3 text-pine-love shadow-xs">
+                <div class="flex min-w-0 items-center gap-2.5">
+                  <span class="rounded-sm bg-pine-love/20 px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
+                    [AUTH REQUIRED]
+                  </span>
+                  <span class="text-xs font-medium text-pine-text">
+                    Antigravity CLI is not authenticated. Launch the CLI in container to sign in:
+                  </span>
+                  <code class="hidden rounded-sm border border-pine-highlight bg-pine-base/80 px-2.5 py-1 font-mono text-xs text-pine-text select-all sm:inline">
+                    docker exec -it agylity agy
+                  </code>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText('docker exec -it agylity agy');
+                      setAuthCopied(true);
+                      setTimeout(() => setAuthCopied(false), 2000);
+                    } catch {}
+                  }}
+                  class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/20 px-3 py-1 text-xs font-semibold text-pine-love transition-colors hover:bg-pine-love/30"
+                >
+                  <Icon icon={authCopied ? faCheck : faCopy} class="size-3" />
+                  <span>{authCopied ? 'Copied' : 'Copy Command'}</span>
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText('docker exec -it agylity agy');
-                    setAuthCopied(true);
-                    setTimeout(() => setAuthCopied(false), 2000);
-                  } catch {}
-                }}
-                class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/20 px-3 py-1 text-xs font-semibold text-pine-love transition-colors hover:bg-pine-love/30"
-              >
-                <Icon icon={authCopied ? faCheck : faCopy} class="size-3" />
-                <span>{authCopied ? 'Copied' : 'Copy Command'}</span>
-              </button>
-            </div>
-          )}
+            )}
 
-          <main>
-            <Router onChange={handleRouteChange}>
-              <OverviewView
-                path="/"
-                quota={quota}
-                alerts={alerts}
-                minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
-              />
-              <OverviewView
-                path="/overview"
-                quota={quota}
-                alerts={alerts}
-                minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
-              />
-              <TasksView
-                path="/tasks"
-                onRefresh={fetchAll}
-                onOpenDispatch={() => setDispatchModalOpen(true)}
-              />
-              <LogsView path="/logs" />
-              <CoordinatorView path="/settings" config={config} onChanged={fetchAll} />
-              <CoordinatorView path="/settings/coordinator" config={config} onChanged={fetchAll} />
-              <NotificationsView
-                path="/settings/notifications"
-                config={config}
-                onSaved={fetchAll}
-              />
-              <RepositoriesView
-                path="/settings/repositories"
-                config={config}
-                onChanged={fetchAll}
-              />
-              <AdvancedView path="/settings/advanced" config={config} onChanged={fetchAll} />
-              <NotFoundView default />
-            </Router>
-          </main>
+            <main>
+              <Router onChange={handleRouteChange}>
+                <OverviewView
+                  path="/"
+                  quota={quota}
+                  alerts={alerts}
+                  minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+                />
+                <OverviewView
+                  path="/overview"
+                  quota={quota}
+                  alerts={alerts}
+                  minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+                />
+                <TasksView
+                  path="/tasks"
+                  onRefresh={fetchAll}
+                  onOpenDispatch={() => setDispatchModalOpen(true)}
+                />
+                <LogsView path="/logs" />
+                <CoordinatorView path="/settings" config={config} onChanged={fetchAll} />
+                <CoordinatorView
+                  path="/settings/coordinator"
+                  config={config}
+                  onChanged={fetchAll}
+                />
+                <NotificationsView
+                  path="/settings/notifications"
+                  config={config}
+                  onSaved={fetchAll}
+                />
+                <RepositoriesView
+                  path="/settings/repositories"
+                  config={config}
+                  onChanged={fetchAll}
+                />
+                <AdvancedView path="/settings/advanced" config={config} onChanged={fetchAll} />
+                <NotFoundView default />
+              </Router>
+            </main>
+          </div>
         </div>
       </div>
 

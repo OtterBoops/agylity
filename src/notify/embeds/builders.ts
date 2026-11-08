@@ -17,7 +17,14 @@ import {
 export interface EmbedBuildOptions {
   ownerUserId?: string;
   pingOwner?: boolean;
+  baseUrl?: string;
 }
+
+// Builders append their own leading-slash route, so a trailing slash on the origin would double up.
+const buildDashboardLink = (baseUrl: string | undefined, path: string): string | undefined => {
+  const base = baseUrl?.trim().replace(/\/+$/, '');
+  return base ? `${base}${path}` : undefined;
+};
 
 // One pool rendering shared by the status and alert embeds so the two cannot drift. The field
 // NAME carries the pool and its headline figure, so each pool reads as a single scannable line.
@@ -43,7 +50,7 @@ const renderPoolFieldValue = (pool: QuotaSnapshot): string => {
 
 export const buildQuotaAlertEmbed = (
   alert: QuotaAlert,
-  _options?: EmbedBuildOptions
+  options?: EmbedBuildOptions
 ): StandardEmbed => {
   const poolName = (alert.pool.displayName || alert.pool.poolId || 'Quota Pool').slice(0, 256);
   const hours = alert.milestoneHours;
@@ -62,6 +69,7 @@ export const buildQuotaAlertEmbed = (
         inline: false,
       },
     ],
+    url: buildDashboardLink(options?.baseUrl, '/overview'),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
     timestamp: alert.triggeredAt || new Date().toISOString(),
   };
@@ -69,7 +77,7 @@ export const buildQuotaAlertEmbed = (
 
 export const buildTestAlertEmbed = (
   samplePool?: Partial<QuotaSnapshot>,
-  _options?: EmbedBuildOptions
+  options?: EmbedBuildOptions
 ): StandardEmbed => {
   const poolName = (samplePool?.displayName || FAMILY_DISPLAY_NAMES.claude).slice(0, 256);
   const modelsList =
@@ -102,6 +110,7 @@ export const buildTestAlertEmbed = (
         inline: false,
       },
     ],
+    url: buildDashboardLink(options?.baseUrl, '/overview'),
     footer: { text: 'Agylity Quota Sentry • Test Notification Simulation' },
     timestamp: new Date().toISOString(),
   };
@@ -136,7 +145,10 @@ export const formatDurationHuman = (durationMs?: number): string => {
   return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
 };
 
-export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): StandardEmbed => {
+export const buildDispatchStatusEmbed = (
+  status: DispatchStatusUpdate,
+  options?: EmbedBuildOptions
+): StandardEmbed => {
   const step = normalizeStep(status);
   const visual = STEP_VISUALS[step] ?? DEFAULT_STEP_VISUAL;
   const isTerminal = isTerminalStep(step);
@@ -219,15 +231,25 @@ export const buildDispatchStatusEmbed = (status: DispatchStatusUpdate): Standard
     description: description.trim() || undefined,
     color,
     fields: fields.length > 0 ? fields : undefined,
+    url: status.taskId
+      ? buildDashboardLink(
+          options?.baseUrl,
+          `/tasks?tab=executions&id=${encodeURIComponent(status.taskId)}`
+        )
+      : undefined,
     timestamp: status.timestamp || new Date().toISOString(),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
   };
 };
 
-export const buildQuotaStatusEmbed = (pools: QuotaSnapshot[]): StandardEmbed => {
+export const buildQuotaStatusEmbed = (
+  pools: QuotaSnapshot[],
+  options?: EmbedBuildOptions
+): StandardEmbed => {
   const embed: StandardEmbed = {
     title: '[Quota] Antigravity Model Pools',
     color: 0x31748f,
+    url: buildDashboardLink(options?.baseUrl, '/overview'),
   };
 
   if (pools.length === 0) {

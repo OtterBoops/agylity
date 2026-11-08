@@ -99,7 +99,7 @@ export const ConnectionInspectorModal = ({
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto flex max-h-[90vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+      class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
       {/* Header */}
       <div class="flex items-center justify-between border-b border-pine-highlight pb-4">

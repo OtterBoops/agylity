@@ -308,6 +308,7 @@ export class DiscordNotifier implements Notifier {
       const embed = buildQuotaAlertEmbed(alert, {
         ownerUserId: ownerId,
         pingOwner: this.config.discordPingOwner !== false,
+        baseUrl: this.config.baseUrl,
       });
       const actionRow = createRepoSelectMenu(this.config.repositories, alert.pool.family);
       const mention = this.resolveOwnerMention(ownerId);
@@ -382,7 +383,7 @@ export class DiscordNotifier implements Notifier {
         return;
       }
 
-      const embed = renderDispatchEmbed(status);
+      const embed = renderDispatchEmbed(status, this.config.baseUrl);
       await (channel as any).send({ embeds: [embed] });
     } catch {
       // Safe catch
@@ -436,6 +437,7 @@ export class DiscordNotifier implements Notifier {
         const embed = buildTestAlertEmbed(samplePool, {
           ownerUserId: ownerId,
           pingOwner: this.config.discordPingOwner !== false,
+          baseUrl: this.config.baseUrl,
         });
         const mention = this.resolveOwnerMention(ownerId);
 

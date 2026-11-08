@@ -31,6 +31,7 @@ import {
   sanitizeWebhookUrl,
   sanitizeErrorMessage,
 } from '../../src/notify/adapters/webhook.js';
+import { buildDispatchStatusEmbed, buildQuotaAlertEmbed } from '../../src/notify/embeds/index.js';
 import {
   DiscordNotifier,
   renderQuotaEmbed,
@@ -1688,6 +1689,91 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(outcome.delivered, true);
       assert.equal(outcome.results.failing?.success, false);
       assert.equal(outcome.results.ok?.success, true);
+    });
+  });
+  /* ==================================================================== */
+  /* 10. Dashboard Deep Links in Embeds                                   */
+  /* ==================================================================== */
+  describe('10. Dashboard links in embeds', () => {
+    const baseUrl = 'https://agylity.example.com';
+    const sampleAlert: QuotaAlert = {
+      pool: {
+        poolId: 'claude',
+        family: 'claude',
+        displayName: 'Claude',
+        remainingFraction: 0.2,
+        resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
+        hoursUntilReset: 3,
+        models: ['Claude'],
+      },
+      milestoneHours: 3,
+      remainingPercentage: 20,
+      triggeredAt: new Date().toISOString(),
+    };
+
+    it('links quota alerts to the overview and strips a trailing slash from the base', () => {
+      const embed = buildQuotaAlertEmbed(sampleAlert, { baseUrl: `${baseUrl}/` });
+      assert.equal(embed.url, `${baseUrl}/overview`);
+    });
+
+    it('links dispatch status to the task inspector and leaves other steps unlinked', () => {
+      const linked = buildDispatchStatusEmbed(
+        { step: 'completed', taskId: 'a4eb1c', timestamp: new Date().toISOString() },
+        { baseUrl }
+      );
+      assert.equal(linked.url, `${baseUrl}/tasks?tab=executions&id=a4eb1c`);
+
+      const unlinked = buildDispatchStatusEmbed(
+        { step: 'completed', timestamp: new Date().toISOString() },
+        { baseUrl }
+      );
+      assert.equal(unlinked.url, undefined);
+    });
+
+    it('omits the link entirely when no base URL is configured', () => {
+      assert.equal(buildQuotaAlertEmbed(sampleAlert).url, undefined);
+      assert.equal(buildDispatchStatusEmbed({ step: 'completed', taskId: 'x' }).url, undefined);
+      assert.equal(renderQuotaEmbed([]).data.url, undefined);
+    });
+
+    it('renders the link through the Discord embed builder', () => {
+      assert.equal(renderQuotaEmbed([], baseUrl).data.url, `${baseUrl}/overview`);
+    });
+
+    it('carries the link in webhook payloads for both events', async () => {
+      const received: any[] = [];
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          received.push(JSON.parse(body));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+          baseUrl,
+        });
+        await notifier.initialize();
+
+        await notifier.notifyQuotaAlert(sampleAlert);
+        await notifier.notifyDispatchStatus({
+          step: 'completed',
+          taskId: 'a4eb1c',
+          timestamp: new Date().toISOString(),
+        });
+
+        assert.equal(received[0]?.embeds?.[0]?.url, `${baseUrl}/overview`);
+        assert.equal(received[1]?.embeds?.[0]?.url, `${baseUrl}/tasks?tab=executions&id=a4eb1c`);
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
     });
   });
 });

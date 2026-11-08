@@ -269,7 +269,7 @@ export const Sidebar = ({
 
       {/* Desktop Collapsible Sidebar */}
       <aside
-        class={`hidden transition-[width] duration-200 ease-in-out md:flex md:h-screen md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 md:backdrop-blur-md ${
+        class={`hidden transition-[width] duration-200 ease-in-out md:flex md:h-full md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 md:backdrop-blur-md ${
           isCollapsed ? 'md:w-16' : 'md:w-60 2xl:w-64'
         }`}
       >

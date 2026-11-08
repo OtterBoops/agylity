@@ -253,7 +253,7 @@ const handleQuotaCommand = async (
     }
   }
 
-  const embed = renderQuotaEmbed(snapshots);
+  const embed = renderQuotaEmbed(snapshots, deps.config.baseUrl);
   const actionRow = createRepoSelectMenu(deps.config.repositories);
 
   if (canDefer && typeof interaction.editReply === 'function') {

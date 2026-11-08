@@ -21,6 +21,10 @@ const toEmbed = (standard: StandardEmbed): EmbedBuilder => {
     );
   }
 
+  if (standard.url) {
+    embed.setURL(standard.url);
+  }
+
   if (standard.footer) {
     embed.setFooter({ text: standard.footer.text.slice(0, 2048) });
   }
@@ -33,9 +37,9 @@ const toEmbed = (standard: StandardEmbed): EmbedBuilder => {
 };
 
 /** Maps the shared quota-status embed model onto a Discord EmbedBuilder. */
-export const renderQuotaEmbed = (pools: QuotaSnapshot[]): EmbedBuilder =>
-  toEmbed(buildQuotaStatusEmbed(pools));
+export const renderQuotaEmbed = (pools: QuotaSnapshot[], baseUrl?: string): EmbedBuilder =>
+  toEmbed(buildQuotaStatusEmbed(pools, { baseUrl }));
 
 /** Maps the shared dispatch-status embed model onto a Discord EmbedBuilder. */
-export const renderDispatchEmbed = (status: DispatchStatusUpdate): EmbedBuilder =>
-  toEmbed(buildDispatchStatusEmbed(status));
+export const renderDispatchEmbed = (status: DispatchStatusUpdate, baseUrl?: string): EmbedBuilder =>
+  toEmbed(buildDispatchStatusEmbed(status, { baseUrl }));

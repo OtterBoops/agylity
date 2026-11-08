@@ -791,7 +791,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">Task</th>
                   <th class="p-3.5 whitespace-nowrap">When</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -827,29 +827,29 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       aria-label={`Open details for ${t.id}`}
                       class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
                     >
-                      <td class="max-w-[220px] min-w-[140px] p-3.5">
-                        <div class="flex flex-wrap items-center gap-1.5">
+                      <td class="max-w-[240px] min-w-[150px] p-3.5">
+                        <div class="flex items-center gap-1.5">
                           <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
                             #{t.taskNumber || 0}
                           </span>
                           <span
-                            class="truncate font-medium text-pine-text"
+                            class="truncate text-sm font-medium text-pine-text"
                             title={t.title || t.prompt}
                           >
                             {t.title || 'Task'}
                           </span>
                         </div>
                       </td>
-                      <td class="p-3.5 text-xs whitespace-nowrap text-pine-subtle">
+                      <td class="p-3.5 text-sm whitespace-nowrap text-pine-subtle">
                         {formatDateTime(t.createdAt, { timeFormat })}
                       </td>
-                      <td class="p-3.5 font-mono text-xs text-pine-text">{t.repositoryName}</td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-iris">
+                      <td class="p-3.5 font-mono text-sm text-pine-text">{t.repositoryName}</td>
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-iris">
                         {t.model}
                         <span class="text-pine-muted"> · {t.effort}</span>
                       </td>
-                      <td class="p-3.5 text-xs whitespace-nowrap">{renderOriginLink(t)}</td>
-                      <td class="p-3.5 font-mono text-xs text-pine-subtle">
+                      <td class="p-3.5 text-sm whitespace-nowrap">{renderOriginLink(t)}</td>
+                      <td class="p-3.5 font-mono text-sm text-pine-subtle">
                         {t.prUrl ? (
                           <a
                             href={t.prUrl}
@@ -862,19 +862,19 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             <Icon icon={faExternalLinkAlt} class="size-2.5" />
                           </a>
                         ) : t.branchName ? (
-                          <span class="inline-block max-w-[120px] truncate" title={t.branchName}>
+                          <span class="inline-block max-w-[130px] truncate" title={t.branchName}>
                             {t.branchName}
                           </span>
                         ) : (
                           '—'
                         )}
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
                         {formatDuration(t.durationMs)}
                       </td>
                       <td class="p-3.5 whitespace-nowrap">
                         <span
-                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(t.status)}`}
+                          class={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(t.status)}`}
                         >
                           {t.status}
                         </span>
@@ -920,7 +920,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Work Item</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -956,46 +956,46 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                         highlightedId === item.id ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
                       }`}
                     >
-                      <td class="p-3.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
+                      <td class="p-3.5 font-mono text-sm font-bold whitespace-nowrap text-pine-iris">
                         #{item.taskNumber}
                       </td>
                       <td class="max-w-sm p-3.5">
-                        <div class="font-semibold text-pine-text">{item.title}</div>
+                        <div class="text-sm font-semibold text-pine-text">{item.title}</div>
                         <div
-                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle"
+                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[13px]"
                           title={item.prompt}
                         >
                           {item.prompt}
                         </div>
                         {item.lastError && (
                           <div
-                            class="mt-1 line-clamp-1 font-mono text-[11px] text-pine-love"
+                            class="mt-1 line-clamp-1 font-mono text-xs text-pine-love"
                             title={item.lastError}
                           >
                             Last error: {item.lastError}
                           </div>
                         )}
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         {item.repositoryId}
                       </td>
-                      <td class="p-3.5 text-xs">
+                      <td class="p-3.5 text-sm">
                         <div class="flex flex-wrap gap-1">
                           {item.models.map((m) => (
                             <span
                               key={m}
-                              class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-[11px] whitespace-nowrap text-pine-iris"
+                              class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris"
                             >
                               {m}
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-[10px] text-pine-muted">Effort: {item.effort}</div>
+                        <div class="mt-0.5 text-[11px] text-pine-muted">Effort: {item.effort}</div>
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
                         P{item.priorityOrder}
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap">
                         <span
                           title="Autonomous retry budget. A manual dispatch is always allowed."
                           class={
@@ -1009,7 +1009,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       </td>
                       <td class="p-3.5 whitespace-nowrap">
                         <span
-                          class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${
+                          class={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${
                             item.status === 'completed'
                               ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'
                               : item.status === 'failed'
@@ -1100,7 +1100,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Routine Template</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -1136,48 +1136,48 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                         highlightedId === routine.id ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
                       }`}
                     >
-                      <td class="p-3.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
+                      <td class="p-3.5 font-mono text-sm font-bold whitespace-nowrap text-pine-iris">
                         #{routine.taskNumber}
                       </td>
                       <td class="max-w-sm p-3.5">
-                        <div class="font-semibold text-pine-text">{routine.title}</div>
+                        <div class="text-sm font-semibold text-pine-text">{routine.title}</div>
                         <div
-                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle"
+                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[13px]"
                           title={routine.prompt}
                         >
                           {routine.prompt}
                         </div>
                         {routine.verifyCommand && (
-                          <div class="mt-1 font-mono text-[11px] text-pine-foam">
+                          <div class="mt-1 font-mono text-xs text-pine-foam">
                             verify: {routine.verifyCommand}
                           </div>
                         )}
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         {routine.repositoryId}
                       </td>
-                      <td class="p-3.5 text-xs">
+                      <td class="p-3.5 text-sm">
                         <div class="flex flex-wrap gap-1">
                           {routine.models.map((m) => (
                             <span
                               key={m}
-                              class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-[11px] whitespace-nowrap text-pine-iris"
+                              class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris"
                             >
                               {m}
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-[10px] text-pine-muted">
+                        <div class="mt-0.5 text-[11px] text-pine-muted">
                           Effort: {routine.effort}
                         </div>
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-gold">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-gold">
                         &le; {routine.triggerBeforeResetHours}h
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         &ge; {routine.minHeadroomPercent}%
                       </td>
-                      <td class="p-3.5 font-mono text-xs whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
                         {routine.lastTriggeredResetTime ? (
                           <span title={routine.lastTriggeredResetTime}>
                             {formatDateTime(routine.lastTriggeredResetTime, { timeFormat })}
@@ -1255,7 +1255,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           ref={executionDialogRef}
           onClose={closeInspector}
           onClick={dialogBackdropClickHandler(executionDialogRef, closeInspector)}
-          class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 sm:p-6"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 sm:p-6"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
             <div class="min-w-0 flex-1">
@@ -1380,7 +1380,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           ref={backlogDialogRef}
           onClose={() => setShowCreateBacklog(false)}
           onClick={dialogBackdropClickHandler(backlogDialogRef, () => setShowCreateBacklog(false))}
-          class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
             <h3 class="text-base font-bold text-pine-text">New Backlog Work Item</h3>
@@ -1479,7 +1479,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           ref={routineDialogRef}
           onClose={() => setShowCreateRoutine(false)}
           onClick={dialogBackdropClickHandler(routineDialogRef, () => setShowCreateRoutine(false))}
-          class="fixed inset-0 m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
             <h3 class="text-base font-bold text-pine-text">New Maintenance Routine</h3>
