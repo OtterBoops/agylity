@@ -56,7 +56,11 @@ export const LogsView = () => {
           }
           if (data.entries.length > 0) {
             lastId.current = data.entries[data.entries.length - 1]!.id;
-            setEntries((prev) => [...prev, ...data.entries].slice(-MAX_LINES));
+            setEntries((prev) => {
+              const existingIds = new Set(prev.map((e) => e.id));
+              const newEntries = data.entries.filter((e) => !existingIds.has(e.id));
+              return [...prev, ...newEntries].slice(-MAX_LINES);
+            });
           }
         })
         .catch(() => {
@@ -249,7 +253,7 @@ export const LogsView = () => {
           <p class="text-pine-subtle">No log lines match current filters.</p>
         ) : (
           visible.map((e) => (
-            <div key={e.id} class="flex gap-3 hover:bg-pine-overlay/30">
+            <div key={`${e.id}-${e.ts}`} class="flex gap-3 hover:bg-pine-overlay/30">
               <span class="shrink-0 font-mono text-pine-subtle">
                 {formatTime(e.ts, { includeSeconds: true, timeFormat })}
               </span>
