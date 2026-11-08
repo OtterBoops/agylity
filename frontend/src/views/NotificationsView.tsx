@@ -456,10 +456,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   };
 
   return (
-    <SettingsLayout
-      activeTab="notifications"
-      coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
-    >
+    <SettingsLayout>
       {/* Page Header */}
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-3">

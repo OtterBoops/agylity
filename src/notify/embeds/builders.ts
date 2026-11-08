@@ -37,11 +37,6 @@ const renderPoolFieldName = (pool: QuotaSnapshot, includePoolName = true): strin
 const renderPoolFieldValue = (pool: QuotaSnapshot): string => {
   const weekly = pool.weekly ?? pool;
   const lines = [`-# weekly · resets ${formatResetWindow(weekly.resetTime)}`];
-  if (pool.shortTerm) {
-    lines.push(
-      `-# 5-hour ${renderSquareProgressBar(pool.shortTerm.remainingFraction)} · resets ${formatResetWindow(pool.shortTerm.resetTime)}`
-    );
-  }
   if (pool.models && pool.models.length > 0) {
     lines.push(formatModelPills(pool.models));
   }
@@ -56,16 +51,24 @@ export const buildQuotaAlertEmbed = (
   const hours = alert.milestoneHours;
   const fraction = alert.pool.remainingFraction ?? alert.remainingPercentage / 100;
   const resetTimestamp = formatResetWindow(alert.pool.resetTime);
+  const weekly = alert.pool.weekly ?? alert.pool;
 
-  const percent = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
+  const valueLines = [`-# weekly · resets ${resetTimestamp}`];
+  if (alert.pool.models && alert.pool.models.length > 0) {
+    valueLines.push(formatModelPills(alert.pool.models));
+  }
+
   return {
-    title: `[Alert] ${poolName} — ${percent}% remaining`,
-    description: `Crossed the **${hours}h** milestone before reset (${resetTimestamp}).`,
+    title: `[Alert] ${poolName}`,
+    description: `Crossed the **${hours}h** milestone before reset.`,
     color: 0xf6c177,
     fields: [
       {
-        name: renderPoolFieldName(alert.pool, false),
-        value: renderPoolFieldValue(alert.pool).slice(0, 1024),
+        name: `${renderSquareProgressBar(weekly.remainingFraction ?? fraction)} remaining (weekly)`.slice(
+          0,
+          256
+        ),
+        value: valueLines.join('\n').slice(0, 1024),
         inline: false,
       },
     ],

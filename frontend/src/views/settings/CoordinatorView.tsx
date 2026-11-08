@@ -65,7 +65,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
       : 'http://agylity:8484';
 
   return (
-    <SettingsLayout activeTab="coordinator" coordinatorEnabled={isCoordinatorEnabled}>
+    <SettingsLayout>
       <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>

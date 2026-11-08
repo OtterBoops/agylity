@@ -26,7 +26,7 @@ export const RepositoriesView = ({ config, onChanged }: RepositoriesViewProps) =
   };
 
   return (
-    <SettingsLayout activeTab="repositories" coordinatorEnabled={isCoordinatorEnabled}>
+    <SettingsLayout>
       {!isCoordinatorEnabled ? (
         <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
           <div class="flex flex-wrap items-center justify-between gap-4">

@@ -10,10 +10,7 @@ interface AdvancedViewProps {
 }
 
 export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
-  <SettingsLayout
-    activeTab="advanced"
-    coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
-  >
+  <SettingsLayout>
     <GeneralSettingsCard />
     <SettingsForm
       title="Sentry &amp; Quota Safeguards"

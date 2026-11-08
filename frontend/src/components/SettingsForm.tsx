@@ -213,11 +213,16 @@ export const SettingsForm = ({
                 )}
               </label>
               {f.type === 'boolean' ? (
-                <ToggleSwitch
-                  checked={valueOf(f) === 'true'}
-                  onChange={(next) => setDraft({ ...draft, [f.key]: String(next) })}
-                  label={f.label}
-                />
+                <div class="flex items-center gap-3 rounded-lg border border-pine-highlight px-3 py-2">
+                  <ToggleSwitch
+                    checked={valueOf(f) === 'true'}
+                    onChange={(next) => setDraft({ ...draft, [f.key]: String(next) })}
+                    label={f.label}
+                  />
+                  <span class="text-sm text-pine-text">
+                    {valueOf(f) === 'true' ? 'Allowed' : 'Blocked'}
+                  </span>
+                </div>
               ) : f.type === 'select' ? (
                 <select
                   id={`f-${f.key}`}
