@@ -114,7 +114,7 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
             <Icon icon={faCheck} class="size-3.5" />
             <span class="font-semibold">Session Authenticated</span>
           </div>
-          <p class="mt-1 text-[11px] text-pine-subtle">
+          <p class="mt-1 text-xs text-pine-subtle">
             Your browser is currently authenticated with a Bearer token.
           </p>
         </div>

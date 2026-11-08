@@ -102,7 +102,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <h4 class="text-sm font-semibold text-pine-text">{pool.name}</h4>
-                  <span class="font-mono text-[10px] text-pine-muted">({pool.key})</span>
+                  <span class="font-mono text-xs text-pine-muted">({pool.key})</span>
                 </div>
                 <p class="mt-0.5 text-xs text-pine-subtle">{pool.description}</p>
               </div>

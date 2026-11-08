@@ -1,3 +1,4 @@
+/* impeccable-disable side-tab -- Discord webhook embeds require a 4px left accent border */
 import { faEye } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
 

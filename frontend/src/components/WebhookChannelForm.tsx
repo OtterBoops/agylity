@@ -144,7 +144,7 @@ export const WebhookChannelForm = ({
             {showSecret ? 'Hide' : 'Show'}
           </button>
         </div>
-        <span class="text-[11px] text-pine-muted">
+        <span class="text-xs text-pine-muted">
           When specified, Agylity signs each payload with HMAC-SHA256 in the x-agylity-signature
           header.
         </span>

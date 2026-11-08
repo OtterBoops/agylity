@@ -125,9 +125,7 @@ export const Sidebar = ({
     <div class="flex flex-col gap-1">
       {!collapsed ? (
         <div class="flex items-center gap-2 px-2 py-0.5">
-          <span class="text-[11px] font-bold tracking-widest text-pine-muted uppercase">
-            {title}
-          </span>
+          <span class="text-xs font-bold tracking-widest text-pine-muted uppercase">{title}</span>
           <span class="h-px flex-1 bg-pine-highlight/30" />
         </div>
       ) : (
@@ -154,7 +152,7 @@ export const Sidebar = ({
               <>
                 <span class="shrink-0 whitespace-nowrap">{item.label}</span>
                 {item.badge && (
-                  <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-[11px] font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
+                  <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-xs font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
                     {item.badge}
                   </span>
                 )}
@@ -229,14 +227,14 @@ export const Sidebar = ({
                 <span class="font-medium text-pine-text">{probeStatus}</span>
               </div>
               {lastProbeAt && (
-                <span class="font-mono text-[0.6875rem] text-pine-muted" title={lastProbeAt}>
+                <span class="font-mono text-xs text-pine-muted" title={lastProbeAt}>
                   {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                 </span>
               )}
             </div>
 
             <div
-              class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-[11px] text-pine-muted"
+              class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted"
               onClick={(e) => e.stopPropagation()}
             >
               <a
@@ -254,13 +252,13 @@ export const Sidebar = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
                   <span>Update v{updateInfo.latestVersion}</span>
                   <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
                 </a>
               ) : (
-                <span class="text-[10px] text-pine-muted/70">Up to date</span>
+                <span class="text-xs text-pine-muted/70">Up to date</span>
               )}
             </div>
           </div>
@@ -344,7 +342,7 @@ export const Sidebar = ({
                   <span class="truncate font-medium text-pine-text">{probeStatus}</span>
                 </div>
                 {lastProbeAt && (
-                  <span class="shrink-0 font-mono text-[11px] text-pine-muted" title={lastProbeAt}>
+                  <span class="shrink-0 font-mono text-xs text-pine-muted" title={lastProbeAt}>
                     {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                   </span>
                 )}
@@ -395,7 +393,7 @@ export const Sidebar = ({
                 />
                 <span class={`relative inline-flex size-2.5 rounded-full ${probeColor}`} />
               </span>
-              <span class="font-mono text-[10px] text-pine-muted">v{APP_VERSION}</span>
+              <span class="font-mono text-xs text-pine-muted">v{APP_VERSION}</span>
             </div>
           )}
         </div>

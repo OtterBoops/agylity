@@ -465,7 +465,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         <div class="flex items-center gap-3">
           <h2 class="text-xl font-semibold text-pine-text">Notification Destinations</h2>
           {enabledChannels.length === 0 && (
-            <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-[11px] font-medium text-pine-muted">
+            <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted">
               Alerts muted
             </span>
           )}
@@ -505,7 +505,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
             >
               Embed Link Base URL
             </label>
-            <span class="text-[11px] text-pine-muted">Optional</span>
+            <span class="text-xs text-pine-muted">Optional</span>
           </div>
           <input
             id="agylity-base-url"

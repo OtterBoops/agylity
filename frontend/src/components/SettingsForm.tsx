@@ -194,7 +194,7 @@ export const SettingsForm = ({
                     <span class="font-mono text-xs text-pine-gold">override</span>
                     <button
                       type="button"
-                      class="cursor-pointer text-[10px] text-pine-subtle transition-colors hover:text-pine-love"
+                      class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love"
                       onClick={async () => {
                         try {
                           await deleteConfigOverride(f.key);

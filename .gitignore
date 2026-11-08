@@ -5,6 +5,12 @@ data/
 *.log
 coverage/
 .agents/
+.codex/
+.impeccable/
+**/.impeccable/
+.github/skills/
+.github/agents/
+.github/hooks/
 .DS_Store
 Thumbs.db
 *.key

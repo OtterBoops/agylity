@@ -67,7 +67,7 @@ export const TopBar = ({
           >
             <Icon icon={faCoins} class="size-3 text-pine-iris sm:size-3.5" />
             <span class="font-mono text-pine-iris">{remainingCredits}</span>
-            <span class="text-[11px] text-pine-subtle sm:text-xs">Credits</span>
+            <span class="text-xs text-pine-subtle">Credits</span>
           </div>
         )}
 

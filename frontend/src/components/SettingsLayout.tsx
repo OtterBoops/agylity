@@ -83,7 +83,7 @@ export const SettingsLayout = ({
                 <span>{tab.label}</span>
                 {tab.badge && (
                   <span
-                    class={`rounded-sm px-1.5 py-0.5 text-[10px] font-bold uppercase ${
+                    class={`rounded-sm px-1.5 py-0.5 text-xs font-bold uppercase ${
                       isActive ? 'bg-pine-base/20 text-pine-base' : 'bg-pine-foam/15 text-pine-foam'
                     }`}
                   >

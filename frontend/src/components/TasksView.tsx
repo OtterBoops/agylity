@@ -583,7 +583,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             class="font-medium whitespace-nowrap text-pine-subtle"
             title="Origin backlog task was deleted"
           >
-            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+            {label} <span class="text-xs font-normal text-pine-muted">(deleted)</span>
           </span>
         );
       }
@@ -621,7 +621,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             class="font-medium whitespace-nowrap text-pine-subtle"
             title="Origin routine was deleted"
           >
-            {label} <span class="text-[10px] font-normal text-pine-muted">(deleted)</span>
+            {label} <span class="text-xs font-normal text-pine-muted">(deleted)</span>
           </span>
         );
       }
@@ -748,7 +748,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                   onChange={handleToggleRoutinesMaster}
                 />
                 <span
-                  class={`text-[11px] font-bold uppercase ${routinesEnabled ? 'text-pine-foam' : 'text-pine-love'}`}
+                  class={`text-xs font-bold uppercase ${routinesEnabled ? 'text-pine-foam' : 'text-pine-love'}`}
                 >
                   {routinesEnabled ? 'Active' : 'Paused'}
                 </span>
@@ -791,7 +791,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">Task</th>
                   <th class="p-3.5 whitespace-nowrap">When</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -827,9 +827,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       aria-label={`Open details for ${t.id}`}
                       class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
                     >
-                      <td class="max-w-[240px] min-w-[150px] p-3.5">
+                      <td class="max-w-xs min-w-[200px] p-3.5 md:max-w-sm xl:max-w-md">
                         <div class="flex items-center gap-1.5">
-                          <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
+                          <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
                             #{t.taskNumber || 0}
                           </span>
                           <span
@@ -920,7 +920,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Work Item</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -990,7 +990,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-[11px] text-pine-muted">Effort: {item.effort}</div>
+                        <div class="mt-0.5 text-xs text-pine-muted">Effort: {item.effort}</div>
                       </td>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
                         P{item.priorityOrder}
@@ -1059,7 +1059,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                                   void handleDeleteBacklog(item.id);
                                 }}
                                 disabled={backlogActionId === item.id}
-                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-[11px] font-bold whitespace-nowrap text-pine-love"
+                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-xs font-bold whitespace-nowrap text-pine-love"
                               >
                                 Delete?
                               </button>
@@ -1100,7 +1100,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
             <table class="w-full min-w-[780px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Routine Template</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -1167,9 +1167,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-[11px] text-pine-muted">
-                          Effort: {routine.effort}
-                        </div>
+                        <div class="mt-0.5 text-xs text-pine-muted">Effort: {routine.effort}</div>
                       </td>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-gold">
                         &le; {routine.triggerBeforeResetHours}h
@@ -1214,7 +1212,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                                   void handleDeleteRoutine(routine.id);
                                 }}
                                 disabled={routineActionId === routine.id}
-                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-[11px] font-bold whitespace-nowrap text-pine-love"
+                                class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-xs font-bold whitespace-nowrap text-pine-love"
                               >
                                 Delete?
                               </button>
@@ -1266,7 +1264,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     : `Task #${selectedTask.taskNumber || selectedTask.id}`}
                 </h3>
                 <span
-                  class={`rounded-sm border px-2 py-0.5 text-[10px] font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(selectedTask.status)}`}
+                  class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(selectedTask.status)}`}
                 >
                   {selectedTask.status}
                 </span>
@@ -1328,7 +1326,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             {/* Prompt Block */}
             <div>
               <div class="mb-1 flex items-center justify-between">
-                <h4 class="text-[10px] font-semibold text-pine-muted uppercase">Prompt</h4>
+                <h4 class="text-xs font-semibold text-pine-muted uppercase">Prompt</h4>
                 <button
                   type="button"
                   onClick={() => {
@@ -1336,7 +1334,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     setCopiedPrompt(true);
                     setTimeout(() => setCopiedPrompt(false), 2000);
                   }}
-                  class="cursor-pointer rounded-sm bg-pine-overlay px-1.5 py-0.5 text-[10px] text-pine-subtle hover:text-pine-text"
+                  class="cursor-pointer rounded-sm bg-pine-overlay px-1.5 py-0.5 text-xs text-pine-subtle hover:text-pine-text"
                 >
                   <Icon icon={copiedPrompt ? faCheck : faCopy} class="mr-1 inline size-2.5" />
                   {copiedPrompt ? 'Copied' : 'Copy'}
@@ -1350,10 +1348,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             {/* Model Output Block (Rendered even on failure!) */}
             {selectedTask.output && (
               <div>
-                <h4 class="mb-1 text-[10px] font-semibold text-pine-muted uppercase">
+                <h4 class="mb-1 text-xs font-semibold text-pine-muted uppercase">
                   Model Output Log
                 </h4>
-                <div class="max-h-48 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-[11px] wrap-break-word break-all whitespace-pre-wrap text-pine-foam">
+                <div class="max-h-48 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam">
                   {selectedTask.output}
                 </div>
               </div>
@@ -1362,7 +1360,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             {/* Error Block */}
             {selectedTask.error && (
               <div>
-                <h4 class="mb-1 text-[10px] font-semibold text-pine-love uppercase">
+                <h4 class="mb-1 text-xs font-semibold text-pine-love uppercase">
                   Failure Diagnostic
                 </h4>
                 <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">

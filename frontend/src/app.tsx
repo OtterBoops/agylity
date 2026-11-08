@@ -268,7 +268,7 @@ export const App = () => {
             ) && (
               <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 px-4 py-3 text-pine-love shadow-xs">
                 <div class="flex min-w-0 items-center gap-2.5">
-                  <span class="rounded-sm bg-pine-love/20 px-2 py-0.5 font-mono text-[11px] font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
+                  <span class="rounded-sm bg-pine-love/20 px-2 py-0.5 font-mono text-xs font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
                     [AUTH REQUIRED]
                   </span>
                   <span class="text-xs font-medium text-pine-text">

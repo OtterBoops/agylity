@@ -35,7 +35,7 @@ export const GeneralSettingsCard = () => {
             <div>
               <div class="flex items-center gap-2">
                 <span class="text-sm font-semibold text-pine-text">Clock Time Format</span>
-                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-[11px] font-semibold text-pine-muted">
+                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-xs font-semibold text-pine-muted">
                   Preview: {formatTime(now, { includeSeconds: true, timeFormat })}
                 </span>
               </div>

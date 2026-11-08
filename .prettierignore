@@ -5,3 +5,10 @@ data
 *.db-wal
 *.db-shm
 *.key
+.agents
+.codex
+.impeccable
+**/.impeccable
+.github/skills
+.github/agents
+.github/hooks

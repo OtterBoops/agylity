@@ -52,12 +52,10 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
             </span>
             <div>
               <h1 class="text-base font-bold text-pine-text sm:text-lg">Agylity Control Plane</h1>
-              <span class="text-[11px] text-pine-subtle">
-                Autonomous Sentry & Swarm Coordinator
-              </span>
+              <span class="text-xs text-pine-subtle">Autonomous Sentry & Swarm Coordinator</span>
             </div>
           </div>
-          <span class="inline-flex items-center gap-1 rounded-md border border-pine-iris/30 bg-pine-iris/10 px-2 py-0.5 font-mono text-[11px] font-medium whitespace-nowrap text-pine-iris">
+          <span class="inline-flex items-center gap-1 rounded-md border border-pine-iris/30 bg-pine-iris/10 px-2 py-0.5 font-mono text-xs font-medium whitespace-nowrap text-pine-iris">
             <Icon icon={faLock} class="size-2.5" />
             <span>Protected</span>
           </span>
@@ -93,7 +91,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
               <input
                 type={showPassword ? 'text' : 'password'}
                 placeholder="Paste WEB_UI_AUTH_TOKEN..."
-                class="w-full rounded-xl border border-pine-highlight bg-pine-overlay py-2.5 pr-10 pl-9 text-sm text-pine-text placeholder-pine-muted transition-colors focus:border-pine-iris focus:outline-none"
+                class="w-full rounded-xl border border-pine-highlight bg-pine-overlay py-2.5 pr-10 pl-9 text-sm text-pine-text placeholder-pine-subtle transition-colors focus:border-pine-iris focus:outline-none"
                 value={token}
                 onInput={(e) => {
                   setToken((e.target as HTMLInputElement).value);
@@ -135,7 +133,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
         </form>
 
         <div class="mt-6 border-t border-pine-highlight/40 pt-4 text-center">
-          <p class="font-mono text-[11px] text-pine-muted">
+          <p class="font-mono text-xs text-pine-muted">
             Token is stored strictly client-side in your browser's local storage.
           </p>
         </div>

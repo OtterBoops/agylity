@@ -30,7 +30,7 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
         <div class="overflow-x-auto">
           <table class="w-full min-w-[540px] border-collapse text-left text-sm">
             <thead>
-              <tr class="border-b border-pine-highlight bg-pine-overlay text-xs font-semibold text-pine-subtle sm:text-sm">
+              <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
                 <th class="px-4 py-3 whitespace-nowrap">Time</th>
                 <th class="px-4 py-3 whitespace-nowrap">Model Pool</th>
                 <th class="px-4 py-3 whitespace-nowrap">Milestone</th>

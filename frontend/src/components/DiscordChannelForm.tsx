@@ -51,7 +51,7 @@ export const DiscordChannelForm = ({
       <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
         <div class="flex items-center gap-2">
           <span class="text-xs font-semibold text-pine-subtle">Discord Bot Configuration</span>
-          <span class="text-[10px] text-pine-muted">• Slash commands &amp; rich alert embeds</span>
+          <span class="text-xs text-pine-muted">• Slash commands &amp; rich alert embeds</span>
         </div>
         <button
           type="button"
@@ -71,13 +71,11 @@ export const DiscordChannelForm = ({
               : 'border-pine-love/40 bg-pine-love/10 text-pine-love'
           }`}
         >
-          <span class="font-mono text-[10px] font-bold tracking-wider uppercase">
+          <span class="font-mono text-xs font-bold tracking-wider uppercase">
             [{diagnostics.success ? 'Success' : 'Error'}]
           </span>
           <span class="flex-1 wrap-break-word">{diagnostics.message}</span>
-          <span class="shrink-0 font-mono text-[10px] text-pine-muted">
-            {diagnostics.timestamp}
-          </span>
+          <span class="shrink-0 font-mono text-xs text-pine-muted">{diagnostics.timestamp}</span>
         </div>
       )}
 

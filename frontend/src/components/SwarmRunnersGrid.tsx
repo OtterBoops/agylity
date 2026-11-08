@@ -82,12 +82,12 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
 
                   <div class="flex items-center gap-1.5">
                     {!r.enabled && (
-                      <span class="inline-flex items-center rounded-md border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap text-pine-muted uppercase">
+                      <span class="inline-flex items-center rounded-md border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-muted uppercase">
                         Paused
                       </span>
                     )}
                     <span
-                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-[11px] font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
                     >
                       {r.status}
                     </span>

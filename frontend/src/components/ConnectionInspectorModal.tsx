@@ -175,7 +175,7 @@ export const ConnectionInspectorModal = ({
                   }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-[10px] font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
                   <span>Update v{updateInfo.latestVersion}</span>
                   <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
