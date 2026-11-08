@@ -51,7 +51,7 @@ export const DiscordChannelForm = ({
       <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
         <div class="flex items-center gap-2">
           <span class="text-xs font-semibold text-pine-subtle">Discord Bot Configuration</span>
-          <span class="text-xs text-pine-muted">• Slash commands &amp; rich alert embeds</span>
+          <span class="text-xs text-pine-subtle">• Slash commands &amp; rich alert embeds</span>
         </div>
         <button
           type="button"
@@ -75,17 +75,17 @@ export const DiscordChannelForm = ({
             [{diagnostics.success ? 'Success' : 'Error'}]
           </span>
           <span class="flex-1 wrap-break-word">{diagnostics.message}</span>
-          <span class="shrink-0 font-mono text-xs text-pine-muted">{diagnostics.timestamp}</span>
+          <span class="shrink-0 font-mono text-xs text-pine-subtle">{diagnostics.timestamp}</span>
         </div>
       )}
 
       {/* Stage 1: Bot Credentials & App Identity */}
-      <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-overlay/30 p-4 sm:p-5">
+      <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
             Stage 1: Bot Credentials &amp; Identity
           </h4>
-          <span class="text-xs text-pine-muted">Discord Developer Portal</span>
+          <span class="text-xs text-pine-subtle">Discord Developer Portal</span>
         </div>
 
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -116,7 +116,7 @@ export const DiscordChannelForm = ({
                 autoComplete="new-password"
                 data-1p-ignore="true"
                 data-lpignore="true"
-                class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+                class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
                 placeholder={
                   isTokenSet
                     ? '•••••••••••••••••••• (Encrypted — enter new token to update)'
@@ -133,7 +133,7 @@ export const DiscordChannelForm = ({
                 {showToken ? 'Hide' : 'Show'}
               </button>
             </div>
-            <span class="text-xs text-pine-muted">Developer Portal &gt; Bot &gt; Reset Token</span>
+            <span class="text-xs text-pine-subtle">Developer Portal &gt; Bot &gt; Reset Token</span>
           </div>
 
           <div class="flex flex-col gap-1.5">
@@ -147,12 +147,12 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
               placeholder="e.g. 987654321098765432"
               value={clientId}
               onInput={(e) => onClientIdChange((e.target as HTMLInputElement).value)}
             />
-            <div class="flex items-center justify-between text-xs text-pine-muted">
+            <div class="flex items-center justify-between text-xs text-pine-subtle">
               <span>Developer Portal General Information</span>
               {clientId.trim() && (
                 <a
@@ -172,12 +172,12 @@ export const DiscordChannelForm = ({
       </div>
 
       {/* Stage 2: Notification Target & Guild Routing */}
-      <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-overlay/30 p-4 sm:p-5">
+      <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
             Stage 2: Delivery Target &amp; Server Routing
           </h4>
-          <span class="text-xs text-pine-muted">Discord Server &amp; Channels</span>
+          <span class="text-xs text-pine-subtle">Discord Server &amp; Channels</span>
         </div>
 
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -190,12 +190,12 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
               placeholder="e.g. 123456789012345678"
               value={channelId}
               onInput={(e) => onChannelIdChange((e.target as HTMLInputElement).value)}
             />
-            <span class="text-xs text-pine-muted">
+            <span class="text-xs text-pine-subtle">
               Right click channel in Discord &gt; Copy Channel ID
             </span>
           </div>
@@ -209,12 +209,12 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
               placeholder="e.g. 112233445566778899"
               value={guildId}
               onInput={(e) => onGuildIdChange((e.target as HTMLInputElement).value)}
             />
-            <span class="text-xs text-pine-muted">
+            <span class="text-xs text-pine-subtle">
               Target server for instant slash command registration
             </span>
           </div>
@@ -233,21 +233,21 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
               placeholder="e.g. 334455667788990011 (Restricts /quota and dispatches to this Discord user ID)"
               value={ownerUserId}
               onInput={(e) => onOwnerUserIdChange((e.target as HTMLInputElement).value)}
             />
-            <span class="text-xs text-pine-muted">
+            <span class="text-xs text-pine-subtle">
               Enforces the Single-Tenant Invariant: only your Discord User ID can query quotas or
               trigger tasks
             </span>
           </div>
 
-          <div class="flex items-center justify-between gap-4 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-3.5 md:col-span-2">
+          <div class="flex items-center justify-between gap-4 border-t border-pine-highlight/40 pt-3 md:col-span-2">
             <div class="flex flex-col gap-0.5">
               <span class="text-xs font-semibold text-pine-text">Ping Owner on Discord</span>
-              <span class="text-xs text-pine-muted">
+              <span class="text-xs text-pine-subtle">
                 Mentions your Discord user ID (
                 <code class="font-mono text-pine-foam">
                   &lt;@{ownerUserId.trim() || 'owner'}&gt;

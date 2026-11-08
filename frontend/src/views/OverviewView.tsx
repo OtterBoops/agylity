@@ -6,11 +6,24 @@ interface OverviewViewProps {
   quota: QuotaSnapshot[];
   alerts: SentryAlertState | null;
   minHeadroomPercent?: number;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
-export const OverviewView = ({ quota, alerts, minHeadroomPercent = 10 }: OverviewViewProps) => (
+export const OverviewView = ({
+  quota,
+  alerts,
+  minHeadroomPercent = 10,
+  error = null,
+  onRetry,
+}: OverviewViewProps) => (
   <div>
-    <QuotaGrid quota={quota} minHeadroomPercent={minHeadroomPercent} />
+    <QuotaGrid
+      quota={quota}
+      minHeadroomPercent={minHeadroomPercent}
+      error={error}
+      onRetry={onRetry}
+    />
     <ActivityView alerts={alerts} />
   </div>
 );

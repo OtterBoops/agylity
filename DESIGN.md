@@ -2,19 +2,19 @@
 name: Agylity
 description: Autonomous Quota Sentry & Swarm Coordinator for Google Antigravity
 colors:
-  bg-base: '#191724'
-  bg-surface: '#1f1d2e'
-  bg-overlay: '#26233a'
+  bg-base: '#232136'
+  bg-surface: '#2a273f'
+  bg-overlay: '#393552'
   text-primary: '#e0def4'
-  text-secondary: '#9893b8'
+  text-secondary: '#a4a0c0'
   text-muted: '#6e6a86'
-  border-highlight: '#403d52'
+  border-highlight: '#44415a'
   accent-foam: '#9ccfd8'
   accent-iris: '#c4a7e7'
-  accent-pine: '#31748f'
+  accent-pine: '#3e8fb0'
   accent-gold: '#f6c177'
-  accent-love: '#eb6f92'
-  accent-rose: '#ebbcba'
+  accent-love: '#ee82a0'
+  accent-rose: '#ea9a97'
 typography:
   heading:
     fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, sans-serif'
@@ -68,30 +68,32 @@ Agylity is a high-density, technical operations dashboard and coordinator for Go
 
 ## Colors
 
-The palette is rooted in three Rosé Pine variants (Default Dark, Moon, and Dawn) composed via Tailwind v4 CSS variables:
+The palette is Rosé Pine Moon, held in a single `:root` block of Tailwind v4 CSS variables. There is one theme: no light variant, no runtime switching, and no `data-theme` attribute. Every text token clears WCAG AA (4.5:1) on all three surface layers except `text-muted`, which is deliberately quiet for de-emphasised metadata.
 
 - **Surface Layers:**
-  - `bg-base` (`#191724`): Application background and viewport canvas.
-  - `bg-surface` (`#1f1d2e`): Primary cards, sidebars, and elevated containers.
-  - `bg-overlay` (`#26233a`): Inputs, table header bands, modals, and badge backgrounds.
+  - `bg-base` (`#232136`): Application background and viewport canvas.
+  - `bg-surface` (`#2a273f`): Primary cards, sidebars, and elevated containers.
+  - `bg-overlay` (`#393552`): Inputs, table header bands, modals, and badge backgrounds.
 - **Text & Borders:**
   - `text-primary` (`#e0def4`): High-contrast titles, primary numbers, and headings.
-  - `text-secondary` (`#9893b8`): Subtitles, helper text, and secondary metadata.
+  - `text-secondary` (`#a4a0c0`): Subtitles, helper text, and secondary metadata.
   - `text-muted` (`#6e6a86`): Disabled states, minor timestamps, and subtle borders.
-  - `border-highlight` (`#403d52`): Structural card and table boundaries.
+  - `border-highlight` (`#44415a`): Structural card and table boundaries.
 - **Accents:**
   - `accent-iris` (`#c4a7e7`): Primary brand action, active tabs, and identity pills.
   - `accent-foam` (`#9ccfd8`): Completed tasks, clean PR links, and stable states.
   - `accent-gold` (`#f6c177`): In-progress tasks, pre-reset triggers, and warning states.
-  - `accent-love` (`#eb6f92`): Failed dispatches, quota depletion, and critical alerts.
-  - `accent-pine` (`#31748f`): Model family indicators and healthy quota pools.
+  - `accent-love` (`#ee82a0`): Failed dispatches, quota depletion, and critical alerts.
+  - `accent-pine` (`#3e8fb0`): Model family indicators and healthy quota pools.
+  - `accent-rose` (`#ea9a97`): Scheduled and routine-bound states.
 
 ## Typography
 
 Typography is strictly dual-stack: **Inter / system-ui** for structural copy and **monospace** for tokens, identifiers, and telemetry:
 
 - **Headings (`h1`, `h2`):** `text-lg` (18px) to `text-xl` (20px), `font-semibold` or `font-bold`. Never bloated or oversized (`2xl:text-3xl` is prohibited).
-- **Body & Captions:** `text-sm` (14px) for data tables and controls; `text-xs` (12px) for secondary metadata. Body text below 12px is prohibited.
+- **Root Scale:** The document root is `15.4px`, rising to `16.5px` at `sm` and `17.6px` at `2xl`; every rem-derived utility scales with it. Never reintroduce `zoom` on an ancestor — it double-scales any overlay positioned from `getBoundingClientRect()`.
+- **Body & Captions:** `text-sm` for data tables and controls; `text-xs` for secondary metadata. Body text below 12px is prohibited.
 - **Mono Telemetry:** `font-mono text-xs` or `text-sm` for task IDs, commit hashes, branches, durations, and credit balances.
 
 ## Layout
@@ -104,7 +106,7 @@ Typography is strictly dual-stack: **Inter / system-ui** for structural copy and
 
 - **Borders over Shadows:** Depth is established primarily via subtle 1px border lines (`border border-pine-highlight`) rather than heavy drop shadows.
 - **Modal Backdrops:** Native HTML `<dialog>` elements rendered with `backdrop:bg-black/60` and light blur (`backdrop-blur-xs`).
-- **Surface Layering:** Base (`#191724`) $\to$ Surface (`#1f1d2e`) $\to$ Overlay (`#26233a`).
+- **Surface Layering:** Base (`#232136`) $\to$ Surface (`#2a273f`) $\to$ Overlay (`#393552`).
 
 ## Shapes
 
@@ -115,7 +117,7 @@ Typography is strictly dual-stack: **Inter / system-ui** for structural copy and
 
 ## Components
 
-- **Data Tables:** Crisp table layout with `p-3.5` cell padding, uppercase monospace headers (`text-xs sm:text-[13px] tracking-wider text-pine-muted`), single-line rows, and right-aligned duration metrics.
+- **Data Tables:** Crisp table layout with `p-3.5` cell padding, uppercase monospace headers (`text-xs sm:text-[14.3px] tracking-wider text-pine-muted`), single-line rows, and right-aligned duration metrics.
 - **Status Badges:** Textual status pills (`[DONE]`, `[FAILED]`, `[ACTIVE]`) with `whitespace-nowrap`, 1px borders, and light alpha backgrounds (`bg-*/15 text-* border-*/40`).
 - **Metric Cards:** Clean numerical displays with dual-tone progress bars and countdown timers.
 

@@ -7,7 +7,6 @@ import {
   faChartPie,
   faCheckToSlot,
   faCodeBranch,
-  faMoon,
   faNetworkWired,
   faRotate,
   faSearch,
@@ -20,7 +19,7 @@ import { Icon } from './Icon';
 interface CommandItem {
   id: string;
   title: string;
-  category: 'Navigation' | 'Action' | 'Theme';
+  category: 'Navigation' | 'Action';
   shortcut?: string;
   icon: IconDefinition;
   action: () => void;
@@ -31,7 +30,6 @@ interface CommandPaletteProps {
   onClose: () => void;
   onRefresh: () => void;
   onOpenDispatch: () => void;
-  onToggleTheme: () => void;
   coordinatorEnabled: boolean;
 }
 
@@ -40,7 +38,6 @@ export const CommandPalette = ({
   onClose,
   onRefresh,
   onOpenDispatch,
-  onToggleTheme,
   coordinatorEnabled,
 }: CommandPaletteProps) => {
   const [query, setQuery] = useState('');
@@ -145,16 +142,6 @@ export const CommandPalette = ({
         onRefresh();
       },
     },
-    {
-      id: 'act-theme',
-      title: 'Cycle Color Theme',
-      category: 'Theme',
-      icon: faMoon,
-      action: () => {
-        onToggleTheme();
-        onClose();
-      },
-    },
   ];
 
   const q = query.trim().toLowerCase();
@@ -205,6 +192,9 @@ export const CommandPalette = ({
 
   return (
     <dialog
+      id="command-palette-dialog"
+      aria-label="Command palette"
+      aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
@@ -216,10 +206,11 @@ export const CommandPalette = ({
         <input
           ref={inputRef}
           type="text"
+          aria-label="Search commands or navigate views"
           autoComplete="off"
           data-1p-ignore="true"
           data-lpignore="true"
-          class="flex-1 bg-transparent text-sm text-pine-text outline-none placeholder:text-pine-muted"
+          class="flex-1 bg-transparent text-sm text-pine-text outline-none placeholder:text-pine-subtle"
           placeholder="Type a command or navigate views..."
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}

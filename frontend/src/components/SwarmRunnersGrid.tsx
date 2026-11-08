@@ -45,19 +45,22 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
   return (
     <div class="mt-5 border-t border-pine-highlight pt-4">
       <div class="mb-2.5 flex items-center justify-between">
-        <h4 class="text-xs font-semibold tracking-wider text-pine-subtle uppercase">
+        <h3 class="text-xs font-semibold tracking-wider text-pine-subtle uppercase">
           Registered Swarm Runners ({runners.length})
-        </h4>
+        </h3>
       </div>
 
       {error && (
-        <div class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love">
+        <div
+          role="alert"
+          class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
+        >
           {error}
         </div>
       )}
 
       {runners.length === 0 ? (
-        <div class="rounded-lg border border-pine-highlight bg-pine-overlay/25 p-4 text-xs text-pine-muted">
+        <div class="rounded-lg border border-pine-highlight bg-pine-overlay/25 p-4 text-xs text-pine-subtle">
           No runners registered yet. Click <strong class="text-pine-text">New Runner</strong> above
           to generate a registration token and connect a Docker or CLI runner.
         </div>
@@ -70,31 +73,31 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
             return (
               <div
                 key={r.runnerId}
-                class="flex flex-col justify-between gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/40 p-3.5 text-xs"
+                class="flex flex-col justify-between gap-3 rounded-lg bg-pine-overlay/30 p-3.5 text-xs"
               >
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
                     <div class="font-mono font-semibold wrap-break-word text-pine-text">
                       {r.name}
                     </div>
-                    <div class="mt-0.5 font-mono text-xs text-pine-muted">{r.runnerId}</div>
+                    <div class="mt-0.5 font-mono text-xs text-pine-subtle">{r.runnerId}</div>
                   </div>
 
                   <div class="flex items-center gap-1.5">
                     {!r.enabled && (
-                      <span class="inline-flex items-center rounded-md border border-pine-muted/40 bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-muted uppercase">
+                      <span class="inline-flex items-center rounded-md border border-pine-highlight bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-subtle uppercase">
                         Paused
                       </span>
                     )}
                     <span
-                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
+                      class={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
                     >
                       {r.status}
                     </span>
                   </div>
                 </div>
 
-                <div class="flex flex-wrap items-center gap-1.5 text-xs text-pine-muted">
+                <div class="flex flex-wrap items-center gap-1.5 text-xs text-pine-subtle">
                   {r.systemInfo?.platform && (
                     <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono whitespace-nowrap text-pine-subtle">
                       {r.systemInfo.platform}/{r.systemInfo.arch || 'x64'}
@@ -119,7 +122,7 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                 </div>
 
                 <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2.5">
-                  <span class="font-mono text-xs text-pine-muted">
+                  <span class="font-mono text-xs text-pine-subtle">
                     Seen {formatTime(r.lastSeenAt, { includeSeconds: true, timeFormat })}
                   </span>
 
@@ -141,7 +144,7 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                           type="button"
                           disabled={isMutating}
                           onClick={() => handleRevoke(r)}
-                          class="cursor-pointer rounded-sm border border-pine-love bg-pine-love px-2 py-1 text-xs font-bold whitespace-nowrap text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+                          class="cursor-pointer rounded-sm border border-pine-love bg-pine-love px-2 py-1 text-xs font-bold whitespace-nowrap text-pine-base transition-opacity hover:opacity-90 disabled:opacity-50"
                         >
                           Confirm
                         </button>
@@ -160,7 +163,7 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                         disabled={isMutating}
                         onClick={() => setConfirmRevokeId(r.runnerId)}
                         title="Revoke runner credential and remove"
-                        class="flex cursor-pointer items-center gap-1 rounded-sm border border-pine-love/30 bg-pine-love/10 px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-white disabled:opacity-50"
+                        class="flex cursor-pointer items-center gap-1 rounded-sm border border-pine-highlight bg-pine-surface px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-subtle transition-colors hover:border-pine-love hover:bg-pine-love hover:text-pine-base disabled:opacity-50"
                       >
                         <Icon icon={faTrash} class="size-2.5" />
                         <span>Revoke</span>

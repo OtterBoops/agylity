@@ -55,7 +55,7 @@ export const WebhookChannelForm = ({
             [{diagnostics.success ? 'Success' : 'Error'}]
           </span>
           <span class="flex-1 wrap-break-word">{diagnostics.message}</span>
-          <span class="shrink-0 font-mono text-xs text-pine-muted">{diagnostics.timestamp}</span>
+          <span class="shrink-0 font-mono text-xs text-pine-subtle">{diagnostics.timestamp}</span>
         </div>
       )}
 
@@ -85,7 +85,7 @@ export const WebhookChannelForm = ({
           autoComplete="off"
           data-1p-ignore="true"
           data-lpignore="true"
-          class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+          class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
           placeholder={
             isUrlSet
               ? '•••••••••••••••••••• (Encrypted — enter new URL to update)'
@@ -94,7 +94,7 @@ export const WebhookChannelForm = ({
           value={url}
           onInput={(e) => onUrlChange((e.target as HTMLInputElement).value)}
         />
-        <span class="text-xs text-pine-muted">
+        <span class="text-xs text-pine-subtle">
           Receives HTTP POST requests with JSON quota milestone payloads (Discord, Slack, &amp;
           generic endpoints supported).
         </span>
@@ -127,7 +127,7 @@ export const WebhookChannelForm = ({
             autoComplete="new-password"
             data-1p-ignore="true"
             data-lpignore="true"
-            class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+            class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
             placeholder={
               isSecretSet
                 ? '•••••••••••••••••••• (Encrypted — enter new secret to update)'
@@ -144,7 +144,7 @@ export const WebhookChannelForm = ({
             {showSecret ? 'Hide' : 'Show'}
           </button>
         </div>
-        <span class="text-xs text-pine-muted">
+        <span class="text-xs text-pine-subtle">
           When specified, Agylity signs each payload with HMAC-SHA256 in the x-agylity-signature
           header.
         </span>

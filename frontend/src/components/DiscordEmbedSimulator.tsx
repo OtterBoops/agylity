@@ -16,7 +16,7 @@ export const DiscordEmbedSimulator = ({
   ownerUserId,
 }: DiscordEmbedSimulatorProps) => {
   return (
-    <div class="flex flex-col gap-3 rounded-xl border border-pine-highlight bg-pine-overlay/20 p-4 sm:p-5">
+    <div class="flex flex-col gap-3 border-t border-pine-highlight/60 pt-4">
       <div class="flex flex-wrap items-center justify-between gap-2 border-b border-pine-highlight/60 pb-3">
         <div class="flex items-center gap-2">
           <Icon icon={faEye} class="size-3.5 text-pine-iris" />
@@ -25,13 +25,13 @@ export const DiscordEmbedSimulator = ({
           </h4>
         </div>
         <div class="flex items-center gap-1.5 text-xs">
-          <span class="text-[11px] text-pine-muted">Preview Tier:</span>
+          <span class="text-xs text-pine-subtle">Preview Tier:</span>
           <button
             type="button"
             onClick={() => onTierChange('alert')}
-            class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
+            class={`cursor-pointer rounded-sm px-2.5 py-1 text-xs transition-colors ${
               previewTier === 'alert'
-                ? 'border border-pine-love/50 bg-pine-love/20 text-pine-love'
+                ? 'border border-pine-love bg-pine-love font-bold text-pine-base shadow-xs'
                 : 'text-pine-subtle hover:text-pine-text'
             }`}
           >
@@ -40,9 +40,9 @@ export const DiscordEmbedSimulator = ({
           <button
             type="button"
             onClick={() => onTierChange('warning')}
-            class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
+            class={`cursor-pointer rounded-sm px-2.5 py-1 text-xs transition-colors ${
               previewTier === 'warning'
-                ? 'border border-pine-gold/50 bg-pine-gold/20 text-pine-gold'
+                ? 'border border-pine-gold bg-pine-gold font-bold text-pine-base shadow-xs'
                 : 'text-pine-subtle hover:text-pine-text'
             }`}
           >
@@ -51,9 +51,9 @@ export const DiscordEmbedSimulator = ({
           <button
             type="button"
             onClick={() => onTierChange('burn')}
-            class={`cursor-pointer rounded-sm px-2 py-0.5 text-[11px] font-medium transition-colors ${
+            class={`cursor-pointer rounded-sm px-2.5 py-1 text-xs transition-colors ${
               previewTier === 'burn'
-                ? 'border border-pine-iris/50 bg-pine-iris/20 text-pine-iris'
+                ? 'border border-pine-iris bg-pine-iris font-bold text-pine-base shadow-xs'
                 : 'text-pine-subtle hover:text-pine-text'
             }`}
           >
@@ -63,7 +63,7 @@ export const DiscordEmbedSimulator = ({
       </div>
 
       {/* Discord-style Embed Container */}
-      <div class="rounded-lg bg-[#313338] p-4 font-sans text-xs text-[#dbdee1] shadow-inner">
+      <div class="py-1 font-sans text-xs text-pine-text">
         <div class="mb-2 flex items-center gap-2">
           <div class="flex size-7 items-center justify-center rounded-full bg-pine-iris/30 text-pine-iris">
             <svg viewBox="0 0 24 24" fill="none" class="size-3.5" aria-hidden="true">
@@ -75,34 +75,43 @@ export const DiscordEmbedSimulator = ({
               />
             </svg>
           </div>
-          <span class="font-medium text-white">Agylity Quota Sentry</span>
-          <span class="rounded-sm bg-[#5865F2] px-1 py-0.5 text-[9px] font-bold text-white uppercase">
+          <span class="font-medium text-pine-text">Agylity Quota Sentry</span>
+          <span class="rounded-sm bg-pine-iris px-1.5 py-0.5 text-xs font-bold text-pine-base uppercase">
             BOT
           </span>
-          <span class="text-[10px] text-[#949ba4]">Today at 22:58</span>
+          <span class="text-xs text-pine-subtle">Today at 22:58</span>
         </div>
 
         {pingOwner && (
-          <div class="mb-2 text-xs font-normal text-[#dbdee1]">
-            <span class="rounded-sm bg-[#5865F2]/30 px-1 py-0.5 font-medium text-[#c9cdfb]">
+          <div class="mb-2 text-xs font-normal text-pine-text">
+            <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-medium text-pine-iris">
               @{ownerUserId.trim() || 'owner'}
             </span>
           </div>
         )}
 
-        <div
-          class={`max-w-[520px] rounded-[4px] border-l-4 bg-[#2b2d31] p-3.5 shadow-sm ${
-            previewTier === 'alert'
-              ? 'border-[#eb6f92]'
-              : previewTier === 'warning'
-                ? 'border-[#f6c177]'
-                : 'border-[#c4a7e7]'
-          }`}
-        >
-          <div class="mb-1 text-sm font-bold text-white">
-            [Alert] Quota Milestone: Claude 5.5 Sonnet / Opus
+        <div class="max-w-[572px] border-y border-pine-highlight/60 py-3">
+          <div class="mb-2 flex items-center gap-2">
+            <span
+              class={`rounded-sm px-2 py-0.5 text-xs font-bold uppercase ${
+                previewTier === 'alert'
+                  ? 'bg-pine-love text-pine-base'
+                  : previewTier === 'warning'
+                    ? 'bg-pine-gold text-pine-base'
+                    : 'bg-pine-iris text-pine-base'
+              }`}
+            >
+              {previewTier === 'alert'
+                ? '[Alert]'
+                : previewTier === 'warning'
+                  ? '[Warning]'
+                  : '[Notice]'}
+            </span>
+            <span class="text-sm font-bold text-pine-text">
+              Quota Milestone: Claude 5.5 Sonnet / Opus
+            </span>
           </div>
-          <div class="mb-3 text-xs text-[#dbdee1]">
+          <div class="mb-3 text-xs text-pine-text">
             Milestone threshold:{' '}
             <strong>
               {previewTier === 'alert' ? '1h' : previewTier === 'warning' ? '3h' : '12h'}
@@ -110,25 +119,25 @@ export const DiscordEmbedSimulator = ({
             before quota reset.
           </div>
 
-          <div class="mb-3 grid grid-cols-2 gap-3">
+          <div class="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
-              <div class="text-[10px] font-semibold text-[#949ba4] uppercase">Remaining Quota</div>
+              <div class="text-xs font-semibold text-pine-subtle uppercase">Remaining Quota</div>
               <div class="mt-1 flex items-center gap-2">
-                <span class="rounded-sm bg-[#1e1f22] px-1.5 py-0.5 font-mono text-xs text-[#dbdee1]">
+                <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-text">
                   {previewTier === 'alert'
                     ? '[■■□□□□□□□□]'
                     : previewTier === 'warning'
                       ? '[■■■■□□□□□□]'
                       : '[■■■■■■■■□□]'}
                 </span>
-                <strong class="font-sans text-xs text-white">
+                <strong class="font-sans text-xs text-pine-text">
                   {previewTier === 'alert' ? '15%' : previewTier === 'warning' ? '35%' : '85%'}
                 </strong>
               </div>
             </div>
             <div>
-              <div class="text-[10px] font-semibold text-[#949ba4] uppercase">Reset Window</div>
-              <div class="mt-1 text-xs text-white">
+              <div class="text-xs font-semibold text-pine-subtle uppercase">Reset Window</div>
+              <div class="mt-1 text-xs text-pine-text">
                 {previewTier === 'alert'
                   ? 'Resets in 45m'
                   : previewTier === 'warning'
@@ -138,14 +147,14 @@ export const DiscordEmbedSimulator = ({
             </div>
           </div>
 
-          <div class="border-t border-[#3f4147] pt-2 text-[10px] text-[#949ba4]">
+          <div class="border-t border-pine-highlight pt-2 text-xs text-pine-subtle">
             Monitored Models:{' '}
-            <span class="font-mono text-white">
+            <span class="font-mono text-pine-text">
               claude-sonnet-5-5, claude-opus-5-5, gemini-4-argon
             </span>
           </div>
 
-          <div class="mt-2 text-[10px] text-[#949ba4]">Agylity Quota Sentry</div>
+          <div class="mt-2 text-xs text-pine-subtle">Agylity Quota Sentry</div>
         </div>
       </div>
     </div>

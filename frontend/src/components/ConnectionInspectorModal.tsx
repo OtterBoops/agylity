@@ -96,6 +96,9 @@ export const ConnectionInspectorModal = ({
 
   return (
     <dialog
+      id="connection-inspector-dialog"
+      aria-labelledby="connection-inspector-title"
+      aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
@@ -108,14 +111,17 @@ export const ConnectionInspectorModal = ({
             <Icon icon={faWifi} class="size-4" />
           </div>
           <div>
-            <h3 class="text-base font-bold text-pine-text">System &amp; Connection Inspector</h3>
+            <h3 id="connection-inspector-title" class="text-base font-bold text-pine-text">
+              System &amp; Connection Inspector
+            </h3>
             <p class="text-xs text-pine-muted">Runtime telemetry &amp; Antigravity sentry link</p>
           </div>
         </div>
         <button
           type="button"
           onClick={onClose}
-          class="cursor-pointer rounded-lg p-1.5 text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text"
+          aria-label="Close connection inspector"
+          class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
         >
           <Icon icon={faTimes} class="size-4" />
         </button>
@@ -123,7 +129,7 @@ export const ConnectionInspectorModal = ({
 
       {/* Diagnostic Grid */}
       <div class="mt-4 flex flex-col gap-3">
-        <div class="grid grid-cols-2 gap-3 text-xs">
+        <div class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
           <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
             <span class="text-pine-muted">Telemetry Probe Source</span>
             <div class="mt-0.5 flex items-center gap-2 font-medium text-pine-text">

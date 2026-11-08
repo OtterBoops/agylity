@@ -29,13 +29,13 @@ export const ToggleSwitch = ({
     title={label}
     disabled={disabled}
     onClick={() => onChange(!checked)}
-    class={`relative inline-flex ${TRACK[size]} shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden disabled:opacity-50 ${
+    class={`relative inline-flex ${TRACK[size]} shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out before:absolute before:-inset-2.5 before:content-[''] focus:outline-hidden focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:ring-offset-2 focus-visible:ring-offset-pine-base disabled:opacity-50 ${
       checked ? activeClass : 'border-pine-highlight bg-pine-overlay'
     }`}
   >
     <span
       aria-hidden="true"
-      class={`pointer-events-none inline-block ${THUMB[size]} transform rounded-full bg-white shadow-xs ring-0 transition duration-200 ease-in-out ${
+      class={`pointer-events-none inline-block ${THUMB[size]} transform rounded-full bg-pine-text shadow-xs ring-0 transition duration-200 ease-in-out ${
         checked ? SHIFT[size] : 'translate-x-0'
       }`}
     />

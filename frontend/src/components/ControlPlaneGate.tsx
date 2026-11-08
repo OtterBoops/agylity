@@ -74,14 +74,20 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
 
         <form onSubmit={handleSubmit} class="mt-5 space-y-4">
           {errorMessage && (
-            <div class="flex items-start gap-2.5 rounded-xl border border-pine-love/30 bg-pine-love/10 p-3 text-xs text-pine-love">
+            <div
+              role="alert"
+              class="flex items-start gap-2.5 rounded-xl border border-pine-love/30 bg-pine-love/10 p-3 text-xs text-pine-love"
+            >
               <Icon icon={faTriangleExclamation} class="mt-0.5 size-3.5 shrink-0" />
               <span class="leading-relaxed">{errorMessage}</span>
             </div>
           )}
 
           <div>
-            <label class="mb-1.5 block text-xs font-semibold text-pine-subtle">
+            <label
+              htmlFor="gate-auth-token"
+              class="mb-1.5 block text-xs font-semibold text-pine-subtle"
+            >
               Bearer Auth Token
             </label>
             <div class="relative">
@@ -89,6 +95,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
                 <Icon icon={faKey} class="size-3.5" />
               </span>
               <input
+                id="gate-auth-token"
                 type={showPassword ? 'text' : 'password'}
                 placeholder="Paste WEB_UI_AUTH_TOKEN..."
                 class="w-full rounded-xl border border-pine-highlight bg-pine-overlay py-2.5 pr-10 pl-9 text-sm text-pine-text placeholder-pine-subtle transition-colors focus:border-pine-iris focus:outline-none"
@@ -104,9 +111,8 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
               <button
                 type="button"
                 onClick={() => setShowPassword(!showPassword)}
-                class="absolute inset-y-0 right-0 flex cursor-pointer items-center pr-3 text-pine-muted transition-colors hover:text-pine-text"
+                class="absolute inset-y-0 right-0 flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center pr-3 text-pine-muted transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
                 aria-label={showPassword ? 'Hide token' : 'Show token'}
-                tabIndex={-1}
               >
                 <Icon icon={showPassword ? faEyeSlash : faEye} class="size-3.5" />
               </button>

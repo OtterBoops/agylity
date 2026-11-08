@@ -566,6 +566,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     }
   };
 
+  // One width cap for origin labels: an untruncated title here widens the whole table
+  const originLabelClass = 'inline-block max-w-36 truncate align-bottom';
+
   const renderOriginLink = (t: SwarmTask) => {
     if (t.tier === 'backlog' || (t.requestedBy && t.requestedBy.startsWith('backlog:'))) {
       const originId = t.originId || t.requestedBy?.replace(/^backlog:/, '');
@@ -580,7 +583,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       if (backlogInitialLoaded && !exists) {
         return (
           <span
-            class="font-medium whitespace-nowrap text-pine-subtle"
+            class={`${originLabelClass} font-medium text-pine-subtle`}
             title="Origin backlog task was deleted"
           >
             {label} <span class="text-xs font-normal text-pine-muted">(deleted)</span>
@@ -595,7 +598,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             e.stopPropagation();
             setTab('backlog', originId);
           }}
-          class="cursor-pointer text-left font-medium whitespace-nowrap text-pine-iris hover:underline"
+          class={`${originLabelClass} cursor-pointer text-left font-medium text-pine-iris hover:underline`}
+          title={label}
         >
           {label}
         </button>
@@ -618,7 +622,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       if (routinesInitialLoaded && !exists) {
         return (
           <span
-            class="font-medium whitespace-nowrap text-pine-subtle"
+            class={`${originLabelClass} font-medium text-pine-subtle`}
             title="Origin routine was deleted"
           >
             {label} <span class="text-xs font-normal text-pine-muted">(deleted)</span>
@@ -633,13 +637,18 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             e.stopPropagation();
             setTab('routines', originId);
           }}
-          class="cursor-pointer text-left font-medium whitespace-nowrap text-pine-iris hover:underline"
+          class={`${originLabelClass} cursor-pointer text-left font-medium text-pine-iris hover:underline`}
+          title={label}
         >
           {label}
         </button>
       );
     }
-    return <span class="text-pine-subtle">{t.requestedBy || 'web-ui'}</span>;
+    return (
+      <span class={`${originLabelClass} text-pine-subtle`} title={t.requestedBy || 'web-ui'}>
+        {t.requestedBy || 'web-ui'}
+      </span>
+    );
   };
 
   const visibleTasks = tasks.filter((t) => {
@@ -665,9 +674,15 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* Top Segmented Sub-view Switcher & Actions */}
       <div class="flex flex-wrap items-center justify-between gap-3 border-b border-pine-highlight pb-4">
         {/* Segmented Switcher */}
-        <div class="flex rounded-lg border border-pine-highlight bg-pine-overlay/40 p-1">
+        <div
+          role="tablist"
+          aria-label="Task management tabs"
+          class="flex rounded-lg border border-pine-highlight bg-pine-overlay/40 p-1"
+        >
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'executions'}
             onClick={() => setTab('executions')}
             class={`cursor-pointer rounded-md px-4 py-1.5 text-xs font-bold uppercase transition-all sm:text-sm ${
               activeTab === 'executions'
@@ -679,6 +694,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'backlog'}
             onClick={() => setTab('backlog')}
             class={`cursor-pointer rounded-md px-4 py-1.5 text-xs font-bold uppercase transition-all sm:text-sm ${
               activeTab === 'backlog'
@@ -690,6 +707,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           </button>
           <button
             type="button"
+            role="tab"
+            aria-selected={activeTab === 'routines'}
             onClick={() => setTab('routines')}
             class={`cursor-pointer rounded-md px-4 py-1.5 text-xs font-bold uppercase transition-all sm:text-sm ${
               activeTab === 'routines'
@@ -770,11 +789,16 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {activeTab === 'executions' && (
         <div class="flex flex-col gap-4">
           {/* Status filter bar */}
-          <div class="flex max-w-full flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1">
+          <div
+            role="group"
+            aria-label="Filter executions by status"
+            class="flex max-w-full flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1"
+          >
             {STATUS_FILTERS.map((f) => (
               <button
                 key={f}
                 type="button"
+                aria-pressed={filter === f}
                 onClick={() => setFilter(f)}
                 class={`cursor-pointer rounded-md px-3 py-1 text-xs font-semibold whitespace-nowrap uppercase transition-colors ${
                   filter === f
@@ -789,9 +813,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
           {/* Table */}
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-            <table class="w-full min-w-[780px] text-left text-sm">
+            <table class="w-full min-w-[858px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[14.3px]">
                   <th class="p-3.5 whitespace-nowrap">Task</th>
                   <th class="p-3.5 whitespace-nowrap">When</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -806,7 +830,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               <tbody class="divide-y divide-pine-highlight/40">
                 {visibleTasks.length === 0 ? (
                   <tr>
-                    <td colSpan={9} class="p-8 text-center text-sm text-pine-muted">
+                    <td colSpan={9} class="p-8 text-center text-sm text-pine-subtle">
                       {loadError
                         ? `Could not load executions: ${loadError}`
                         : 'No executions matching the selected filter.'}
@@ -817,17 +841,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     <tr
                       key={t.id}
                       onClick={() => setSelectedTask(t)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelectedTask(t);
-                        }
-                      }}
-                      tabIndex={0}
-                      aria-label={`Open details for ${t.id}`}
                       class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
                     >
-                      <td class="max-w-xs min-w-[200px] p-3.5 md:max-w-sm xl:max-w-md">
+                      <td class="max-w-xs min-w-[220px] p-3.5 md:max-w-sm xl:max-w-md">
                         <div class="flex items-center gap-1.5">
                           <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
                             #{t.taskNumber || 0}
@@ -846,7 +862,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       <td class="p-3.5 font-mono text-sm text-pine-text">{t.repositoryName}</td>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-iris">
                         {t.model}
-                        <span class="text-pine-muted"> · {t.effort}</span>
+                        <span class="text-pine-subtle"> · {t.effort}</span>
                       </td>
                       <td class="p-3.5 text-sm whitespace-nowrap">{renderOriginLink(t)}</td>
                       <td class="p-3.5 font-mono text-sm text-pine-subtle">
@@ -862,14 +878,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             <Icon icon={faExternalLinkAlt} class="size-2.5" />
                           </a>
                         ) : t.branchName ? (
-                          <span class="inline-block max-w-[130px] truncate" title={t.branchName}>
+                          <span class="inline-block max-w-[143px] truncate" title={t.branchName}>
                             {t.branchName}
                           </span>
                         ) : (
                           '—'
                         )}
                       </td>
-                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         {formatDuration(t.durationMs)}
                       </td>
                       <td class="p-3.5 whitespace-nowrap">
@@ -918,9 +934,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {activeTab === 'backlog' && (
         <div class="flex flex-col gap-4">
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-            <table class="w-full min-w-[780px] text-left text-sm">
+            <table class="w-full min-w-[858px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[14.3px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Work Item</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -962,7 +978,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       <td class="max-w-sm p-3.5">
                         <div class="text-sm font-semibold text-pine-text">{item.title}</div>
                         <div
-                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[13px]"
+                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[14.3px]"
                           title={item.prompt}
                         >
                           {item.prompt}
@@ -990,9 +1006,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-xs text-pine-muted">Effort: {item.effort}</div>
+                        <div class="mt-0.5 text-xs text-pine-subtle">Effort: {item.effort}</div>
                       </td>
-                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         P{item.priorityOrder}
                       </td>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap">
@@ -1034,7 +1050,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             <Icon icon={faExternalLinkAlt} class="size-2.5" />
                           </a>
                         ) : (
-                          <span class="text-xs text-pine-muted">—</span>
+                          <span class="text-xs text-pine-subtle">—</span>
                         )}
                       </td>
                       <td class="p-3.5 text-right whitespace-nowrap">
@@ -1098,9 +1114,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {activeTab === 'routines' && (
         <div class="flex flex-col gap-4">
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-            <table class="w-full min-w-[780px] text-left text-sm">
+            <table class="w-full min-w-[858px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[14.3px]">
                   <th class="p-3.5 whitespace-nowrap">#</th>
                   <th class="p-3.5 whitespace-nowrap">Routine Template</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
@@ -1142,7 +1158,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       <td class="max-w-sm p-3.5">
                         <div class="text-sm font-semibold text-pine-text">{routine.title}</div>
                         <div
-                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[13px]"
+                          class="mt-0.5 line-clamp-2 text-xs text-pine-subtle sm:text-[14.3px]"
                           title={routine.prompt}
                         >
                           {routine.prompt}
@@ -1167,7 +1183,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             </span>
                           ))}
                         </div>
-                        <div class="mt-0.5 text-xs text-pine-muted">Effort: {routine.effort}</div>
+                        <div class="mt-0.5 text-xs text-pine-subtle">Effort: {routine.effort}</div>
                       </td>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-gold">
                         &le; {routine.triggerBeforeResetHours}h
@@ -1175,7 +1191,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         &ge; {routine.minHeadroomPercent}%
                       </td>
-                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-muted">
+                      <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
                         {routine.lastTriggeredResetTime ? (
                           <span title={routine.lastTriggeredResetTime}>
                             {formatDateTime(routine.lastTriggeredResetTime, { timeFormat })}
@@ -1250,26 +1266,32 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* --- MODAL: EXECUTION DETAIL INSPECTOR --- */}
       {selectedTask && (
         <dialog
+          id="execution-dialog"
+          aria-labelledby="execution-dialog-title"
+          aria-modal="true"
           ref={executionDialogRef}
           onClose={closeInspector}
           onClick={dialogBackdropClickHandler(executionDialogRef, closeInspector)}
-          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 sm:p-6"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
         >
           <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
             <div class="min-w-0 flex-1">
               <div class="flex flex-wrap items-center gap-2">
-                <h3 class="truncate text-base font-bold text-pine-text">
+                <h2
+                  id="execution-dialog-title"
+                  class="text-base font-bold wrap-break-word text-pine-text"
+                >
                   {selectedTask.title
                     ? selectedTask.title
                     : `Task #${selectedTask.taskNumber || selectedTask.id}`}
-                </h3>
+                </h2>
                 <span
                   class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(selectedTask.status)}`}
                 >
                   {selectedTask.status}
                 </span>
               </div>
-              <p class="mt-1 font-mono text-xs text-pine-muted">
+              <p class="mt-1 font-mono text-xs text-pine-subtle">
                 ID: {selectedTask.id} &bull; {selectedTask.repositoryName} &bull;{' '}
                 {selectedTask.model} ({selectedTask.effort})
               </p>
@@ -1277,7 +1299,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             <button
               type="button"
               onClick={closeInspector}
-              class="cursor-pointer rounded-lg border border-pine-highlight p-1.5 text-xs text-pine-subtle hover:text-pine-text"
+              aria-label="Close task details"
+              class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             >
               <Icon icon={faTimes} class="size-4" />
             </button>
@@ -1285,27 +1308,27 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
           <div class="mt-4 flex flex-col gap-4 text-xs">
             {/* Metadata Grid */}
-            <div class="grid grid-cols-2 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-4">
+            <div class="grid grid-cols-1 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-2 lg:grid-cols-4">
               <div>
-                <span class="text-pine-muted">Initiated By</span>
+                <span class="text-pine-subtle">Initiated By</span>
                 <div class="mt-0.5 font-medium text-pine-text">
                   {renderOriginLink(selectedTask)}
                 </div>
               </div>
               <div>
-                <span class="text-pine-muted">Timestamp</span>
+                <span class="text-pine-subtle">Timestamp</span>
                 <div class="mt-0.5 font-mono text-xs whitespace-nowrap text-pine-text">
                   {formatDateTime(selectedTask.createdAt, { timeFormat })}
                 </div>
               </div>
               <div>
-                <span class="text-pine-muted">Duration</span>
+                <span class="text-pine-subtle">Duration</span>
                 <div class="mt-0.5 font-medium text-pine-text">
                   {formatDuration(selectedTask.durationMs)}
                 </div>
               </div>
               <div>
-                <span class="text-pine-muted">Branch / PR</span>
+                <span class="text-pine-subtle">Branch / PR</span>
                 <div class="mt-0.5 truncate font-mono text-xs text-pine-foam">
                   {selectedTask.prUrl ? (
                     <a
@@ -1326,7 +1349,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             {/* Prompt Block */}
             <div>
               <div class="mb-1 flex items-center justify-between">
-                <h4 class="text-xs font-semibold text-pine-muted uppercase">Prompt</h4>
+                <h3 class="text-xs font-semibold text-pine-subtle uppercase">Prompt</h3>
                 <button
                   type="button"
                   onClick={() => {
@@ -1348,9 +1371,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
             {/* Model Output Block (Rendered even on failure!) */}
             {selectedTask.output && (
               <div>
-                <h4 class="mb-1 text-xs font-semibold text-pine-muted uppercase">
+                <h3 class="mb-1 text-xs font-semibold text-pine-subtle uppercase">
                   Model Output Log
-                </h4>
+                </h3>
                 <div class="max-h-48 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam">
                   {selectedTask.output}
                 </div>
@@ -1375,17 +1398,23 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* --- MODAL: CREATE BACKLOG TASK --- */}
       {showCreateBacklog && (
         <dialog
+          id="backlog-dialog"
+          aria-labelledby="backlog-dialog-title"
+          aria-modal="true"
           ref={backlogDialogRef}
           onClose={() => setShowCreateBacklog(false)}
           onClick={dialogBackdropClickHandler(backlogDialogRef, () => setShowCreateBacklog(false))}
-          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
-            <h3 class="text-base font-bold text-pine-text">New Backlog Work Item</h3>
+            <h2 id="backlog-dialog-title" class="text-base font-bold text-pine-text">
+              New Backlog Work Item
+            </h2>
             <button
               type="button"
               onClick={() => setShowCreateBacklog(false)}
-              class="cursor-pointer rounded-lg border border-pine-highlight p-1 text-pine-muted hover:text-pine-text"
+              aria-label="Close create backlog work item dialog"
+              class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             >
               <Icon icon={faTimes} class="size-4" />
             </button>
@@ -1474,17 +1503,23 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       {/* --- MODAL: CREATE ROUTINE --- */}
       {showCreateRoutine && (
         <dialog
+          id="routine-dialog"
           ref={routineDialogRef}
+          aria-labelledby="routineDialogTitle"
+          aria-modal="true"
           onClose={() => setShowCreateRoutine(false)}
           onClick={dialogBackdropClickHandler(routineDialogRef, () => setShowCreateRoutine(false))}
-          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60"
+          class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
-            <h3 class="text-base font-bold text-pine-text">New Maintenance Routine</h3>
+            <h2 id="routineDialogTitle" class="text-base font-bold text-pine-text">
+              New Maintenance Routine
+            </h2>
             <button
               type="button"
+              aria-label="Close dialog"
               onClick={() => setShowCreateRoutine(false)}
-              class="cursor-pointer rounded-lg border border-pine-highlight p-1 text-pine-muted hover:text-pine-text"
+              class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             >
               <Icon icon={faTimes} class="size-4" />
             </button>
@@ -1540,7 +1575,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 <option value="high">High</option>
               </select>
             </div>
-            <div class="grid grid-cols-2 gap-3">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <label class="mb-1 block font-medium text-pine-subtle">Trigger Before Reset</label>
                 <div class="flex items-center gap-1.5">
@@ -1552,7 +1587,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     onInput={(e) => setRoutineTriggerHours((e.target as HTMLInputElement).value)}
                     class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-pine-text focus:border-pine-iris focus:outline-hidden"
                   />
-                  <span class="font-medium text-pine-muted">hours</span>
+                  <span class="font-medium text-pine-subtle">hours</span>
                 </div>
               </div>
               <div>
@@ -1566,7 +1601,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                     onInput={(e) => setRoutineMinHeadroom((e.target as HTMLInputElement).value)}
                     class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-pine-text focus:border-pine-iris focus:outline-hidden"
                   />
-                  <span class="font-medium text-pine-muted">%</span>
+                  <span class="font-medium text-pine-subtle">%</span>
                 </div>
               </div>
             </div>

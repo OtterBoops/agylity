@@ -46,9 +46,9 @@ export const ActivityView = ({ alerts }: ActivityViewProps) => {
             </a>
           </div>
           <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-            <table class="w-full min-w-[780px] text-left text-sm">
+            <table class="w-full min-w-[858px] text-left text-sm">
               <thead>
-                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[13px]">
+                <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-muted uppercase sm:text-[14.3px]">
                   <th class="p-3.5 whitespace-nowrap">Task ID</th>
                   <th class="p-3.5 whitespace-nowrap">Repository</th>
                   <th class="p-3.5 whitespace-nowrap">Prompt</th>

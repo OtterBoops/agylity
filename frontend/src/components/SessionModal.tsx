@@ -85,8 +85,11 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
 
   return (
     <dialog
+      id="session-modal"
+      aria-labelledby="session-modal-title"
+      aria-modal="true"
       ref={dialogRef}
-      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 shadow-2xl transition-all backdrop:bg-black/70 backdrop:backdrop-blur-xs"
+      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 shadow-2xl transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose();
       }}
@@ -97,13 +100,15 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
             <span class="text-pine-iris">
               <Icon icon={faLock} />
             </span>
-            <h2 class="text-base font-semibold text-pine-text">Control-Plane Session</h2>
+            <h2 id="session-modal-title" class="text-base font-semibold text-pine-text">
+              Control-Plane Session
+            </h2>
           </div>
           <button
             type="button"
-            class="cursor-pointer text-pine-subtle transition-colors hover:text-pine-text"
+            class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg text-pine-subtle transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             onClick={onClose}
-            aria-label="Close"
+            aria-label="Close session modal"
           >
             <Icon icon={faXmark} />
           </button>
@@ -120,14 +125,20 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
         </div>
 
         {errorMessage && (
-          <div class="flex items-start gap-2.5 rounded-xl border border-pine-love/30 bg-pine-love/10 p-3 text-xs text-pine-love">
+          <div
+            role="alert"
+            class="flex items-start gap-2.5 rounded-xl border border-pine-love/30 bg-pine-love/10 p-3 text-xs text-pine-love"
+          >
             <Icon icon={faTriangleExclamation} class="mt-0.5 size-3.5 shrink-0" />
             <span>{errorMessage}</span>
           </div>
         )}
 
         {successMessage && (
-          <div class="flex items-center gap-2 rounded-xl border border-pine-pine/30 bg-pine-pine/10 p-3 text-xs text-pine-foam">
+          <div
+            role="status"
+            class="flex items-center gap-2 rounded-xl border border-pine-pine/30 bg-pine-pine/10 p-3 text-xs text-pine-foam"
+          >
             <Icon icon={faCheck} class="size-3.5" />
             <span>{successMessage}</span>
           </div>
@@ -135,14 +146,18 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
 
         <form onSubmit={handleUpdate} class="flex flex-col gap-3">
           <div>
-            <label class="mb-1 block text-xs font-medium text-pine-subtle">
+            <label
+              htmlFor="session-token-input"
+              class="mb-1 block text-xs font-medium text-pine-subtle"
+            >
               Update Bearer Token
             </label>
             <div class="relative">
               <input
+                id="session-token-input"
                 type="password"
                 placeholder="Enter new WEB_UI_AUTH_TOKEN..."
-                class="w-full rounded-xl border border-pine-highlight bg-pine-overlay px-3 py-2 pr-9 text-sm text-pine-text placeholder-pine-muted focus:border-pine-iris focus:outline-none"
+                class="w-full rounded-xl border border-pine-highlight bg-pine-overlay px-3 py-2 pr-9 text-sm text-pine-text placeholder-pine-subtle focus:border-pine-iris focus:outline-none"
                 value={token}
                 onInput={(e) => {
                   setToken((e.target as HTMLInputElement).value);

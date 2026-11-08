@@ -125,7 +125,7 @@ export const Sidebar = ({
     <div class="flex flex-col gap-1">
       {!collapsed ? (
         <div class="flex items-center gap-2 px-2 py-0.5">
-          <span class="text-xs font-bold tracking-widest text-pine-muted uppercase">{title}</span>
+          <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">{title}</span>
           <span class="h-px flex-1 bg-pine-highlight/30" />
         </div>
       ) : (
@@ -137,7 +137,7 @@ export const Sidebar = ({
             key={item.href}
             href={item.href}
             onClick={onLinkClick}
-            activeClassName="bg-pine-iris/15 font-semibold text-pine-iris"
+            activeClassName="bg-pine-iris/15 font-semibold !text-pine-iris"
             title={collapsed ? item.label : undefined}
             class={`group relative flex w-full cursor-pointer items-center rounded-xl text-pine-subtle transition-all duration-150 hover:bg-pine-overlay/60 hover:text-pine-text ${
               collapsed
@@ -145,14 +145,16 @@ export const Sidebar = ({
                 : 'gap-3 px-3 py-2 text-left text-sm font-medium whitespace-nowrap'
             }`}
           >
-            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-subtle transition-colors group-hover:bg-pine-overlay group-hover:text-pine-text">
+            <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-subtle transition-colors group-hover:bg-pine-overlay group-hover:text-pine-text group-[.text-pine-iris]:border-pine-iris/30 group-[.text-pine-iris]:text-pine-iris">
               <Icon icon={item.icon} class="size-4" />
             </div>
             {!collapsed && (
               <>
-                <span class="shrink-0 whitespace-nowrap">{item.label}</span>
+                <span class="shrink-0 whitespace-nowrap group-[.text-pine-iris]:text-pine-iris">
+                  {item.label}
+                </span>
                 {item.badge && (
-                  <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-xs font-semibold tracking-wider whitespace-nowrap text-pine-muted uppercase">
+                  <span class="ml-auto rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 text-xs font-semibold tracking-wider whitespace-nowrap text-pine-subtle uppercase">
                     {item.badge}
                   </span>
                 )}
@@ -184,7 +186,7 @@ export const Sidebar = ({
           </span>
           <span class="relative flex size-2 shrink-0">
             <span
-              class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
+              class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
             />
             <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
           </span>
@@ -192,7 +194,7 @@ export const Sidebar = ({
         <button
           type="button"
           onClick={() => setMobileOpen(!mobileOpen)}
-          class="flex size-9 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight"
+          class="flex size-11 min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
           aria-label="Toggle navigation menu"
           aria-expanded={mobileOpen}
         >
@@ -220,14 +222,14 @@ export const Sidebar = ({
               <div class="flex items-center gap-2">
                 <span class="relative flex size-2 shrink-0">
                   <span
-                    class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
+                    class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
                   />
                   <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                 </span>
                 <span class="font-medium text-pine-text">{probeStatus}</span>
               </div>
               {lastProbeAt && (
-                <span class="font-mono text-xs text-pine-muted" title={lastProbeAt}>
+                <span class="font-mono text-xs text-pine-subtle" title={lastProbeAt}>
                   {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                 </span>
               )}
@@ -267,7 +269,7 @@ export const Sidebar = ({
 
       {/* Desktop Collapsible Sidebar */}
       <aside
-        class={`hidden transition-[width] duration-200 ease-in-out md:flex md:h-full md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 md:backdrop-blur-md ${
+        class={`hidden md:flex md:h-full md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 ${
           isCollapsed ? 'md:w-16' : 'md:w-60 2xl:w-64'
         }`}
       >
@@ -335,21 +337,21 @@ export const Sidebar = ({
                 <div class="flex min-w-0 items-center gap-2">
                   <span class="relative flex size-2 shrink-0">
                     <span
-                      class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
+                      class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
                     />
                     <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                   </span>
                   <span class="truncate font-medium text-pine-text">{probeStatus}</span>
                 </div>
                 {lastProbeAt && (
-                  <span class="shrink-0 font-mono text-xs text-pine-muted" title={lastProbeAt}>
+                  <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
                     {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
                   </span>
                 )}
               </div>
 
               <div
-                class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-muted"
+                class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle"
                 onClick={(e) => e.stopPropagation()}
               >
                 <a
@@ -377,7 +379,7 @@ export const Sidebar = ({
                     <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
                   </a>
                 ) : (
-                  <span class="text-xs text-pine-muted/70">Up to date</span>
+                  <span class="text-xs text-pine-subtle">Up to date</span>
                 )}
               </div>
             </div>
@@ -389,11 +391,11 @@ export const Sidebar = ({
             >
               <span class="relative flex size-2.5 shrink-0">
                 <span
-                  class={`absolute inline-flex size-full animate-ping rounded-full opacity-75 ${probeColor}`}
+                  class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
                 />
                 <span class={`relative inline-flex size-2.5 rounded-full ${probeColor}`} />
               </span>
-              <span class="font-mono text-xs text-pine-muted">v{APP_VERSION}</span>
+              <span class="font-mono text-xs text-pine-subtle">v{APP_VERSION}</span>
             </div>
           )}
         </div>

@@ -33,7 +33,7 @@ export const RepositoriesView = ({ config, onChanged }: RepositoriesViewProps) =
             <div>
               <div class="mb-1 flex items-center gap-2">
                 <Icon icon={faCodeBranch} class="size-5 text-pine-subtle" />
-                <h3 class="text-lg font-semibold text-pine-text">Repositories</h3>
+                <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>
                 <span class="rounded-full border border-pine-highlight bg-pine-overlay px-2.5 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap text-pine-subtle uppercase">
                   Coordinator Off
                 </span>

@@ -17,7 +17,7 @@ interface RepoEditorProps {
 }
 
 const inputClass =
-  'bg-pine-overlay border border-pine-highlight text-pine-text rounded-lg px-3 py-2 text-sm outline-none focus:border-pine-iris transition-colors';
+  'bg-pine-overlay border border-pine-highlight text-pine-text placeholder-pine-subtle rounded-lg px-3 py-2 text-sm outline-none focus:border-pine-iris transition-colors';
 
 export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
   const current: Repo[] = config.resolved?.repositories || [];
@@ -114,8 +114,10 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         </p>
       </div>
 
-      <form onSubmit={handleAddRepo} class="flex gap-2">
+      <form onSubmit={handleAddRepo} class="flex flex-col gap-2 sm:flex-row">
         <input
+          id="repo-input"
+          aria-label="Repository name or Git clone URL"
           type="text"
           class={`flex-1 ${inputClass}`}
           placeholder="e.g. OtterBoops/agylity or https://github.com/OtterBoops/agylity.git"
@@ -132,30 +134,30 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       </form>
 
       {current.length === 0 ? (
-        <p class="text-sm text-pine-muted">No repositories configured yet.</p>
+        <p class="text-sm text-pine-subtle">No repositories configured yet.</p>
       ) : (
         <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
           {current.map((r) => (
             <div
               key={r.id}
-              class="flex flex-col justify-between gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-4"
+              class="flex flex-col justify-between gap-3 border-t border-pine-highlight/40 pt-3"
             >
               <div>
                 <div class="flex items-center justify-between">
-                  <h4 class="font-semibold text-pine-text">{r.name}</h4>
-                  <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono text-xs text-pine-muted">
+                  <h3 class="font-semibold text-pine-text">{r.name}</h3>
+                  <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono text-xs text-pine-subtle">
                     {r.defaultBranch || 'main'}
                   </span>
                 </div>
                 <p class="mt-1 font-mono text-xs text-pine-foam">{r.path}</p>
                 {r.cloneUrl && <p class="mt-0.5 truncate text-xs text-pine-subtle">{r.cloneUrl}</p>}
               </div>
-              <div class="flex justify-end border-t border-pine-highlight/50 pt-2">
+              <div class="flex justify-end pt-1">
                 <button
                   type="button"
                   onClick={() => handleRemoveRepo(r.id)}
                   disabled={isSaving}
-                  class="cursor-pointer rounded-sm border border-pine-love/30 bg-pine-love/10 px-2 py-1 text-xs font-medium text-pine-love hover:bg-pine-love hover:text-white disabled:opacity-50"
+                  class="cursor-pointer rounded-sm border border-pine-love/30 bg-pine-love/10 px-2.5 py-1 text-xs font-medium text-pine-love hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden disabled:opacity-50"
                 >
                   Remove
                 </button>

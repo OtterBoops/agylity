@@ -465,7 +465,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         <div class="flex items-center gap-3">
           <h2 class="text-xl font-semibold text-pine-text">Notification Destinations</h2>
           {enabledChannels.length === 0 && (
-            <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted">
+            <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-subtle">
               Alerts muted
             </span>
           )}
@@ -505,19 +505,19 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
             >
               Embed Link Base URL
             </label>
-            <span class="text-xs text-pine-muted">Optional</span>
+            <span class="text-xs text-pine-subtle">Optional</span>
           </div>
           <input
             id="agylity-base-url"
             type="url"
             autoComplete="off"
             name="agylity_base_url"
-            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
             placeholder="https://agylity.example.com"
             value={baseUrl}
             onInput={(e) => setBaseUrl((e.target as HTMLInputElement).value)}
           />
-          <span class="text-xs text-pine-muted">
+          <span class="text-xs text-pine-subtle">
             When set, embed titles link to this dashboard: the task inspector for dispatch status,
             the quota overview for alerts.
           </span>

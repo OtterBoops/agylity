@@ -4,6 +4,8 @@ import type { QuotaSnapshot } from '../types';
 interface QuotaGridProps {
   quota: QuotaSnapshot[];
   minHeadroomPercent?: number;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 const formatResetHuman = (hours: number): string => {
@@ -35,11 +37,20 @@ const formatResetDate = (isoStr?: string): string => {
   }
 };
 
-export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) => {
+export const QuotaGrid = ({
+  quota,
+  minHeadroomPercent = 10,
+  error = null,
+  onRetry,
+}: QuotaGridProps) => {
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
+    const tick = () => {
+      if (document.hidden) return;
+      setNow(Date.now());
+    };
+    const timer = setInterval(tick, 1000);
     return () => clearInterval(timer);
   }, []);
 
@@ -63,13 +74,37 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
   };
 
   if (quota.length === 0) {
+    if (error) {
+      return (
+        <div id="quotaGrid" class="mb-8 grid grid-cols-1">
+          <div
+            role="alert"
+            class="flex flex-col gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 p-5 text-pine-love shadow-sm sm:p-6"
+          >
+            <div class="flex items-center justify-between">
+              <span class="text-sm font-semibold">[Error] Sentry Telemetry Offline</span>
+              {onRetry && (
+                <button
+                  type="button"
+                  onClick={onRetry}
+                  class="cursor-pointer rounded-lg border border-pine-love/40 bg-pine-love/20 px-3 py-1 text-xs font-semibold hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden"
+                >
+                  Retry Connection
+                </button>
+              )}
+            </div>
+            <p class="text-xs text-pine-subtle">{error}</p>
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         id="quotaGrid"
         class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3"
       >
         <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-5 shadow-sm sm:p-6">
-          <p class="text-sm text-pine-muted">Probing Antigravity Language Server models...</p>
+          <p class="text-sm text-pine-subtle">Probing Antigravity Language Server models...</p>
         </div>
       </div>
     );
@@ -159,21 +194,13 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 >
                   {poolDisplayName}
                 </h2>
-                <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-pine-muted">
+                <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-pine-subtle">
                   <span class="inline-flex items-center gap-1">
                     Pool:{' '}
                     <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris">
                       {pool.poolId}
                     </span>
                   </span>
-                  {typeof pool.remainingCredits === 'number' ? (
-                    <span
-                      class="inline-flex items-center gap-1 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-muted"
-                      title="Google One AI credits remaining. Whether usage past the limit is billed is not exposed by the language server."
-                    >
-                      {pool.remainingCredits} credits
-                    </span>
-                  ) : null}
                 </div>
               </div>
               <span
@@ -184,16 +211,23 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
             </div>
 
             {/* Quota 1: Weekly Limit */}
-            <div class="flex flex-col gap-2 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:p-3.5">
+            <div class="flex flex-col gap-2 border-t border-pine-highlight/40 pt-2">
               <div class="flex items-center justify-between text-sm font-semibold sm:text-base">
                 <span class="font-medium text-pine-text">Weekly Limit</span>
                 <span class="font-mono text-sm font-bold text-pine-text sm:text-base">
                   {weeklyPct}%
                 </span>
               </div>
-              <div class="h-2 overflow-hidden rounded-full bg-pine-overlay sm:h-2.5">
+              <div
+                role="progressbar"
+                aria-valuenow={Math.min(100, Math.max(0, weeklyPct))}
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-label={`${pool.displayName || pool.poolId} weekly quota remaining`}
+                class="h-2 overflow-hidden rounded-full bg-pine-overlay sm:h-2.5"
+              >
                 <div
-                  class={`h-full rounded-full transition-all duration-500 ease-out ${barColor}`}
+                  class={`h-full rounded-full transition-[width] duration-500 ease-out ${barColor}`}
                   style={{ width: `${Math.min(100, Math.max(0, weeklyPct))}%` }}
                 />
               </div>
@@ -201,10 +235,10 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 <span class="font-mono font-medium text-pine-text">
                   Resets in {weeklyCountdown}
                 </span>
-                <span class="font-mono text-xs">{weeklyDateStr}</span>
+                <span class="font-mono text-xs text-pine-subtle">{weeklyDateStr}</span>
               </div>
               {velocityLabel && (
-                <div class="mt-1 flex items-center justify-between border-t border-pine-highlight/40 pt-1 text-xs text-pine-muted">
+                <div class="mt-1 flex items-center justify-between border-t border-pine-highlight/30 pt-1 text-xs text-pine-subtle">
                   <span>Pacing Guidance:</span>
                   {velocityLabel}
                 </div>
@@ -213,36 +247,50 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
 
             {/* Quota 2: 5-Hour Limit (Capacity Rate Limiter) */}
             {shortTerm?.disabled ? (
-              <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
+              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-muted">
+                  <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-subtle">
                     Not applicable
                   </span>
                 </div>
-                <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
-                  <div class="h-full rounded-full bg-pine-muted/30" style={{ width: '0%' }} />
+                <div
+                  role="progressbar"
+                  aria-valuenow={0}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${pool.displayName || pool.poolId} 5-hour limit`}
+                  class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2"
+                >
+                  <div class="h-full rounded-full bg-pine-highlight" style={{ width: '0%' }} />
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
                   <span>Capacity throttle</span>
                   <span>Reported disabled by the quota server</span>
                 </div>
               </div>
             ) : shortTerm && shortTermPct !== null ? (
-              <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
+              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
                   <span class="font-mono text-sm font-bold text-pine-text sm:text-base">
                     {shortTermPct}%
                   </span>
                 </div>
-                <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
+                <div
+                  role="progressbar"
+                  aria-valuenow={Math.min(100, Math.max(0, shortTermPct))}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-label={`${pool.displayName || pool.poolId} 5-hour rolling limit remaining`}
+                  class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2"
+                >
                   <div
-                    class="h-full rounded-full bg-pine-iris/75 transition-all duration-500 ease-out"
+                    class="h-full rounded-full bg-pine-iris/75 transition-[width] duration-500 ease-out"
                     style={{ width: `${Math.min(100, Math.max(0, shortTermPct))}%` }}
                   />
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
                   <span>Capacity throttle</span>
                   <span>
                     Refreshes in {getLiveCountdown(shortTerm.resetTime, shortTerm.hoursUntilReset)}
@@ -250,24 +298,24 @@ export const QuotaGrid = ({ quota, minHeadroomPercent = 10 }: QuotaGridProps) =>
                 </div>
               </div>
             ) : (
-              <div class="flex flex-col gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/15 p-3 sm:p-3.5">
+              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="text-xs font-medium text-pine-muted">No 5h cap</span>
+                  <span class="text-xs font-medium text-pine-subtle">No 5h cap</span>
                 </div>
                 <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
                   <div class="size-full rounded-full bg-pine-muted/20" />
                 </div>
-                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-muted">
+                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
                   <span>Capacity throttle</span>
-                  <span class="text-pine-muted">Uncapped 5h window</span>
+                  <span>Uncapped 5h window</span>
                 </div>
               </div>
             )}
 
             {/* Models in Pool - Responsive flex layout */}
             <div class="mt-auto flex items-center justify-between gap-2 border-t border-pine-highlight pt-2.5 text-xs text-pine-subtle">
-              <span class="shrink-0 text-pine-muted">Models:</span>
+              <span class="shrink-0 text-pine-subtle">Models:</span>
               <span
                 class="min-w-0 flex-1 truncate text-right font-medium text-pine-text"
                 title={pool.models?.join(', ')}

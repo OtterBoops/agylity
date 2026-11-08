@@ -217,24 +217,29 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   return (
     <dialog
       id="dispatchModal"
+      aria-labelledby="dispatchModalTitle"
+      aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
       onClick={handleDialogClick}
-      class={`fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/65 backdrop:backdrop-blur-sm sm:p-6 ${
+      class={`fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6 ${
         !isOpen ? 'hidden' : ''
       }`}
     >
       <div class="flex flex-col gap-4">
         <div class="flex items-center justify-between border-b border-pine-highlight pb-2">
-          <h3 class="flex items-center gap-2 text-lg font-semibold text-pine-text">
+          <h2
+            id="dispatchModalTitle"
+            class="flex items-center gap-2 text-lg font-semibold text-pine-text"
+          >
             <Icon icon={faBolt} class="size-4 text-pine-iris" />
             <span>Dispatch Continuation Task</span>
-          </h3>
+          </h2>
           <button
             type="button"
-            class="cursor-pointer text-pine-subtle transition-colors hover:text-pine-text"
+            class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg text-pine-subtle transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             onClick={onClose}
-            aria-label="Close modal"
+            aria-label="Close dispatch modal"
           >
             <Icon icon={faXmark} class="size-4" />
           </button>

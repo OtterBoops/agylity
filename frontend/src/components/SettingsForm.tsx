@@ -139,7 +139,7 @@ export const SettingsForm = ({
   };
 
   const inputClass =
-    'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris';
+    'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris';
 
   return (
     <form
@@ -245,7 +245,7 @@ export const SettingsForm = ({
                     data-lpignore="true"
                     data-form-type="other"
                     data-bwignore="true"
-                    class={`${inputClass} w-full pr-24`}
+                    class={`${inputClass} w-full pr-24 placeholder-pine-subtle`}
                     placeholder={
                       f.placeholder ??
                       (isConfigured
@@ -261,7 +261,7 @@ export const SettingsForm = ({
                     {isConfigured && (
                       <button
                         type="button"
-                        class="cursor-pointer px-1.5 py-0.5 text-xs text-pine-love/80 transition-colors hover:text-pine-love"
+                        class="cursor-pointer rounded-sm px-1.5 py-0.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-love focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
                         onClick={async () => {
                           try {
                             await deleteConfigOverride(f.key);
@@ -276,8 +276,8 @@ export const SettingsForm = ({
                     )}
                     <button
                       type="button"
-                      tabIndex={-1}
-                      class="cursor-pointer px-1.5 py-0.5 text-xs text-pine-subtle transition-colors hover:text-pine-text"
+                      aria-label={showSecrets[f.key] ? `Hide ${f.label}` : `Show ${f.label}`}
+                      class="inline-flex min-h-[36px] min-w-[36px] cursor-pointer items-center justify-center px-1.5 py-0.5 text-xs text-pine-subtle transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
                       onClick={() =>
                         setShowSecrets({ ...showSecrets, [f.key]: !showSecrets[f.key] })
                       }
@@ -302,7 +302,7 @@ export const SettingsForm = ({
                   }
                 />
               )}
-              {f.hint && <p class="text-xs text-pine-muted sm:text-sm">{f.hint}</p>}
+              {f.hint && <p class="text-xs text-pine-subtle sm:text-sm">{f.hint}</p>}
             </div>
           );
         })}
@@ -316,7 +316,7 @@ export const SettingsForm = ({
               {dirtyKeys.length} unsaved {dirtyKeys.length === 1 ? 'change' : 'changes'}
             </span>
           ) : (
-            <span class="text-xs text-pine-muted">
+            <span class="text-xs text-pine-subtle">
               Clear a field and save to fall back to environment default.
             </span>
           )}

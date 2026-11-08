@@ -15,6 +15,13 @@ import type {
 
 export const getAuthToken = (): string | null => {
   try {
+    if (typeof window !== 'undefined') {
+      const tokenParam = new URLSearchParams(window.location.search).get('token');
+      if (tokenParam) {
+        localStorage.setItem('agylity_auth_token', tokenParam);
+        return tokenParam;
+      }
+    }
     return localStorage.getItem('agylity_auth_token');
   } catch {
     return null;

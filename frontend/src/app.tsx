@@ -2,12 +2,6 @@ import { useState, useEffect } from 'preact/hooks';
 import Router, { type RouterOnChangeArgs } from 'preact-router';
 import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './components/Icon';
-import {
-  type ThemeChoice,
-  normalizeStoredTheme,
-  resolveEffectiveTheme,
-  applyDocumentTheme,
-} from './theme';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { DispatchModal, loadModelCatalog } from './components/DispatchModal';
@@ -52,13 +46,6 @@ export const App = () => {
   const handleRouteChange = (e: RouterOnChangeArgs) => {
     setCurrentUrl(e.url);
   };
-  const [theme, setTheme] = useState<ThemeChoice>(() => {
-    try {
-      return normalizeStoredTheme(localStorage.getItem('agylity-theme'));
-    } catch {
-      return normalizeStoredTheme(null);
-    }
-  });
   const { quota, alerts, error: quotaError } = useStore(quotaStore);
   const { config } = useStore(configStore);
   const [authCopied, setAuthCopied] = useState(false);
@@ -143,31 +130,6 @@ export const App = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [refreshCooldown, isRefreshing, dispatchModalOpen, commandPaletteOpen, sessionModalOpen]);
 
-  const handleToggleTheme = () => {
-    const sequence: ThemeChoice[] = ['regular', 'moon', 'dawn', 'system'];
-    const nextIdx = (sequence.indexOf(theme) + 1) % sequence.length;
-    setTheme(sequence[nextIdx]!);
-  };
-
-  useEffect(() => {
-    const apply = () => {
-      const effective = resolveEffectiveTheme(theme);
-      applyDocumentTheme(effective);
-    };
-
-    apply();
-    try {
-      localStorage.setItem('agylity-theme', theme);
-    } catch {}
-
-    if (theme === 'system' && typeof window !== 'undefined' && window.matchMedia) {
-      const media = window.matchMedia('(prefers-color-scheme: light)');
-      const listener = () => apply();
-      media.addEventListener('change', listener);
-      return () => media.removeEventListener('change', listener);
-    }
-  }, [theme]);
-
   const fetchAll = (force = false) =>
     Promise.all([
       refreshQuota({ force }),
@@ -240,16 +202,14 @@ export const App = () => {
 
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
         {/* Desktop Header: pinned at top of right pane */}
-        <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-3.5 sm:px-6 md:px-6 2xl:px-8">
-          <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
+        <header class="shrink-0 bg-pine-base/95 px-4 py-[0.7rem] sm:px-6 md:px-6 2xl:px-8">
+          <div class="mx-auto max-w-7xl border-b border-pine-highlight 2xl:max-w-[2112px]">
             <TopBar
               title={title}
               isRefreshing={isRefreshing}
               refreshCooldown={refreshCooldown}
               coordinatorEnabled={isCoordinatorEnabled}
               remainingCredits={remainingCredits}
-              theme={theme}
-              onThemeChange={setTheme}
               onRefresh={handleManualRefresh}
               onOpenCommandPalette={() => setCommandPaletteOpen(true)}
               onOpenAuthModal={() => setSessionModalOpen(true)}
@@ -259,7 +219,7 @@ export const App = () => {
 
         {/* Scrollable View Area: content scrolls cleanly inside this div */}
         <div class="min-w-0 flex-1 p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
-          <div class="mx-auto max-w-7xl 2xl:max-w-[1920px]">
+          <div class="mx-auto max-w-7xl 2xl:max-w-[2112px]">
             {Boolean(
               alerts?.lastProbeSource === 'auth_required' ||
               alerts?.authRequired === true ||
@@ -302,12 +262,16 @@ export const App = () => {
                   quota={quota}
                   alerts={alerts}
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+                  error={quotaError}
+                  onRetry={() => fetchAll(true)}
                 />
                 <OverviewView
                   path="/overview"
                   quota={quota}
                   alerts={alerts}
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+                  error={quotaError}
+                  onRetry={() => fetchAll(true)}
                 />
                 <TasksView
                   path="/tasks"
@@ -361,7 +325,6 @@ export const App = () => {
         onClose={() => setCommandPaletteOpen(false)}
         onRefresh={handleManualRefresh}
         onOpenDispatch={() => setDispatchModalOpen(true)}
-        onToggleTheme={handleToggleTheme}
         coordinatorEnabled={isCoordinatorEnabled}
       />
     </div>

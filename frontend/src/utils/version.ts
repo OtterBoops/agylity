@@ -19,49 +19,58 @@ export const isNewerVersion = (current: string, latest: string): boolean => {
   return l3 > c3;
 };
 
-export const fetchLatestRelease = async (): Promise<{ latest: string; url: string } | null> => {
-  try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Date.now() - parsed.timestamp < CACHE_TTL_MS) {
-        return { latest: parsed.tag, url: parsed.url };
+let inFlightRelease: Promise<{ latest: string; url: string } | null> | null = null;
+
+export const fetchLatestRelease = (): Promise<{ latest: string; url: string } | null> => {
+  if (inFlightRelease) return inFlightRelease;
+  inFlightRelease = (async () => {
+    try {
+      const cached = localStorage.getItem(CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Date.now() - parsed.timestamp < CACHE_TTL_MS) {
+          return { latest: parsed.tag, url: parsed.url };
+        }
       }
+    } catch {
+      // ignore cache parse issues
     }
-  } catch {
-    // ignore cache parse issues
-  }
 
-  try {
-    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
-      headers: {
-        Accept: 'application/vnd.github.v3+json',
-      },
-    });
+    try {
+      const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+        headers: {
+          Accept: 'application/vnd.github.v3+json',
+        },
+      });
 
-    if (!res.ok) return null;
-    const data = await res.json();
-    const tag = (data.tag_name || '').replace(/^v/, '');
-    const url = data.html_url || `https://github.com/${GITHUB_REPO}/releases/latest`;
+      if (!res.ok) return null;
+      const data = await res.json();
+      const tag = (data.tag_name || '').replace(/^v/, '');
+      const url = data.html_url || `https://github.com/${GITHUB_REPO}/releases/latest`;
 
-    if (tag) {
-      try {
-        localStorage.setItem(
-          CACHE_KEY,
-          JSON.stringify({
-            tag,
-            url,
-            timestamp: Date.now(),
-          })
-        );
-      } catch {
-        // quota exceeded or disabled
+      if (tag) {
+        try {
+          localStorage.setItem(
+            CACHE_KEY,
+            JSON.stringify({
+              tag,
+              url,
+              timestamp: Date.now(),
+            })
+          );
+        } catch {
+          // quota exceeded or disabled
+        }
+        return { latest: tag, url };
       }
-      return { latest: tag, url };
+    } catch {
+      // network failure or offline
     }
-  } catch {
-    // network failure or offline
-  }
 
-  return null;
+    return null;
+  })().finally(() => {
+    inFlightRelease = null;
+  });
+
+  return inFlightRelease;
 };

@@ -199,7 +199,7 @@ export const DispatchFormFields = ({
         <textarea
           id="taskPromptInput"
           name="prompt"
-          class="min-h-[110px] rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
+          class="min-h-[121px] rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris"
           placeholder="e.g. Continue unit test suite implementation on isolated branch..."
           value={taskPrompt}
           onInput={(e) => onTaskPromptChange((e.target as HTMLTextAreaElement).value)}

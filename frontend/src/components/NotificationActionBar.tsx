@@ -15,7 +15,7 @@ export const NotificationActionBar = ({
         {isDirty ? (
           <span class="text-xs font-medium text-pine-gold">Unsaved changes</span>
         ) : (
-          <span class="text-xs text-pine-muted">Settings saved</span>
+          <span class="text-xs text-pine-subtle">Settings saved</span>
         )}
       </div>
 

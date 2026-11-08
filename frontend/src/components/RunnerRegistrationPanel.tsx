@@ -85,8 +85,8 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
     : '';
 
   return (
-    <div class="rounded-xl border border-pine-highlight bg-pine-overlay/40 p-4">
-      <h4 class="text-sm font-semibold text-pine-text">Register New Swarm Runner</h4>
+    <div class="mt-4 border-t border-pine-highlight/60 pt-4">
+      <h3 class="text-sm font-semibold text-pine-text">Register New Swarm Runner</h3>
       <p class="mt-0.5 text-xs text-pine-subtle">
         Generate a short-lived one-time registration token (valid for 1 hour). The runner exchanges
         it on first boot for a unique persistent credential stored in{' '}
@@ -94,7 +94,10 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
       </p>
 
       {error && (
-        <div class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love">
+        <div
+          role="alert"
+          class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
+        >
           {error}
         </div>
       )}
@@ -124,7 +127,7 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
           <label class="text-xs font-medium text-pine-subtle" for="runner-labels-input">
             Labels (comma-separated)
           </label>
-          <div class="flex gap-2">
+          <div class="flex flex-col gap-2 sm:flex-row">
             <input
               id="runner-labels-input"
               type="text"

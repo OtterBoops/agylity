@@ -71,9 +71,9 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
           <div>
             <div class="mb-1 flex flex-wrap items-center gap-2">
               <Icon icon={faNetworkWired} class="size-5 text-pine-iris" />
-              <h3 class="text-lg font-semibold text-pine-text">
+              <h2 class="text-lg font-semibold text-pine-text">
                 Task Coordinator &amp; Swarm Runners
-              </h3>
+              </h2>
               <span
                 class={`rounded-full border px-2.5 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${
                   isCoordinatorEnabled
@@ -108,7 +108,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
               onClick={handleToggleCoordinator}
               class={`cursor-pointer rounded-lg px-4 py-2 text-xs font-semibold whitespace-nowrap transition-colors sm:text-sm ${
                 isCoordinatorEnabled
-                  ? 'border border-pine-love/40 bg-pine-love/15 text-pine-love hover:bg-pine-love hover:text-white'
+                  ? 'border border-pine-love/40 bg-pine-love/15 text-pine-love hover:bg-pine-love hover:text-pine-base'
                   : 'bg-pine-iris text-pine-base hover:opacity-90'
               }`}
             >
@@ -146,7 +146,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
             </div>
             <div>
               <div class="text-xs font-semibold text-pine-text">Tier 3: Maintenance Routines</div>
-              <p class="text-[11px] text-pine-subtle">
+              <p class="text-[12.1px] text-pine-subtle">
                 Routines automatically execute prompt templates before quota pool resets. Managed
                 under the Tasks tab.
               </p>

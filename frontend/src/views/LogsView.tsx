@@ -1,5 +1,5 @@
 import { faCheck, faCopy, faDownload, faPause, faPlay } from '@fortawesome/free-solid-svg-icons';
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { LogEntry, LogLevel } from '../types';
 import { getLogs } from '../api';
 import { Icon } from '../components/Icon';
@@ -8,7 +8,7 @@ import { formatTime, useTimeFormat } from '../utils/time';
 const MAX_LINES = 1000;
 
 const LEVEL_STYLE: Record<LogLevel, string> = {
-  debug: 'text-pine-muted',
+  debug: 'text-pine-subtle',
   info: 'text-pine-foam',
   warn: 'text-pine-gold',
   error: 'text-pine-love',
@@ -40,6 +40,7 @@ export const LogsView = () => {
     let cancelled = false;
 
     const poll = () => {
+      if (document.hidden) return;
       getLogs(lastId.current, 'debug')
         .then((data) => {
           if (cancelled) return;
@@ -74,27 +75,36 @@ export const LogsView = () => {
   const rank: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
   const q = query.trim().toLowerCase();
 
-  const visible = entries.filter((e) => {
-    if (rank[e.level] < rank[level]) return false;
-    const msg = e.message.toLowerCase();
-    if (q && !msg.includes(q)) return false;
-    if (namespace !== 'all') {
-      const match = e.message.match(/^\[([a-zA-Z0-9_\-:]+)\]/);
-      if (match && match[1]) {
-        const prefix = match[1].toLowerCase();
-        if (namespace === 'runner' && (prefix.startsWith('runner') || prefix === 'coordinator'))
-          return true;
-        if (prefix.startsWith(namespace)) return true;
+  const visible = useMemo(() => {
+    return entries.filter((e) => {
+      if (rank[e.level] < rank[level]) return false;
+      const msg = e.message.toLowerCase();
+      if (q && !msg.includes(q)) return false;
+      if (namespace !== 'all') {
+        const match = e.message.match(/^\[([a-zA-Z0-9_\-:]+)\]/);
+        if (match && match[1]) {
+          const prefix = match[1].toLowerCase();
+          if (namespace === 'runner' && (prefix.startsWith('runner') || prefix === 'coordinator'))
+            return true;
+          if (prefix.startsWith(namespace)) return true;
+        }
+        const keywords = FACET_KEYWORDS[namespace];
+        if (!keywords.some((kw) => msg.includes(kw))) return false;
       }
-      const keywords = FACET_KEYWORDS[namespace];
-      if (!keywords.some((kw) => msg.includes(kw))) return false;
-    }
-    return true;
-  });
+      return true;
+    });
+  }, [entries, level, q, namespace]);
 
   useEffect(() => {
-    if (!paused && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
-  }, [visible.length, paused]);
+    if (!paused && !q && scroller.current) {
+      const isNearBottom =
+        scroller.current.scrollHeight - scroller.current.scrollTop - scroller.current.clientHeight <
+        50;
+      if (isNearBottom) {
+        scroller.current.scrollTop = scroller.current.scrollHeight;
+      }
+    }
+  }, [entries.length, paused, q]);
 
   const handleCopyLogs = async () => {
     if (visible.length === 0) return;
@@ -135,6 +145,7 @@ export const LogsView = () => {
       {/* Top Filter Bar */}
       <div class="flex flex-wrap items-center gap-3">
         <select
+          aria-label="Filter logs by severity level"
           class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text outline-none focus:border-pine-iris"
           value={level}
           onChange={(e) => setLevel((e.target as HTMLSelectElement).value as LogLevel)}
@@ -146,11 +157,16 @@ export const LogsView = () => {
         </select>
 
         {/* Facet pills */}
-        <div class="inline-flex rounded-lg border border-pine-highlight bg-pine-surface p-0.5 text-xs">
+        <div
+          role="group"
+          aria-label="Filter by subsystem"
+          class="inline-flex rounded-lg border border-pine-highlight bg-pine-surface p-0.5 text-xs"
+        >
           {(['all', 'sentry', 'notify', 'web', 'runner'] as NamespaceFacet[]).map((facet) => (
             <button
               key={facet}
               type="button"
+              aria-pressed={namespace === facet}
               onClick={() => setNamespace(facet)}
               class={`cursor-pointer rounded-md px-2.5 py-1 font-medium capitalize transition-colors ${
                 namespace === facet
@@ -165,10 +181,11 @@ export const LogsView = () => {
 
         <input
           type="search"
+          aria-label="Filter log lines"
           autoComplete="off"
           data-1p-ignore="true"
           data-lpignore="true"
-          class="min-w-[180px] flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text outline-none focus:border-pine-iris"
+          class="min-w-[198px] flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text placeholder-pine-subtle outline-none focus:border-pine-iris"
           placeholder="Filter log lines..."
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
@@ -215,7 +232,7 @@ export const LogsView = () => {
           </button>
         </div>
 
-        <span class="text-xs text-pine-muted">{visible.length} lines</span>
+        <span class="text-xs text-pine-subtle">{visible.length} lines</span>
       </div>
 
       {/* Terminal Output */}
@@ -224,16 +241,16 @@ export const LogsView = () => {
         class="h-[60vh] overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 font-mono text-xs/relaxed shadow-sm"
       >
         {!enabled ? (
-          <p class="text-pine-muted">
+          <p class="text-pine-subtle">
             Log capture isn't active in this process. It starts with the daemon entrypoint (
             <code>npm start</code>).
           </p>
         ) : visible.length === 0 ? (
-          <p class="text-pine-muted">No log lines match current filters.</p>
+          <p class="text-pine-subtle">No log lines match current filters.</p>
         ) : (
           visible.map((e) => (
-            <div key={e.id} class="flex gap-3 hover:bg-white/3">
-              <span class="shrink-0 font-mono text-pine-muted">
+            <div key={e.id} class="flex gap-3 hover:bg-pine-overlay/30">
+              <span class="shrink-0 font-mono text-pine-subtle">
                 {formatTime(e.ts, { includeSeconds: true, timeFormat })}
               </span>
               <span class={`w-12 shrink-0 font-bold uppercase ${LEVEL_STYLE[e.level]}`}>
@@ -245,7 +262,7 @@ export const LogsView = () => {
         )}
       </div>
 
-      <div class="flex flex-wrap items-center justify-between text-xs text-pine-muted">
+      <div class="flex flex-wrap items-center justify-between text-xs text-pine-subtle">
         <span>
           Last {MAX_LINES} lines are kept in memory only and cleared on restart. Tokens and secrets
           are redacted server-side.

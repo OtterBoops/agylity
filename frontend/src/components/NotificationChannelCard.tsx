@@ -44,19 +44,14 @@ export const NotificationChannelCard = ({
     >
       {/* Card Header Row: Expand trigger + Icon/Label + Badges + Toggle Switch */}
       <div class="flex items-center justify-between gap-4 p-4 select-none md:p-5">
-        <div
-          class="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5"
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault();
-              onToggleExpand();
-            }
-          }}
+        <button
+          type="button"
+          aria-expanded={isExpanded}
+          aria-controls={`channel-config-${channel.id}`}
           onClick={onToggleExpand}
+          class="flex min-w-0 flex-1 cursor-pointer items-center gap-3.5 rounded-lg text-left focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
         >
-          <span class="text-pine-muted transition-colors hover:text-pine-text" aria-hidden="true">
+          <span class="text-pine-subtle transition-colors hover:text-pine-text" aria-hidden="true">
             <Icon icon={isExpanded ? faChevronDown : faChevronRight} class="size-3.5" />
           </span>
 
@@ -64,21 +59,21 @@ export const NotificationChannelCard = ({
             <Icon icon={channel.icon} class={`size-4 shrink-0 ${channel.iconColor}`} />
             <div class="min-w-0">
               <div class="flex items-center gap-2">
-                <span class="text-sm font-semibold text-pine-text">{channel.label}</span>
+                <h3 class="text-sm font-semibold text-pine-text">{channel.label}</h3>
                 {isEnabled ? (
                   <span class="rounded-sm bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
                     Enabled
                   </span>
                 ) : (
-                  <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-muted uppercase">
+                  <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-subtle uppercase">
                     Off
                   </span>
                 )}
               </div>
-              <p class="text-xs text-pine-muted">{channel.description}</p>
+              <p class="text-xs text-pine-subtle">{channel.description}</p>
             </div>
           </div>
-        </div>
+        </button>
 
         {/* Right-aligned Toggle Switch */}
         <div class="flex shrink-0 items-center gap-3">
@@ -92,7 +87,12 @@ export const NotificationChannelCard = ({
 
       {/* Nested Config Section: Expanded configuration */}
       {isExpanded && (
-        <div class="border-t border-pine-highlight bg-pine-overlay/20 p-4 md:p-6">{children}</div>
+        <div
+          id={`channel-config-${channel.id}`}
+          class="border-t border-pine-highlight bg-pine-overlay/20 p-4 md:p-6"
+        >
+          {children}
+        </div>
       )}
     </div>
   );
