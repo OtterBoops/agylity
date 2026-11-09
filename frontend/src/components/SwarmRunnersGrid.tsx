@@ -65,7 +65,7 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
           to generate a registration token and connect a Docker or CLI runner.
         </div>
       ) : (
-        <div class="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div class="flex flex-col divide-y divide-pine-highlight/40 border-t border-pine-highlight/40">
           {runners.map((r) => {
             const isMutating = mutatingId === r.runnerId;
             const isConfirmingRevoke = confirmRevokeId === r.runnerId;
@@ -73,56 +73,53 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
             return (
               <div
                 key={r.runnerId}
-                class="flex flex-col justify-between gap-3 rounded-lg bg-pine-overlay/30 p-3.5 text-xs"
+                class="flex flex-col gap-3 py-3 lg:flex-row lg:items-center lg:justify-between"
               >
-                <div class="flex items-start justify-between gap-2">
-                  <div class="min-w-0">
-                    <div class="font-mono font-semibold wrap-break-word text-pine-text">
-                      {r.name}
-                    </div>
-                    <div class="mt-0.5 font-mono text-xs text-pine-subtle">{r.runnerId}</div>
-                  </div>
+                <div class="flex min-w-0 flex-wrap items-center gap-2">
+                  <span class="font-mono text-sm font-semibold wrap-break-word text-pine-text">
+                    {r.name}
+                  </span>
+                  <span class="font-mono text-xs text-pine-subtle">{r.runnerId}</span>
 
-                  <div class="flex items-center gap-1.5">
-                    {!r.enabled && (
-                      <span class="inline-flex items-center rounded-md border border-pine-highlight bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-subtle uppercase">
-                        Paused
-                      </span>
-                    )}
-                    <span
-                      class={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
-                    >
-                      {r.status}
+                  <span
+                    class={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
+                  >
+                    {r.status}
+                  </span>
+
+                  {!r.enabled && (
+                    <span class="inline-flex items-center rounded-md border border-pine-highlight bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-subtle uppercase">
+                      Paused
                     </span>
-                  </div>
-                </div>
+                  )}
 
-                <div class="flex flex-wrap items-center gap-1.5 text-xs text-pine-subtle">
                   {r.systemInfo?.platform && (
-                    <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono whitespace-nowrap text-pine-subtle">
+                    <span class="rounded-sm bg-pine-overlay/60 px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
                       {r.systemInfo.platform}/{r.systemInfo.arch || 'x64'}
                     </span>
                   )}
+
                   {r.activeTaskId && (
                     <a
                       href="#tasks"
-                      class="rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 font-mono whitespace-nowrap text-pine-gold hover:underline"
+                      class="rounded-sm border border-pine-gold/40 bg-pine-gold/20 px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-gold hover:underline"
                     >
                       task:{r.activeTaskId.slice(-6)}
                     </a>
                   )}
+
                   {r.labels?.map((lbl) => (
                     <span
                       key={lbl}
-                      class="rounded-sm bg-pine-iris/15 px-2 py-0.5 font-mono whitespace-nowrap text-pine-iris"
+                      class="rounded-sm bg-pine-iris/15 px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris"
                     >
                       {lbl}
                     </span>
                   ))}
                 </div>
 
-                <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2.5">
-                  <span class="font-mono text-xs text-pine-subtle">
+                <div class="flex flex-wrap items-center gap-3 lg:shrink-0">
+                  <span class="font-mono text-xs whitespace-nowrap text-pine-subtle">
                     Seen {formatTime(r.lastSeenAt, { includeSeconds: true, timeFormat })}
                   </span>
 
@@ -132,7 +129,7 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                       disabled={isMutating}
                       onClick={() => handleToggle(r)}
                       title={r.enabled ? 'Pause runner' : 'Resume runner'}
-                      class="flex cursor-pointer items-center gap-1 rounded-sm border border-pine-highlight bg-pine-surface px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
+                      class="flex min-w-20 cursor-pointer items-center justify-center gap-1 rounded-sm border border-pine-highlight bg-pine-surface px-2 py-1 text-xs font-medium whitespace-nowrap text-pine-subtle transition-colors hover:text-pine-text disabled:opacity-50"
                     >
                       <Icon icon={r.enabled ? faPause : faPlay} class="size-2.5" />
                       <span>{r.enabled ? 'Pause' : 'Resume'}</span>

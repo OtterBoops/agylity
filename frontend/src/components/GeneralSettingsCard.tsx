@@ -33,9 +33,9 @@ export const GeneralSettingsCard = () => {
               <Icon icon={faClock} class="size-4" />
             </div>
             <div>
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-2">
                 <span class="text-sm font-semibold text-pine-text">Clock Time Format</span>
-                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-xs font-semibold text-pine-subtle">
+                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-xs font-semibold whitespace-nowrap text-pine-subtle">
                   Preview: {formatTime(now, { includeSeconds: true, timeFormat })}
                 </span>
               </div>

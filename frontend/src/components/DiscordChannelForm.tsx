@@ -79,11 +79,11 @@ export const DiscordChannelForm = ({
         </div>
       )}
 
-      {/* Stage 1: Bot Credentials & App Identity */}
+      {/* Step 1: Bot Credentials & App Identity */}
       <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
-            Stage 1: Bot Credentials &amp; Identity
+            Step 1: Bot Credentials &amp; Identity
           </h4>
           <span class="text-xs text-pine-subtle">Discord Developer Portal</span>
         </div>
@@ -118,9 +118,7 @@ export const DiscordChannelForm = ({
                 data-lpignore="true"
                 class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
                 placeholder={
-                  isTokenSet
-                    ? '•••••••••••••••••••• (Encrypted — enter new token to update)'
-                    : 'Paste Discord Bot Token'
+                  isTokenSet ? 'Enter new token to update...' : 'Paste Discord bot token'
                 }
                 value={token}
                 onInput={(e) => onTokenChange((e.target as HTMLInputElement).value)}
@@ -148,7 +146,7 @@ export const DiscordChannelForm = ({
               data-1p-ignore="true"
               data-lpignore="true"
               class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
-              placeholder="e.g. 987654321098765432"
+              placeholder="e.g. 123456789012345678"
               value={clientId}
               onInput={(e) => onClientIdChange((e.target as HTMLInputElement).value)}
             />
@@ -171,11 +169,11 @@ export const DiscordChannelForm = ({
         </div>
       </div>
 
-      {/* Stage 2: Notification Target & Guild Routing */}
+      {/* Step 2: Notification Target & Guild Routing */}
       <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
-            Stage 2: Delivery Target &amp; Server Routing
+            Step 2: Delivery Target &amp; Server Routing
           </h4>
           <span class="text-xs text-pine-subtle">Discord Server &amp; Channels</span>
         </div>
@@ -210,7 +208,7 @@ export const DiscordChannelForm = ({
               data-1p-ignore="true"
               data-lpignore="true"
               class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
-              placeholder="e.g. 112233445566778899"
+              placeholder="e.g. 123456789012345678"
               value={guildId}
               onInput={(e) => onGuildIdChange((e.target as HTMLInputElement).value)}
             />
@@ -234,7 +232,7 @@ export const DiscordChannelForm = ({
               data-1p-ignore="true"
               data-lpignore="true"
               class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
-              placeholder="e.g. 334455667788990011 (Restricts /quota and dispatches to this Discord user ID)"
+              placeholder="e.g. 123456789012345678"
               value={ownerUserId}
               onInput={(e) => onOwnerUserIdChange((e.target as HTMLInputElement).value)}
             />

@@ -78,7 +78,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     () => resolved.discordPingOwner !== false,
     [resolved.discordPingOwner]
   );
-  const serverBaseUrl = useMemo(() => String(resolved.baseUrl || ''), [resolved.baseUrl]);
 
   const isDiscordTokenSet = Boolean(
     config.secretsMeta?.discordToken?.isSet ?? Boolean(resolved.discordToken)
@@ -121,9 +120,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSecret, setWebhookSecret] = useState('');
 
-  // Shared by every channel: the origin embed links point at.
-  const [baseUrl, setBaseUrl] = useState(serverBaseUrl);
-
   const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
@@ -142,7 +138,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordGuildId(serverDiscordGuildId);
     setDiscordOwnerUserId(serverDiscordOwnerUserId);
     setDiscordPingOwner(serverDiscordPingOwner);
-    setBaseUrl(serverBaseUrl);
     setWebhookUrl('');
     setDiscordToken('');
     setWebhookSecret('');
@@ -153,7 +148,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     serverDiscordGuildId,
     serverDiscordOwnerUserId,
     serverDiscordPingOwner,
-    serverBaseUrl,
   ]);
 
   const ensureChannelEnabled = (id: ChannelId) => {
@@ -209,7 +203,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     if (discordGuildId !== serverDiscordGuildId) return true;
     if (discordOwnerUserId !== serverDiscordOwnerUserId) return true;
     if (discordPingOwner !== serverDiscordPingOwner) return true;
-    if (baseUrl.trim() !== serverBaseUrl) return true;
     if (webhookUrl.trim().length > 0) return true;
     if (webhookSecret.trim().length > 0) return true;
     return false;
@@ -226,8 +219,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     serverDiscordOwnerUserId,
     discordPingOwner,
     serverDiscordPingOwner,
-    baseUrl,
-    serverBaseUrl,
     webhookUrl,
     webhookSecret,
   ]);
@@ -240,7 +231,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordGuildId(serverDiscordGuildId);
     setDiscordOwnerUserId(serverDiscordOwnerUserId);
     setDiscordPingOwner(serverDiscordPingOwner);
-    setBaseUrl(serverBaseUrl);
     setWebhookUrl('');
     setWebhookSecret('');
     setToast(null);
@@ -294,14 +284,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       payload.discordPingOwner = discordPingOwner;
     }
 
-    if (baseUrl.trim() !== serverBaseUrl) {
-      if (baseUrl.trim() === '' && config.overrides?.baseUrl !== undefined) {
-        overrideDeletes.push('baseUrl');
-      } else {
-        payload.baseUrl = baseUrl.trim();
-      }
-    }
-
     if (webhookUrl.trim() && webhookUrl.trim() !== '••••••••' && webhookUrl.trim() !== '********') {
       payload.notificationWebhookUrl = webhookUrl.trim();
     }
@@ -340,9 +322,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setToast(null);
 
     const overrides: Record<string, unknown> = {};
-    if (baseUrl.trim() !== serverBaseUrl) {
-      overrides.baseUrl = baseUrl.trim();
-    }
     if (channel === 'webhook') {
       if (
         webhookUrl.trim() &&
@@ -492,33 +471,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           aria-hidden="true"
           autoComplete="off"
         />
-
-        {/* Link target shared by every channel, so it sits above the channel cards */}
-        <div class="flex flex-col gap-1.5 rounded-xl border border-pine-highlight bg-pine-overlay/40 p-4">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <label
-              for="agylity-base-url"
-              class="text-xs font-semibold tracking-wider text-pine-text uppercase"
-            >
-              Embed Link Base URL
-            </label>
-            <span class="text-xs text-pine-subtle">Optional</span>
-          </div>
-          <input
-            id="agylity-base-url"
-            type="url"
-            autoComplete="off"
-            name="agylity_base_url"
-            class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
-            placeholder="https://agylity.example.com"
-            value={baseUrl}
-            onInput={(e) => setBaseUrl((e.target as HTMLInputElement).value)}
-          />
-          <span class="text-xs text-pine-subtle">
-            When set, embed titles link to this dashboard: the task inspector for dispatch status,
-            the quota overview for alerts.
-          </span>
-        </div>
 
         {/* Vertically Stacked Notification Channel Cards with Independent Toggles */}
         {CHANNELS.map((ch) => {

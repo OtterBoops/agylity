@@ -152,6 +152,11 @@ export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean
 /** Loopback only: a private-range peer is not a proxy, it is another host that can forge headers. */
 export const DEFAULT_TRUSTED_PROXY_RANGES = ['127.0.0.0/8', '::1/128'];
 
+export const isLoopbackIp = (ip: string): boolean => {
+  const norm = normalizeIp(ip);
+  return isIpAllowed(norm, DEFAULT_TRUSTED_PROXY_RANGES);
+};
+
 export const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[]): boolean => {
   const ranges =
     customProxyRanges && customProxyRanges.length > 0

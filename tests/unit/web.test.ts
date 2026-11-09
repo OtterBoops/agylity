@@ -461,10 +461,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
-    it('enforces timing-safe Bearer auth when WEB_UI_AUTH_TOKEN is configured', async () => {
+    it('enforces timing-safe Bearer auth when WEB_UI_AUTH_TOKEN is configured and localhost exemption is disabled', async () => {
       const { dir, cleanup } = makeTempDir('web_test_bearer_auth_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         webUiAuthToken: 'secret-auth-token-12345',
+        webUiAuthExemptLocalhost: false,
       });
       let server: http.Server | undefined;
 
@@ -475,6 +476,10 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           port: 0,
         });
         server = started.server;
+
+        // Healthcheck reflects auth requirement
+        const health = await ky.get(`http://127.0.0.1:${started.port}/api/health`).json<any>();
+        assert.equal(health.authRequired, true);
 
         // Missing auth -> 401
         await assert.rejects(
@@ -509,6 +514,35 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           .json<any>();
         assert.equal(successRes.success, true);
         assert.equal(store.get('logLevel'), 'info');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('exempts localhost from auth by default when WEB_UI_AUTH_TOKEN is configured', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_bearer_auth_localhost_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        webUiAuthToken: 'secret-auth-token-12345',
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        // Health reports authRequired: false for localhost
+        const health = await ky.get(`http://127.0.0.1:${started.port}/api/health`).json<any>();
+        assert.equal(health.authRequired, false);
+
+        // Control plane route succeeds without auth
+        const res = await ky.get(`http://127.0.0.1:${started.port}/api/config`).json<any>();
+        assert.ok(res.resolved);
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -1207,6 +1241,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const secretToken = 'super_secret_test_token_42';
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         webUiAuthToken: secretToken,
+        webUiAuthExemptLocalhost: false,
       });
       let server: http.Server | undefined;
 
@@ -1252,6 +1287,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const { dir, cleanup } = makeTempDir('web_test_ratelimit_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         webUiAuthToken: 'correct_token',
+        webUiAuthExemptLocalhost: false,
       });
       let server: http.Server | undefined;
 

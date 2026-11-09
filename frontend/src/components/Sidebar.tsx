@@ -9,6 +9,7 @@ import {
   faChartPie,
   faCheckToSlot,
   faCodeBranch,
+  faGear,
   faList,
   faNetworkWired,
   faSliders,
@@ -97,6 +98,7 @@ export const Sidebar = ({
   ];
 
   const configurationItems: NavItem[] = [
+    { href: '/settings/general', label: 'General', icon: faGear },
     {
       href: '/settings/coordinator',
       label: 'Coordinator',

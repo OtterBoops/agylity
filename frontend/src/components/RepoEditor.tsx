@@ -136,32 +136,34 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       {current.length === 0 ? (
         <p class="text-sm text-pine-subtle">No repositories configured yet.</p>
       ) : (
-        <div class="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <div class="flex flex-col divide-y divide-pine-highlight/40 border-t border-pine-highlight/40">
           {current.map((r) => (
             <div
               key={r.id}
-              class="flex flex-col justify-between gap-3 border-t border-pine-highlight/40 pt-3"
+              class="flex flex-col gap-2 py-3 lg:flex-row lg:items-center lg:justify-between"
             >
-              <div>
-                <div class="flex items-center justify-between">
-                  <h3 class="font-semibold text-pine-text">{r.name}</h3>
-                  <span class="rounded-sm bg-pine-surface px-2 py-0.5 font-mono text-xs text-pine-subtle">
-                    {r.defaultBranch || 'main'}
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <span class="font-mono text-sm font-semibold text-pine-text">{r.name}</span>
+                <span class="rounded-sm bg-pine-overlay/60 px-2 py-0.5 font-mono text-xs text-pine-foam">
+                  {r.path}
+                </span>
+                <span class="rounded-sm bg-pine-overlay px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
+                  {r.defaultBranch || 'main'}
+                </span>
+                {r.cloneUrl && (
+                  <span class="max-w-full truncate font-mono text-xs text-pine-subtle">
+                    {r.cloneUrl}
                   </span>
-                </div>
-                <p class="mt-1 font-mono text-xs text-pine-foam">{r.path}</p>
-                {r.cloneUrl && <p class="mt-0.5 truncate text-xs text-pine-subtle">{r.cloneUrl}</p>}
+                )}
               </div>
-              <div class="flex justify-end pt-1">
-                <button
-                  type="button"
-                  onClick={() => handleRemoveRepo(r.id)}
-                  disabled={isSaving}
-                  class="cursor-pointer rounded-sm border border-pine-love/30 bg-pine-love/10 px-2.5 py-1 text-xs font-medium text-pine-love hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden disabled:opacity-50"
-                >
-                  Remove
-                </button>
-              </div>
+              <button
+                type="button"
+                onClick={() => handleRemoveRepo(r.id)}
+                disabled={isSaving}
+                class="cursor-pointer self-start rounded-sm border border-pine-love/30 bg-pine-love/10 px-2.5 py-1 text-xs font-medium whitespace-nowrap text-pine-love hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden disabled:opacity-50 lg:self-auto"
+              >
+                Remove
+              </button>
             </div>
           ))}
         </div>

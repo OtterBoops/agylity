@@ -12,6 +12,7 @@ import { TasksView } from './components/TasksView';
 import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
 import { NotificationsView } from './views/NotificationsView';
+import { GeneralView } from './views/settings/GeneralView';
 import { CoordinatorView } from './views/settings/CoordinatorView';
 import { RepositoriesView } from './views/settings/RepositoriesView';
 import { AdvancedView } from './views/settings/AdvancedView';
@@ -31,7 +32,8 @@ const TITLES: Record<string, string> = {
   '/overview': 'Overview',
   '/tasks': 'Tasks',
   '/logs': 'Logs',
-  '/settings': 'Coordinator',
+  '/settings': 'General',
+  '/settings/general': 'General',
   '/settings/coordinator': 'Coordinator',
   '/settings/notifications': 'Notifications',
   '/settings/repositories': 'Repositories',
@@ -39,9 +41,15 @@ const TITLES: Record<string, string> = {
 };
 
 export const App = () => {
-  const [currentUrl, setCurrentUrl] = useState(() =>
-    typeof window !== 'undefined' ? window.location.pathname : '/'
-  );
+  const [currentUrl, setCurrentUrl] = useState(() => {
+    if (typeof window === 'undefined') return '/';
+    // Canonicalises the bare path so the General sidebar item highlights on direct visits.
+    if (window.location.pathname === '/settings') {
+      window.history.replaceState(null, '', '/settings/general');
+      return '/settings/general';
+    }
+    return window.location.pathname;
+  });
 
   const handleRouteChange = (e: RouterOnChangeArgs) => {
     setCurrentUrl(e.url);
@@ -202,8 +210,8 @@ export const App = () => {
 
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
         {/* Desktop Header: pinned at top of right pane */}
-        <header class="shrink-0 bg-pine-base/95 px-4 py-[0.7rem] sm:px-6 md:px-6 2xl:px-8">
-          <div class="mx-auto max-w-7xl border-b border-pine-highlight 2xl:max-w-[2112px]">
+        <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
+          <div class="mx-auto max-w-7xl 2xl:max-w-[2112px]">
             <TopBar
               title={title}
               isRefreshing={isRefreshing}
@@ -279,7 +287,8 @@ export const App = () => {
                   onOpenDispatch={() => setDispatchModalOpen(true)}
                 />
                 <LogsView path="/logs" />
-                <CoordinatorView path="/settings" config={config} onChanged={fetchAll} />
+                <GeneralView path="/settings" config={config} onChanged={fetchAll} />
+                <GeneralView path="/settings/general" config={config} onChanged={fetchAll} />
                 <CoordinatorView
                   path="/settings/coordinator"
                   config={config}

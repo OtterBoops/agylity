@@ -22,31 +22,37 @@ export const TopBar = ({
   onOpenAuthModal,
 }: TopBarProps) => {
   return (
-    <div class="grid min-h-13 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 sm:gap-4">
-      <h1 class="min-w-0 text-lg font-semibold tracking-[-0.02em] text-pine-text sm:text-xl">
-        {title}
-      </h1>
+    // The outer columns need a min-content floor: with a fixed 24rem search, 1fr sides collapse to
+    // 0px between 768px and 900px and the view title disappears.
+    <div class="grid h-10 grid-cols-[minmax(min-content,1fr)_minmax(0,24rem)_minmax(min-content,1fr)] items-center gap-3">
+      <div class="flex min-w-0 items-center">
+        <h1 class="truncate text-lg font-semibold tracking-tight text-pine-text sm:text-xl">
+          {title}
+        </h1>
+      </div>
 
-      {onOpenCommandPalette && (
-        <button
-          type="button"
-          onClick={onOpenCommandPalette}
-          class="mx-auto flex w-full max-w-88 cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-2 text-[0.95rem] text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-          title="Search commands and navigate views (Ctrl+K)"
-          aria-label="Search commands, views, tasks (Ctrl+K)"
-        >
-          <Icon icon={faSearch} class="size-3.5 shrink-0 text-pine-iris" />
-          <span class="min-w-0 flex-1 truncate text-left">Search commands, views, tasks...</span>
-          <kbd class="shrink-0 rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-subtle">
-            Ctrl K
-          </kbd>
-        </button>
-      )}
+      <div class="flex items-center justify-center">
+        {onOpenCommandPalette && (
+          <button
+            type="button"
+            onClick={onOpenCommandPalette}
+            class="flex h-9 w-full cursor-pointer items-center gap-2 rounded-lg border border-pine-highlight bg-pine-surface px-3 text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:text-sm"
+            title="Search commands and navigate views (Ctrl+K)"
+            aria-label="Search commands, views, tasks (Ctrl+K)"
+          >
+            <Icon icon={faSearch} class="size-3.5 shrink-0 text-pine-iris" />
+            <span class="min-w-0 flex-1 truncate text-left">Search commands, views, tasks...</span>
+            <kbd class="hidden shrink-0 rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[11px] text-pine-subtle sm:inline-block">
+              Ctrl K
+            </kbd>
+          </button>
+        )}
+      </div>
 
-      <div class="flex shrink-0 items-center gap-1.5">
+      <div class="flex shrink-0 items-center justify-end gap-2">
         {typeof remainingCredits === 'number' && (
           <div
-            class="inline-flex items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-2 py-1 text-xs font-semibold text-pine-text"
+            class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 text-xs font-semibold text-pine-text"
             title="Available Google AI Credits / Flex Tokens"
           >
             <Icon icon={faCoins} class="size-3 text-pine-iris" />
@@ -56,7 +62,7 @@ export const TopBar = ({
 
         <button
           type="button"
-          class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface p-2.5 text-pine-iris transition-colors hover:bg-pine-overlay focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+          class="inline-flex size-9 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface text-pine-iris transition-colors hover:bg-pine-overlay focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
           onClick={onOpenAuthModal}
           title="Configure Control-Plane Auth Token"
           aria-label="Configure Control-Plane Auth Token"
@@ -66,7 +72,7 @@ export const TopBar = ({
 
         <button
           type="button"
-          class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface p-2.5 text-pine-text transition-colors hover:bg-pine-overlay focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
+          class="inline-flex size-9 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface text-pine-text transition-colors hover:bg-pine-overlay focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
           onClick={onRefresh}
           disabled={refreshCooldown > 0 || isRefreshing}
           title="Poll latest quota snapshots"

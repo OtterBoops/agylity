@@ -177,7 +177,8 @@ export const SettingsForm = ({
           const isSecret = f.type === 'password';
           const isConfigured = Boolean(config.secretsMeta?.[f.key]?.isSet || resolved[f.key]);
           const placeholder =
-            f.placeholder ?? (isSecret && isConfigured ? '•••••••• (Encrypted)' : undefined);
+            f.placeholder ??
+            (isSecret && isConfigured ? 'Enter new secret to update...' : undefined);
 
           return (
             <div
@@ -252,10 +253,7 @@ export const SettingsForm = ({
                     data-bwignore="true"
                     class={`${inputClass} w-full pr-24 placeholder-pine-subtle`}
                     placeholder={
-                      f.placeholder ??
-                      (isConfigured
-                        ? '•••••••• (Encrypted — enter new token to update)'
-                        : undefined)
+                      f.placeholder ?? (isConfigured ? 'Enter new secret to update...' : undefined)
                     }
                     value={valueOf(f)}
                     onInput={(e) =>

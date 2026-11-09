@@ -190,6 +190,7 @@ export const RawEnvSchema = z.object({
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
   WEB_UI_AUTH_TOKEN: z.string().optional(),
+  WEB_UI_AUTH_EXEMPT_LOCALHOST: z.string().optional(),
   BASE_URL: z.string().url().optional().or(z.literal('')),
 
   /* In-App Network & IP Security */
@@ -244,6 +245,7 @@ export interface AppConfig {
   webUiPort: number;
   webUiHost: string;
   webUiAuthToken?: string;
+  webUiAuthExemptLocalhost: boolean;
 
   allowedIpRanges: string[];
   trustedProxies: boolean;
@@ -287,6 +289,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   webUiPort: 'WEB_UI_PORT',
   webUiHost: 'WEB_UI_HOST',
   webUiAuthToken: 'WEB_UI_AUTH_TOKEN',
+  webUiAuthExemptLocalhost: 'WEB_UI_AUTH_EXEMPT_LOCALHOST',
   baseUrl: 'BASE_URL',
   allowedIpRanges: 'ALLOWED_IP_RANGES',
   trustedProxies: 'TRUSTED_PROXIES',
@@ -369,6 +372,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
   webUiAuthToken: undefined,
+  webUiAuthExemptLocalhost: true,
   baseUrl: undefined,
 
   allowedIpRanges: [],
@@ -540,6 +544,16 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.WEB_UI_AUTH_TOKEN && !isTemplatePlaceholder(parsed.WEB_UI_AUTH_TOKEN)) {
     result.webUiAuthToken = parsed.WEB_UI_AUTH_TOKEN;
   }
+  if (
+    parsed.WEB_UI_AUTH_EXEMPT_LOCALHOST !== undefined &&
+    parsed.WEB_UI_AUTH_EXEMPT_LOCALHOST.trim() !== ''
+  ) {
+    try {
+      result.webUiAuthExemptLocalhost = booleanEnv.parse(parsed.WEB_UI_AUTH_EXEMPT_LOCALHOST);
+    } catch {
+      warnEnvFallback('WEB_UI_AUTH_EXEMPT_LOCALHOST', 'invalid boolean value');
+    }
+  }
   if (parsed.BASE_URL && !isTemplatePlaceholder(parsed.BASE_URL)) {
     result.baseUrl = parsed.BASE_URL.trim();
   }
@@ -595,6 +609,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   webUiPort: z.number().int().positive(),
   webUiHost: z.string(),
   webUiAuthToken: z.string().optional(),
+  webUiAuthExemptLocalhost: z.boolean(),
   baseUrl: z.string().url().or(z.literal('')).optional(),
   allowedIpRanges: z.array(z.string()),
   trustedProxies: z.boolean(),

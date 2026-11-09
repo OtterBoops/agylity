@@ -3,7 +3,7 @@ import { resolveWebUiAuthToken } from '../config/schema.js';
 import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';
-import { extractClientIp, isIpAllowed } from './ip.js';
+import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from './ip.js';
 import {
   MAX_BODY_BYTES,
   PayloadTooLargeError,
@@ -183,7 +183,12 @@ export const handleRequest = async (
     }
 
     const expectedToken = resolveWebUiAuthToken(resolvedConfig);
-    if (expectedToken && isControlPlaneRoute(pathname)) {
+    const peerIp = normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
+    const isLocalhost = isLoopbackIp(clientIp) && isLoopbackIp(peerIp);
+    const exemptLocalhost = resolvedConfig?.webUiAuthExemptLocalhost ?? true;
+    const authRequired = Boolean(expectedToken) && !(isLocalhost && exemptLocalhost);
+
+    if (authRequired && expectedToken && isControlPlaneRoute(pathname)) {
       if (isIpRateLimited(clientIp)) {
         logger
           .child('security')
@@ -241,7 +246,7 @@ export const handleRequest = async (
         status: 'ok',
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
-        authRequired: Boolean(expectedToken),
+        authRequired,
       });
     }
 

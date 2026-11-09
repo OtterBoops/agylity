@@ -9,6 +9,8 @@ data
 .codex
 .impeccable
 **/.impeccable
+.worktrees
+**/.worktrees
 .github/skills
 .github/agents
 .github/hooks

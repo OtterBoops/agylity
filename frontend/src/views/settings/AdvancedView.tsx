@@ -1,5 +1,4 @@
 import type { ConfigData } from '../../types';
-import { GeneralSettingsCard } from '../../components/GeneralSettingsCard';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { SENTRY_FIELDS } from '../../config/fields';
@@ -11,7 +10,6 @@ interface AdvancedViewProps {
 
 export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
   <SettingsLayout>
-    <GeneralSettingsCard />
     <SettingsForm
       title="Sentry &amp; Quota Safeguards"
       description="Fine-tune quota polling frequency, milestone warnings, Language Server Connect-RPC, and overcharge safety floor."
