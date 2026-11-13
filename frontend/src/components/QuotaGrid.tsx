@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { QuotaSnapshot } from '../types';
+import { useModelCatalog } from '../state/modelCatalogStore';
 
 interface QuotaGridProps {
   quota: QuotaSnapshot[];
@@ -44,6 +45,16 @@ export const QuotaGrid = ({
   onRetry,
 }: QuotaGridProps) => {
   const [now, setNow] = useState(Date.now());
+  const catalog = useModelCatalog();
+
+  // The live catalog outranks `pool.models`, which a cached or fallback snapshot may have
+  // populated from a stale description.
+  const catalogLabelsByFamily = new Map<string, string[]>();
+  for (const entry of catalog.models) {
+    const labels = catalogLabelsByFamily.get(entry.family) ?? [];
+    labels.push(entry.label);
+    catalogLabelsByFamily.set(entry.family, labels);
+  }
 
   useEffect(() => {
     const tick = () => {
@@ -120,6 +131,10 @@ export const QuotaGrid = ({
         const weeklyPct = Math.round(weeklyFraction * 100);
         const shortTerm = pool.shortTerm;
         const shortTermPct = shortTerm ? Math.round(shortTerm.remainingFraction * 100) : null;
+
+        const catalogModels = catalogLabelsByFamily.get(pool.family);
+        const poolModels =
+          catalogModels && catalogModels.length > 0 ? catalogModels : (pool.models ?? []);
 
         // Badges use the effective budget: min(weekly, shortTerm).
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
@@ -318,9 +333,9 @@ export const QuotaGrid = ({
               <span class="shrink-0 text-pine-subtle">Models:</span>
               <span
                 class="min-w-0 flex-1 truncate text-right font-medium text-pine-text"
-                title={pool.models?.join(', ')}
+                title={poolModels.join(', ')}
               >
-                {pool.models?.join(', ') || 'N/A'}
+                {poolModels.join(', ') || 'N/A'}
               </span>
             </div>
           </div>

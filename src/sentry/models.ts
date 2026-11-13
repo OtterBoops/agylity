@@ -387,19 +387,9 @@ export const aggregateUserQuotaSummary = (
         b.displayName.toLowerCase().includes('five hour')
     );
 
-    let groupModels = resolved.defaultModels;
-    if (
-      group.description &&
-      group.description.toLowerCase().includes('models within this group:')
-    ) {
-      const match = /models within this group:\s*([^\.]+)/i.exec(group.description);
-      if (match && match[1]) {
-        groupModels = match[1]
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean);
-      }
-    }
+    // Google's group description carries a stale generic 'Gemini Flash, Gemini Pro' line, so the
+    // canonical per-family list is used and the live catalog supplies labels at the API layer.
+    const groupModels = resolved.defaultModels;
 
     if (weeklyBucket) {
       result.push(
@@ -561,13 +551,6 @@ export const snapshotsFromSentryState = (
     // An unknown pool id must not be reported as another pool's headroom.
     if (!family) continue;
 
-    const defaultModels =
-      family === 'claude'
-        ? ['claude-sonnet-5-5', 'claude-opus-5-5']
-        : family === 'gemini-argon'
-          ? ['gemini-4-argon']
-          : ['gemini-3.8-flash'];
-
     const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
     const weeklyBucket: QuotaBucket = {
       bucketId: `${family}-weekly`,
@@ -585,7 +568,7 @@ export const snapshotsFromSentryState = (
         remainingFraction: pool.remainingFraction,
         resetTime: pool.resetTime,
         hoursUntilReset,
-        models: defaultModels,
+        models: [...FAMILY_DEFAULT_MODELS[family]],
         weekly: weeklyBucket,
         buckets: [weeklyBucket],
       })

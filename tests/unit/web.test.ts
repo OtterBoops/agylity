@@ -9,6 +9,7 @@ import { ConfigStore } from '../../src/config/store.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
+import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* ==================================================================== */
@@ -241,6 +242,64 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(quotas.length, 1);
         assert.equal(quotas[0]?.poolId, 'claude');
         assert.equal(quotas[0]?.remainingFraction, 0.85);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/quota populates pool.models from the live model catalog', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_quota_catalog_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      const liveModels = [
+        { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+        { id: 'gemini-4-hydrogen-high', label: 'Gemini 4 Hydrogen (High)' },
+        { id: 'gemini-4-argon-high', label: 'Gemini 4 Argon (High)' },
+      ];
+      const provider = new DynamicModelCatalog({
+        execFileFn: async () => ({
+          stdout: JSON.stringify({
+            status: 'SUCCESS',
+            command: { name: 'models', data: { models: liveModels } },
+          }),
+          stderr: '',
+        }),
+      });
+      await provider.refreshModels();
+
+      // A cached snapshot keeps its own stale model list; the route must override it.
+      const mockQuotaClient: QuotaClient = {
+        fetchQuota: async (): Promise<QuotaSnapshot[]> => [
+          {
+            poolId: 'gemini-flash',
+            family: 'gemini-flash',
+            displayName: 'Gemini Flash',
+            remainingFraction: 0.7,
+            resetTime: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
+            hoursUntilReset: 6,
+            models: ['Gemini Flash', 'Gemini Pro'],
+          },
+        ],
+      };
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          quotaClient: mockQuotaClient,
+          modelCatalog: provider,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const quotas = await ky
+          .get(`http://127.0.0.1:${started.port}/api/quota`)
+          .json<QuotaSnapshot[]>();
+        assert.equal(quotas.length, 1);
+        assert.deepEqual(quotas[0]?.models, ['Gemini 3.8 Flash', 'Gemini 4 Hydrogen']);
       } finally {
         if (server) await closeWebServer(server);
         store.close();

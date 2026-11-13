@@ -2,8 +2,30 @@ import type http from 'node:http';
 import { sendJson, methodNotAllowed } from '../http.js';
 import { logger } from '../../logs/logger.js';
 import type { WebServerOptions } from '../types.js';
-import type { QuotaSnapshot } from '../../sentry/models.js';
+import type { QuotaFamily, QuotaSnapshot } from '../../sentry/models.js';
 import { snapshotsFromSentryState } from '../../sentry/models.js';
+
+/** Live catalog labels per pool, so the Overview cards track `/api/models` rather than a stale list. */
+const withCatalogModels = (
+  snapshots: QuotaSnapshot[],
+  options: WebServerOptions
+): QuotaSnapshot[] => {
+  if (!options.modelCatalog) return snapshots;
+  const catalog = options.modelCatalog.getModels();
+  if (catalog.length === 0) return snapshots;
+
+  const labelsByFamily = new Map<QuotaFamily, string[]>();
+  for (const entry of catalog) {
+    const labels = labelsByFamily.get(entry.family) ?? [];
+    labels.push(entry.label);
+    labelsByFamily.set(entry.family, labels);
+  }
+
+  return snapshots.map((snapshot) => {
+    const labels = labelsByFamily.get(snapshot.family);
+    return labels && labels.length > 0 ? { ...snapshot, models: labels } : snapshot;
+  });
+};
 
 export const handleGetQuota = async (
   req: http.IncomingMessage,
@@ -22,7 +44,9 @@ export const handleGetQuota = async (
     } else if (options.sentryState) {
       snapshots = snapshotsFromSentryState(options.sentryState.getState());
     }
-    return sendJson(res, 200, snapshots, { 'Cache-Control': 'no-store' });
+    return sendJson(res, 200, withCatalogModels(snapshots, options), {
+      'Cache-Control': 'no-store',
+    });
   } catch (err: any) {
     const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
     // The message stays in the log: it can carry absolute paths and SQL detail.

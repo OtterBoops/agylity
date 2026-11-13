@@ -10,6 +10,8 @@ import {
   calculateHoursUntilReset,
   deriveOverageEnabled,
   resolveModelFamily,
+  snapshotsFromSentryState,
+  FAMILY_DEFAULT_MODELS,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
@@ -1001,6 +1003,77 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const parsedOmitted = RetrieveUserQuotaSummaryResponseSchema.parse(summaryOmitted);
       const snapshotsOmitted = aggregateUserQuotaSummary(parsedOmitted);
       assert.equal(snapshotsOmitted[0]?.overageEnabled, undefined);
+    });
+
+    it('ignores Google\'s stale "Models within this group" description for pool models', () => {
+      const parsed = RetrieveUserQuotaSummaryResponseSchema.parse({
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              description: 'Models within this group: Gemini Flash, Gemini Pro',
+              buckets: [
+                {
+                  bucketId: 'gemini-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.73,
+                  resetTime: new Date(Date.now() + 120 * 3600 * 1000).toISOString(),
+                },
+              ],
+            },
+            {
+              displayName: 'Claude and GPT models',
+              description: 'Models within this group: Gemini Flash, Gemini Pro',
+              buckets: [
+                {
+                  bucketId: '3p-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.49,
+                  resetTime: new Date(Date.now() + 27 * 3600 * 1000).toISOString(),
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const snapshots = aggregateUserQuotaSummary(parsed);
+      const flash = snapshots.find((s) => s.family === 'gemini-flash');
+      const claude = snapshots.find((s) => s.family === 'claude');
+
+      assert.ok(flash);
+      assert.ok(claude);
+      assert.deepEqual(flash.models, FAMILY_DEFAULT_MODELS['gemini-flash']);
+      assert.deepEqual(claude.models, FAMILY_DEFAULT_MODELS.claude);
+      for (const pool of snapshots) {
+        // The generic placeholders described models that may belong to a different pool.
+        assert.ok(!pool.models.includes('Gemini Pro'));
+        assert.ok(!pool.models.includes('Gemini Flash'));
+      }
+    });
+
+    it('falls back to clean canonical model labels when synthesizing from sentry state', () => {
+      const snapshots = snapshotsFromSentryState({
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
+            remainingFraction: 0.8,
+          },
+          'gemini-argon': {
+            resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
+            remainingFraction: 0.5,
+          },
+          claude: {
+            resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
+            remainingFraction: 0.4,
+          },
+        },
+      });
+
+      assert.equal(snapshots.length, 3);
+      for (const pool of snapshots) {
+        assert.deepEqual(pool.models, FAMILY_DEFAULT_MODELS[pool.family]);
+      }
     });
 
     it('derives overageEnabled from GetUserStatus and keeps unknown distinct from disabled', () => {
