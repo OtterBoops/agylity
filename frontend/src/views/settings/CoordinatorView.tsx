@@ -1,11 +1,5 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import {
-  faArrowRight,
-  faMinus,
-  faNetworkWired,
-  faPlus,
-  faRotate,
-} from '@fortawesome/free-solid-svg-icons';
+import { faArrowRight, faMinus, faNetworkWired, faPlus } from '@fortawesome/free-solid-svg-icons';
 import { Link } from 'preact-router/match';
 import type { ConfigData, SwarmRunnerRecord } from '../../types';
 import { getRunners, revokeRunner, setRunnerEnabled } from '../../api';
@@ -134,28 +128,6 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
       </div>
 
       <PoolPoliciesCard config={config} onSaved={onChanged} />
-
-      <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-highlight/60 bg-pine-overlay/30 p-4">
-        <div class="flex items-center gap-3">
-          <div class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-pine-overlay text-pine-iris">
-            <Icon icon={faRotate} class="size-4" />
-          </div>
-          <div>
-            <div class="text-xs font-semibold text-pine-text">Tier 3: Maintenance Routines</div>
-            <p class="text-[12.1px] text-pine-subtle">
-              Routines automatically execute prompt templates before quota pool resets. Managed
-              under the Tasks tab.
-            </p>
-          </div>
-        </div>
-        <a
-          href="/tasks?tab=routines"
-          class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-semibold text-pine-text transition-colors hover:border-pine-iris hover:text-pine-iris"
-        >
-          <span>View Routines</span>
-          <Icon icon={faArrowRight} class="size-3" />
-        </a>
-      </div>
 
       <SettingsForm
         title="Model Selection &amp; Swarm Queue Parameters"
