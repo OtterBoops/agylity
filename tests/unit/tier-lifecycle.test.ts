@@ -272,7 +272,7 @@ describe('Runner: a mounted working copy is never destroyed', () => {
       const executor = new TaskExecutor({
         agyBinPath: 'agy',
         dirExistsFn: () => true,
-        botPrPolicy: 'all',
+        prPolicy: 'all',
         execFileFn: async (file, args) => {
           calls.push([file, ...args]);
           if (file === 'git' && args[0] === 'status') {

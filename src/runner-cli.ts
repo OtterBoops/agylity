@@ -1,7 +1,7 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
 import { RemoteSwarmRunner } from './coordinator/runner.js';
-import type { BotPrPolicy } from './config/schema.js';
+import type { PrPolicy } from './config/schema.js';
 
 export interface RunnerCliOptions {
   coordinatorUrl: string;
@@ -16,7 +16,7 @@ export interface RunnerCliOptions {
   agyBinPath: string;
   pollTimeoutMs: number;
   idlePollIntervalMs: number;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
 }
 
 const parseCsvList = (value?: string): string[] => {
@@ -100,8 +100,8 @@ export const parseRunnerCliArgs = (
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
   const pollTimeoutMs = Number(env.RUNNER_POLL_TIMEOUT_MS ?? 25000);
   const idlePollIntervalMs = Number(env.RUNNER_IDLE_INTERVAL_MS ?? 2000);
-  const botPrPolicy = (args['bot-pr-policy'] || env.BOT_PR_POLICY || '').trim() as
-    BotPrPolicy | undefined;
+  const prPolicy = (args['pr-policy'] || env.PR_POLICY || '').trim() as
+    PrPolicy | undefined;
 
   return {
     coordinatorUrl,
@@ -116,7 +116,7 @@ export const parseRunnerCliArgs = (
     agyBinPath,
     pollTimeoutMs: Number.isFinite(pollTimeoutMs) ? pollTimeoutMs : 25000,
     idlePollIntervalMs: Number.isFinite(idlePollIntervalMs) ? idlePollIntervalMs : 2000,
-    botPrPolicy: botPrPolicy || undefined,
+    prPolicy: prPolicy || undefined,
   };
 };
 
@@ -147,7 +147,7 @@ export const runRunnerCli = async (): Promise<void> => {
     agyBinPath: opts.agyBinPath,
     pollTimeoutMs: opts.pollTimeoutMs,
     idlePollIntervalMs: opts.idlePollIntervalMs,
-    botPrPolicy: opts.botPrPolicy,
+    prPolicy: opts.prPolicy,
     logger: log,
   });
 

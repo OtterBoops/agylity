@@ -16,6 +16,19 @@ import {
   type ReasoningEffort,
   type TaskActor,
 } from '../../coordinator/models.js';
+import { PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
+
+const parseOptionalPrPolicy = (
+  raw: unknown
+): { ok: true; value: PrPolicy | null | undefined } | { ok: false; error: string } => {
+  if (raw === undefined) return { ok: true, value: undefined };
+  if (raw === null || raw === '') return { ok: true, value: null };
+  const parsed = PrPolicyEnum.safeParse(raw);
+  if (!parsed.success) {
+    return { ok: false, error: "prPolicy must be 'docs_only', 'all', 'none', or null" };
+  }
+  return { ok: true, value: parsed.data };
+};
 
 export const handleRoutineTasks = async (
   req: http.IncomingMessage,
@@ -49,6 +62,10 @@ export const handleRoutineTasks = async (
       (payload.model ? [String(payload.model)] : ['gemini-3.8-flash']);
     const actor: TaskActor =
       payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : 'bot';
+    const policyParsed = parseOptionalPrPolicy(payload.prPolicy);
+    if (!policyParsed.ok) {
+      return sendJson(res, 400, { error: policyParsed.error });
+    }
 
     const created = coordinator.queue.createRoutineTask({
       title: String(payload.title).trim(),
@@ -59,6 +76,7 @@ export const handleRoutineTasks = async (
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
       autoCreatePr: payload.autoCreatePr !== false,
       actor,
+      prPolicy: policyParsed.value,
       enabled: payload.enabled !== false,
       sortOrder: toFiniteNumberOrUndefined(payload.sortOrder) ?? 0,
       triggerBeforeResetHours: toFiniteNumberOrUndefined(payload.triggerBeforeResetHours) ?? 2,
@@ -104,7 +122,7 @@ export const handleRoutineTaskById = async (
       effort: rt.effort,
       autoCreatePr: rt.autoCreatePr,
       actor: rt.actor || 'bot',
-      botPrPolicy: resolved.botPrPolicy,
+      prPolicy: rt.prPolicy ?? resolved.prPolicy,
       verifyCommand: rt.verifyCommand,
       scheduleMode: 'immediate',
       requestedBy: `routine:${rt.id}`,
@@ -129,6 +147,13 @@ export const handleRoutineTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
+    const policyParsed = parseOptionalPrPolicy(patch?.prPolicy);
+    if (!policyParsed.ok) {
+      return sendJson(res, 400, { error: policyParsed.error });
+    }
+    if (patch && 'prPolicy' in patch) {
+      patch.prPolicy = policyParsed.value;
+    }
 
     const updated = coordinator.queue.updateRoutineTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Routine task ${id} not found` });

@@ -11,7 +11,13 @@ import {
   faTimes,
   faExternalLinkAlt,
 } from '@fortawesome/free-solid-svg-icons';
-import type { BacklogTaskRecord, ReasoningEffort, RoutineTaskRecord, SwarmTask } from '../types';
+import type {
+  BacklogTaskRecord,
+  PrPolicy,
+  ReasoningEffort,
+  RoutineTaskRecord,
+  SwarmTask,
+} from '../types';
 import { EFFORT_OPTIONS } from '../config/fields';
 import {
   cancelTask,
@@ -137,6 +143,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [routineTriggerHours, setRoutineTriggerHours] = useState('2');
   const [routineMinHeadroom, setRoutineMinHeadroom] = useState('10');
   const [routineVerifyCommand, setRoutineVerifyCommand] = useState('');
+  const [routinePrPolicy, setRoutinePrPolicy] = useState<PrPolicy | ''>('');
 
   const [notification, setNotification] = useState<{
     type: 'success' | 'error';
@@ -553,12 +560,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         triggerBeforeResetHours: triggerHours,
         minHeadroomPercent: minHeadroom,
         verifyCommand: routineVerifyCommand.trim() || undefined,
+        prPolicy: routinePrPolicy || undefined,
         enabled: true,
         autoCreatePr: true,
       });
       setRoutineTitle('');
       setRoutinePrompt('');
       setRoutineVerifyCommand('');
+      setRoutinePrPolicy('');
       setShowCreateRoutine(false);
       await loadRoutines();
       showNotification('success', `Created routine "${routineTitle.trim()}"`);
@@ -1625,6 +1634,23 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 placeholder="npm test"
                 class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-pine-text focus:border-pine-iris focus:outline-hidden"
               />
+            </div>
+            <div>
+              <label class="mb-1 block font-medium text-pine-subtle">
+                PR Policy Override (optional)
+              </label>
+              <select
+                value={routinePrPolicy}
+                onChange={(e) =>
+                  setRoutinePrPolicy((e.target as HTMLSelectElement).value as PrPolicy | '')
+                }
+                class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-pine-text focus:border-pine-iris focus:outline-hidden"
+              >
+                <option value="">Inherit global policy</option>
+                <option value="docs_only">Documentation only (*.md, docs/)</option>
+                <option value="all">All files (Allow code & doc PRs)</option>
+                <option value="none">None (Disable PRs & branch pushes)</option>
+              </select>
             </div>
             <div>
               <label class="mb-1 block font-medium text-pine-subtle">Prompt Template</label>

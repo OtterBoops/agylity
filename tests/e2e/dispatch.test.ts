@@ -289,9 +289,15 @@ async function main() {
     }
     console.log(`[E2E Test] - Binary: ${call.binary}`);
     console.log(`[E2E Test] - Args: ${JSON.stringify(call.args)}`);
-    if (call.args[0] !== '-p' || call.args[1] !== samplePrompt) {
+    const expectedFooter =
+      '*Dispatched via Agylity (immediate) with `gemini-3.8-flash` (medium reasoning) — please review carefully.*';
+    if (
+      call.args[0] !== '-p' ||
+      !call.args[1]?.startsWith(samplePrompt) ||
+      !call.args[1]?.includes(expectedFooter)
+    ) {
       throw new Error(
-        `Prompt mismatch in CLI call: expected "${samplePrompt}", got "${call.args[1]}"`
+        `Prompt mismatch in CLI call: expected "${samplePrompt}" with flat footer, got "${call.args[1]}"`
       );
     }
     if (!call.args.includes('--model') || !call.args.includes('gemini-3.8-flash')) {

@@ -175,11 +175,11 @@ export const handlePostDispatch = async (
     originTitle: toStringOrUndefined(payload.originTitle),
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
     actor: payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : undefined,
-    botPrPolicy:
-      payload.botPrPolicy === 'docs_only' ||
-      payload.botPrPolicy === 'all' ||
-      payload.botPrPolicy === 'none'
-        ? payload.botPrPolicy
+    prPolicy:
+      payload.prPolicy === 'docs_only' ||
+      payload.prPolicy === 'all' ||
+      payload.prPolicy === 'none'
+        ? payload.prPolicy
         : undefined,
     scheduleMode,
     requiredLabels,
@@ -408,7 +408,7 @@ export const handleTaskRetry = async (
     originTitle: task.originTitle,
     requestedBy: 'web-ui (retry)',
     actor: task.actor,
-    botPrPolicy: task.botPrPolicy,
+    prPolicy: task.prPolicy,
     scheduleMode: task.scheduleMode,
     model: task.model,
     effort: task.effort,

@@ -154,7 +154,7 @@ export interface RunnerRegistrationTokenResult {
 export type TaskStatus =
   'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
 
-export type BotPrPolicy = 'docs_only' | 'all' | 'none';
+export type PrPolicy = 'docs_only' | 'all' | 'none';
 export type TaskActor = 'user' | 'bot';
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
@@ -177,7 +177,7 @@ export interface SwarmTask {
   prompt: string;
   requestedBy: string;
   actor?: TaskActor;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
   model: string;
@@ -227,6 +227,7 @@ export interface RoutineTaskRecord {
   verifyCommand?: string;
   autoCreatePr: boolean;
   actor: TaskActor;
+  prPolicy?: PrPolicy;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;

@@ -109,7 +109,7 @@ export const handleBacklogTaskById = async (
       effort: task.effort,
       autoCreatePr: task.autoCreatePr,
       actor: task.actor,
-      botPrPolicy: resolved.botPrPolicy,
+      prPolicy: resolved.prPolicy,
       verifyCommand: task.verifyCommand,
       scheduleMode: 'immediate',
       requestedBy: `backlog:${task.id}`,

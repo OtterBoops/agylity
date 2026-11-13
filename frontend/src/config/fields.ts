@@ -19,7 +19,7 @@ export const EFFORT_OPTIONS: Array<{
   { value: 'xhigh', label: 'XHigh' },
 ];
 
-export const BOT_PR_POLICY_OPTIONS: Array<{
+export const PR_POLICY_OPTIONS: Array<{
   value: 'docs_only' | 'all' | 'none';
   label: string;
 }> = [
@@ -86,10 +86,10 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Reasoning effort level passed to agy --effort.',
   },
   {
-    key: 'botPrPolicy',
-    label: 'Bot Pull Request policy',
+    key: 'prPolicy',
+    label: 'Pull Request policy',
     type: 'select',
-    options: BOT_PR_POLICY_OPTIONS,
+    options: PR_POLICY_OPTIONS,
     hint: 'Restricts autonomous tasks (routines and pre-reset triggers) from opening code PRs. Code issues are filed as GitHub Issues instead.',
   },
   {

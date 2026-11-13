@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schema.js';
 import type { QuotaFamily } from '../sentry/models.js';
-import type { BotPrPolicy } from '../config/schema.js';
+import type { PrPolicy } from '../config/schema.js';
 import {
   BacklogStatusSchema,
   ReasoningEffortSchema,
@@ -46,7 +46,7 @@ export interface SwarmTask {
   prompt: string;
   requestedBy: string;
   actor: TaskActor;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   scheduleMode: ScheduleMode;
   requiredLabels: string[];
   model: string;
@@ -89,7 +89,7 @@ export interface EnqueueTaskInput {
   prompt: string;
   requestedBy?: string;
   actor?: TaskActor;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model: string;
@@ -198,6 +198,7 @@ export interface RoutineTaskRecord {
   verifyCommand?: string;
   autoCreatePr: boolean;
   actor: TaskActor;
+  prPolicy?: PrPolicy;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;
@@ -219,6 +220,7 @@ export interface StandingTaskRecord {
   verifyCommand?: string;
   autoCreatePr: boolean;
   actor: TaskActor;
+  prPolicy?: PrPolicy;
   enabled: boolean;
   sortOrder: number;
   triggerBeforeResetHours: number;
@@ -257,7 +259,7 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'requested_by', ddl: "requested_by TEXT NOT NULL DEFAULT 'web-ui'" },
   { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'user'" },
-  { name: 'bot_pr_policy', ddl: 'bot_pr_policy TEXT' },
+  { name: 'pr_policy', ddl: 'pr_policy TEXT' },
   { name: 'schedule_mode', ddl: "schedule_mode TEXT NOT NULL DEFAULT 'immediate'" },
   { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'model', ddl: 'model TEXT NOT NULL' },
@@ -324,6 +326,7 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
   { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'bot'" },
+  { name: 'pr_policy', ddl: 'pr_policy TEXT' },
   { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
   { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
   { name: 'trigger_before_reset_hours', ddl: 'trigger_before_reset_hours REAL NOT NULL DEFAULT 2' },
@@ -926,7 +929,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const prompt = input.prompt.slice(0, 20000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
     const actor: TaskActor = input.actor ?? 'user';
-    const botPrPolicy = input.botPrPolicy ?? null;
+    const prPolicy = input.prPolicy ?? null;
     const scheduleMode: ScheduleMode = input.scheduleMode ?? 'immediate';
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
@@ -954,7 +957,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         `INSERT INTO swarm_tasks (
           id, task_number, title, tier, origin_id, origin_number, origin_title,
           created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, actor, bot_pr_policy, schedule_mode,
+          clone_url, default_branch, prompt, requested_by, actor, pr_policy, schedule_mode,
           required_labels_json, model, pool_family, effort, allow_overage, push_branch,
           auto_create_pr, expires_at, standing_task_id, verify_command, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
@@ -977,7 +980,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         prompt,
         requestedBy,
         actor,
-        botPrPolicy,
+        prPolicy,
         scheduleMode,
         JSON.stringify(requiredLabels),
         model,
@@ -1516,7 +1519,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       prompt: String(row.prompt),
       requestedBy: String(row.requested_by || 'web-ui'),
       actor: (row.actor as TaskActor) || 'user',
-      botPrPolicy: (row.bot_pr_policy as BotPrPolicy) || undefined,
+      prPolicy: (row.pr_policy as PrPolicy) || undefined,
       scheduleMode: (row.schedule_mode as ScheduleMode) || 'immediate',
       requiredLabels,
       model: String(row.model),
@@ -1830,6 +1833,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     verifyCommand?: string;
     autoCreatePr?: boolean;
     actor?: TaskActor;
+    prPolicy?: PrPolicy | null;
     enabled?: boolean;
     sortOrder?: number;
     triggerBeforeResetHours?: number;
@@ -1845,6 +1849,12 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const actor: TaskActor = coerceActor(input.actor, 'bot');
+    const prPolicy =
+      input.prPolicy === 'docs_only' ||
+      input.prPolicy === 'all' ||
+      input.prPolicy === 'none'
+        ? input.prPolicy
+        : null;
     const enabled = input.enabled !== false ? 1 : 0;
     const sortOrder = coerceNumber(input.sortOrder, 0);
     const triggerHours = coerceNumber(input.triggerBeforeResetHours, 2);
@@ -1854,9 +1864,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       .prepare(
         `INSERT INTO routine_tasks (
           id, task_number, title, prompt, repository_id, models_json, effort,
-          verify_command, auto_create_pr, actor, enabled, sort_order,
+          verify_command, auto_create_pr, actor, pr_policy, enabled, sort_order,
           trigger_before_reset_hours, min_headroom_percent, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1869,6 +1879,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         input.verifyCommand ?? null,
         autoCreatePr,
         actor,
+        prPolicy,
         enabled,
         sortOrder,
         triggerHours,
@@ -1891,6 +1902,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       verifyCommand: string | null;
       autoCreatePr: boolean;
       actor: TaskActor;
+      prPolicy: PrPolicy | null;
       enabled: boolean;
       sortOrder: number;
       triggerBeforeResetHours: number;
@@ -1921,6 +1933,14 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           ? 1
           : 0;
     const actor = coerceActor(patch.actor ?? existing.actor, existing.actor);
+    const prPolicy =
+      patch.prPolicy === null
+        ? null
+        : patch.prPolicy === 'docs_only' ||
+            patch.prPolicy === 'all' ||
+            patch.prPolicy === 'none'
+          ? patch.prPolicy
+          : (existing.prPolicy ?? null);
     const enabled =
       typeof patch.enabled === 'boolean' ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
     const sortOrder = coerceNumber(patch.sortOrder, existing.sortOrder);
@@ -1946,6 +1966,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              verify_command = ?,
              auto_create_pr = ?,
              actor = ?,
+             pr_policy = ?,
              enabled = ?,
              sort_order = ?,
              trigger_before_reset_hours = ?,
@@ -1964,6 +1985,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         verifyCommand,
         autoCreatePr,
         actor,
+        prPolicy,
         enabled,
         sortOrder,
         triggerHours,
@@ -2004,6 +2026,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
       actor: (r.actor as TaskActor) || 'bot',
+      prPolicy: (r.pr_policy as PrPolicy) || undefined,
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),
       triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? 2),

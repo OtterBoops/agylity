@@ -122,8 +122,8 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
   return val;
 }, z.array(RepositorySchema).default([]));
 
-export const BotPrPolicyEnum = z.enum(['docs_only', 'all', 'none']);
-export type BotPrPolicy = z.infer<typeof BotPrPolicyEnum>;
+export const PrPolicyEnum = z.enum(['docs_only', 'all', 'none']);
+export type PrPolicy = z.infer<typeof PrPolicyEnum>;
 
 // Notification channels
 export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);
@@ -180,7 +180,7 @@ export const RawEnvSchema = z.object({
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
   DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
   RUNNER_SHARED_SECRET: z.string().optional(),
-  BOT_PR_POLICY: BotPrPolicyEnum.optional(),
+  PR_POLICY: PrPolicyEnum.optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
 
@@ -233,7 +233,7 @@ export interface AppConfig {
   defaultDispatchModel: string;
   defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh';
   runnerSharedSecret?: string;
-  botPrPolicy: BotPrPolicy;
+  prPolicy: PrPolicy;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
 
@@ -281,7 +281,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   defaultDispatchModel: 'DEFAULT_DISPATCH_MODEL',
   defaultDispatchEffort: 'DEFAULT_DISPATCH_EFFORT',
   runnerSharedSecret: 'RUNNER_SHARED_SECRET',
-  botPrPolicy: 'BOT_PR_POLICY',
+  prPolicy: 'PR_POLICY',
   quotaBurnMaxHours: 'QUOTA_BURN_MAX_HOURS',
   quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
   webUiEnabled: 'WEB_UI_ENABLED',
@@ -363,7 +363,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   defaultDispatchModel: 'gemini-3.8-flash',
   defaultDispatchEffort: 'medium',
   runnerSharedSecret: undefined,
-  botPrPolicy: 'docs_only',
+  prPolicy: 'docs_only',
   quotaBurnMaxHours: 2,
   quotaBurnMinHeadroomPercent: 30,
 
@@ -522,8 +522,8 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.RUNNER_SHARED_SECRET && !isTemplatePlaceholder(parsed.RUNNER_SHARED_SECRET)) {
     result.runnerSharedSecret = parsed.RUNNER_SHARED_SECRET;
   }
-  if (parsed.BOT_PR_POLICY) {
-    result.botPrPolicy = parsed.BOT_PR_POLICY;
+  if (parsed.PR_POLICY) {
+    result.prPolicy = parsed.PR_POLICY;
   }
   if (parsed.QUOTA_BURN_MAX_HOURS !== undefined) {
     result.quotaBurnMaxHours = parsed.QUOTA_BURN_MAX_HOURS;
@@ -601,7 +601,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   defaultDispatchModel: z.string(),
   defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   runnerSharedSecret: z.string().optional(),
-  botPrPolicy: BotPrPolicyEnum,
+  prPolicy: PrPolicyEnum,
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
   webUiEnabled: z.boolean(),

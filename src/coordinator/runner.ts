@@ -7,7 +7,7 @@ import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask, TaskStatusPatch } from './queue.js';
 import { resolveReasoningEffortForModel } from './models.js';
-import type { BotPrPolicy } from '../config/schema.js';
+import type { PrPolicy } from '../config/schema.js';
 
 export interface TaskExecutorOptions {
   agyBinPath?: string;
@@ -15,7 +15,7 @@ export interface TaskExecutorOptions {
   execFileFn?: ExecFileAsyncFn;
   dirExistsFn?: (dirPath: string) => boolean;
   logger?: Logger;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   onStatusUpdate?: (patch: TaskStatusPatch & { message?: string }) => Promise<void> | void;
 }
 
@@ -215,7 +215,7 @@ export class TaskExecutor {
   private readonly execFileFn: ExecFileAsyncFn;
   private readonly dirExistsFn: (dirPath: string) => boolean;
   private readonly log: Logger;
-  private readonly botPrPolicy: BotPrPolicy;
+  private readonly prPolicy: PrPolicy;
   private readonly onStatusUpdate?: (
     patch: TaskStatusPatch & { message?: string }
   ) => Promise<void> | void;
@@ -226,8 +226,8 @@ export class TaskExecutor {
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
-    this.botPrPolicy =
-      options.botPrPolicy ?? ((process.env.BOT_PR_POLICY as BotPrPolicy) || 'docs_only');
+    this.prPolicy =
+      options.prPolicy ?? ((process.env.PR_POLICY as PrPolicy) || 'docs_only');
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
@@ -355,11 +355,9 @@ export class TaskExecutor {
 
       // 2. Dispatch prompt via official `agy` CLI binary with explicit model & effort
       const safeEffort = resolveReasoningEffortForModel(task.model, task.effort);
-      const botAttributionSuffix =
-        task.actor === 'bot'
-          ? `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Written by Agylity with \`${task.model}\` (${safeEffort} reasoning)*". Never mention runner hostnames, internal server paths, or worker IDs.]`
-          : '';
-      const effectivePrompt = `${task.prompt}${botAttributionSuffix}`;
+      const tierLabel = task.tier || 'immediate';
+      const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${safeEffort} reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
+      const effectivePrompt = `${task.prompt}${attributionSuffix}`;
 
       // Unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
       const agyArgs: string[] = [
@@ -451,13 +449,8 @@ export class TaskExecutor {
         });
         if (statusOut && statusOut.trim() !== '') {
           await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
-          const isBot = task.actor === 'bot';
-          const authorName = isBot
-            ? 'agylity[bot]'
-            : process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
-          const authorEmail = isBot
-            ? 'agylity@users.noreply.github.com'
-            : process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
+          const authorName = process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
+          const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
           await this.execFileFn(
             'git',
             ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
@@ -468,12 +461,8 @@ export class TaskExecutor {
                 ...process.env,
                 GIT_AUTHOR_NAME: authorName,
                 GIT_AUTHOR_EMAIL: authorEmail,
-                GIT_COMMITTER_NAME: isBot
-                  ? authorName
-                  : process.env.GIT_COMMITTER_NAME || authorName,
-                GIT_COMMITTER_EMAIL: isBot
-                  ? authorEmail
-                  : process.env.GIT_COMMITTER_EMAIL || authorEmail,
+                GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
+                GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
               },
             }
           );
@@ -527,12 +516,12 @@ export class TaskExecutor {
 
       let prUrl: string | undefined;
 
-      // Policy Guard: Check Bot PR policy before pushing branches or creating PRs
+      // Policy Guard: Check PR policy before pushing branches or creating PRs
       const isBot = task.actor === 'bot';
-      const effectiveBotPrPolicy: BotPrPolicy = task.botPrPolicy ?? this.botPrPolicy ?? 'docs_only';
+      const effectivePrPolicy: PrPolicy = task.prPolicy ?? this.prPolicy ?? 'docs_only';
 
       if (isBot) {
-        if (effectiveBotPrPolicy === 'none') {
+        if (effectivePrPolicy === 'none') {
           this.log.info(
             'Bot PR policy is "none": suppressing branch push and PR creation for task %s on %s',
             task.id,
@@ -557,7 +546,7 @@ export class TaskExecutor {
           };
         }
 
-        if (effectiveBotPrPolicy === 'docs_only') {
+        if (effectivePrPolicy === 'docs_only') {
           let nonDocFiles: string[] = [];
           try {
             const { stdout: diffOut } = await this.execFileFn(
@@ -596,7 +585,7 @@ export class TaskExecutor {
               success: true,
               noChanges: true,
               branchName,
-              output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only (botPrPolicy='docs_only'). Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`,
+              output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only (prPolicy='docs_only'). Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`,
               durationMs: Date.now() - startMs,
               numTurns: telemetry.numTurns,
               totalTokens: telemetry.totalTokens,
@@ -648,11 +637,12 @@ export class TaskExecutor {
         if (task.autoCreatePr) {
           try {
             const effort = task.effort || safeEffort;
+            const tierLabel = task.tier || 'immediate';
             const prBody = [
               task.prompt,
               '',
               '---',
-              `*Written by Agylity with \`${task.model}\` (${effort} reasoning)*`,
+              `*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${effort} reasoning) — please review carefully.*`,
             ].join('\n');
 
             const { stdout: prOut } = await this.execFileFn(
@@ -744,7 +734,7 @@ export interface RemoteSwarmRunnerOptions {
   execFileFn?: ExecFileAsyncFn;
   pollTimeoutMs?: number;
   idlePollIntervalMs?: number;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   executor?: TaskExecutor;
   logger?: Logger;
 }
@@ -782,7 +772,7 @@ export class RemoteSwarmRunner {
         agyBinPath: options.agyBinPath || 'agy',
         execFileFn: options.execFileFn,
         logger: this.log,
-        botPrPolicy: options.botPrPolicy,
+        prPolicy: options.prPolicy,
         onStatusUpdate: async (status) => {
           if (this.currentExecutingTaskId) {
             await this.reportStatus(

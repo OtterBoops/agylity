@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
-import type { BotPrPolicy } from '../config/schema.js';
+import type { PrPolicy } from '../config/schema.js';
 import type { SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
@@ -50,7 +50,7 @@ export interface DispatchTaskRequest {
   requestedBy?: string;
   requestedByUserId?: string;
   actor?: TaskActor;
-  botPrPolicy?: BotPrPolicy;
+  prPolicy?: PrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model?: string;
@@ -242,7 +242,7 @@ export class Coordinator {
             originTitle: nextBacklog.title,
             requestedBy: `backlog:${nextBacklog.id}`,
             actor: nextBacklog.actor || 'bot',
-            botPrPolicy: resolved.botPrPolicy,
+            prPolicy: resolved.prPolicy,
             scheduleMode: 'immediate',
             model: modelChoice.selectedModel,
             effort: nextBacklog.effort,
@@ -401,7 +401,7 @@ export class Coordinator {
         effort: rt.effort,
         autoCreatePr: rt.autoCreatePr,
         actor: rt.actor || 'bot',
-        botPrPolicy: resolved.botPrPolicy,
+        prPolicy: rt.prPolicy ?? resolved.prPolicy,
         verifyCommand: rt.verifyCommand,
         scheduleMode: 'immediate',
         requestedBy: `routine:${rt.id}`,
@@ -618,7 +618,7 @@ export class Coordinator {
       originTitle,
       requestedBy: req.requestedBy || 'web-ui',
       actor: req.actor ?? 'user',
-      botPrPolicy: req.botPrPolicy ?? resolved.botPrPolicy,
+      prPolicy: req.prPolicy ?? resolved.prPolicy,
       scheduleMode,
       requiredLabels,
       model: concreteModel,
@@ -713,7 +713,7 @@ export class Coordinator {
       requestedBy: params.requestedBy || parentTask?.requestedBy,
       requestedByUserId: params.requestedByUserId,
       actor: parentTask?.actor ?? 'user',
-      botPrPolicy: parentTask?.botPrPolicy,
+      prPolicy: parentTask?.prPolicy,
       effort: params.effort || parentTask?.effort,
       model: params.model || parentTask?.model,
       scheduleMode: params.scheduleMode || parentTask?.scheduleMode,
