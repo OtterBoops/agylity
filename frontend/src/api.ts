@@ -260,7 +260,10 @@ export const createRoutine = (
 
 export const updateRoutine = (
   id: string,
-  patch: Partial<RoutineTaskRecord>
+  patch: Partial<Omit<RoutineTaskRecord, 'verifyCommand' | 'prPolicy'>> & {
+    verifyCommand?: string | null;
+    prPolicy?: RoutineTaskRecord['prPolicy'] | null;
+  }
 ): Promise<RoutineTaskRecord> =>
   api.patch(`routines/${encodeURIComponent(id)}`, { json: patch }).json<RoutineTaskRecord>();
 

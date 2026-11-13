@@ -5,6 +5,8 @@ import { taskStatusBadgeClass } from '../utils/status';
 import {
   faCheck,
   faCopy,
+  faPencil,
+  faPlay,
   faPlus,
   faSync,
   faTrash,
@@ -134,6 +136,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [routinesLoading, setRoutinesLoading] = useState(false);
   const [routinesInitialLoaded, setRoutinesInitialLoaded] = useState(false);
   const [showCreateRoutine, setShowCreateRoutine] = useState(false);
+  const [editingRoutineId, setEditingRoutineId] = useState<string | null>(null);
   const [routineActionId, setRoutineActionId] = useState<string | null>(null);
   const [routineTitle, setRoutineTitle] = useState('');
   const [routinePrompt, setRoutinePrompt] = useState('');
@@ -530,7 +533,39 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     }
   };
 
-  const handleCreateRoutine = async (e: Event) => {
+  const openCreateRoutineModal = () => {
+    setEditingRoutineId(null);
+    setRoutineTitle('');
+    setRoutinePrompt('');
+    setRoutineRepo(defaultRepoId);
+    setRoutineModels(defaultModel);
+    setRoutineEffort('medium');
+    setRoutineTriggerHours('4');
+    setRoutineMinHeadroom('15');
+    setRoutineVerifyCommand('');
+    setRoutinePrPolicy('');
+    setShowCreateRoutine(true);
+  };
+
+  const openEditRoutineModal = (routine: RoutineTaskRecord) => {
+    setEditingRoutineId(routine.id);
+    setRoutineTitle(routine.title);
+    setRoutinePrompt(routine.prompt);
+    setRoutineRepo(routine.repositoryId);
+    setRoutineModels(routine.models.join(', '));
+    setRoutineEffort(routine.effort);
+    setRoutineTriggerHours(
+      routine.triggerBeforeResetHours !== undefined ? String(routine.triggerBeforeResetHours) : ''
+    );
+    setRoutineMinHeadroom(
+      routine.minHeadroomPercent !== undefined ? String(routine.minHeadroomPercent) : ''
+    );
+    setRoutineVerifyCommand(routine.verifyCommand || '');
+    setRoutinePrPolicy(routine.prPolicy || '');
+    setShowCreateRoutine(true);
+  };
+
+  const handleSaveRoutine = async (e: Event) => {
     e.preventDefault();
     if (!routineTitle.trim() || !routinePrompt.trim()) return;
     if (!(routineRepo || defaultRepoId)) {
@@ -551,28 +586,48 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       .filter(Boolean);
 
     try {
-      await createRoutine({
-        title: routineTitle.trim(),
-        prompt: routinePrompt.trim(),
-        repositoryId: routineRepo || defaultRepoId,
-        models: modelsList.length > 0 ? modelsList : [defaultModel],
-        effort: routineEffort,
-        triggerBeforeResetHours: triggerHours,
-        minHeadroomPercent: minHeadroom,
-        verifyCommand: routineVerifyCommand.trim() || undefined,
-        prPolicy: routinePrPolicy || undefined,
-        enabled: true,
-        autoCreatePr: true,
-      });
+      const title = routineTitle.trim();
+      if (editingRoutineId) {
+        await updateRoutine(editingRoutineId, {
+          title,
+          prompt: routinePrompt.trim(),
+          repositoryId: routineRepo || defaultRepoId,
+          models: modelsList.length > 0 ? modelsList : [defaultModel],
+          effort: routineEffort,
+          triggerBeforeResetHours: triggerHours,
+          minHeadroomPercent: minHeadroom,
+          verifyCommand: routineVerifyCommand.trim() || null,
+          prPolicy: routinePrPolicy || null,
+        });
+      } else {
+        await createRoutine({
+          title,
+          prompt: routinePrompt.trim(),
+          repositoryId: routineRepo || defaultRepoId,
+          models: modelsList.length > 0 ? modelsList : [defaultModel],
+          effort: routineEffort,
+          triggerBeforeResetHours: triggerHours,
+          minHeadroomPercent: minHeadroom,
+          verifyCommand: routineVerifyCommand.trim() || undefined,
+          prPolicy: routinePrPolicy || undefined,
+          enabled: true,
+          autoCreatePr: true,
+        });
+      }
+      const wasEditing = Boolean(editingRoutineId);
+      setEditingRoutineId(null);
       setRoutineTitle('');
       setRoutinePrompt('');
       setRoutineVerifyCommand('');
       setRoutinePrPolicy('');
       setShowCreateRoutine(false);
       await loadRoutines();
-      showNotification('success', `Created routine "${routineTitle.trim()}"`);
+      showNotification('success', `${wasEditing ? 'Updated' : 'Created'} routine "${title}"`);
     } catch (err: any) {
-      showNotification('error', `Failed to create routine: ${err?.message || String(err)}`);
+      showNotification(
+        'error',
+        `Failed to ${editingRoutineId ? 'update' : 'create'} routine: ${err?.message || String(err)}`
+      );
     }
   };
 
@@ -784,7 +839,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               </div>
               <button
                 type="button"
-                onClick={() => setShowCreateRoutine(true)}
+                onClick={openCreateRoutineModal}
                 class="flex cursor-pointer items-center gap-1.5 rounded-lg bg-pine-iris px-3.5 py-1.5 text-xs font-semibold text-pine-base shadow-xs transition-opacity hover:opacity-90 sm:text-sm"
               >
                 <Icon icon={faPlus} class="size-3.5" />
@@ -1224,10 +1279,21 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                             type="button"
                             onClick={() => handleTriggerRoutineNow(routine)}
                             disabled={routineActionId === routine.id}
-                            class="cursor-pointer rounded-sm border border-pine-iris/30 bg-pine-iris/10 px-2.5 py-1 text-xs font-semibold text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base"
+                            class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-iris/30 bg-pine-iris/10 text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base"
                             title="Trigger immediate execution with preference chain"
+                            aria-label={`Trigger ${routine.title}`}
                           >
-                            Trigger
+                            <Icon icon={faPlay} class="size-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => openEditRoutineModal(routine)}
+                            disabled={routineActionId === routine.id}
+                            class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight bg-pine-overlay/50 text-pine-subtle transition-colors hover:border-pine-foam/40 hover:text-pine-foam"
+                            title="Edit routine"
+                            aria-label={`Edit ${routine.title}`}
+                          >
+                            <Icon icon={faPencil} class="size-3" />
                           </button>
                           {pendingDelete === routine.id ? (
                             <>
@@ -1245,7 +1311,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                               <button
                                 type="button"
                                 onClick={() => setPendingDelete(null)}
-                                class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted hover:text-pine-text"
+                                class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight text-pine-muted hover:text-pine-text"
                                 aria-label="Cancel delete"
                               >
                                 <Icon icon={faTimes} class="size-3.5" />
@@ -1256,10 +1322,11 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                               type="button"
                               onClick={() => setPendingDelete(routine.id)}
                               disabled={routineActionId === routine.id}
-                              class="cursor-pointer rounded-sm border border-pine-highlight p-1 text-pine-muted transition-colors hover:text-pine-love"
+                              class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-love/30 bg-pine-love/10 text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base"
                               title="Delete routine"
+                              aria-label={`Delete ${routine.title}`}
                             >
-                              <Icon icon={faTrash} class="size-3.5" />
+                              <Icon icon={faTrash} class="size-3" />
                             </button>
                           )}
                         </div>
@@ -1514,31 +1581,40 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         </dialog>
       )}
 
-      {/* --- MODAL: CREATE ROUTINE --- */}
+      {/* --- MODAL: CREATE / EDIT ROUTINE --- */}
       {showCreateRoutine && (
         <dialog
           id="routine-dialog"
           ref={routineDialogRef}
           aria-labelledby="routineDialogTitle"
           aria-modal="true"
-          onClose={() => setShowCreateRoutine(false)}
-          onClick={dialogBackdropClickHandler(routineDialogRef, () => setShowCreateRoutine(false))}
+          onClose={() => {
+            setShowCreateRoutine(false);
+            setEditingRoutineId(null);
+          }}
+          onClick={dialogBackdropClickHandler(routineDialogRef, () => {
+            setShowCreateRoutine(false);
+            setEditingRoutineId(null);
+          })}
           class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
         >
           <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
             <h2 id="routineDialogTitle" class="text-base font-bold text-pine-text">
-              New Maintenance Routine
+              {editingRoutineId ? 'Edit Maintenance Routine' : 'New Maintenance Routine'}
             </h2>
             <button
               type="button"
               aria-label="Close dialog"
-              onClick={() => setShowCreateRoutine(false)}
+              onClick={() => {
+                setShowCreateRoutine(false);
+                setEditingRoutineId(null);
+              }}
               class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             >
               <Icon icon={faTimes} class="size-4" />
             </button>
           </div>
-          <form onSubmit={handleCreateRoutine} class="mt-4 flex flex-col gap-3.5 text-xs">
+          <form onSubmit={handleSaveRoutine} class="mt-4 flex flex-col gap-3.5 text-xs">
             <div>
               <label class="mb-1 block font-medium text-pine-subtle">Routine Title</label>
               <input
@@ -1675,7 +1751,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                 type="submit"
                 class="cursor-pointer rounded-lg bg-pine-iris px-4 py-1.5 font-bold text-pine-base shadow-xs hover:opacity-90"
               >
-                Create Routine
+                {editingRoutineId ? 'Save Changes' : 'Create Routine'}
               </button>
             </div>
           </form>
