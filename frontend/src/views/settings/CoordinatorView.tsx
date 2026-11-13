@@ -130,8 +130,8 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
       <PoolPoliciesCard config={config} onSaved={onChanged} />
 
       <SettingsForm
-        title="Model Selection &amp; Swarm Queue Parameters"
-        description="Configure the explicit default dispatch model, fallback runner secret, and routine pre-reset trigger thresholds."
+        title="Model Selection &amp; Dispatch Thresholds"
+        description="Configure the default dispatch model, fallback runner secret, routine pre-reset triggers, and the dispatch safety floor that blocks overage."
         fields={COORDINATOR_FIELDS}
         config={config}
         onSaved={onChanged}

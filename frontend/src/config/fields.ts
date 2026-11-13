@@ -107,6 +107,18 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Minimum remaining pool quota required to trigger scheduled maintenance routines (default: 30%).',
   },
   {
+    key: 'minDispatchHeadroomPercent',
+    label: 'AI safety floor (%)',
+    type: 'number',
+    hint: 'Block dispatches when quota <= this floor to prevent paid overages (default: 10). Set to 0 if overages do not apply.',
+  },
+  {
+    key: 'allowOverage',
+    label: 'Allow billable overage',
+    type: 'boolean',
+    hint: 'Whether usage past 0% quota may draw purchased credits. The language server does not report this, so set it to match your account.',
+  },
+  {
     key: 'runnerSharedSecret',
     label: 'Fallback shared runner secret (optional)',
     type: 'password',
@@ -115,7 +127,7 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
   },
 ];
 
-export const SENTRY_FIELDS: FieldDef[] = [
+export const SENTRY_GENERAL_FIELDS: FieldDef[] = [
   {
     key: 'quotaCheckIntervalSeconds',
     label: 'Polling interval (seconds)',
@@ -130,30 +142,14 @@ export const SENTRY_FIELDS: FieldDef[] = [
     hint: 'Comma-separated hours before reset to trigger warnings.',
   },
   {
-    key: 'minDispatchHeadroomPercent',
-    label: 'AI safety floor (%)',
-    type: 'number',
-    hint: 'Block dispatches when quota <= this floor to prevent paid overages (default: 10). Set to 0 if overages do not apply.',
-  },
-  {
-    key: 'allowOverage',
-    label: 'Allow billable overage',
-    type: 'boolean',
-    hint: 'Whether usage past 0% quota may draw purchased credits. The language server does not report this, so set it to match your account.',
-  },
-  {
     key: 'quotaAlertThresholdPercent',
     label: 'Alert quota threshold (%)',
     type: 'number',
     hint: 'Only fire milestones if at least this much quota remains unused (default: 25).',
   },
-  {
-    key: 'antigravityEndpointUrl',
-    label: 'Language Server RPC URL',
-    type: 'text',
-    placeholder: 'http://127.0.0.1:60643',
-    hint: 'Custom Antigravity Language Server Connect-RPC URL (optional).',
-  },
+];
+
+export const NETWORK_SECURITY_FIELDS: FieldDef[] = [
   {
     key: 'allowedIpRanges',
     label: 'Allowed IP Ranges / CIDRs (Whitelist)',
@@ -170,5 +166,15 @@ export const SENTRY_FIELDS: FieldDef[] = [
       { value: 'true', label: 'Enabled (Trust Cf-Connecting-IP, X-Real-IP, X-Forwarded-For)' },
     ],
     hint: 'Inspects Cf-Connecting-IP, X-Real-IP, and X-Forwarded-For headers to resolve client IP behind reverse proxies.',
+  },
+];
+
+export const TELEMETRY_OVERRIDE_FIELDS: FieldDef[] = [
+  {
+    key: 'antigravityEndpointUrl',
+    label: 'Language Server RPC URL',
+    type: 'text',
+    placeholder: 'http://127.0.0.1:60643',
+    hint: 'Custom Antigravity Language Server Connect-RPC URL (optional).',
   },
 ];

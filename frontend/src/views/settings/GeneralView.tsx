@@ -5,8 +5,10 @@ import { updateConfig, deleteConfigOverride } from '../../api';
 import { Icon } from '../../components/Icon';
 import { ToggleSwitch } from '../../components/ToggleSwitch';
 import { GeneralSettingsCard } from '../../components/GeneralSettingsCard';
+import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { StatusBanner } from '../../components/StatusBanner';
+import { SENTRY_GENERAL_FIELDS } from '../../config/fields';
 
 interface GeneralViewProps {
   config: ConfigData;
@@ -102,6 +104,14 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
       </div>
 
       <GeneralSettingsCard />
+
+      <SettingsForm
+        title="Quota Sentry &amp; Alerting"
+        description="Control how often rolling quota is polled and when milestone warnings fire before a pool reset."
+        fields={SENTRY_GENERAL_FIELDS}
+        config={config}
+        onSaved={onChanged}
+      />
 
       <form
         onSubmit={handleSave}
