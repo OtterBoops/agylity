@@ -21,7 +21,12 @@ interface SettingsFormProps {
   fields: FieldDef[];
   config: ConfigData;
   onSaved: () => void;
+  /** Live catalog options; the static field options are the pre-load fallback. */
+  modelOptions?: Array<{ value: string; label: string }>;
 }
+
+/** Field keys whose options come from the live model catalog rather than the static list. */
+const CATALOG_OPTION_KEYS = new Set(['defaultDispatchModel']);
 
 const toDisplay = (value: unknown): string => {
   if (value === undefined || value === null) return '';
@@ -49,8 +54,12 @@ const parseValue = (field: FieldDef, raw: string): unknown => {
   return raw;
 };
 
-const normalizeValueForField = (field: FieldDef, rawValue: string): string =>
-  field.key === 'defaultDispatchModel' ? normalizeModelId(rawValue) : rawValue;
+const normalizeValueForField = (
+  field: FieldDef,
+  rawValue: string,
+  modelIds: Array<{ id: string }>
+): string =>
+  field.key === 'defaultDispatchModel' ? normalizeModelId(rawValue, modelIds) : rawValue;
 
 export const SettingsForm = ({
   title,
@@ -58,6 +67,7 @@ export const SettingsForm = ({
   fields,
   config,
   onSaved,
+  modelOptions = [],
 }: SettingsFormProps) => {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
@@ -66,13 +76,26 @@ export const SettingsForm = ({
 
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
+  const modelIds = modelOptions.map((o) => ({ id: o.value }));
 
   const valueOf = (field: FieldDef): string => {
     if (draft[field.key] !== undefined) return draft[field.key];
     if (field.type === 'password') return '';
     const source = overrides[field.key] ?? resolved[field.key];
     const raw = toDisplay(source);
-    return normalizeValueForField(field, raw);
+    return normalizeValueForField(field, raw, modelIds);
+  };
+
+  const optionsFor = (field: FieldDef): Array<{ value: string; label: string }> => {
+    const fromCatalog =
+      field.options && CATALOG_OPTION_KEYS.has(field.key) && modelOptions.length > 0;
+    const options = fromCatalog ? modelOptions : (field.options ?? []);
+    // A stored id the catalog no longer offers must still render, or the select goes blank.
+    const current = valueOf(field);
+    if (current !== '' && !options.some((o) => o.value === current)) {
+      return [...options, { value: current, label: `${current} (not offered by agy)` }];
+    }
+    return options;
   };
 
   const dirtyKeys = fields
@@ -84,7 +107,7 @@ export const SettingsForm = ({
         return draft[k].trim() !== '';
       }
       const rawCurrent = toDisplay(overrides[k] ?? resolved[k]);
-      const current = field ? normalizeValueForField(field, rawCurrent) : rawCurrent;
+      const current = field ? normalizeValueForField(field, rawCurrent, modelIds) : rawCurrent;
       return draft[k] !== current;
     });
 
@@ -234,7 +257,7 @@ export const SettingsForm = ({
                     setDraft({ ...draft, [f.key]: (e.target as HTMLSelectElement).value })
                   }
                 >
-                  {f.options?.map((o) => (
+                  {optionsFor(f).map((o) => (
                     <option key={o.value} value={o.value}>
                       {o.label}
                     </option>

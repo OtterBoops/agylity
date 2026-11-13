@@ -44,7 +44,12 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(resolveConcreteModelId('claude-opus-5-5', 'gemini-4-argon'), 'claude-opus-5-5');
       assert.equal(resolveConcreteModelId('claude', 'gemini-4-argon'), 'claude-sonnet-5-5');
       assert.equal(resolveConcreteModelId('gemini-flash', 'gemini-4-argon'), 'gemini-3.8-flash');
-      assert.equal(CANONICAL_AGY_MODELS.length, 5);
+      // Hydrogen is in the bundled fallback but must not displace the flash pool default.
+      assert.equal(
+        resolveConcreteModelId('gemini-4-hydrogen-xhigh', 'gemini-4-argon'),
+        'gemini-4-hydrogen'
+      );
+      assert.equal(CANONICAL_AGY_MODELS.length, 6);
     });
 
     it('calculates effectiveHeadroomPercent as min(weekly, 5h shortTerm)', () => {
@@ -521,7 +526,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // 1. GET /api/models returns annotated model catalog
         const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
         assert.equal(modelsRes.defaultModel, 'gemini-3.8-flash');
-        assert.equal(modelsRes.models.length, 5);
+        assert.equal(modelsRes.models.length, 6);
+        const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
+        assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
+        assert.equal(hydrogen.family, 'gemini-flash');
+        assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
 
         // 2. Unauthenticated poll is rejected with 401
         await assert.rejects(
@@ -839,7 +848,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(effortSelect.custom_id, 'task_effort');
       assert.deepEqual(
         effortSelect.options.map((o: any) => o.value),
-        ['low', 'medium', 'high']
+        ['low', 'medium', 'high', 'xhigh']
       );
     });
   });

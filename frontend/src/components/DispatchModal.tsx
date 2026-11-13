@@ -1,9 +1,10 @@
 import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { dialogBackdropClickHandler } from '../utils/dialog';
-import type { ConfigData, ModelCatalogEntry, QuotaSnapshot, ToastState } from '../types';
-import { getModels, triggerDispatch } from '../api';
+import type { ConfigData, QuotaSnapshot, ReasoningEffort, ToastState } from '../types';
+import { triggerDispatch } from '../api';
 import { normalizeModelId, resolveModelEffort } from '../config/fields';
+import { loadModelCatalog, useModelCatalog } from '../state/modelCatalogStore';
 import { Icon } from './Icon';
 import {
   DispatchFormFields,
@@ -21,38 +22,19 @@ interface DispatchModalProps {
   quota?: QuotaSnapshot[];
 }
 
-let cachedCatalogModels: ModelCatalogEntry[] = [];
-let modelsFetchPromise: Promise<ModelCatalogEntry[]> | null = null;
-
-export const loadModelCatalog = async (): Promise<ModelCatalogEntry[]> => {
-  if (cachedCatalogModels.length > 0) return cachedCatalogModels;
-  if (!modelsFetchPromise) {
-    modelsFetchPromise = getModels()
-      .then((res) => {
-        if (res.models && res.models.length > 0) {
-          cachedCatalogModels = res.models;
-        }
-        return cachedCatalogModels;
-      })
-      .finally(() => {
-        modelsFetchPromise = null;
-      });
-  }
-  return modelsFetchPromise;
-};
-
 const EMPTY_REPOS: RepoItem[] = [];
 
 export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
   const repos: RepoItem[] = (config.resolved?.repositories as unknown as RepoItem[]) || EMPTY_REPOS;
   const defaultRepo = repos.length === 1 ? repos[0]!.name : '';
+  const catalog = useModelCatalog();
+  const catalogModels = catalog.models;
 
   const configuredDefaultModel = normalizeModelId(
     config.resolved?.defaultDispatchModel,
-    cachedCatalogModels
+    catalogModels
   );
-  // No catalog yet at this point in render; the effect below re-derives once it loads.
-  const defaultEfforts = resolveModelEffort([], configuredDefaultModel);
+  const defaultEfforts = resolveModelEffort(catalogModels, configuredDefaultModel);
   const rawEffort = config.resolved?.defaultDispatchEffort as any;
   const configuredDefaultEffort = defaultEfforts.supported.includes(rawEffort)
     ? rawEffort
@@ -61,14 +43,13 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   const [selectedRepo, setSelectedRepo] = useState(defaultRepo);
   const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
   const [scheduleMode, setScheduleMode] = useState<'immediate' | 'pre_reset'>('immediate');
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>(configuredDefaultEffort);
+  const [effort, setEffort] = useState<ReasoningEffort>(configuredDefaultEffort);
   const [autoCreatePr, setAutoCreatePr] = useState(true);
   const [taskPrompt, setTaskPrompt] = useState('');
   const [requestedBy, setRequestedBy] = useState('web-ui');
   const [allowOverage, setAllowOverage] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [status, setStatus] = useState<ToastState | null>(null);
-  const [catalogModels, setCatalogModels] = useState<ModelCatalogEntry[]>(cachedCatalogModels);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -89,7 +70,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
 
   useEffect(() => {
     if (isOpen) return;
-    const nextModel = normalizeModelId(config.resolved?.defaultDispatchModel, cachedCatalogModels);
+    const nextModel = normalizeModelId(config.resolved?.defaultDispatchModel, catalogModels);
     setSelectedModel(nextModel);
     const { supported, defaultEffort } = resolveModelEffort(catalogModels, nextModel);
     const raw = config.resolved?.defaultDispatchEffort as any;
@@ -117,36 +98,25 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   }, [isOpen]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    if (cachedCatalogModels.length === 0) {
-      loadModelCatalog().then((models) => {
-        if (models.length > 0) {
-          setCatalogModels(models);
-        }
-      });
-    }
+    if (isOpen) void loadModelCatalog();
   }, [isOpen]);
 
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const minHeadroom = config.resolved?.minDispatchHeadroomPercent ?? 10;
 
-  // Determine the selected model's pool family and effective headroom
-  const activeModelMeta =
-    catalogModels.find((m) => m.id === selectedModel) ||
-    FALLBACK_MODELS.find((m) => m.id === selectedModel) ||
-    FALLBACK_MODELS[0]!;
-  const matchingPool = quota.find(
-    (q) => q.family === activeModelMeta.family || q.poolId === activeModelMeta.family
-  );
-  const selectedPoolHeadroomPct =
-    (activeModelMeta as ModelCatalogEntry).effectiveHeadroomPercent ??
-    computePoolHeadroomPct(matchingPool) ??
-    100;
+  // A model absent from the catalog has no family, so it can claim no pool's headroom.
+  const activeLive = catalogModels.find((m) => m.id === selectedModel);
+  const activeFamily =
+    activeLive?.family ?? FALLBACK_MODELS.find((m) => m.id === selectedModel)?.family ?? null;
+  const matchingPool = activeFamily
+    ? quota.find((q) => q.family === activeFamily || q.poolId === activeFamily)
+    : undefined;
+  const knownHeadroomPct =
+    activeLive?.effectiveHeadroomPercent ?? computePoolHeadroomPct(matchingPool);
+  const selectedPoolHeadroomPct = knownHeadroomPct ?? 100;
+  // Unknown headroom must not read as headroom below the floor; the server locks that dispatch.
   const isLowHeadroom =
-    (matchingPool !== undefined ||
-      (activeModelMeta as ModelCatalogEntry).effectiveHeadroomPercent !== undefined) &&
-    selectedPoolHeadroomPct !== null &&
-    selectedPoolHeadroomPct < minHeadroom;
+    activeFamily !== null && knownHeadroomPct !== null && knownHeadroomPct < minHeadroom;
 
   const handleDispatch = (e: Event) => {
     e.preventDefault();
@@ -279,7 +249,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
 
           {isLowHeadroom && (
             <DispatchOverageWarning
-              family={activeModelMeta.family}
+              family={activeFamily ?? 'unknown pool'}
               headroomPct={selectedPoolHeadroomPct}
               minHeadroom={minHeadroom}
               allowOverage={allowOverage}

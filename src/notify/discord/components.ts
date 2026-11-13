@@ -7,6 +7,7 @@ import {
   LabelBuilder,
 } from 'discord.js';
 import {
+  ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
   resolveConcreteModelId,
   resolveReasoningEffortForModel,
@@ -110,7 +111,7 @@ export const createDispatchModal = (
       .setCustomId('task_effort')
       .setPlaceholder('Select reasoning effort')
       .addOptions(
-        (['low', 'medium', 'high'] as const).map((effort) => ({
+        ALL_EFFORTS.map((effort) => ({
           label: effort,
           value: effort,
           default: effort === initialEffort,

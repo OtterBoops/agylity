@@ -16,6 +16,7 @@ import { type Notifier } from '../notify/types.js';
 import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
 import { Coordinator } from '../coordinator/index.js';
+import { DynamicModelCatalog } from '../coordinator/catalog.js';
 
 /** Dry-run milestone plan returned by the evaluator; state is recorded only after delivery. */
 interface MilestonePlan {
@@ -47,6 +48,8 @@ export class AgylityDaemon {
   public readonly sentryEvaluator: QuotaEvaluator;
   public readonly notifier: Notifier;
   public readonly coordinator: Coordinator;
+  /** Stale-while-revalidate view of `agy --output-format json models`. */
+  public readonly modelCatalog: DynamicModelCatalog;
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
   public readonly logger: Logger;
@@ -90,6 +93,9 @@ export class AgylityDaemon {
         logger: this.logger.child('coordinator'),
       });
     this.coordinator.setNotifier(notifier);
+    this.modelCatalog = new DynamicModelCatalog({
+      logger: this.logger.child('catalog'),
+    });
     const initialConfig = configStore.resolveConfig();
     if (initialConfig.logLevel) {
       this.applyLogLevel(initialConfig.logLevel);
@@ -292,6 +298,7 @@ export class AgylityDaemon {
         logBuffer: this.logBuffer,
         notifier: this.notifier,
         coordinator: this.coordinator,
+        modelCatalog: this.modelCatalog,
         logger: this.logger.child('web'),
         port: resolved.webUiPort,
         host: resolved.webUiHost,

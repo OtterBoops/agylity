@@ -17,6 +17,7 @@ import { Coordinator } from '../../coordinator/coordinator.js';
 import { RegistrationTokenError } from '../../coordinator/queue.js';
 import {
   annotateModelsWithQuota,
+  CANONICAL_AGY_MODELS,
   isTerminalTaskStatus,
   ReasoningEffortSchema,
   ScheduleModeSchema,
@@ -98,7 +99,15 @@ export const handleGetModels = async (
     }
   }
 
-  const models = annotateModelsWithQuota(pools, resolved.minDispatchHeadroomPercent ?? 10);
+  // Non-blocking: the provider serves its cache and revalidates in the background, so an
+  // offline or unauthenticated CLI never stalls this route.
+  const catalog = options.modelCatalog?.getModels() ?? CANONICAL_AGY_MODELS;
+  const models = annotateModelsWithQuota(
+    pools,
+    resolved.minDispatchHeadroomPercent ?? 10,
+    Date.now(),
+    catalog
+  );
   return sendJson(
     res,
     200,
@@ -106,6 +115,7 @@ export const handleGetModels = async (
       defaultModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
       defaultEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
       models,
+      unattributedModels: options.modelCatalog?.getUnattributedModels() ?? [],
     },
     { 'Cache-Control': 'no-store' }
   );

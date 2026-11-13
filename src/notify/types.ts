@@ -68,7 +68,7 @@ export interface DispatchRequest {
   requestedBy: string;
   requestedByUserId?: string;
   model?: string;
-  effort?: 'low' | 'medium' | 'high';
+  effort?: 'low' | 'medium' | 'high' | 'xhigh';
   runnerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
   requiredLabels?: string[];
@@ -86,7 +86,7 @@ export const DispatchRequestSchema = z.object({
   requestedBy: z.string().min(1),
   requestedByUserId: z.string().optional(),
   model: z.string().optional(),
-  effort: z.enum(['low', 'medium', 'high']).optional(),
+  effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
   workerMode: z.enum(['headless', 'visible', 'any']).optional(),
   poolFamily: z.string().optional(),
   requiredLabels: z.array(z.string()).optional(),

@@ -204,7 +204,7 @@ export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
 
 /** Fallback member models per pool, used when the API supplies none. */
 export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
-  'gemini-flash': ['Gemini Flash', 'Gemini Pro'],
+  'gemini-flash': ['Gemini 3.8 Flash', 'Gemini 4 Hydrogen'],
   'gemini-argon': ['Gemini 4 Argon'],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
 };
@@ -260,6 +260,19 @@ export const resolveModelFamily = (config: {
     return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
+  // The orchestrator codenames carry 'pro' rather than 'argon' but bill the Argon pool.
+  if (mid.includes('orchestrator') || lbl.includes('orchestrator')) {
+    return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
+  }
+
+  // Hydrogen ships in the Gemini Flash pool. Matched before the flash branch so a
+  // 'gemini-4-hydrogen-*' codename resolves without a pool of its own.
+  if (mid.includes('hydrogen') || lbl.includes('hydrogen')) {
+    return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
+  }
+
+  // No bare 'pro' branch: 'gemini-pro-orchestrator-g1-pro' is NOT a Flash model, so a
+  // substring match there would charge the wrong pool's headroom.
   if (mid.includes('flash') || lbl.includes('flash')) {
     return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
   }
@@ -410,6 +423,24 @@ export const aggregateUserQuotaSummary = (
   return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };
 
+// Attribute an unattributable codename to a pool by exact quota telemetry match. Ambiguous
+// telemetry (several pools reporting the same window) yields null rather than a guess.
+const inferFamilyFromQuotaInfo = (
+  quotaInfo: { remainingFraction: number; resetTime: string },
+  pools: Iterable<{ family: QuotaFamily; remainingFraction: number; resetTime: string }>
+): QuotaFamily | null => {
+  const matches: QuotaFamily[] = [];
+  for (const pool of pools) {
+    if (
+      pool.remainingFraction === quotaInfo.remainingFraction &&
+      pool.resetTime === quotaInfo.resetTime
+    ) {
+      matches.push(pool.family);
+    }
+  }
+  return matches.length === 1 ? matches[0]! : null;
+};
+
 // Aggregates raw language server model configs into canonical QuotaSnapshot pools.
 export const aggregateQuotaPools = (
   configs: LanguageServerModelConfig[],
@@ -427,10 +458,15 @@ export const aggregateQuotaPools = (
     }
   >();
 
+  const orphans: LanguageServerModelConfig[] = [];
+
   for (const config of configs) {
     if (!config.quotaInfo) continue;
     const resolved = resolveModelFamily(config);
-    if (!resolved) continue;
+    if (!resolved) {
+      orphans.push(config);
+      continue;
+    }
 
     const { family, displayName } = resolved;
     const modelLabel = config.label || config.modelId;
@@ -465,6 +501,14 @@ export const aggregateQuotaPools = (
   }
 
   const { remainingCredits, overageEnabled } = resolveCredits(extraCredits, false);
+
+  // A codename the family resolver does not know still carries quotaInfo, so attribute it to the
+  // pool whose telemetry it matches exactly rather than dropping it from that pool's model list.
+  for (const orphan of orphans) {
+    const inferred = inferFamilyFromQuotaInfo(orphan.quotaInfo!, poolMap.values());
+    if (!inferred) continue;
+    poolMap.get(inferred)!.models.add(orphan.label || orphan.modelId);
+  }
 
   const result: QuotaSnapshot[] = [];
   for (const entry of poolMap.values()) {

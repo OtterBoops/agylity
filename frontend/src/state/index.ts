@@ -7,3 +7,10 @@ export {
   removeConfigOverride,
   type ConfigState,
 } from './configStore';
+export {
+  loadModelCatalog,
+  useModelCatalog,
+  getModelCatalog,
+  toModelOptions,
+  type ModelCatalogState,
+} from './modelCatalogStore';

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { faClock, faMinus, faPlay, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
-import type { ConfigData, RepositoryConfig, StandingTaskRecord } from '../types';
+import type { ConfigData, ReasoningEffort, RepositoryConfig, StandingTaskRecord } from '../types';
 import {
   getStandingTasks,
   createStandingTask,
@@ -10,6 +10,8 @@ import {
 } from '../api';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
+import { EFFORT_OPTIONS, MODEL_OPTIONS, resolveModelEffort } from '../config/fields';
+import { useModelCatalog } from '../state/modelCatalogStore';
 
 interface StandingTasksCardProps {
   config: ConfigData;
@@ -24,13 +26,20 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
   // Form state
   const repos = config.resolved?.repositories || [];
   const defaultRepoId = repos[0]?.id || 'agylity';
-  const defaultModel = config.resolved?.defaultDispatchModel || 'claude-sonnet-5-5';
+  const catalog = useModelCatalog();
+  // Live catalog first; the bundled list only covers the window before it loads.
+  const modelOptions =
+    catalog.models.length > 0
+      ? catalog.models.map((m) => ({ value: m.id, label: m.label }))
+      : MODEL_OPTIONS;
+  const defaultModel =
+    config.resolved?.defaultDispatchModel || catalog.defaultModel || 'claude-sonnet-5-5';
 
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
   const [repositoryId, setRepositoryId] = useState(defaultRepoId);
   const [model, setModel] = useState(defaultModel);
-  const [effort, setEffort] = useState<'low' | 'medium' | 'high'>('high');
+  const [effort, setEffort] = useState<ReasoningEffort>('high');
   const [triggerHours, setTriggerHours] = useState(12);
   const [autoCreatePr, setAutoCreatePr] = useState(true);
   const [verifyCommand, setVerifyCommand] = useState('');
@@ -218,10 +227,11 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
                 onChange={(e) => setModel((e.target as HTMLSelectElement).value)}
                 class="w-full rounded-md border border-pine-highlight bg-pine-surface px-3 py-1.5 text-xs text-pine-text focus:border-pine-iris focus:outline-none"
               >
-                <option value="claude-sonnet-5-5">Claude Sonnet 5.5</option>
-                <option value="claude-opus-5-5-high">Claude Opus 5.5</option>
-                <option value="gemini-4-argon">Gemini 4 Argon</option>
-                <option value="gemini-flash">Gemini Flash</option>
+                {modelOptions.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
               </select>
             </div>
 
@@ -231,12 +241,18 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
               </label>
               <select
                 value={effort}
-                onChange={(e) => setEffort((e.target as HTMLSelectElement).value as any)}
+                onChange={(e) =>
+                  setEffort((e.target as HTMLSelectElement).value as ReasoningEffort)
+                }
                 class="w-full rounded-md border border-pine-highlight bg-pine-surface px-3 py-1.5 text-xs text-pine-text focus:border-pine-iris focus:outline-none"
               >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
+                {EFFORT_OPTIONS.filter((o) =>
+                  resolveModelEffort(catalog.models, model).supported.includes(o.value)
+                ).map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
 

@@ -5,6 +5,7 @@ import type { LogBuffer } from '../logs/buffer.js';
 import type { Logger } from '../logs/logger.js';
 import type { Notifier } from '../notify/types.js';
 import type { Coordinator } from '../coordinator/coordinator.js';
+import type { ModelCatalogProvider } from '../coordinator/catalog.js';
 
 export interface WebServerOptions {
   host?: string;
@@ -15,6 +16,8 @@ export interface WebServerOptions {
   logBuffer?: LogBuffer;
   notifier?: Notifier;
   coordinator?: Coordinator;
+  /** Live `agy models` catalog; absent means the bundled canonical catalog is served. */
+  modelCatalog?: ModelCatalogProvider;
   logger?: Logger;
 }
 

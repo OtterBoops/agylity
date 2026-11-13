@@ -209,7 +209,90 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         resolveModelFamily({ modelId: 'gemini-3.8-flash-high' })?.family,
         'gemini-flash'
       );
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-4-hydrogen-high' })?.family,
+        'gemini-flash'
+      );
       assert.equal(resolveModelFamily({ modelId: 'unknown-model-xyz' }), null);
+    });
+
+    it('attributes new codenames to the correct pool without a bare pro match', () => {
+      // Hydrogen is a Flash-pool model that no canonical list mentioned when this shipped.
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' })?.family,
+        'gemini-flash'
+      );
+      // The orchestrator codenames carry 'pro' but must never bill the Flash pool.
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro' })?.family,
+        'gemini-argon'
+      );
+      assert.notEqual(
+        resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro', label: 'Gemini Pro' })
+          ?.family,
+        'gemini-flash'
+      );
+    });
+
+    it('attributes an unknown codename to the pool whose quota telemetry it matches', () => {
+      const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
+      const configs: LanguageServerModelConfig[] = [
+        {
+          label: 'Gemini 4 Argon',
+          modelId: 'gemini-4-argon-high',
+          quotaInfo: { remainingFraction: 0.6, resetTime },
+        },
+        {
+          label: 'Gemini 3.8 Flash',
+          modelId: 'gemini-3.8-flash-high',
+          quotaInfo: { remainingFraction: 0.4, resetTime },
+        },
+        {
+          label: 'Claude Sonnet 5.5',
+          modelId: 'claude-sonnet-5-5-high',
+          quotaInfo: { remainingFraction: 0.2, resetTime },
+        },
+        {
+          label: 'Gemini Q7 Nebula',
+          modelId: 'gemini-q7-nebula-high',
+          quotaInfo: { remainingFraction: 0.4, resetTime },
+        },
+      ];
+
+      const pools = aggregateQuotaPools(configs);
+      const flashPool = pools.find((p) => p.family === 'gemini-flash');
+      assert.ok(flashPool);
+      // Same telemetry as the flash pool, so the unknown codename joins that pool's model list.
+      assert.ok(flashPool.models.includes('Gemini Q7 Nebula'));
+      assert.equal(flashPool.models.length, 2);
+      // And it must not leak into another pool.
+      assert.ok(!pools.find((p) => p.family === 'claude')?.models.includes('Gemini Q7 Nebula'));
+    });
+
+    it('drops an unknown codename whose telemetry matches no pool or matches several', () => {
+      const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
+      const configs: LanguageServerModelConfig[] = [
+        {
+          label: 'Gemini 4 Argon',
+          modelId: 'gemini-4-argon-high',
+          quotaInfo: { remainingFraction: 0.5, resetTime },
+        },
+        {
+          label: 'Gemini 3.8 Flash',
+          modelId: 'gemini-3.8-flash-high',
+          quotaInfo: { remainingFraction: 0.5, resetTime },
+        },
+        {
+          label: 'Gemini Q7 Nebula',
+          modelId: 'gemini-q7-nebula-high',
+          quotaInfo: { remainingFraction: 0.5, resetTime },
+        },
+      ];
+
+      const pools = aggregateQuotaPools(configs);
+      for (const pool of pools) {
+        assert.ok(!pool.models.includes('Gemini Q7 Nebula'));
+      }
     });
 
     it('pools 13 raw models into 3 canonical family pools', () => {

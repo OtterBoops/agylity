@@ -11,7 +11,8 @@ import {
   faTimes,
   faExternalLinkAlt,
 } from '@fortawesome/free-solid-svg-icons';
-import type { BacklogTaskRecord, RoutineTaskRecord, SwarmTask } from '../types';
+import type { BacklogTaskRecord, ReasoningEffort, RoutineTaskRecord, SwarmTask } from '../types';
+import { EFFORT_OPTIONS } from '../config/fields';
 import {
   cancelTask,
   getTasks,
@@ -120,7 +121,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [backlogPrompt, setBacklogPrompt] = useState('');
   const [backlogRepo, setBacklogRepo] = useState('');
   const [backlogModels, setBacklogModels] = useState('gemini-3.8-flash');
-  const [backlogEffort, setBacklogEffort] = useState<'low' | 'medium' | 'high'>('high');
+  const [backlogEffort, setBacklogEffort] = useState<ReasoningEffort>('high');
 
   // --- Tier 3: Routines state ---
   const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
@@ -132,7 +133,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [routinePrompt, setRoutinePrompt] = useState('');
   const [routineRepo, setRoutineRepo] = useState('');
   const [routineModels, setRoutineModels] = useState('gemini-3.8-flash');
-  const [routineEffort, setRoutineEffort] = useState<'low' | 'medium' | 'high'>('high');
+  const [routineEffort, setRoutineEffort] = useState<ReasoningEffort>('high');
   const [routineTriggerHours, setRoutineTriggerHours] = useState('2');
   const [routineMinHeadroom, setRoutineMinHeadroom] = useState('10');
   const [routineVerifyCommand, setRoutineVerifyCommand] = useState('');
@@ -1462,12 +1463,16 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               <label class="mb-1 block font-medium text-pine-subtle">Reasoning Effort</label>
               <select
                 value={backlogEffort}
-                onChange={(e) => setBacklogEffort((e.target as HTMLSelectElement).value as any)}
+                onChange={(e) =>
+                  setBacklogEffort((e.target as HTMLSelectElement).value as ReasoningEffort)
+                }
                 class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-pine-text focus:border-pine-iris focus:outline-hidden"
               >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
+                {EFFORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div>
@@ -1567,12 +1572,16 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               <label class="mb-1 block font-medium text-pine-subtle">Reasoning Effort</label>
               <select
                 value={routineEffort}
-                onChange={(e) => setRoutineEffort((e.target as HTMLSelectElement).value as any)}
+                onChange={(e) =>
+                  setRoutineEffort((e.target as HTMLSelectElement).value as ReasoningEffort)
+                }
                 class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-pine-text focus:border-pine-iris focus:outline-hidden"
               >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
+                {EFFORT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
               </select>
             </div>
             <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">

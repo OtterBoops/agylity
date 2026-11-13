@@ -178,7 +178,7 @@ export const RawEnvSchema = z.object({
   ROUTINES_ENABLED: z.string().optional(),
   GITHUB_BACKLOG_LABEL: z.string().optional(),
   DEFAULT_DISPATCH_MODEL: z.string().optional(),
-  DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high']).optional(),
+  DEFAULT_DISPATCH_EFFORT: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
   RUNNER_SHARED_SECRET: z.string().optional(),
   BOT_PR_POLICY: BotPrPolicyEnum.optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
@@ -231,7 +231,7 @@ export interface AppConfig {
   routinesEnabled: boolean;
   githubBacklogLabel: string;
   defaultDispatchModel: string;
-  defaultDispatchEffort: 'low' | 'medium' | 'high';
+  defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh';
   runnerSharedSecret?: string;
   botPrPolicy: BotPrPolicy;
   quotaBurnMaxHours: number;
@@ -599,7 +599,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   routinesEnabled: z.boolean(),
   githubBacklogLabel: z.string().min(1),
   defaultDispatchModel: z.string(),
-  defaultDispatchEffort: z.enum(['low', 'medium', 'high']),
+  defaultDispatchEffort: z.enum(['low', 'medium', 'high', 'xhigh']),
   runnerSharedSecret: z.string().optional(),
   botPrPolicy: BotPrPolicyEnum,
   quotaBurnMaxHours: z.number().positive(),

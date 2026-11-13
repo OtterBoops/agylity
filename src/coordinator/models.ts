@@ -21,8 +21,8 @@ export const BacklogStatusSchema = z
 export type TaskActor = 'user' | 'bot';
 export const TaskActorSchema = z.enum(['user', 'bot']).default('user');
 
-export type ReasoningEffort = 'low' | 'medium' | 'high';
-export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high']).default('high');
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).default('high');
 
 export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'aborted'] as const;
 
@@ -72,6 +72,13 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     defaultForFamily: true,
   },
   {
+    id: 'gemini-4-hydrogen',
+    label: 'Gemini 4 Hydrogen',
+    family: 'gemini-flash',
+    defaultEffort: 'medium',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+  },
+  {
     id: 'gemini-4-argon',
     label: 'Gemini 4 Argon',
     family: 'gemini-argon',
@@ -103,9 +110,10 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   },
 ] as const;
 
-const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
+/** Every effort agy accepts, ascending; also the fallback for a model that declares none. */
+export const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
-const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
+export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
 
 /** Derived from the catalog, so a model's efforts are declared exactly once. */
 export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> =
@@ -204,8 +212,8 @@ export const resolveConcreteModelId = (
     return 'gpt-oss-120b';
   }
 
-  // Strip trailing legacy -high, -medium, -low suffixes if present
-  return requestedModel.trim().replace(/-(high|medium|low)$/i, '');
+  // Strip a trailing effort suffix so 'gemini-4-hydrogen-xhigh' targets the base model id.
+  return requestedModel.trim().replace(/-(low|medium|high|xhigh)$/i, '');
 };
 
 export const calculateEffectiveHeadroomPercent = (
@@ -409,13 +417,14 @@ export const evaluateModelDispatchEligibility = (
   };
 };
 
-// Annotates the canonical model catalog with live quota headroom and reset windows from active pools.
+// Annotates the model catalog with live quota headroom and reset windows from active pools.
 export const annotateModelsWithQuota = (
   pools: QuotaSnapshot[] = [],
   minDispatchHeadroomPercent = 10,
-  nowMs: number = Date.now()
+  nowMs: number = Date.now(),
+  catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
 ): AnnotatedModelCatalogEntry[] => {
-  return CANONICAL_AGY_MODELS.map((entry) => {
+  return catalog.map((entry) => {
     const pool = pools.find((p) => p.family === entry.family || p.poolId === entry.family);
     if (!pool) {
       return {

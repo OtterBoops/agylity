@@ -107,12 +107,14 @@ export interface DispatchRecord {
   durationMs: number;
 }
 
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+
 export interface ModelCatalogEntry {
   id: string;
   label: string;
   family: 'claude' | 'gemini-argon' | 'gemini-flash';
-  defaultEffort: 'low' | 'medium' | 'high';
-  supportedEfforts: ('low' | 'medium' | 'high')[];
+  defaultEffort: ReasoningEffort;
+  supportedEfforts: ReasoningEffort[];
   effectiveHeadroomPercent: number | null;
   weeklyRemainingPercent: number | null;
   shortTermRemainingPercent: number | null;
@@ -179,7 +181,7 @@ export interface SwarmTask {
   scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
   model: string;
-  effort: 'low' | 'medium' | 'high';
+  effort: ReasoningEffort;
   status: TaskStatus;
   runnerId?: string;
   claimedByRunnerId?: string;
@@ -198,7 +200,7 @@ export interface BacklogTaskRecord {
   prompt: string;
   repositoryId: string;
   models: string[];
-  effort: 'low' | 'medium' | 'high';
+  effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
   actor: TaskActor;
@@ -221,7 +223,7 @@ export interface RoutineTaskRecord {
   prompt: string;
   repositoryId: string;
   models: string[];
-  effort: 'low' | 'medium' | 'high';
+  effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
   actor: TaskActor;

@@ -11,6 +11,7 @@ import type {
   SwarmTask,
   BacklogTaskRecord,
   RoutineTaskRecord,
+  ReasoningEffort,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -172,7 +173,7 @@ export const triggerDispatch = (payload: {
   requestedBy?: string;
   model?: string;
   scheduleMode?: 'immediate' | 'pre_reset';
-  effort?: 'low' | 'medium' | 'high';
+  effort?: ReasoningEffort;
   autoCreatePr?: boolean;
   allowOverage?: boolean;
 }): Promise<{
@@ -185,14 +186,17 @@ export const triggerDispatch = (payload: {
   code?: string;
 }> => api.post('dispatch', { json: payload }).json();
 
-export const getModels = (): Promise<{
+export interface ModelsResponse {
   defaultModel: string;
   defaultEffort: string;
   models: ModelCatalogEntry[];
-}> =>
+  unattributedModels?: string[];
+}
+
+export const getModels = (): Promise<ModelsResponse> =>
   api
     .get('models')
-    .json<{ defaultModel: string; defaultEffort: string; models: ModelCatalogEntry[] }>()
+    .json<ModelsResponse>()
     .catch(() => ({ defaultModel: 'gemini-4-argon', defaultEffort: 'high', models: [] }));
 
 export const getRunners = (): Promise<SwarmRunnerRecord[]> =>

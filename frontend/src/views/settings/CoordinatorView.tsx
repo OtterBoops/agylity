@@ -16,6 +16,7 @@ import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { COORDINATOR_FIELDS } from '../../config/fields';
+import { toModelOptions, useModelCatalog } from '../../state/modelCatalogStore';
 
 interface CoordinatorViewProps {
   config: ConfigData;
@@ -25,6 +26,7 @@ interface CoordinatorViewProps {
 export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => {
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
   const [showRegisterPanel, setShowRegisterPanel] = useState(false);
+  const catalog = useModelCatalog();
 
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
 
@@ -161,6 +163,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
         fields={COORDINATOR_FIELDS}
         config={config}
         onSaved={onChanged}
+        modelOptions={toModelOptions(catalog.models)}
       />
     </SettingsLayout>
   );

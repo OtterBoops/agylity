@@ -4,7 +4,7 @@ import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './components/Icon';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { DispatchModal, loadModelCatalog } from './components/DispatchModal';
+import { DispatchModal } from './components/DispatchModal';
 import { ControlPlaneGate } from './components/ControlPlaneGate';
 import { SessionModal } from './components/SessionModal';
 import { CommandPalette } from './components/CommandPalette';
@@ -25,6 +25,7 @@ import {
   refreshQuota,
   refreshConfig,
   startQuotaPolling,
+  loadModelCatalog,
 } from './state';
 
 const TITLES: Record<string, string> = {

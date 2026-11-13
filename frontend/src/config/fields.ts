@@ -1,4 +1,5 @@
 import type { FieldDef } from '../components/SettingsForm';
+import type { ModelCatalogEntry, ReasoningEffort } from '../types';
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
@@ -9,12 +10,13 @@ export const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
 ];
 
 export const EFFORT_OPTIONS: Array<{
-  value: 'low' | 'medium' | 'high';
+  value: ReasoningEffort;
   label: string;
 }> = [
   { value: 'low', label: 'Low' },
   { value: 'medium', label: 'Medium' },
   { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'XHigh' },
 ];
 
 export const BOT_PR_POLICY_OPTIONS: Array<{
@@ -39,12 +41,13 @@ export const normalizeModelId = (
   return pool.find((m) => raw === m.id || raw.startsWith(m.id))?.id ?? raw;
 };
 
-type Effort = 'low' | 'medium' | 'high';
-
-const ALL_EFFORTS: Effort[] = ['low', 'medium', 'high'];
+const ALL_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
 /** Bundled effort facts for the pre-load window; the live catalog from /api/models wins. */
-const FALLBACK_MODEL_EFFORTS: Record<string, { supported: Effort[]; defaultEffort: Effort }> = {
+const FALLBACK_MODEL_EFFORTS: Record<
+  string,
+  { supported: ReasoningEffort[]; defaultEffort: ReasoningEffort }
+> = {
   'gemini-4-argon': { supported: ALL_EFFORTS, defaultEffort: 'high' },
   'gemini-3.8-flash': { supported: ALL_EFFORTS, defaultEffort: 'medium' },
   'claude-sonnet-5-5': { supported: ALL_EFFORTS, defaultEffort: 'high' },
@@ -54,17 +57,16 @@ const FALLBACK_MODEL_EFFORTS: Record<string, { supported: Effort[]; defaultEffor
 
 /** Reads effort rules from the server catalog, so a new model needs no frontend edit. */
 export const resolveModelEffort = (
-  models: Array<{ id: string; supportedEfforts?: string[]; defaultEffort?: string }>,
+  models: Array<Pick<ModelCatalogEntry, 'id'> & Partial<ModelCatalogEntry>>,
   id: string
-): { supported: Effort[]; defaultEffort: Effort } => {
+): { supported: ReasoningEffort[]; defaultEffort: ReasoningEffort } => {
   const live = models.find((m) => m.id === id);
   const fallback = FALLBACK_MODEL_EFFORTS[id];
   return {
     supported: live?.supportedEfforts?.length
-      ? (live.supportedEfforts as Effort[])
+      ? live.supportedEfforts
       : (fallback?.supported ?? ALL_EFFORTS),
-    defaultEffort:
-      (live?.defaultEffort as Effort | undefined) ?? fallback?.defaultEffort ?? 'medium',
+    defaultEffort: live?.defaultEffort ?? fallback?.defaultEffort ?? 'medium',
   };
 };
 
