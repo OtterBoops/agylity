@@ -176,9 +176,7 @@ export const handlePostDispatch = async (
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
     actor: payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : undefined,
     prPolicy:
-      payload.prPolicy === 'docs_only' ||
-      payload.prPolicy === 'all' ||
-      payload.prPolicy === 'none'
+      payload.prPolicy === 'docs_only' || payload.prPolicy === 'all' || payload.prPolicy === 'none'
         ? payload.prPolicy
         : undefined,
     scheduleMode,

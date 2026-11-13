@@ -226,8 +226,7 @@ export class TaskExecutor {
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
-    this.prPolicy =
-      options.prPolicy ?? ((process.env.PR_POLICY as PrPolicy) || 'docs_only');
+    this.prPolicy = options.prPolicy ?? ((process.env.PR_POLICY as PrPolicy) || 'docs_only');
     this.onStatusUpdate = options.onStatusUpdate;
   }
 

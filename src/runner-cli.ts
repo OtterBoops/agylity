@@ -100,8 +100,7 @@ export const parseRunnerCliArgs = (
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
   const pollTimeoutMs = Number(env.RUNNER_POLL_TIMEOUT_MS ?? 25000);
   const idlePollIntervalMs = Number(env.RUNNER_IDLE_INTERVAL_MS ?? 2000);
-  const prPolicy = (args['pr-policy'] || env.PR_POLICY || '').trim() as
-    PrPolicy | undefined;
+  const prPolicy = (args['pr-policy'] || env.PR_POLICY || '').trim() as PrPolicy | undefined;
 
   return {
     coordinatorUrl,

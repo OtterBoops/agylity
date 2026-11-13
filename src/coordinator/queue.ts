@@ -1850,9 +1850,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const actor: TaskActor = coerceActor(input.actor, 'bot');
     const prPolicy =
-      input.prPolicy === 'docs_only' ||
-      input.prPolicy === 'all' ||
-      input.prPolicy === 'none'
+      input.prPolicy === 'docs_only' || input.prPolicy === 'all' || input.prPolicy === 'none'
         ? input.prPolicy
         : null;
     const enabled = input.enabled !== false ? 1 : 0;
@@ -1936,9 +1934,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const prPolicy =
       patch.prPolicy === null
         ? null
-        : patch.prPolicy === 'docs_only' ||
-            patch.prPolicy === 'all' ||
-            patch.prPolicy === 'none'
+        : patch.prPolicy === 'docs_only' || patch.prPolicy === 'all' || patch.prPolicy === 'none'
           ? patch.prPolicy
           : (existing.prPolicy ?? null);
     const enabled =
