@@ -1,3 +1,4 @@
+import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState, useCallback } from 'preact/hooks';
 import { dialogBackdropClickHandler } from '../utils/dialog';
 import { formatDuration, formatDateTime, useTimeFormat } from '../utils/time';
@@ -74,6 +75,29 @@ const parseOptionalNumber = (
   return value;
 };
 
+// Grouped digits, because these run to seven figures and an unseparated count is unreadable.
+const formatTokenCount = (value: number): string => value.toLocaleString();
+
+const PR_POLICY_LABELS: Record<PrPolicy, string> = {
+  docs_only: 'Docs only',
+  all: 'All files',
+  none: 'Disabled',
+};
+
+interface DetailItemProps {
+  label: string;
+  span?: boolean;
+  children: ComponentChildren;
+}
+
+/** One label/value cell of the inspector's grids; `span` gives the long strings a whole row. */
+const DetailItem = ({ label, span, children }: DetailItemProps) => (
+  <div class={span ? 'sm:col-span-2' : undefined}>
+    <span class="text-pine-subtle">{label}</span>
+    <div class="mt-0.5 font-mono text-xs wrap-break-word text-pine-text">{children}</div>
+  </div>
+);
+
 export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) => {
   const [timeFormat] = useTimeFormat();
 
@@ -143,7 +167,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const [routineRepo, setRoutineRepo] = useState('');
   const [routineModels, setRoutineModels] = useState('gemini-3.8-flash');
   const [routineEffort, setRoutineEffort] = useState<ReasoningEffort>('high');
-  const [routineTriggerHours, setRoutineTriggerHours] = useState('2');
+  const [routineTriggerHours, setRoutineTriggerHours] = useState('4');
   const [routineMinHeadroom, setRoutineMinHeadroom] = useState('10');
   const [routineVerifyCommand, setRoutineVerifyCommand] = useState('');
   const [routinePrPolicy, setRoutinePrPolicy] = useState<PrPolicy | ''>('');
@@ -325,6 +349,17 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       }
     } catch {}
   };
+
+  // The poll replaces every task object; without re-pinning, an open inspector freezes at open.
+  useEffect(() => {
+    if (!selectedTask) return;
+    const fresh = tasks.find((t) => t.id === selectedTask.id);
+    if (fresh && fresh.updatedAt !== selectedTask.updatedAt) setSelectedTask(fresh);
+  }, [tasks, selectedTask]);
+
+  const isLiveTask =
+    selectedTask !== null &&
+    (selectedTask.status === 'claimed' || selectedTask.status === 'executing');
 
   useEffect(() => {
     const dialog = executionDialogRef.current;
@@ -1384,42 +1419,79 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           </div>
 
           <div class="mt-4 flex flex-col gap-4 text-xs">
-            {/* Metadata Grid */}
-            <div class="grid grid-cols-1 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-2 lg:grid-cols-4">
+            {/* Token Telemetry */}
+            {(selectedTask.totalTokens !== undefined ||
+              selectedTask.thinkingTokens !== undefined ||
+              selectedTask.numTurns !== undefined) && (
               <div>
-                <span class="text-pine-subtle">Initiated By</span>
-                <div class="mt-0.5 font-medium text-pine-text">
-                  {renderOriginLink(selectedTask)}
+                <h3 class="mb-1 text-xs font-semibold text-pine-subtle uppercase">Token Usage</h3>
+                <div class="grid grid-cols-1 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-3">
+                  <DetailItem label="Turns">
+                    {selectedTask.numTurns !== undefined ? selectedTask.numTurns : '\u2014'}
+                  </DetailItem>
+                  <DetailItem label="Total Tokens">
+                    {selectedTask.totalTokens !== undefined
+                      ? formatTokenCount(selectedTask.totalTokens)
+                      : '\u2014'}
+                  </DetailItem>
+                  <DetailItem label="Thinking Tokens">
+                    {selectedTask.thinkingTokens !== undefined
+                      ? formatTokenCount(selectedTask.thinkingTokens)
+                      : '\u2014'}
+                  </DetailItem>
                 </div>
               </div>
-              <div>
-                <span class="text-pine-subtle">Timestamp</span>
-                <div class="mt-0.5 font-mono text-xs whitespace-nowrap text-pine-text">
+            )}
+
+            {/* Run Metadata */}
+            <div>
+              <h3 class="mb-1 text-xs font-semibold text-pine-subtle uppercase">Run Metadata</h3>
+              {/* A full timestamp does not fit a quarter-width cell; stay at two columns. */}
+              <div class="grid grid-cols-1 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-2">
+                <DetailItem label="Initiated By">{renderOriginLink(selectedTask)}</DetailItem>
+                <DetailItem label="Created">
                   {formatDateTime(selectedTask.createdAt, { timeFormat })}
-                </div>
-              </div>
-              <div>
-                <span class="text-pine-subtle">Duration</span>
-                <div class="mt-0.5 font-medium text-pine-text">
-                  {formatDuration(selectedTask.durationMs)}
-                </div>
-              </div>
-              <div>
-                <span class="text-pine-subtle">Branch / PR</span>
-                <div class="mt-0.5 truncate font-mono text-xs text-pine-foam">
+                </DetailItem>
+                <DetailItem label="Runner">
+                  {selectedTask.runnerId || selectedTask.claimedByRunnerId || '\u2014'}
+                </DetailItem>
+                <DetailItem label="Duration">{formatDuration(selectedTask.durationMs)}</DetailItem>
+                <DetailItem label="Claimed">
+                  {formatDateTime(selectedTask.claimedAt, { timeFormat }) || '\u2014'}
+                </DetailItem>
+                {/* A finished run's last heartbeat equals its completion, so only one is shown. */}
+                <DetailItem label={isLiveTask ? 'Last Heartbeat' : 'Completed'}>
+                  {formatDateTime(
+                    isLiveTask ? selectedTask.heartbeatAt : selectedTask.completedAt,
+                    { timeFormat }
+                  ) || '\u2014'}
+                </DetailItem>
+                <DetailItem label="Branch" span>
+                  {selectedTask.branchName || '\u2014'}
+                </DetailItem>
+                <DetailItem label="Pull Request">
                   {selectedTask.prUrl ? (
                     <a
                       href={selectedTask.prUrl}
                       target="_blank"
                       rel="noreferrer"
-                      class="text-pine-iris hover:underline"
+                      class="inline-flex items-center gap-1 text-pine-iris hover:underline"
                     >
-                      View PR
+                      <span>View PR</span>
+                      <Icon icon={faExternalLinkAlt} class="size-2.5" />
                     </a>
                   ) : (
-                    selectedTask.branchName || '—'
+                    <span class="text-pine-subtle">
+                      {selectedTask.autoCreatePr === false ? 'Off' : '\u2014'}
+                    </span>
                   )}
-                </div>
+                </DetailItem>
+                <DetailItem label="PR Policy">
+                  {selectedTask.prPolicy ? PR_POLICY_LABELS[selectedTask.prPolicy] : 'Inherited'}
+                </DetailItem>
+                <DetailItem label="Verify Command" span>
+                  {selectedTask.verifyCommand || '\u2014'}
+                </DetailItem>
               </div>
             </div>
 

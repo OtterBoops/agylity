@@ -4,6 +4,7 @@ import type {
   QuotaAlert,
   DispatchStatusUpdate,
   DeliveryOutcome,
+  InfoNotice,
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
@@ -15,6 +16,7 @@ export class ConsoleNotifier implements Notifier {
   public initialized = false;
   public alerts: QuotaAlert[] = [];
   public statuses: DispatchStatusUpdate[] = [];
+  public notices: InfoNotice[] = [];
   protected config: ResolvedConfig;
   protected options: NotifierOptions;
 
@@ -72,6 +74,19 @@ export class ConsoleNotifier implements Notifier {
     console.log(line1);
     console.log(line2);
     console.log(line3);
+    console.log('└' + '─'.repeat(71) + '┘');
+  }
+
+  async notifyInfo(notice: InfoNotice): Promise<void> {
+    this.notices.push(notice);
+    if (this.notices.length > 100) this.notices.shift();
+
+    const line1 = `│ [NOTICE] ${notice.title}`.padEnd(72) + '│';
+    const line2 = `│ ${notice.message}`.padEnd(72) + '│';
+
+    console.log('┌' + '─'.repeat(71) + '┐');
+    console.log(line1);
+    console.log(line2);
     console.log('└' + '─'.repeat(71) + '┘');
   }
 

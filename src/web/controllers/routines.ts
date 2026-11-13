@@ -16,7 +16,7 @@ import {
   type ReasoningEffort,
   type TaskActor,
 } from '../../coordinator/models.js';
-import { PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 
 const parseOptionalPrPolicy = (
   raw: unknown
@@ -79,7 +79,8 @@ export const handleRoutineTasks = async (
       prPolicy: policyParsed.value,
       enabled: payload.enabled !== false,
       sortOrder: toFiniteNumberOrUndefined(payload.sortOrder) ?? 0,
-      triggerBeforeResetHours: toFiniteNumberOrUndefined(payload.triggerBeforeResetHours) ?? 2,
+      triggerBeforeResetHours:
+        toFiniteNumberOrUndefined(payload.triggerBeforeResetHours) ?? DEFAULT_QUOTA_BURN_MAX_HOURS,
       minHeadroomPercent: toFiniteNumberOrUndefined(payload.minHeadroomPercent) ?? 10,
     });
 

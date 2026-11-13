@@ -11,6 +11,7 @@ import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient, extractCliJsonPayload } from '../../src/sentry/client.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
+import type { InfoNotice } from '../../src/notify/types.js';
 import {
   CANONICAL_AGY_MODELS,
   assertRunnerGitCredentials,
@@ -124,48 +125,45 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(argonCheck.effectiveHeadroomPercent, 85);
     });
 
-    it('enforces P2 Opportunistic Quota-Burn conditions (<2h to reset and >=30% headroom)', () => {
-      const farResetPools: QuotaSnapshot[] = [
+    it('enforces P2 Opportunistic Quota-Burn conditions (inside the 4h default window, >=30%)', () => {
+      const buildPools = (hoursUntilReset: number): QuotaSnapshot[] => [
         {
           poolId: 'gemini-argon',
           family: 'gemini-argon',
           displayName: 'Gemini 4 Argon',
           remainingFraction: 0.65,
-          resetTime: new Date(Date.now() + 12 * 3600000).toISOString(),
-          hoursUntilReset: 12, // 12h > 2h threshold
+          resetTime: new Date(Date.now() + hoursUntilReset * 3600000).toISOString(),
+          hoursUntilReset,
           models: ['Gemini 4 Argon'],
         },
       ];
 
+      // 12h out is still outside the built-in 4h window, so the task stays queued.
       const notYetCheck = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-argon-high',
         scheduleMode: 'pre_reset',
-        pools: farResetPools,
-        quotaBurnMaxHours: 2,
+        pools: buildPools(12),
       });
       assert.equal(notYetCheck.allowed, false);
       assert.equal(notYetCheck.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
 
-      // When reset is 1.5h away and 65% remains, pre_reset is released!
-      const imminentPools: QuotaSnapshot[] = [
-        {
-          poolId: 'gemini-argon',
-          family: 'gemini-argon',
-          displayName: 'Gemini 4 Argon',
-          remainingFraction: 0.65,
-          resetTime: new Date(Date.now() + 1.5 * 3600000).toISOString(),
-          hoursUntilReset: 1.5,
-          models: ['Gemini 4 Argon'],
-        },
-      ];
-
+      // At 3h the default 4h window has opened, and 65% clears the 30% burn floor.
       const readyCheck = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-argon-high',
         scheduleMode: 'pre_reset',
-        pools: imminentPools,
-        quotaBurnMaxHours: 2,
+        pools: buildPools(3),
       });
       assert.equal(readyCheck.allowed, true);
+
+      // An explicit quotaBurnMaxHours still narrows the window.
+      const narrowedCheck = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon-high',
+        scheduleMode: 'pre_reset',
+        pools: buildPools(3),
+        quotaBurnMaxHours: 2,
+      });
+      assert.equal(narrowedCheck.allowed, false);
+      assert.equal(narrowedCheck.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
     });
   });
 
@@ -2144,10 +2142,313 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(updatedRt?.lastTriggeredResetTime, resetTime);
         assert.equal(updatedRt?.lastTaskId, task.id);
 
-        // 3. Second run with the same resetTime cycle must DEDUPE (no re-triggering)
+        // 3. A still-running task blocks the cycle: one in-flight run per routine at a time
         const recheck = await coordinator.triggerEligibleRoutines(imminentSnapshots);
         assert.equal(recheck.length, 0);
       } finally {
+        cleanup();
+      }
+    });
+
+    it('loops a routine sequentially inside one reset cycle after the previous run completed', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_loop_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            {
+              id: 'agylity',
+              name: 'OtterBoops/agylity',
+              path: dir,
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const rt = coordinator.queue.createRoutineTask({
+          title: 'Claude Pre-Reset Loop',
+          prompt: 'Keep burning quota',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const first = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(first.length, 1);
+        const firstTask = first[0]!;
+        assert.equal(coordinator.queue.getRoutineTask(rt.id)?.lastTriggeredResetTime, resetTime);
+
+        // Still queued: a second pass must not stack a second run
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+
+        await coordinator.reportTaskStatus(firstTask.id, { status: 'completed' });
+
+        // Same resetTime, later in the cycle: completion re-arms the routine
+        const second = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(second.length, 1);
+        const secondTask = second[0]!;
+        assert.notEqual(secondTask.id, firstTask.id);
+        assert.equal(secondTask.originId, rt.id);
+        assert.equal(secondTask.tier, 'routine');
+        assert.equal(coordinator.queue.getRoutineTask(rt.id)?.lastTaskId, secondTask.id);
+
+        // And it keeps looping: a third completion yields a third run in the same cycle
+        await coordinator.reportTaskStatus(secondTask.id, { status: 'completed' });
+        const third = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(third.length, 1);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('announces the burn kick once per reset cycle and never pings the owner', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_burn_kick_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            {
+              id: 'agylity',
+              name: 'OtterBoops/agylity',
+              path: dir,
+              defaultBranch: 'main',
+            },
+          ],
+        });
+
+        const notices: InfoNotice[] = [];
+        const coordinator = new Coordinator({
+          configStore,
+          notifier: {
+            channelName: 'test',
+            initialize: async () => {},
+            notifyQuotaAlert: async () => ({ delivered: true, results: {} }),
+            notifyDispatchStatus: async () => {},
+            notifyInfo: async (notice) => {
+              notices.push(notice);
+            },
+            shutdown: async () => {},
+          },
+        });
+
+        coordinator.queue.createRoutineTask({
+          title: 'Claude Pre-Reset Loop',
+          prompt: 'Keep burning quota',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const first = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(first.length, 1);
+        assert.equal(notices.length, 1);
+        assert.match(notices[0]!.title, /Pre-reset burn started/);
+        assert.equal(notices[0]!.poolFamily, 'claude');
+        assert.equal(notices[0]!.resetTime, resetTime);
+        assert.match(notices[0]!.message, /Routine #1/);
+
+        // Looping inside the same cycle must not re-announce for the same pool.
+        await coordinator.reportTaskStatus(first[0]!.id, { status: 'completed' });
+        const second = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(second.length, 1);
+        assert.equal(notices.length, 1);
+
+        // A new reset cycle is a new kick, so it announces again.
+        await coordinator.reportTaskStatus(second[0]!.id, { status: 'completed' });
+        const nextCycle: QuotaSnapshot[] = [
+          {
+            ...snapshots[0]!,
+            resetTime: '2026-11-09T01:30:44Z',
+          },
+        ];
+        const third = await coordinator.triggerEligibleRoutines(nextCycle);
+        assert.equal(third.length, 1);
+        assert.equal(notices.length, 2);
+        assert.equal(notices[1]!.resetTime, '2026-11-09T01:30:44Z');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('holds one active routine task across queued, claimed and executing states', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_single_active_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const rt = coordinator.queue.createRoutineTask({
+          title: 'Claude Dedup',
+          prompt: 'Burn quota once at a time',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime: '2026-11-08T01:30:44Z',
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const spawned = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(spawned.length, 1);
+        const taskId = spawned[0]!.id;
+        assert.equal(spawned[0]!.originId, rt.id);
+
+        // queued -> claimed through the queue's own claim path, then executing
+        const claimed = coordinator.queue.claimNext({
+          runnerId: 'runner-test',
+          runnerName: 'test',
+        });
+        assert.equal(claimed?.id, taskId);
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+
+        coordinator.queue.updateTaskStatus(taskId, {
+          status: 'executing',
+          runnerId: 'runner-test',
+        });
+        assert.equal(coordinator.queue.getTask(taskId)?.status, 'executing');
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('stops looping for the reset cycle once a run fails or is cancelled', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_fail_stop_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const failing = coordinator.queue.createRoutineTask({
+          title: 'Claude Fail Stop',
+          prompt: 'Fail once',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+        const firstRun = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(firstRun.length, 1);
+        await coordinator.reportTaskStatus(firstRun[0]!.id, {
+          status: 'failed',
+          error: 'boom',
+        });
+
+        // Same cycle, condition still met, but the cycle is burned by the failure
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+        assert.equal(coordinator.queue.getRoutineTask(failing.id)?.lastTaskId, firstRun[0]!.id);
+
+        // A cancel inside the cycle stops it just the same
+        await coordinator.queue.updateRoutineTask(failing.id, { enabled: false });
+        const cancelled = coordinator.queue.createRoutineTask({
+          title: 'Claude Cancel Stop',
+          prompt: 'Cancel once',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+        const cancelRun = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(cancelRun.length, 1);
+        assert.equal(cancelRun[0]!.originId, cancelled.id);
+        await coordinator.cancelTask(cancelRun[0]!.id);
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+
+        // A new reset cycle re-arms both routines
+        const nextCycle: QuotaSnapshot[] = [
+          {
+            ...snapshots[0]!,
+            resetTime: '2026-11-09T01:30:44Z',
+          },
+        ];
+        const afterReset = await coordinator.triggerEligibleRoutines(nextCycle);
+        assert.equal(afterReset.length, 1);
+        assert.equal(afterReset[0]!.originId, cancelled.id);
+      } finally {
+        db.close();
         cleanup();
       }
     });

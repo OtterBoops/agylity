@@ -7,7 +7,7 @@ import {
   renderSquareProgressBar,
 } from './formatters.js';
 import { AGYLITY_VERSION } from '../../version.js';
-import type { QuotaAlert, DispatchStatusUpdate } from '../types.js';
+import type { QuotaAlert, DispatchStatusUpdate, InfoNotice } from '../types.js';
 import {
   FAMILY_DEFAULT_MODELS,
   FAMILY_DISPLAY_NAMES,
@@ -75,6 +75,47 @@ export const buildQuotaAlertEmbed = (
     url: buildDashboardLink(options?.baseUrl, '/overview'),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
     timestamp: alert.triggeredAt || new Date().toISOString(),
+  };
+};
+
+export const buildInfoNoticeEmbed = (
+  notice: InfoNotice,
+  options?: EmbedBuildOptions
+): StandardEmbed => {
+  const fields: EmbedField[] = [];
+
+  if (notice.poolName) {
+    fields.push({
+      name: 'Pool',
+      value: notice.poolName.slice(0, 100),
+      inline: true,
+    });
+  }
+
+  if (notice.models && notice.models.length > 0) {
+    fields.push({
+      name: 'Models',
+      value: formatModelPills(notice.models).slice(0, 1024),
+      inline: true,
+    });
+  }
+
+  if (notice.resetTime) {
+    fields.push({
+      name: 'Reset',
+      value: formatResetWindow(notice.resetTime),
+      inline: true,
+    });
+  }
+
+  return {
+    title: `[Notice] ${notice.title}`.slice(0, 256),
+    description: notice.message.slice(0, 4096),
+    color: 0x9ccfd8,
+    fields: fields.length > 0 ? fields : undefined,
+    url: buildDashboardLink(options?.baseUrl, '/tasks'),
+    footer: { text: `Agylity v${AGYLITY_VERSION}` },
+    timestamp: notice.timestamp || new Date().toISOString(),
   };
 };
 

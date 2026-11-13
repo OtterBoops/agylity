@@ -165,7 +165,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 ## 5. Subsystem Breakdown
 
 1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
-2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`24h`, `12h`, `3h`), and atomic alert state deduplication (`data/state.json`).
+2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`).
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
@@ -269,10 +269,18 @@ lets the dashboard link a run back to the item that produced it.
   redeploy does not re-arm autonomous work.
 - **Tier 2 (backlog)**: at most one item per probe, gated on effective headroom of at least
   `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
-- **Tier 3 (routine)**: at most one execution per pool reset cycle (stamped in
-  `last_triggered_reset_time`), released only inside `trigger_before_reset_hours` and only while
+- **Tier 3 (routine)**: sequential looping inside one pool reset cycle — a routine re-triggers as soon
+  as its previous run reaches `completed`, while the window and headroom still hold. At most one run is
+  in flight per routine at any time (checked against `origin_id`, so a manual trigger counts too), and a
+  `failed`/`aborted` run burns the rest of the cycle: `last_triggered_reset_time` plus the terminal
+  status of `last_task_id` is the gate. Released only inside `trigger_before_reset_hours` and only while
   headroom is at least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. Needs
   `COORDINATOR_ENABLED` and `ROUTINES_ENABLED`.
+- **Burn kick notice**: the first time a pool's pre-reset window opens in a reset cycle — whether from a
+  routine or from an opportunistic `pre_reset` task being claimed — one silent `[Notice]` is delivered
+  through every configured channel. It is informational by construction: no owner mention, so it cannot
+  page anyone. The announced cycle per pool is recorded in `runtime_state` (`burnKickAnnouncedCycles`),
+  so looping inside the same cycle does not repeat it and a redeploy does not re-announce it.
 - **Model preference chains**: both autonomous tiers store an ordered `models[]` and dispatch the
   first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
   to no pool is refused rather than charged to another family's headroom.

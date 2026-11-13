@@ -182,15 +182,22 @@ export interface SwarmTask {
   requiredLabels: string[];
   model: string;
   effort: ReasoningEffort;
+  verifyCommand?: string;
   status: TaskStatus;
   runnerId?: string;
   claimedByRunnerId?: string;
+  claimedAt?: string;
+  heartbeatAt?: string;
+  completedAt?: string;
   branchName?: string;
   autoCreatePr?: boolean;
   prUrl?: string;
   output?: string;
   error?: string;
   durationMs: number;
+  numTurns?: number;
+  totalTokens?: number;
+  thinkingTokens?: number;
 }
 
 export interface BacklogTaskRecord {

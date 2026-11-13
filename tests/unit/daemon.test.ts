@@ -113,7 +113,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         notifier: mockNotifier,
         autoCheckOnStart: true,
         config: {
-          quotaMilestoneHours: [24, 12, 3],
+          quotaMilestoneHours: [48, 24, 12],
           quotaAlertThresholdPercent: 25,
           webUiEnabled: false,
         },

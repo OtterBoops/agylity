@@ -20,7 +20,7 @@ export class QuotaEvaluator {
 
   constructor(options: QuotaEvaluatorOptions = {}) {
     const rawMilestones = options.milestoneHours ?? DEFAULT_MILESTONE_HOURS;
-    // Filter positive numbers, remove duplicates, sort descending: e.g. [24, 12, 3]
+    // Filter positive numbers, remove duplicates, sort descending: e.g. [48, 24, 12]
     this.milestoneHours = Array.from(
       new Set(rawMilestones.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))
     ).sort((a, b) => b - a);

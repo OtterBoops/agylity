@@ -6,6 +6,7 @@ import {
   type QuotaFamily,
   type QuotaSnapshot,
 } from '../sentry/models.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 
 export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
@@ -29,6 +30,9 @@ export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'abo
 /** Terminal task statuses, so no status list can drift from the set. */
 export const isTerminalTaskStatus = (status: string): boolean =>
   (TERMINAL_TASK_STATUSES as readonly string[]).includes(status);
+
+/** Only an achieved run re-arms a routine inside its reset cycle; anything else ends the cycle. */
+export const ROUTINE_CYCLE_REARM_STATUSES = ['completed'] as const;
 
 export type TaskStatus =
   'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
@@ -294,7 +298,7 @@ export const evaluateModelDispatchEligibility = (
   const scheduleMode: ScheduleMode = options.scheduleMode ?? 'immediate';
   const minHeadroom = options.minDispatchHeadroomPercent ?? 10;
   const allowOverage = Boolean(options.allowOverage);
-  const quotaBurnMaxHours = options.quotaBurnMaxHours ?? 2;
+  const quotaBurnMaxHours = options.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS;
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
 

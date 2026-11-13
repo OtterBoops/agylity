@@ -96,8 +96,8 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     key: 'quotaBurnMaxHours',
     label: 'Routine pre-reset window (hours)',
     type: 'number',
-    placeholder: '2',
-    hint: 'Maximum hours remaining before pool reset to trigger scheduled maintenance routines (default: 2h).',
+    placeholder: '4',
+    hint: 'Maximum hours remaining before pool reset to trigger scheduled maintenance routines (default: 4h).',
   },
   {
     key: 'quotaBurnMinHeadroomPercent',
@@ -138,7 +138,7 @@ export const SENTRY_GENERAL_FIELDS: FieldDef[] = [
     key: 'quotaMilestoneHours',
     label: 'Alert milestones (hours before reset)',
     type: 'list',
-    placeholder: '24, 12, 3',
+    placeholder: '48, 24, 12',
     hint: 'Comma-separated hours before reset to trigger warnings.',
   },
   {

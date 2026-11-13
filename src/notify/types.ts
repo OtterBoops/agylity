@@ -123,6 +123,22 @@ export interface DeliveryChannelResult {
   error?: string;
 }
 
+/**
+ * A silent operational notice. It is delivered through the configured channels but never
+ * carries an owner mention, so an informational event cannot ring anyone's phone.
+ */
+export interface InfoNotice {
+  /** Short headline, rendered after the [Notice] tag. */
+  title: string;
+  message: string;
+  poolFamily?: string;
+  poolName?: string;
+  models?: string[];
+  resetTime?: string;
+  hoursUntilReset?: number;
+  timestamp?: string;
+}
+
 // Outcome of notifyQuotaAlert; `delivered` is true if any channel succeeded, or if none are configured.
 export interface DeliveryOutcome {
   delivered: boolean;
@@ -134,6 +150,7 @@ export interface Notifier {
   initialize(): Promise<void>;
   notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome>;
   notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void>;
+  notifyInfo(notice: InfoNotice): Promise<void>;
   updateConfig?(newConfig: Partial<ResolvedConfig>): Promise<void>;
   shutdown(): Promise<void>;
   testNotification?(targetChannel?: string): Promise<{

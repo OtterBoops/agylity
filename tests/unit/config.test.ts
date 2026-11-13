@@ -8,6 +8,8 @@ import {
   parseRawEnv,
   validateConfigOverridePatch,
   BUILTIN_DEFAULTS,
+  DEFAULT_MILESTONE_HOURS,
+  DEFAULT_QUOTA_BURN_MAX_HOURS,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { logger, createMemorySink } from '../../src/logs/logger.js';
@@ -100,9 +102,22 @@ describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses comma-separated milestone strings into number arrays', () => {
     assert.deepEqual(milestoneHoursEnv.parse('24,12,3'), [24, 12, 3]);
     assert.deepEqual(milestoneHoursEnv.parse(' 48 , 24 , 6 '), [48, 24, 6]);
-    assert.deepEqual(milestoneHoursEnv.parse(''), [24, 12, 3]);
-    assert.deepEqual(milestoneHoursEnv.parse(undefined), [24, 12, 3]);
+    assert.deepEqual(milestoneHoursEnv.parse(''), [48, 24, 12]);
+    assert.deepEqual(milestoneHoursEnv.parse(undefined), [48, 24, 12]);
     assert.deepEqual(milestoneHoursEnv.parse([10, 5]), [10, 5]);
+  });
+
+  it('ships 48/24/12 milestones and a 4h pre-reset burn window as built-in defaults', () => {
+    assert.deepEqual(BUILTIN_DEFAULTS.quotaMilestoneHours, [48, 24, 12]);
+    assert.deepEqual(DEFAULT_MILESTONE_HOURS, [48, 24, 12]);
+    assert.equal(BUILTIN_DEFAULTS.quotaBurnMaxHours, 4);
+    assert.equal(DEFAULT_QUOTA_BURN_MAX_HOURS, 4);
+
+    const store = new ConfigStore(':memory:', {});
+    const config = store.resolveConfig();
+    assert.deepEqual(config.quotaMilestoneHours, [48, 24, 12]);
+    assert.equal(config.quotaBurnMaxHours, 4);
+    store.close();
   });
 
   it('parses and validates REPOSITORIES_JSON correctly', () => {
@@ -302,7 +317,7 @@ describe('parseRawEnv malformed-value resilience', () => {
     assert.equal(parsed.repositories, undefined);
     assert.equal(parsed.coordinatorEnabled, undefined);
     assert.equal(parsed.webUiEnabled, undefined);
-    assert.deepEqual(parsed.quotaMilestoneHours, [24, 12, 3]);
+    assert.deepEqual(parsed.quotaMilestoneHours, [48, 24, 12]);
 
     // The ConfigStore constructor must not crash; the resolved config uses the defaults
     const store = new ConfigStore(':memory:', parsed);
@@ -310,7 +325,7 @@ describe('parseRawEnv malformed-value resilience', () => {
     assert.deepEqual(config.repositories, []);
     assert.equal(config.coordinatorEnabled, false);
     assert.equal(config.webUiEnabled, false);
-    assert.deepEqual(config.quotaMilestoneHours, [24, 12, 3]);
+    assert.deepEqual(config.quotaMilestoneHours, [48, 24, 12]);
     store.close();
   });
 

@@ -9,10 +9,11 @@ import type {
   QuotaSnapshot,
   DispatchStatusUpdate,
   DeliveryOutcome,
+  InfoNotice,
 } from '../types.js';
 import { buildQuotaAlertEmbed, buildTestAlertEmbed } from '../embeds/index.js';
 import type { DiscordNotifierOptions } from '../discord/types.js';
-import { renderDispatchEmbed } from '../discord/embeds.js';
+import { renderDispatchEmbed, renderInfoEmbed } from '../discord/embeds.js';
 import { createRepoSelectMenu } from '../discord/components.js';
 import { registerSlashCommands } from '../discord/commands.js';
 import { routeInteraction } from '../discord/interactions.js';
@@ -387,6 +388,24 @@ export class DiscordNotifier implements Notifier {
       await (channel as any).send({ embeds: [embed] });
     } catch {
       // Safe catch
+    }
+  }
+
+  // Silent by construction: no `content` component and no allowed_mentions, so no owner ping.
+  async notifyInfo(notice: InfoNotice): Promise<void> {
+    if (!this.client || !this.initialized) return;
+
+    const channelId = this.config.discordNotificationChannelId;
+    if (!channelId || typeof this.client.channels?.fetch !== 'function') return;
+
+    try {
+      const channel = await this.client.channels.fetch(channelId);
+      if (!channel || !channel.isTextBased?.()) return;
+
+      const embed = renderInfoEmbed(notice, this.config.baseUrl);
+      await (channel as any).send({ embeds: [embed] });
+    } catch (err: any) {
+      logger.child('notify:discord').debug('Failed to deliver info notice: %s', err.message);
     }
   }
 

@@ -1,6 +1,10 @@
 import { EmbedBuilder } from 'discord.js';
-import type { QuotaSnapshot, DispatchStatusUpdate } from '../types.js';
-import { buildQuotaStatusEmbed, buildDispatchStatusEmbed } from '../embeds/index.js';
+import type { QuotaSnapshot, DispatchStatusUpdate, InfoNotice } from '../types.js';
+import {
+  buildQuotaStatusEmbed,
+  buildDispatchStatusEmbed,
+  buildInfoNoticeEmbed,
+} from '../embeds/index.js';
 import type { StandardEmbed } from '../embeds/types.js';
 
 /** Clamps the shared embed model to Discord's per-field limits. */
@@ -43,3 +47,7 @@ export const renderQuotaEmbed = (pools: QuotaSnapshot[], baseUrl?: string): Embe
 /** Maps the shared dispatch-status embed model onto a Discord EmbedBuilder. */
 export const renderDispatchEmbed = (status: DispatchStatusUpdate, baseUrl?: string): EmbedBuilder =>
   toEmbed(buildDispatchStatusEmbed(status, { baseUrl }));
+
+/** Maps the shared info-notice embed model onto a Discord EmbedBuilder. */
+export const renderInfoEmbed = (notice: InfoNotice, baseUrl?: string): EmbedBuilder =>
+  toEmbed(buildInfoNoticeEmbed(notice, { baseUrl }));

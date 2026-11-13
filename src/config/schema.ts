@@ -17,9 +17,12 @@ export const booleanEnv = z.preprocess((val) => {
 }, z.boolean());
 
 /** Default milestone hours, referenced by the parser, the schema and the evaluator. */
-export const DEFAULT_MILESTONE_HOURS = [24, 12, 3];
+export const DEFAULT_MILESTONE_HOURS = [48, 24, 12];
 
-// Safe comma-separated milestone parser ("24,12,3" -> [24, 12, 3])
+/** Default pre-reset trigger window, shared by the coordinator, the queue DDL and the routines API. */
+export const DEFAULT_QUOTA_BURN_MAX_HOURS = 4;
+
+// Safe comma-separated milestone parser ("48,24,12" -> [48, 24, 12])
 export const milestoneHoursEnv = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val.map(Number).filter((n) => !Number.isNaN(n) && n > 0);
@@ -364,7 +367,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   defaultDispatchEffort: 'medium',
   runnerSharedSecret: undefined,
   prPolicy: 'docs_only',
-  quotaBurnMaxHours: 2,
+  quotaBurnMaxHours: DEFAULT_QUOTA_BURN_MAX_HOURS,
   quotaBurnMinHeadroomPercent: 30,
 
   webUiEnabled: false,

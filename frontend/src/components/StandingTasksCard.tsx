@@ -40,7 +40,7 @@ export const StandingTasksCard = ({ config }: StandingTasksCardProps) => {
   const [repositoryId, setRepositoryId] = useState(defaultRepoId);
   const [model, setModel] = useState(defaultModel);
   const [effort, setEffort] = useState<ReasoningEffort>('high');
-  const [triggerHours, setTriggerHours] = useState(12);
+  const [triggerHours, setTriggerHours] = useState(4);
   const [autoCreatePr, setAutoCreatePr] = useState(true);
   const [verifyCommand, setVerifyCommand] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);

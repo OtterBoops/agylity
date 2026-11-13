@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { PrPolicy } from '../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import type { SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
@@ -17,6 +18,7 @@ import {
   resolvePoolFamilyForModel,
   isTerminalTaskStatus,
   resolveReasoningEffortForModel,
+  ROUTINE_CYCLE_REARM_STATUSES,
   type ModelEligibilityResult,
   type ReasoningEffort,
   type ScheduleMode,
@@ -28,6 +30,7 @@ import {
   TaskQueue,
   type CreateRegistrationTokenInput,
   type ExchangeRegistrationTokenInput,
+  type RoutineTaskRecord,
   type RunnerRegistrationTokenResult,
   type RunnerSystemInfo,
   type SwarmRunnerRecord,
@@ -35,6 +38,9 @@ import {
   type TaskStatusPatch,
 } from './queue.js';
 import { buildContinuationBranchName } from './runner.js';
+
+/** Runtime-state key holding `{ family: resetTime }` for pools whose burn kick was already announced. */
+const BURN_KICK_CYCLES_KEY = 'burnKickAnnouncedCycles';
 
 export interface DispatchTaskRequest {
   repositoryId: string;
@@ -141,6 +147,76 @@ export class Coordinator {
     this.queue.setRuntimeValue('lastManualDispatchAt', String(timestampMs));
   }
 
+  // One burn-kick notice per pool per reset cycle: the map records the cycle a pool was announced for.
+  private hasAnnouncedBurnKick(family: string, resetTime: string): boolean {
+    const raw = this.queue.getRuntimeValue(BURN_KICK_CYCLES_KEY);
+    if (!raw) return false;
+    try {
+      const cycles = JSON.parse(raw) as Record<string, string>;
+      return cycles[family] === resetTime;
+    } catch {
+      return false;
+    }
+  }
+
+  private recordBurnKick(family: string, resetTime: string): void {
+    const raw = this.queue.getRuntimeValue(BURN_KICK_CYCLES_KEY);
+    let cycles: Record<string, string> = {};
+    try {
+      cycles = raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      cycles = {};
+    }
+    cycles[family] = resetTime;
+    this.queue.setRuntimeValue(BURN_KICK_CYCLES_KEY, JSON.stringify(cycles));
+  }
+
+  // Informational only: notifyInfo never mentions the owner, so this cannot ring a phone.
+  private async announceBurnKick(params: {
+    /** Prose prefix, e.g. `Routine #3 "Nightly sweep"`. */
+    label: string;
+    pool: QuotaSnapshot;
+    models: string[];
+    headroomPercent: number | null;
+    triggerHours: number;
+  }): Promise<void> {
+    const family = params.pool.family;
+    const resetTime = params.pool.resetTime;
+    if (!resetTime || this.hasAnnouncedBurnKick(family, resetTime)) return;
+    this.recordBurnKick(family, resetTime);
+
+    await this.notifier?.notifyInfo({
+      title: 'Pre-reset burn started',
+      message:
+        `${params.label} entered the pre-reset window (<=${params.triggerHours}h) with ` +
+        `${params.headroomPercent ?? 0}% headroom. Quota-burn looping is now active for this pool ` +
+        `until the reset at ${resetTime}.`,
+      poolFamily: family,
+      poolName: params.pool.displayName || params.pool.poolId,
+      models: params.models,
+      resetTime,
+      hoursUntilReset: params.pool.hoursUntilReset,
+    });
+  }
+
+  // Opportunistic pre_reset tasks only kick off when the window opens, which is exactly when
+  // claimNext lets them through, so the announcement belongs after a claim, not at enqueue time.
+  private async announceOpportunisticBurnKick(task: SwarmTask): Promise<void> {
+    if (task.scheduleMode !== 'pre_reset') return;
+    const family = resolvePoolFamilyForModel(task.model);
+    const pool = this.getActivePools().find((p) => p.family === family || p.poolId === family);
+    if (!pool) return;
+
+    const resolved = this.configStore.resolveConfig();
+    await this.announceBurnKick({
+      label: `Pre-reset task #${task.taskNumber} "${task.title}"`,
+      pool,
+      models: [task.model],
+      headroomPercent: calculateEffectiveHeadroomPercent(pool),
+      triggerHours: resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS,
+    });
+  }
+
   public getActivePools(): QuotaSnapshot[] {
     // A snapshot past its interval is most wrong right after a reset, so it must not
     // authorise dispatch: return nothing and let eligibility fail closed.
@@ -214,7 +290,7 @@ export class Coordinator {
           models: nextBacklog.models,
           defaultModel: resolved.defaultDispatchModel,
           pools: snapshots,
-          minHeadroomPercent: Math.max(40, resolved.minDispatchHeadroomPercent ?? 0),
+          minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
           isPoolDispatchEnabled: (fam) => resolved.poolPolicies?.[fam]?.dispatchEnabled !== false,
         });
 
@@ -285,6 +361,21 @@ export class Coordinator {
     return spawned;
   }
 
+  // Re-arms only on a productive run: a failed or aborted task must not keep burning the cycle.
+  private routineMayTriggerAgain(rt: RoutineTaskRecord, resetTime: string): boolean {
+    if (!rt.lastTriggeredResetTime || rt.lastTriggeredResetTime !== resetTime) {
+      return true;
+    }
+
+    const previous =
+      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined) ??
+      this.queue.getLatestTaskForOrigin(rt.id);
+    // A stamped cycle whose run can no longer be found stays burned: looping blind burns quota.
+    if (!previous) return false;
+
+    return (ROUTINE_CYCLE_REARM_STATUSES as readonly string[]).includes(previous.status);
+  }
+
   // Evaluates enabled routine tasks against live quota pools and triggers any due for pre-reset burn.
   public async triggerEligibleRoutines(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
     const resolved = this.configStore.resolveConfig();
@@ -300,8 +391,18 @@ export class Coordinator {
     const spawned: SwarmTask[] = [];
 
     for (const rt of routines) {
+      // One in-flight run per routine: the evaluator must never stack runs on itself.
+      if (this.queue.hasActiveTaskForOrigin(rt.id)) {
+        continue;
+      }
+
       let selectedModel: string | undefined;
       let targetPool: QuotaSnapshot | undefined;
+      // The routine's own window wins; the global burn window is only a fallback.
+      const triggerHours =
+        rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
+          ? rt.triggerBeforeResetHours
+          : (resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS);
 
       for (const m of rt.models) {
         const concreteModel = resolveConcreteModelId(m, resolved.defaultDispatchModel);
@@ -331,16 +432,10 @@ export class Coordinator {
           continue;
         }
 
-        // At most one execution per reset cycle
-        if (rt.lastTriggeredResetTime && rt.lastTriggeredResetTime === resetTime) {
+        // Looping inside a cycle is allowed, but only after the cycle's previous run succeeded.
+        if (!this.routineMayTriggerAgain(rt, resetTime)) {
           continue;
         }
-
-        // Check trigger window: routine's triggerBeforeResetHours, or global quotaBurnMaxHours
-        const triggerHours =
-          rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
-            ? rt.triggerBeforeResetHours
-            : (resolved.quotaBurnMaxHours ?? 2);
 
         if (hoursUntilReset > triggerHours) {
           continue;
@@ -410,6 +505,15 @@ export class Coordinator {
       this.queue.updateRoutineTask(rt.id, {
         lastTriggeredResetTime: targetPool.resetTime,
         lastTaskId: task.id,
+      });
+
+      // After the enqueue: a slow notification channel must never delay the burn it announces.
+      await this.announceBurnKick({
+        label: `Routine #${rt.taskNumber} "${rt.title}"`,
+        pool: targetPool,
+        models: [selectedModel],
+        headroomPercent: calculateEffectiveHeadroomPercent(targetPool),
+        triggerHours,
       });
 
       spawned.push(task);
@@ -793,6 +897,7 @@ export class Coordinator {
 
     const immediate = tryClaim();
     if (immediate) {
+      void this.announceOpportunisticBurnKick(immediate);
       return immediate;
     }
 
@@ -820,6 +925,7 @@ export class Coordinator {
         const claimed = tryClaim();
         if (claimed) {
           cleanup();
+          void this.announceOpportunisticBurnKick(claimed);
           resolve(claimed);
         }
       };

@@ -5,6 +5,7 @@ import type {
   DispatchStatusUpdate,
   DeliveryOutcome,
   DeliveryChannelResult,
+  InfoNotice,
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
@@ -105,6 +106,15 @@ export class CompositeNotifier implements Notifier {
     for (const res of results) {
       if (res.status === 'rejected') {
         logger.child('notify:composite').error('Dispatch status delivery error:', res.reason);
+      }
+    }
+  }
+
+  async notifyInfo(notice: InfoNotice): Promise<void> {
+    const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyInfo(notice)));
+    for (const res of results) {
+      if (res.status === 'rejected') {
+        logger.child('notify:composite').error('Info notice delivery error:', res.reason);
       }
     }
   }

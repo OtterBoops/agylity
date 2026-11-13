@@ -6,6 +6,7 @@ import type {
   QuotaAlert,
   DispatchStatusUpdate,
   DeliveryOutcome,
+  InfoNotice,
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
@@ -16,10 +17,11 @@ import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
   buildDispatchStatusEmbed,
+  buildInfoNoticeEmbed,
 } from '../embeds/index.js';
 
 export interface WebhookPayload {
-  event: 'quota_alert' | 'dispatch_status' | 'test_ping';
+  event: 'quota_alert' | 'dispatch_status' | 'test_ping' | 'info_notice';
   timestamp: string;
   data: Record<string, unknown>;
   content?: string;
@@ -146,6 +148,7 @@ export class WebhookNotifier implements Notifier {
   public initialized = false;
   public alerts: QuotaAlert[] = [];
   public statuses: DispatchStatusUpdate[] = [];
+  public notices: InfoNotice[] = [];
   protected config: ResolvedConfig;
   protected options: NotifierOptions;
 
@@ -251,6 +254,31 @@ export class WebhookNotifier implements Notifier {
       text: textMsg,
       embeds: [embed],
       data: { ...status } as Record<string, unknown>,
+    };
+
+    try {
+      await this.postWebhook(payload);
+    } catch {
+      // Error already logged by postWebhook
+    }
+  }
+
+  async notifyInfo(notice: InfoNotice): Promise<void> {
+    this.notices.push(notice);
+    if (this.notices.length > 100) this.notices.shift();
+
+    const textMsg = `[Notice] ${notice.title} — ${notice.message}`;
+    const embed = buildInfoNoticeEmbed(notice, { baseUrl: this.config.baseUrl });
+
+    const payload: WebhookPayload = {
+      event: 'info_notice',
+      timestamp: notice.timestamp || new Date().toISOString(),
+      username: 'Agylity',
+      content: textMsg,
+      text: textMsg,
+      message: textMsg,
+      embeds: [embed],
+      data: { ...notice } as Record<string, unknown>,
     };
 
     try {

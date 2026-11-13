@@ -4,6 +4,7 @@ import type { AppDatabase } from '../storage/db.js';
 import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schema.js';
 import type { QuotaFamily } from '../sentry/models.js';
 import type { PrPolicy } from '../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import {
   BacklogStatusSchema,
   ReasoningEffortSchema,
@@ -329,7 +330,10 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'pr_policy', ddl: 'pr_policy TEXT' },
   { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
   { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
-  { name: 'trigger_before_reset_hours', ddl: 'trigger_before_reset_hours REAL NOT NULL DEFAULT 2' },
+  {
+    name: 'trigger_before_reset_hours',
+    ddl: `trigger_before_reset_hours REAL NOT NULL DEFAULT ${DEFAULT_QUOTA_BURN_MAX_HOURS}`,
+  },
   { name: 'min_headroom_percent', ddl: 'min_headroom_percent REAL NOT NULL DEFAULT 10' },
   { name: 'last_triggered_reset_time', ddl: 'last_triggered_reset_time TEXT' },
   { name: 'last_task_id', ddl: 'last_task_id TEXT' },
@@ -558,7 +562,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
               row.actor || 'bot',
               row.enabled !== undefined ? row.enabled : 1,
               row.sort_order || 0,
-              row.trigger_before_reset_hours || 2,
+              row.trigger_before_reset_hours || DEFAULT_QUOTA_BURN_MAX_HOURS,
               10,
               row.last_triggered_reset_time ?? null,
               row.last_task_id ?? null,
@@ -1037,6 +1041,31 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const row = this.rawDb.prepare('SELECT * FROM swarm_tasks WHERE id = ?').get(id) as
       Record<string, any> | undefined;
     return row ? this.mapRowToTask(row) : undefined;
+  }
+
+  // The cycle's run is the newest task the routine produced; a manual trigger counts too.
+  public getLatestTaskForOrigin(originId: string): SwarmTask | undefined {
+    const row = this.rawDb
+      .prepare(
+        `SELECT * FROM swarm_tasks
+         WHERE origin_id = ?
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT 1`
+      )
+      .get(originId) as Record<string, any> | undefined;
+    return row ? this.mapRowToTask(row) : undefined;
+  }
+
+  // A routine holds at most one in-flight task, whether the evaluator or a manual trigger made it.
+  public hasActiveTaskForOrigin(originId: string): boolean {
+    const row = this.rawDb
+      .prepare(
+        `SELECT 1 AS active FROM swarm_tasks
+         WHERE origin_id = ? AND status NOT IN (${TERMINAL_STATUS_SQL})
+         LIMIT 1`
+      )
+      .get(originId) as { active?: number } | undefined;
+    return row?.active === 1;
   }
 
   public listTasks(
@@ -1855,7 +1884,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         : null;
     const enabled = input.enabled !== false ? 1 : 0;
     const sortOrder = coerceNumber(input.sortOrder, 0);
-    const triggerHours = coerceNumber(input.triggerBeforeResetHours, 2);
+    const triggerHours = coerceNumber(input.triggerBeforeResetHours, DEFAULT_QUOTA_BURN_MAX_HOURS);
     const minHeadroom = coerceNumber(input.minHeadroomPercent, 10);
 
     this.rawDb
@@ -2025,7 +2054,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       prPolicy: (r.pr_policy as PrPolicy) || undefined,
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),
-      triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? 2),
+      triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? DEFAULT_QUOTA_BURN_MAX_HOURS),
       minHeadroomPercent: Number(r.min_headroom_percent ?? 10),
       lastTriggeredResetTime: r.last_triggered_reset_time
         ? String(r.last_triggered_reset_time)

@@ -194,7 +194,7 @@ Three tiers, and only the first is human-initiated per run:
 
 - **`immediate`** — a direct dispatch from the Web UI, Discord or `POST /api/dispatch`. Sets the autonomy quench timestamp when `actor !== 'bot'`.
 - **`backlog`** (`backlog_tasks`) — queued work items, created by hand or by the GitHub label sync. The evaluator dispatches at most one per quota probe, gated on headroom of at least `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
-- **`routine`** (`routine_tasks`, migrated from `standing_tasks`) — recurring templates released inside `trigger_before_reset_hours`, once per pool reset cycle, gated on `max(min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`.
+- **`routine`** (`routine_tasks`, migrated from `standing_tasks`) — recurring templates released inside `trigger_before_reset_hours`, looping sequentially within one pool reset cycle: a routine re-triggers as soon as its previous run reaches `completed`, gated on `max(min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. At most one run is in flight per routine (`origin_id`), and a `failed`/`aborted` run ends the cycle.
 
 - **The autonomy quench is 2 hours** after a manual immediate dispatch, persisted in `runtime_state` so a restart cannot re-arm it.
 - **Both autonomous tiers carry an ordered `models[]`** and dispatch the first candidate whose pool clears the floor (`evaluateModelPreferenceChain`); the manual dispatch routes pass the same chain to `coordinator.dispatch`. A model id mapping to no pool is refused, never charged to another family.

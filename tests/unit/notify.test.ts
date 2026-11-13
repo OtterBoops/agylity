@@ -807,6 +807,19 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.shutdown();
     });
 
+    it('ConsoleNotifier records info notices separately from alerts and statuses', async () => {
+      const notifier = new ConsoleNotifier();
+      await notifier.initialize();
+
+      await notifier.notifyInfo({ title: 'Pre-reset burn started', message: 'Looping now.' });
+
+      assert.equal(notifier.notices.length, 1);
+      assert.equal(notifier.notices[0]?.title, 'Pre-reset burn started');
+      assert.equal(notifier.alerts.length, 0);
+      assert.equal(notifier.statuses.length, 0);
+      await notifier.shutdown();
+    });
+
     it('posts webhook JSON with x-agylity-signature when webhook URL and secret are configured', async () => {
       let receivedHeaders: http.IncomingHttpHeaders = {};
       let receivedBody: any = null;
@@ -913,6 +926,56 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         assert.equal(attempts, 2, 'a 503 on the first POST attempt must be retried');
         assert.equal(deliveredBody?.event, 'quota_alert');
         assert.equal(outcome.delivered, true);
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('delivers an info notice with no owner mention, even when owner pings are enabled', async () => {
+      let deliveredBody: any = null;
+
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          deliveredBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+          discordOwnerUserId: '1234567890',
+          discordPingOwner: true,
+        });
+        await notifier.initialize();
+
+        await notifier.notifyInfo({
+          title: 'Pre-reset burn started',
+          message: 'Routine #1 entered the pre-reset window.',
+          poolFamily: 'claude',
+          poolName: 'Claude and GPT models',
+          models: ['claude-sonnet-5-5'],
+          resetTime: '2026-11-08T01:30:44Z',
+        });
+
+        assert.equal(deliveredBody?.event, 'info_notice');
+        assert.equal(
+          deliveredBody?.content,
+          '[Notice] Pre-reset burn started — Routine #1 entered the pre-reset window.'
+        );
+        // An informational notice must never @mention the owner: no ping on a burn kick.
+        assert.equal(deliveredBody?.allowed_mentions, undefined);
+        assert.ok(!String(deliveredBody?.content).includes('<@'));
+        assert.equal(notifier.notices.length, 1);
 
         await notifier.shutdown();
       } finally {
@@ -1490,6 +1553,38 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.ok(payload.embeds?.length > 0);
     });
 
+    it('notifyInfo sends a silent embed with no mention even when discordPingOwner is true', async () => {
+      const mock = createMockDiscordClient({
+        channelId: 'chan-123',
+        guildId: 'guild-123',
+        guildOwnerId: '141254861575553024',
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          discordNotificationChannelId: 'chan-123',
+          discordGuildId: 'guild-123',
+          discordOwnerUserId: '141254861575553024',
+          discordPingOwner: true,
+        },
+        { client: mock.client }
+      );
+      notifier.initialized = true;
+
+      await notifier.notifyInfo({
+        title: 'Pre-reset burn started',
+        message: 'Routine #1 entered the pre-reset window.',
+        poolFamily: 'claude',
+        poolName: 'Claude and GPT models',
+      });
+
+      const payload = mock.getSentPayload();
+      assert.ok(payload);
+      assert.equal(payload.content, undefined);
+      assert.equal(payload.allowedMentions, undefined);
+      assert.equal(payload.embeds?.length, 1);
+    });
+
     it('notifyQuotaAlert omits mention content when discordPingOwner is false', async () => {
       const mock = createMockDiscordClient({
         channelId: 'chan-123',
@@ -1623,6 +1718,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       initialize: async () => {},
       notifyQuotaAlert: async () => ({ delivered: true, results: { [name]: { success: true } } }),
       notifyDispatchStatus: async () => {},
+      notifyInfo: async () => {},
       shutdown: async () => {},
       ...impl,
     });
