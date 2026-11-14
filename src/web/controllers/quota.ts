@@ -73,3 +73,26 @@ export const handleGetAlerts = (
   };
   return sendJson(res, 200, alertData);
 };
+
+/** Dismissal is the only way an early-reset notice clears; the next premature reset replaces it. */
+export const handleDismissAlerts = async (
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  method: string
+): Promise<void> => {
+  if (method !== 'POST') return methodNotAllowed(res);
+  if (!options.sentryState) {
+    return sendJson(res, 503, { error: 'Sentry state is unavailable' });
+  }
+
+  const dismissed = options.sentryState.dismissEarlyResetNotice();
+  try {
+    await options.sentryState.save();
+  } catch (err: any) {
+    logger.child('web').error('Failed to persist alert dismissal: %s', err?.message ?? err);
+    return sendJson(res, 500, { error: 'Failed to persist dismissal' });
+  }
+
+  return sendJson(res, 200, { success: true, dismissed, earlyResetNotice: null });
+};

@@ -23,6 +23,7 @@ import {
   quotaStore,
   configStore,
   refreshQuota,
+  refreshAlerts,
   refreshConfig,
   startQuotaPolling,
   loadModelCatalog,
@@ -273,6 +274,7 @@ export const App = () => {
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
                   error={quotaError}
                   onRetry={() => fetchAll(true)}
+                  onAlertsChanged={refreshAlerts}
                 />
                 <OverviewView
                   path="/overview"
@@ -281,6 +283,7 @@ export const App = () => {
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
                   error={quotaError}
                   onRetry={() => fetchAll(true)}
+                  onAlertsChanged={refreshAlerts}
                 />
                 <TasksView
                   path="/tasks"

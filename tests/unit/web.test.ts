@@ -346,6 +346,68 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('POST /api/alerts/dismiss clears the early-reset notice and GET reflects it', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_alerts_dismiss_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: '2026-10-19T14:00:00.000Z',
+        lastProbeSource: 'connect_rpc',
+        pools: {},
+        earlyResetNotice: {
+          detectedAt: '2026-10-19T13:30:00.000Z',
+          pools: [
+            {
+              poolId: 'gemini-argon',
+              displayName: 'Gemini Argon',
+              previousRemainingFraction: 0.2,
+              remainingFraction: 0.95,
+              previousResetTime: '2026-10-23T00:00:00.000Z',
+              resetTime: '2026-10-23T00:00:00.000Z',
+            },
+          ],
+        },
+      });
+
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const before = await ky.get(`${base}/api/alerts`).json<any>();
+        assert.equal(before.earlyResetNotice.pools.length, 1);
+        assert.equal(before.earlyResetNotice.pools[0].poolId, 'gemini-argon');
+
+        const res = await ky.post(`${base}/api/alerts/dismiss`, { retry: 0 });
+        assert.equal(res.status, 200);
+        const body = await res.json<any>();
+        assert.deepEqual(body, { success: true, dismissed: true, earlyResetNotice: null });
+
+        const after = await ky.get(`${base}/api/alerts`).json<any>();
+        assert.equal(after.earlyResetNotice, null);
+
+        // Dismissal is POST-only.
+        await assert.rejects(
+          async () => {
+            await ky.get(`${base}/api/alerts/dismiss`, { retry: 0 });
+          },
+          (err: any) => err.response?.status === 405
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

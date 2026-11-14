@@ -3,16 +3,17 @@ import { ConfigStore } from '../config/store.js';
 import { AppDatabase } from '../storage/db.js';
 import { type ResolvedConfig } from '../config/schema.js';
 import { ConnectRpcQuotaClient } from '../sentry/client.js';
-import { SentryStateManager } from '../sentry/state.js';
+import { SentryStateManager, type EarlyResetPool } from '../sentry/state.js';
 import { QuotaEvaluator } from '../sentry/evaluator.js';
 import {
   type QuotaAlert,
   type QuotaSnapshot,
   type QuotaClient as IQuotaClient,
+  calculateHoursUntilReset,
   snapshotsFromSentryState,
 } from '../sentry/models.js';
 import { createDaemonNotifier } from '../notify/factory.js';
-import { type Notifier } from '../notify/types.js';
+import { type InfoNotice, type Notifier } from '../notify/types.js';
 import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
 import { Coordinator } from '../coordinator/index.js';
@@ -22,7 +23,43 @@ import { DynamicModelCatalog } from '../coordinator/catalog.js';
 interface MilestonePlan {
   alerts: QuotaAlert[];
   superseded?: Map<string, number[]> | Record<string, number[]>;
+  earlyResets?: EarlyResetPool[];
 }
+
+const formatPercent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
+
+const formatWindow = (hours: number): string => {
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h`;
+};
+
+/** One silent notice per probe, naming every pool that refilled early. */
+const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): InfoNotice => {
+  const lines = pools.map((pool) => {
+    const name = pool.displayName || pool.poolId;
+    const window = formatWindow(
+      calculateHoursUntilReset(pool.previousResetTime, Date.parse(detectedAt))
+    );
+    return `${name}: ${formatPercent(pool.previousRemainingFraction)} -> ${formatPercent(pool.remainingFraction)} remaining, ${window} before its scheduled reset.`;
+  });
+
+  const single = pools.length === 1 ? pools[0] : null;
+
+  return {
+    title: 'Quota reset early',
+    message: `${lines.join(' ')} Upstream replenished ${
+      pools.length === 1 ? 'this pool' : 'these pools'
+    } ahead of schedule.`,
+    poolFamily: single?.poolId,
+    poolName: single?.displayName,
+    resetTime: single?.resetTime,
+    hoursUntilReset: single
+      ? calculateHoursUntilReset(single.resetTime, Date.parse(detectedAt))
+      : undefined,
+    timestamp: detectedAt,
+  };
+};
 
 export interface AgylityDaemonOptions {
   configStore?: ConfigStore;
@@ -379,6 +416,10 @@ export class AgylityDaemon {
         }
       }
 
+      if (plan.earlyResets && plan.earlyResets.length > 0) {
+        await this.announceEarlyReset(plan.earlyResets);
+      }
+
       const probeSource =
         typeof (this.quotaClient as any).getLastProbeSource === 'function'
           ? (this.quotaClient as any).getLastProbeSource()
@@ -443,14 +484,42 @@ export class AgylityDaemon {
       evaluateWithPlan?: (
         snapshots: QuotaSnapshot[],
         state: SentryStateManager
-      ) => { alerts?: QuotaAlert[]; supersededMilestones?: Map<string, number[]> };
+      ) => {
+        alerts?: QuotaAlert[];
+        supersededMilestones?: Map<string, number[]>;
+        earlyResets?: EarlyResetPool[];
+      };
     };
     if (typeof evaluator.evaluateWithPlan === 'function') {
       const plan = evaluator.evaluateWithPlan(snapshots, this.sentryState);
-      return { alerts: plan.alerts ?? [], superseded: plan.supersededMilestones };
+      return {
+        alerts: plan.alerts ?? [],
+        superseded: plan.supersededMilestones,
+        earlyResets: plan.earlyResets ?? [],
+      };
     }
     // Legacy evaluator records milestones itself and returns only the alerts.
     return { alerts: this.sentryEvaluator.evaluate(snapshots, this.sentryState) };
+  }
+
+  // Silent by contract: notifyInfo carries no owner mention, so an early refill cannot ring a phone.
+  private async announceEarlyReset(pools: EarlyResetPool[]): Promise<void> {
+    const notice = this.sentryState.recordEarlyResetNotice(pools);
+    for (const pool of pools) {
+      this.logger.info(
+        '%s reset ahead of schedule: %s -> %s remaining before the %s deadline',
+        pool.displayName || pool.poolId,
+        formatPercent(pool.previousRemainingFraction),
+        formatPercent(pool.remainingFraction),
+        pool.previousResetTime
+      );
+    }
+    try {
+      await this.notifier.notifyInfo(buildEarlyResetNotice(pools, notice.detectedAt));
+    } catch (err: any) {
+      // The notice is already persisted for the dashboard, so a channel failure is not fatal.
+      this.logger.warn('Early reset notice delivery failed: %s', err?.message ?? err);
+    }
   }
 
   /** Delivers one alert; returns false when the notifier reports no successful channel. */

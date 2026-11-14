@@ -425,7 +425,8 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       // Cycle 2: new reset deadline
       const rolledOver = manager.updatePoolQuota('claude', 0.95, '2026-10-21T10:00:00Z');
-      assert.equal(rolledOver, true);
+      assert.equal(rolledOver.cycleRolled, true);
+      assert.equal(rolledOver.earlyReset, null);
       assert.equal(manager.isMilestoneFired('claude', 24), false);
       assert.equal(manager.isMilestoneFired('claude', 12), false);
       assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, []);
@@ -451,6 +452,128 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(normalizeMilestoneKey('24h'), '24h');
       assert.equal(normalizeMilestoneKey('12'), '12h');
       assert.equal(normalizeMilestoneKey(3.5), '3.5h');
+    });
+
+    it('reports a premature reset when a used pool refills mid-cycle', () => {
+      const manager = new SentryStateManager(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = new Date(nowMs + 48 * 3600 * 1000).toISOString();
+
+      manager.updatePoolQuota('claude', 0.4, resetTime, nowMs);
+      const update = manager.updatePoolQuota('claude', 1, resetTime, nowMs + 60_000);
+
+      assert.equal(update.cycleRolled, false);
+      assert.ok(update.earlyReset);
+      assert.equal(update.earlyReset?.poolId, 'claude');
+      assert.equal(update.earlyReset?.previousRemainingFraction, 0.4);
+      assert.equal(update.earlyReset?.remainingFraction, 1);
+      assert.equal(update.earlyReset?.previousResetTime, resetTime);
+      assert.equal(update.earlyReset?.resetTime, resetTime);
+    });
+
+    it('reports a premature reset when the refill also moves the reset deadline', () => {
+      const manager = new SentryStateManager(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const firstReset = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+      const secondReset = new Date(nowMs + 7 * 24 * 3600 * 1000).toISOString();
+
+      manager.updatePoolQuota('gemini-flash', 0.2, firstReset, nowMs);
+      const update = manager.updatePoolQuota('gemini-flash', 1, secondReset, nowMs + 60_000);
+
+      assert.equal(update.cycleRolled, true);
+      assert.equal(update.earlyReset?.previousResetTime, firstReset);
+      assert.equal(update.earlyReset?.resetTime, secondReset);
+    });
+
+    it('ignores a never-used pool whose reset time merely floats forward', () => {
+      const manager = new SentryStateManager(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+
+      manager.updatePoolQuota(
+        'gemini-flash',
+        1,
+        new Date(nowMs + 3 * 3600 * 1000).toISOString(),
+        nowMs
+      );
+      const update = manager.updatePoolQuota(
+        'gemini-flash',
+        1,
+        new Date(nowMs + 4 * 3600 * 1000).toISOString(),
+        nowMs + 60_000
+      );
+
+      assert.equal(update.cycleRolled, true);
+      assert.equal(update.earlyReset, null);
+      assert.equal(manager.getEarlyResetNotice(), null);
+    });
+
+    it('ignores a refill inside the five-minute guard before the scheduled reset', () => {
+      const manager = new SentryStateManager(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = new Date(nowMs + 4 * 60_000).toISOString();
+
+      manager.updatePoolQuota('claude', 0.1, resetTime, nowMs);
+      const update = manager.updatePoolQuota('claude', 1, resetTime, nowMs + 30_000);
+
+      assert.equal(update.earlyReset, null);
+    });
+
+    it('ignores a gain below five percentage points', () => {
+      const manager = new SentryStateManager(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+
+      manager.updatePoolQuota('claude', 0.5, resetTime, nowMs);
+      const update = manager.updatePoolQuota('claude', 0.54, resetTime, nowMs + 60_000);
+
+      assert.equal(update.earlyReset, null);
+    });
+
+    it('keeps only the newest early reset notice and persists it until dismissed', async () => {
+      const manager = new SentryStateManager(stateFile);
+      await manager.load();
+
+      manager.recordEarlyResetNotice(
+        [
+          {
+            poolId: 'claude',
+            previousRemainingFraction: 0.3,
+            remainingFraction: 1,
+            previousResetTime: '2026-11-16T12:00:00.000Z',
+            resetTime: '2026-11-16T12:00:00.000Z',
+          },
+        ],
+        '2026-11-14T12:00:00.000Z'
+      );
+      manager.recordEarlyResetNotice(
+        [
+          {
+            poolId: 'gemini-flash',
+            previousRemainingFraction: 0.1,
+            remainingFraction: 0.95,
+            previousResetTime: '2026-11-17T12:00:00.000Z',
+            resetTime: '2026-11-17T12:00:00.000Z',
+          },
+        ],
+        '2026-11-14T13:00:00.000Z'
+      );
+
+      const notice = manager.getEarlyResetNotice();
+      assert.equal(notice?.detectedAt, '2026-11-14T13:00:00.000Z');
+      assert.deepEqual(
+        notice?.pools.map((p) => p.poolId),
+        ['gemini-flash']
+      );
+
+      await manager.save();
+
+      const reloaded = new SentryStateManager(stateFile);
+      await reloaded.load();
+      assert.equal(reloaded.getEarlyResetNotice()?.pools[0]?.poolId, 'gemini-flash');
+
+      assert.equal(reloaded.dismissEarlyResetNotice(), true);
+      assert.equal(reloaded.getEarlyResetNotice(), null);
+      assert.equal(reloaded.dismissEarlyResetNotice(), false);
     });
   });
 

@@ -141,6 +141,9 @@ export const getAlerts = (): Promise<SentryAlertState | null> =>
     .json<SentryAlertState | null>()
     .catch(() => null);
 
+export const dismissEarlyReset = (): Promise<{ success: boolean; dismissed: boolean }> =>
+  api.post('alerts/dismiss').json<{ success: boolean; dismissed: boolean }>();
+
 export const getConfig = (): Promise<ConfigData> =>
   api
     .get('config')

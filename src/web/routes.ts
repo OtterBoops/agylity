@@ -19,7 +19,7 @@ import {
   handleStaticAsset,
   handleIndexHtml,
 } from './controllers/static.js';
-import { handleGetQuota, handleGetAlerts } from './controllers/quota.js';
+import { handleGetQuota, handleGetAlerts, handleDismissAlerts } from './controllers/quota.js';
 import { handleGetLogs } from './controllers/logs.js';
 import {
   handleConfigEndpoint,
@@ -275,6 +275,10 @@ export const handleRequest = async (
     // Alert State
     if (pathname === '/api/alerts') {
       return handleGetAlerts(req, res, options, method);
+    }
+
+    if (pathname === '/api/alerts/dismiss') {
+      return handleDismissAlerts(req, res, options, method);
     }
 
     // In-Memory Ring Buffer Logs

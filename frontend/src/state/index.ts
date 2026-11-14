@@ -1,5 +1,11 @@
 export { createStore, useStore, type Store } from './store';
-export { quotaStore, refreshQuota, startQuotaPolling, type QuotaState } from './quotaStore';
+export {
+  quotaStore,
+  refreshQuota,
+  refreshAlerts,
+  startQuotaPolling,
+  type QuotaState,
+} from './quotaStore';
 export {
   configStore,
   refreshConfig,

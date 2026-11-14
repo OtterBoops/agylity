@@ -1,7 +1,7 @@
 import type { QuotaAlert, QuotaSnapshot } from './models.js';
 import { calculateHoursUntilReset } from './models.js';
 import { DEFAULT_MILESTONE_HOURS } from '../config/schema.js';
-import type { SentryStateManager } from './state.js';
+import type { EarlyResetPool, SentryStateManager } from './state.js';
 
 export interface QuotaEvaluatorOptions {
   milestoneHours?: number[];
@@ -12,6 +12,8 @@ export interface EvaluationPlan {
   alerts: QuotaAlert[];
   pendingMilestones: Map<string, number[]>;
   supersededMilestones: Map<string, number[]>;
+  /** Pools that refilled before their scheduled reset, in snapshot order. */
+  earlyResets: EarlyResetPool[];
 }
 
 export class QuotaEvaluator {
@@ -119,17 +121,22 @@ export class QuotaEvaluator {
     const alerts: QuotaAlert[] = [];
     const pendingMilestones = new Map<string, number[]>();
     const supersededMilestones = new Map<string, number[]>();
+    const earlyResets: EarlyResetPool[] = [];
 
     for (const snapshot of snapshots) {
       let firedMilestones: string[] = [];
 
       if (stateManager) {
         // Detect cycle rollover and update pool quota; milestone recording is deferred to the caller.
-        stateManager.updatePoolQuota(
+        const update = stateManager.updatePoolQuota(
           snapshot.poolId,
           snapshot.remainingFraction,
-          snapshot.resetTime
+          snapshot.resetTime,
+          nowMs
         );
+        if (update?.earlyReset) {
+          earlyResets.push({ ...update.earlyReset, displayName: snapshot.displayName });
+        }
         const poolState = stateManager.getPoolState(snapshot.poolId);
         if (poolState) {
           firedMilestones = poolState.firedMilestones;
@@ -157,7 +164,7 @@ export class QuotaEvaluator {
       }
     }
 
-    return { alerts, pendingMilestones, supersededMilestones };
+    return { alerts, pendingMilestones, supersededMilestones, earlyResets };
   }
 
   evaluate(

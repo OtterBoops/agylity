@@ -53,6 +53,20 @@ export interface SentryPoolState {
 
 export type ProbeSource = 'connect_rpc' | 'cli' | 'cli_fallback' | 'unreachable' | 'auth_required';
 
+export interface EarlyResetPool {
+  poolId: string;
+  displayName?: string;
+  previousRemainingFraction: number;
+  remainingFraction: number;
+  previousResetTime: string;
+  resetTime: string;
+}
+
+export interface EarlyResetNotice {
+  detectedAt: string;
+  pools: EarlyResetPool[];
+}
+
 export interface SentryAlertState {
   version: number;
   lastProbeAt: string;
@@ -60,6 +74,7 @@ export interface SentryAlertState {
   authRequired?: boolean;
   authErrorMessage?: string;
   pools: Record<string, SentryPoolState>;
+  earlyResetNotice?: EarlyResetNotice | null;
 }
 
 export interface ConfigData {

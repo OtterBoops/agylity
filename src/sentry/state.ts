@@ -14,6 +14,61 @@ export const PoolStateSchema = z.object({
 
 export type PoolState = z.infer<typeof PoolStateSchema>;
 
+export const EarlyResetPoolSchema = z.object({
+  poolId: z.string(),
+  displayName: z.string().optional(),
+  previousRemainingFraction: z.number().min(0).max(1),
+  remainingFraction: z.number().min(0).max(1),
+  previousResetTime: z.string(),
+  resetTime: z.string(),
+});
+
+export type EarlyResetPool = z.infer<typeof EarlyResetPoolSchema>;
+
+export const EarlyResetNoticeSchema = z.object({
+  detectedAt: z.string(),
+  pools: z.array(EarlyResetPoolSchema),
+});
+
+export type EarlyResetNotice = z.infer<typeof EarlyResetNoticeSchema>;
+
+/** Per-pool outcome of a quota observation, so callers can react without diffing state twice. */
+export interface PoolQuotaUpdate {
+  /** The reset deadline advanced: a new cycle with cleared milestones. */
+  cycleRolled: boolean;
+  /** Set only when this observation was a premature reset. */
+  earlyReset: EarlyResetPool | null;
+}
+
+// A pool nobody drew from floats its resetTime forward every poll, so only a pool with prior
+// usage can have reset early.
+const EARLY_RESET_UNUSED_FRACTION = 0.99;
+const EARLY_RESET_MIN_GAIN = 0.05;
+/** Inside this window the cycle is ending anyway, so a refill is expected rather than early. */
+const EARLY_RESET_GUARD_MS = 5 * 60_000;
+
+const detectEarlyReset = (
+  poolId: string,
+  existing: PoolState,
+  remainingFraction: number,
+  resetTime: string,
+  nowMs: number
+): EarlyResetPool | null => {
+  if (existing.remainingFraction >= EARLY_RESET_UNUSED_FRACTION) return null;
+  const priorResetMs = Date.parse(existing.resetTime);
+  if (!Number.isFinite(priorResetMs)) return null;
+  if (nowMs >= priorResetMs - EARLY_RESET_GUARD_MS) return null;
+  if (remainingFraction - existing.remainingFraction < EARLY_RESET_MIN_GAIN) return null;
+
+  return {
+    poolId,
+    previousRemainingFraction: existing.remainingFraction,
+    remainingFraction,
+    previousResetTime: existing.resetTime,
+    resetTime,
+  };
+};
+
 /** Probe sources, so the schema and its callers cannot disagree. */
 export const PROBE_SOURCES = [
   'connect_rpc',
@@ -32,6 +87,8 @@ export const SentryStateSchema = z.object({
   authRequired: z.boolean().optional(),
   authErrorMessage: z.string().optional(),
   pools: z.record(z.string(), PoolStateSchema),
+  /** Only the newest premature reset survives; a probe never retires it. */
+  earlyResetNotice: EarlyResetNoticeSchema.nullable().optional(),
 });
 
 export type SentryState = z.infer<typeof SentryStateSchema>;
@@ -146,7 +203,12 @@ export class SentryStateManager {
     }
   }
 
-  updatePoolQuota(poolId: string, remainingFraction: number, resetTime: string): boolean {
+  updatePoolQuota(
+    poolId: string,
+    remainingFraction: number,
+    resetTime: string,
+    nowMs: number = Date.now()
+  ): PoolQuotaUpdate {
     const existing = this.state.pools[poolId];
     if (!existing) {
       this.state.pools[poolId] = {
@@ -155,8 +217,10 @@ export class SentryStateManager {
         firedMilestones: [],
         lastAlertSentAt: null,
       };
-      return true;
+      return { cycleRolled: true, earlyReset: null };
     }
+
+    const earlyReset = detectEarlyReset(poolId, existing, remainingFraction, resetTime, nowMs);
 
     if (existing.resetTime !== resetTime) {
       // Upstream reset time changed: cycle rollover
@@ -164,11 +228,32 @@ export class SentryStateManager {
       existing.remainingFraction = remainingFraction;
       existing.firedMilestones = [];
       existing.lastAlertSentAt = null;
-      return true;
+      return { cycleRolled: true, earlyReset };
     }
 
     existing.remainingFraction = remainingFraction;
-    return false;
+    return { cycleRolled: false, earlyReset };
+  }
+
+  /** Overwrites any previous notice: only the latest premature reset is actionable. */
+  recordEarlyResetNotice(
+    pools: EarlyResetPool[],
+    detectedAt: string = new Date().toISOString()
+  ): EarlyResetNotice {
+    const notice: EarlyResetNotice = { detectedAt, pools };
+    this.state.earlyResetNotice = notice;
+    return JSON.parse(JSON.stringify(notice));
+  }
+
+  getEarlyResetNotice(): EarlyResetNotice | null {
+    return this.state.earlyResetNotice ?? null;
+  }
+
+  /** Cleared only by an explicit dismissal; the next premature reset replaces it. */
+  dismissEarlyResetNotice(): boolean {
+    if (!this.state.earlyResetNotice) return false;
+    this.state.earlyResetNotice = null;
+    return true;
   }
 
   isMilestoneFired(poolId: string, milestone: number | string): boolean {

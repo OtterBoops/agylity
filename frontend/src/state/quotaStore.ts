@@ -44,6 +44,12 @@ export const refreshQuota = async (options?: { force?: boolean }): Promise<void>
   }
 };
 
+/** Re-reads only the alert state, so dismissing a notice does not force a fresh quota probe. */
+export const refreshAlerts = async (): Promise<void> => {
+  const alerts = await getAlerts();
+  quotaStore.setState((prev) => ({ ...prev, alerts }));
+};
+
 let activePollingId: ReturnType<typeof setInterval> | null = null;
 
 export const startQuotaPolling = (intervalMs = 60000): (() => void) => {
