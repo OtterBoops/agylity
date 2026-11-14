@@ -102,9 +102,12 @@ export const App = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // One modal at a time: a second showModal() stacks in the top layer over a live dialog.
+      const anyDialogOpen = document.querySelector('dialog[open]') !== null;
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setCommandPaletteOpen((prev) => !prev);
+        if (commandPaletteOpen || !anyDialogOpen) setCommandPaletteOpen((prev) => !prev);
         return;
       }
 
@@ -119,7 +122,7 @@ export const App = () => {
 
       if (e.altKey && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        setDispatchModalOpen(true);
+        if (!anyDialogOpen) setDispatchModalOpen(true);
         return;
       }
 
@@ -174,7 +177,7 @@ export const App = () => {
     return () => clearInterval(timer);
   }, [refreshCooldown]);
 
-  const title = TITLES[currentUrl] || 'Overview';
+  const title = TITLES[currentUrl] || 'Not Found';
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const remainingCredits =
     quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;

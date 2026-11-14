@@ -31,7 +31,11 @@ import {
   sanitizeWebhookUrl,
   sanitizeErrorMessage,
 } from '../../src/notify/adapters/webhook.js';
-import { buildDispatchStatusEmbed, buildQuotaAlertEmbed } from '../../src/notify/embeds/index.js';
+import {
+  buildDispatchStatusEmbed,
+  buildQuotaAlertEmbed,
+  formatDurationHuman,
+} from '../../src/notify/embeds/index.js';
 import {
   DiscordNotifier,
   renderQuotaEmbed,
@@ -748,6 +752,34 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const field = embed.data.fields?.[0];
       assert.ok((field?.name?.length ?? 0) <= 256);
       assert.ok((field?.value?.length ?? 0) <= 1024);
+    });
+
+    it('builds a quota alert embed from a junk timestamp and a 400-char pool name', () => {
+      const alert: QuotaAlert = {
+        pool: {
+          poolId: 'claude',
+          family: 'claude',
+          displayName: 'C'.repeat(400),
+          remainingFraction: 0.2,
+          resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
+          hoursUntilReset: 3,
+          models: ['Claude'],
+        },
+        milestoneHours: 3,
+        remainingPercentage: 20,
+        triggeredAt: 'bogus',
+      };
+
+      const embed = buildQuotaAlertEmbed(alert);
+
+      // Discord rejects an unparsable timestamp and loses the whole message with it.
+      assert.equal(Number.isNaN(Date.parse(embed.timestamp ?? 'bogus')), false);
+      assert.ok((embed.title ?? '').length <= 256, `title was ${(embed.title ?? '').length} chars`);
+    });
+
+    it('renders a human duration without "1m 60s" or "NaN"', () => {
+      assert.equal(formatDurationHuman(119_600), '2m');
+      assert.equal(formatDurationHuman(Number.NaN), '0s');
     });
   });
 

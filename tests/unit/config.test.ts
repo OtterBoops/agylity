@@ -77,6 +77,11 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       () => validateConfigOverridePatch({ defaultDispatchEffort: 'invalid-effort' as any }),
       /Invalid option: expected one of/
     );
+    // An inherited Object member is not a config key, so it must not slip past the lookup.
+    assert.throws(
+      () => validateConfigOverridePatch({ toString: 'x' }),
+      /Unknown configuration key/
+    );
   });
 
   it('fails on invalid NOTIFICATION_CHANNEL enum value', () => {
@@ -341,6 +346,16 @@ describe('parseRawEnv malformed-value resilience', () => {
     assert.equal(parsed.repositories, undefined);
     assert.equal(parsed.logLevel, 'debug');
     assert.equal(parsed.quotaCheckIntervalSeconds, 300);
+  });
+
+  it('drops an unparsable ALLOW_OVERAGE instead of throwing', () => {
+    const parsed = parseRawEnv({ ALLOW_OVERAGE: 'maybe' });
+
+    assert.equal('allowOverage' in parsed, false);
+  });
+
+  it('trims a padded env value so it reaches the consumer bind-ready', () => {
+    assert.equal(parseRawEnv({ WEB_UI_HOST: ' 0.0.0.0 ' }).webUiHost, '0.0.0.0');
   });
 
   it('logs a warning naming each malformed variable', () => {

@@ -1445,6 +1445,98 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   });
 
   /* ==================================================================== */
+  /* 10. Backlog Sub-route Guards                                         */
+  /* ==================================================================== */
+  describe('10. Backlog Sub-route Guards', () => {
+    it('rejects PATCH on the dispatch sub-route with 405 and leaves the row unchanged', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_dispatch_patch_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'B', prompt: 'P', repositoryId: 'agylity' },
+            throwHttpErrors: false,
+          })
+          .json<{ id: string; status: string }>();
+        assert.equal(created.status, 'pending');
+
+        // The dispatch sub-route is POST-only; a PATCH must not fall through to the row update.
+        const res = await ky.patch(
+          `${base}/api/backlog/${encodeURIComponent(created.id)}/dispatch`,
+          {
+            json: { status: 'dispatched' },
+            retry: 0,
+            throwHttpErrors: false,
+          }
+        );
+        assert.equal(res.status, 405);
+
+        const after = await ky
+          .get(`${base}/api/backlog/${encodeURIComponent(created.id)}`)
+          .json<{ status: string; swarmTaskId?: string | null }>();
+        assert.equal(after.status, 'pending');
+        assert.equal(after.swarmTaskId ?? null, null);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('answers 400 (not 500) for a null body or a non-string title on PATCH', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_patch_bad_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'B', prompt: 'P', repositoryId: 'agylity' },
+            throwHttpErrors: false,
+          })
+          .json<{ id: string }>();
+        const url = `${base}/api/backlog/${encodeURIComponent(created.id)}`;
+
+        for (const body of ['null', '{"title":5}']) {
+          const res = await ky.patch(url, {
+            body,
+            headers: { 'content-type': 'application/json' },
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 400, `expected 400 for body ${body}, got ${res.status}`);
+        }
+
+        // The row is untouched by the rejected patches.
+        const after = await ky.get(url).json<{ title: string }>();
+        assert.equal(after.title, 'B');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
   /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
   /* ==================================================================== */
   describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {

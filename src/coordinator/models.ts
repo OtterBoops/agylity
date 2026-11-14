@@ -3,6 +3,7 @@ import {
   calculateHoursUntilReset,
   FAMILY_ALIASES,
   resolveModelFamily,
+  type QuotaBucket,
   type QuotaFamily,
   type QuotaSnapshot,
 } from '../sentry/models.js';
@@ -166,92 +167,99 @@ export const resolvePoolFamilyForModelOrNull = (modelOrFamily?: string): QuotaFa
 export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =>
   resolvePoolFamilyForModelOrNull(modelOrFamily) ?? 'gemini-argon';
 
-// Resolves to an explicit `agy --model` identifier; never returns 'auto'.
-export const resolveConcreteModelId = (
-  requestedModel: string | undefined,
-  defaultModel = 'gemini-4-argon'
-): string => {
-  const safeDefault =
-    defaultModel && defaultModel.trim() !== '' && defaultModel.trim().toLowerCase() !== 'auto'
-      ? defaultModel.trim()
-      : 'gemini-4-argon';
-
+// Ids and pool shorthands that all name one canonical model, so no caller invents its own table.
+const resolveShorthandModelId = (lowercased: string): string | undefined => {
   if (
-    !requestedModel ||
-    requestedModel.trim() === '' ||
-    requestedModel.trim().toLowerCase() === 'auto'
-  ) {
-    return safeDefault;
-  }
-
-  const trimmed = requestedModel.trim().toLowerCase();
-  if (
-    trimmed === 'gemini-argon' ||
-    trimmed === 'argon' ||
-    trimmed === 'gemini-4-argon' ||
-    trimmed === 'gemini-4-argon-high'
+    lowercased === 'gemini-argon' ||
+    lowercased === 'argon' ||
+    lowercased === 'gemini-4-argon' ||
+    lowercased === 'gemini-4-argon-high'
   ) {
     return DEFAULT_MODEL_BY_FAMILY['gemini-argon'];
   }
   if (
-    trimmed === 'gemini-flash' ||
-    trimmed === 'flash' ||
-    trimmed === 'gemini-3.8-flash' ||
-    trimmed === 'gemini-3.8-flash-high'
+    lowercased === 'gemini-flash' ||
+    lowercased === 'flash' ||
+    lowercased === 'gemini-3.8-flash' ||
+    lowercased === 'gemini-3.8-flash-high'
   ) {
     return DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
   }
   if (
-    trimmed === 'claude' ||
-    trimmed === 'sonnet' ||
-    trimmed === 'claude-sonnet-5-5' ||
-    trimmed === 'claude-sonnet-5-5-high'
+    lowercased === 'claude' ||
+    lowercased === 'sonnet' ||
+    lowercased === '3p' ||
+    lowercased === 'claude-sonnet-5-5' ||
+    lowercased === 'claude-sonnet-5-5-high'
   ) {
     return DEFAULT_MODEL_BY_FAMILY.claude;
   }
-  if (trimmed === 'opus' || trimmed === 'claude-opus-5-5' || trimmed === 'claude-opus-5-5-high') {
+  if (
+    lowercased === 'opus' ||
+    lowercased === 'claude-opus-5-5' ||
+    lowercased === 'claude-opus-5-5-high'
+  ) {
     return 'claude-opus-5-5';
   }
-  if (trimmed === 'gpt-oss' || trimmed === 'gpt-oss-120b' || trimmed === 'gpt-oss-120b-medium') {
+  if (
+    lowercased === 'gpt-oss' ||
+    lowercased === 'gpt-oss-120b' ||
+    lowercased === 'gpt-oss-120b-medium'
+  ) {
     return 'gpt-oss-120b';
   }
-
-  // Strip a trailing effort suffix so 'gemini-4-hydrogen-xhigh' targets the base model id.
-  return requestedModel.trim().replace(/-(low|medium|high|xhigh)$/i, '');
+  return undefined;
 };
+
+// Strips a trailing effort suffix so 'gemini-4-hydrogen-xhigh' targets the base model id.
+const stripEffortSuffix = (value: string): string =>
+  value.trim().replace(/-(low|medium|high|xhigh)$/i, '');
+
+// Resolves to an explicit `agy --model` identifier; never returns 'auto' or a pool shorthand.
+export const resolveConcreteModelId = (
+  requestedModel: string | undefined,
+  defaultModel = 'gemini-4-argon'
+): string => {
+  const configured = (defaultModel ?? '').trim();
+  // The configured default is user input too: a shorthand there must not reach `agy --model`.
+  const safeDefault =
+    configured !== '' && configured.toLowerCase() !== 'auto'
+      ? (resolveShorthandModelId(configured.toLowerCase()) ?? stripEffortSuffix(configured))
+      : 'gemini-4-argon';
+
+  const requested = (requestedModel ?? '').trim();
+  if (requested === '' || requested.toLowerCase() === 'auto') return safeDefault;
+
+  return resolveShorthandModelId(requested.toLowerCase()) ?? stripEffortSuffix(requested);
+};
+
+/** Fraction (0..1) to whole percent, floored. `toPrecision` stops 0.29 * 100 = 28.999… flooring to 28. */
+const toPercentFloor = (fraction: number): number =>
+  Math.floor(Number((fraction * 100).toPrecision(12)));
 
 export const calculateEffectiveHeadroomPercent = (
   pool: Pick<QuotaSnapshot, 'remainingFraction' | 'weekly' | 'shortTerm' | 'buckets'>
 ): number | null => {
   const fractions: number[] = [];
+  const addBucket = (bucket: QuotaBucket | undefined): void => {
+    // A disabled bucket is not in effect, so it must not drag the pool's headroom down.
+    if (!bucket || bucket.disabled === true) return;
+    if (typeof bucket.remainingFraction === 'number' && Number.isFinite(bucket.remainingFraction)) {
+      fractions.push(bucket.remainingFraction);
+    }
+  };
   if (typeof pool.remainingFraction === 'number' && Number.isFinite(pool.remainingFraction)) {
     fractions.push(pool.remainingFraction);
   }
-  if (
-    pool.weekly &&
-    typeof pool.weekly.remainingFraction === 'number' &&
-    Number.isFinite(pool.weekly.remainingFraction)
-  ) {
-    fractions.push(pool.weekly.remainingFraction);
-  }
-  if (
-    pool.shortTerm &&
-    typeof pool.shortTerm.remainingFraction === 'number' &&
-    Number.isFinite(pool.shortTerm.remainingFraction)
-  ) {
-    fractions.push(pool.shortTerm.remainingFraction);
-  }
+  addBucket(pool.weekly);
+  addBucket(pool.shortTerm);
   if (Array.isArray(pool.buckets)) {
-    for (const b of pool.buckets) {
-      if (typeof b.remainingFraction === 'number' && Number.isFinite(b.remainingFraction)) {
-        fractions.push(b.remainingFraction);
-      }
-    }
+    for (const b of pool.buckets) addBucket(b);
   }
   if (fractions.length === 0) return null;
   const minFraction = Math.max(0, Math.min(1, Math.min(...fractions)));
   // Floor, not round: 9.5% must not clear a 10% safety floor.
-  return Math.floor(minFraction * 100);
+  return toPercentFloor(minFraction);
 };
 
 export interface ModelEligibilityOptions {
@@ -351,7 +359,8 @@ export const evaluateModelDispatchEligibility = (
     (p) =>
       p.family === family ||
       p.poolId === family ||
-      resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+      // `...OrNull`, not the display default: an unattributable pool must never answer for argon.
+      resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
   );
 
   // No pool for this family, or a pool whose fractions are unusable, means unknown.
@@ -518,7 +527,8 @@ export const evaluateModelPreferenceChain = (options: {
       (p) =>
         p.family === family ||
         p.poolId === family ||
-        resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+        // `...OrNull`, not the display default: an unattributable pool must never answer for argon.
+        resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
     );
     if (!targetPool) {
       rejectionReasons.push(`${resolvedModel} (${family}): no telemetry pool`);
@@ -528,7 +538,7 @@ export const evaluateModelPreferenceChain = (options: {
     const weeklyFraction = targetPool.weekly?.remainingFraction ?? targetPool.remainingFraction;
     const weeklyHeadroomPercent =
       typeof weeklyFraction === 'number' && Number.isFinite(weeklyFraction)
-        ? Math.floor(Math.max(0, Math.min(1, weeklyFraction)) * 100)
+        ? toPercentFloor(Math.max(0, Math.min(1, weeklyFraction)))
         : null;
 
     const isShortTermActive = targetPool.shortTerm && !targetPool.shortTerm.disabled;
@@ -537,7 +547,7 @@ export const evaluateModelPreferenceChain = (options: {
       : undefined;
     const shortTermHeadroomPercent =
       typeof shortTermFraction === 'number' && Number.isFinite(shortTermFraction)
-        ? Math.floor(Math.max(0, Math.min(1, shortTermFraction)) * 100)
+        ? toPercentFloor(Math.max(0, Math.min(1, shortTermFraction)))
         : null;
 
     const effectiveHeadroomPercent = calculateEffectiveHeadroomPercent(targetPool);

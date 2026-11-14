@@ -89,6 +89,8 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
       aria-labelledby="session-modal-title"
       aria-modal="true"
       ref={dialogRef}
+      onClose={onClose}
+      onCancel={onClose}
       class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 shadow-2xl transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose();

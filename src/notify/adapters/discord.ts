@@ -37,6 +37,8 @@ export class DiscordNotifier implements Notifier {
   private options: DiscordNotifierOptions;
   private activeSubmissions = new Set<string>();
   private pinnedOwnerUserId?: string;
+  // A retried initialize() must not attach a second interactionCreate handler to the same client.
+  private interactionListenerBound = false;
 
   constructor(config: Partial<ResolvedConfig> = {}, options: DiscordNotifierOptions = {}) {
     this.config = { ...BUILTIN_DEFAULTS, ...config };
@@ -133,7 +135,8 @@ export class DiscordNotifier implements Notifier {
       });
     }
 
-    if (typeof this.client.on === 'function') {
+    if (!this.interactionListenerBound && typeof this.client.on === 'function') {
+      this.interactionListenerBound = true;
       this.client.on('interactionCreate', async (interaction: any) => {
         try {
           await this.handleInteraction(interaction);
@@ -354,7 +357,8 @@ export class DiscordNotifier implements Notifier {
     if (interaction) {
       try {
         const step = status.status ?? (status.step as string) ?? 'executing';
-        const msg = (status.message ?? `Step: ${step}`).slice(0, 2000);
+        // A blank relay is rejected by Discord as an empty message, so it falls back to the step.
+        const msg = (status.message?.trim() || `Step: ${step}`).slice(0, 2000);
         await interaction.editReply({ content: msg });
       } catch {
         // Safe catch on interaction update
@@ -441,42 +445,49 @@ export class DiscordNotifier implements Notifier {
         };
       }
 
-      if ('send' in channel && typeof (channel as any).send === 'function') {
-        let samplePool: QuotaSnapshot | undefined;
-        if (this.options.onQuotaRequested) {
-          try {
-            const pools = await this.options.onQuotaRequested();
-            if (pools && pools.length > 0) {
-              samplePool = pools.find((p) => p.family === 'claude') || pools[0];
-            }
-          } catch {}
-        }
-
-        const ownerId = await this.resolveOwnerUserId();
-        const embed = buildTestAlertEmbed(samplePool, {
-          ownerUserId: ownerId,
-          pingOwner: this.config.discordPingOwner !== false,
-          baseUrl: this.config.baseUrl,
-        });
-        const mention = this.resolveOwnerMention(ownerId);
-
-        const sendPayload: any = {
-          embeds: [embed],
+      // A channel that cannot accept messages must not be reported as a delivered ping.
+      if (!('send' in channel) || typeof (channel as any).send !== 'function') {
+        return {
+          success: false,
+          message: `Discord channel ${channelId} cannot receive messages.`,
+          channel: this.channelName,
         };
-
-        if (mention && ownerId) {
-          sendPayload.content = mention;
-          sendPayload.allowedMentions = {
-            users: [ownerId],
-          };
-        }
-
-        if (this.config.repositories && this.config.repositories.length > 0) {
-          sendPayload.components = [createRepoSelectMenu(this.config.repositories)];
-        }
-
-        await (channel as any).send(sendPayload);
       }
+
+      let samplePool: QuotaSnapshot | undefined;
+      if (this.options.onQuotaRequested) {
+        try {
+          const pools = await this.options.onQuotaRequested();
+          if (pools && pools.length > 0) {
+            samplePool = pools.find((p) => p.family === 'claude') || pools[0];
+          }
+        } catch {}
+      }
+
+      const ownerId = await this.resolveOwnerUserId();
+      const embed = buildTestAlertEmbed(samplePool, {
+        ownerUserId: ownerId,
+        pingOwner: this.config.discordPingOwner !== false,
+        baseUrl: this.config.baseUrl,
+      });
+      const mention = this.resolveOwnerMention(ownerId);
+
+      const sendPayload: any = {
+        embeds: [embed],
+      };
+
+      if (mention && ownerId) {
+        sendPayload.content = mention;
+        sendPayload.allowedMentions = {
+          users: [ownerId],
+        };
+      }
+
+      if (this.config.repositories && this.config.repositories.length > 0) {
+        sendPayload.components = [createRepoSelectMenu(this.config.repositories)];
+      }
+
+      await (channel as any).send(sendPayload);
 
       return {
         success: true,
@@ -494,6 +505,7 @@ export class DiscordNotifier implements Notifier {
 
   async shutdown(): Promise<void> {
     this.initialized = false;
+    this.interactionListenerBound = false;
     this.activeInteractions.clear();
     this.activeSubmissions.clear();
     if (this.client) {

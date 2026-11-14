@@ -435,8 +435,11 @@ const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogSt
   return parsed.success ? parsed.data : fallback;
 };
 
-const coerceNullableString = (value: unknown, fallback: string | null): string | null =>
-  typeof value === 'string' ? value : fallback;
+// `null` is an explicit clear: callers pass it to drop a stale error or attachment.
+const coerceNullableString = (value: unknown, fallback: string | null): string | null => {
+  if (value === null) return null;
+  return typeof value === 'string' ? value : fallback;
+};
 
 /** Raised for every rejected one-time registration token, so callers can map it to a 401. */
 export class RegistrationTokenError extends Error {}
@@ -1013,6 +1016,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
                WHERE status IN (${TERMINAL_STATUS_SQL})
                ORDER BY updated_at DESC
                LIMIT ?
+             )
+             -- The terminal row is the reconciler's only proof its backlog origin already ran;
+             -- deleting it re-dispatches finished work.
+             AND NOT (
+               tier = 'backlog'
+               AND origin_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM backlog_tasks AS b
+                 WHERE b.id = swarm_tasks.origin_id AND b.status = 'dispatched'
+               )
              )`
         )
         .run(keepTerminalCount);
@@ -1075,7 +1088,12 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       limit?: number;
     } = {}
   ): SwarmTask[] {
-    const limit = Math.min(Math.max(1, options.limit ?? 50), 500);
+    // SQLite rejects a REAL/NaN LIMIT, so the caller's number is floored and range-checked.
+    const requestedLimit = options.limit ?? 50;
+    const limit = Math.min(
+      Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
+      500
+    );
     const conditions: string[] = [];
     const params: any[] = [];
 
@@ -1275,11 +1293,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
+    // An unparsable claimed_at yields NaN, which SQLite rejects as a NOT NULL violation; the
+    // derived duration therefore falls back to the stored value instead of throwing.
+    const elapsedMs = existing.claimedAt
+      ? Date.now() - new Date(existing.claimedAt).getTime()
+      : Number.NaN;
     const durationMs =
       patch.durationMs !== undefined
         ? Math.max(0, Math.round(patch.durationMs))
-        : existing.claimedAt && isTerminal
-          ? Math.max(0, Date.now() - new Date(existing.claimedAt).getTime())
+        : existing.claimedAt && isTerminal && Number.isFinite(elapsedMs)
+          ? Math.max(0, elapsedMs)
           : existing.durationMs;
 
     const branchName = patch.branchName ?? existing.branchName ?? null;

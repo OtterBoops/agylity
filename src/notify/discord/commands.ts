@@ -1,6 +1,7 @@
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { z } from 'zod';
 import type { ResolvedConfig } from '../../config/schema.js';
+import { ALL_EFFORTS } from '../../coordinator/models.js';
 import { logger } from '../../logs/logger.js';
 
 // Task prompt validation schema enforcing 1-4000 character boundaries.
@@ -41,11 +42,8 @@ export const buildSlashCommandDefinitions = (): unknown[] => [
         .setName('effort')
         .setDescription('Reasoning effort')
         .setRequired(false)
-        .addChoices(
-          { name: 'low', value: 'low' },
-          { name: 'medium', value: 'medium' },
-          { name: 'high', value: 'high' }
-        )
+        // Derived from the shared effort list so a new effort is offered here too.
+        .addChoices(...ALL_EFFORTS.map((effort) => ({ name: effort, value: effort })))
     )
     .toJSON(),
 ];

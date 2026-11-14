@@ -65,6 +65,10 @@ export const handleStaticAsset = async (
       })
       .end(content);
   } catch (err: any) {
+    // A path naming a directory (`/assets/`) is a missing asset, not a server failure.
+    if (err?.code === 'EISDIR') {
+      return sendJson(res, 404, { error: 'Asset not found' });
+    }
     logger.child('web').error('Static asset read failed for %s: %s', pathname, err?.message ?? err);
     if (!res.headersSent) {
       return sendJson(res, 500, { error: 'Failed to load asset' });

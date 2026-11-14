@@ -1,16 +1,23 @@
 import type http from 'node:http';
 import { sendJson, methodNotAllowed, readJsonBody, safeDecodeSegment } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { isSecretKey, isSecretMask, maskSecret } from '../../storage/crypto.js';
+import { isSecretKey, isSecretMask, maskSecret, SECRET_MASK } from '../../storage/crypto.js';
 import { validateConfigOverridePatch } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+
+/** Object-valued secrets (e.g. webhookCustomHeaders) are set when they carry any entry. */
+const isSecretSet = (value: unknown): boolean => {
+  if (typeof value === 'string') return value.trim() !== '';
+  return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
+};
 
 export const sanitizeConfigForClient = (config: Record<string, any>): Record<string, any> => {
   const result: Record<string, any> = { ...config };
   for (const [k, v] of Object.entries(result)) {
-    if (isSecretKey(k)) {
-      result[k] = maskSecret(v);
-    }
+    if (!isSecretKey(k)) continue;
+    // Never hand the client the stored value. A blank one would read as "unset", and a blank
+    // write deletes the override, so a configured object secret still renders as the mask.
+    result[k] = typeof v === 'string' ? maskSecret(v) : isSecretSet(v) ? SECRET_MASK : '';
   }
   return result;
 };
@@ -19,7 +26,7 @@ export const getSecretsMeta = (config: Record<string, any>): Record<string, { is
   const meta: Record<string, { isSet: boolean }> = {};
   for (const [k, v] of Object.entries(config)) {
     if (isSecretKey(k)) {
-      meta[k] = { isSet: Boolean(v && typeof v === 'string' && v.trim() !== '') };
+      meta[k] = { isSet: isSecretSet(v) };
     }
   }
   return meta;
@@ -37,12 +44,17 @@ export const handleConfigEndpoint = async (
     const resolved = options.configStore.resolveConfig();
     const overrides = options.configStore.getAllOverrides();
     const sources = options.configStore.getSources?.() ?? {};
-    return sendJson(res, 200, {
-      resolved: sanitizeConfigForClient(resolved),
-      overrides: sanitizeConfigForClient(overrides),
-      secretsMeta: getSecretsMeta(resolved),
-      sources,
-    });
+    return sendJson(
+      res,
+      200,
+      {
+        resolved: sanitizeConfigForClient(resolved),
+        overrides: sanitizeConfigForClient(overrides),
+        secretsMeta: getSecretsMeta(resolved),
+        sources,
+      },
+      { 'Cache-Control': 'no-store' }
+    );
   }
 
   if (method === 'POST') {
@@ -73,9 +85,10 @@ export const handleConfigEndpoint = async (
       keysToValidate[k] = v;
     }
 
+    let validatedPatch: Record<string, unknown> = {};
     try {
       if (Object.keys(keysToValidate).length > 0) {
-        validateConfigOverridePatch(keysToValidate);
+        validatedPatch = validateConfigOverridePatch(keysToValidate);
       }
     } catch (err: any) {
       return sendJson(res, 400, { error: err.message });
@@ -95,7 +108,9 @@ export const handleConfigEndpoint = async (
     };
 
     for (const [k, v] of Object.entries(patchToValidate)) {
-      handleSet(k, v);
+      // Store the value the schema produced, not the raw one: repositories entries, for one,
+      // only gain their derived id/defaultBranch through validation.
+      handleSet(k, Object.hasOwn(validatedPatch, k) ? validatedPatch[k] : v);
     }
 
     const updatedResolved = options.configStore.resolveConfig();
@@ -122,8 +137,10 @@ export const handleDeleteConfigOverride = (
   method: string
 ): void => {
   const log = options.logger ?? logger.child('web');
+  if (method !== 'DELETE') return methodNotAllowed(res);
+
   const key = pathname.slice('/api/config/'.length).trim();
-  if (!key || method !== 'DELETE') return methodNotAllowed(res);
+  if (!key) return sendJson(res, 400, { error: 'Configuration key is required' });
 
   const decodedKey = safeDecodeSegment(key);
   if (decodedKey === null) return sendJson(res, 400, { error: 'Malformed configuration key' });

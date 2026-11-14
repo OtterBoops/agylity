@@ -36,6 +36,24 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     assert.equal(tableCheck.name, 'settings');
   });
 
+  it('round-trips an object-valued secret and never stores it in plaintext', () => {
+    const headers = { Authorization: 'Bearer abc123', 'X-Api-Key': 'k-42' };
+    db.set('webhookCustomHeaders', headers);
+
+    // The stored row is ciphertext, not the header map.
+    const raw = db.getRaw('webhookCustomHeaders');
+    assert.ok(raw);
+    assert.equal(raw.includes('Bearer abc123'), false);
+
+    const read = db.get<typeof headers>('webhookCustomHeaders');
+    assert.deepEqual(read, headers);
+    assert.deepEqual(db.getAll().webhookCustomHeaders, headers);
+
+    // A string secret keeps its plain form through the same path.
+    db.set('webhookSecret', 'plain-token');
+    assert.equal(db.get('webhookSecret'), 'plain-token');
+  });
+
   it('auto-creates parent directories and enables WAL mode on disk files', () => {
     const testDir = join(
       tmpdir(),

@@ -101,6 +101,7 @@ export const ConnectionInspectorModal = ({
       aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
+      onCancel={onClose}
       onClick={handleDialogClick}
       class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >

@@ -56,7 +56,8 @@ export class DefaultLogger implements Logger {
     if (this.minLevel) return this.minLevel;
     if (this.parent) return this.parent.getLevel();
     const envLevel = process.env.LOG_LEVEL?.trim().toLowerCase();
-    if (envLevel && envLevel in LEVEL_PRIORITY) {
+    // Own keys only: 'constructor' is inherited, and matching it would disable log filtering entirely.
+    if (envLevel && Object.hasOwn(LEVEL_PRIORITY, envLevel)) {
       return envLevel as LogLevel;
     }
     return 'info';

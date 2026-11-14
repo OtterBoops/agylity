@@ -18,6 +18,7 @@ interface GeneralViewProps {
 export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const [isTogglingCoordinator, setIsTogglingCoordinator] = useState(false);
+  const [coordinatorError, setCoordinatorError] = useState<string | null>(null);
   const serverBaseUrl = String(config.resolved?.baseUrl || '');
   const [baseUrl, setBaseUrl] = useState(serverBaseUrl);
   const [isSaving, setIsSaving] = useState(false);
@@ -29,9 +30,13 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
 
   const handleToggleCoordinator = async () => {
     setIsTogglingCoordinator(true);
+    setCoordinatorError(null);
     try {
       await updateConfig({ coordinatorEnabled: !isCoordinatorEnabled });
       onChanged();
+    } catch (err: any) {
+      // The switch reads the server value, so a failed write snaps back — say why.
+      setCoordinatorError(err?.message || 'Failed to update the Task Coordinator state');
     } finally {
       setIsTogglingCoordinator(false);
     }
@@ -159,6 +164,15 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
             />
           </div>
         </div>
+
+        {coordinatorError && (
+          <p
+            role="alert"
+            class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
+          >
+            {coordinatorError}
+          </p>
+        )}
       </div>
 
       <SettingsForm

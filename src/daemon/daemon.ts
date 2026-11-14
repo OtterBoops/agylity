@@ -97,6 +97,11 @@ export class AgylityDaemon {
   public isNotifierShutdown = false;
 
   private timer: NodeJS.Timeout | null = null;
+  /** Guards the tick path so a probe slower than the interval cannot overlap the next one. */
+  private probeInFlight = false;
+  /** Memoized teardown, so a signal landing during shutdown waits instead of tearing down twice. */
+  private shutdownPromise?: Promise<void>;
+  private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
   private readonly warnedLowQuotaPools = new Map<string, string>();
   private warnedAuthRequired = false;
@@ -140,23 +145,24 @@ export class AgylityDaemon {
 
     // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
     this.configStore.on('change', async ({ key, resolvedConfig }) => {
-      try {
-        this.logger.info('Configuration update detected, syncing active components...');
-        if (resolvedConfig.logLevel) {
-          this.applyLogLevel(resolvedConfig.logLevel);
-        }
-        if (typeof this.notifier.updateConfig === 'function') {
-          await this.notifier.updateConfig(resolvedConfig);
-        }
-        if (typeof this.quotaClient.updateConfig === 'function') {
-          this.quotaClient.updateConfig(resolvedConfig);
-        }
-        if (typeof this.sentryEvaluator.updateConfig === 'function') {
-          this.sentryEvaluator.updateConfig({
-            milestoneHours: resolvedConfig.quotaMilestoneHours,
-            alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
-          });
-        }
+      this.logger.info('Configuration update detected, syncing active components...');
+      if (resolvedConfig.logLevel) {
+        this.applyLogLevel(resolvedConfig.logLevel);
+      }
+      // Each component syncs on its own: one rejecting adapter must not leave the rest on stale config.
+      await this.syncComponent('notification adapter', () =>
+        this.notifier.updateConfig?.(resolvedConfig)
+      );
+      await this.syncComponent('quota client', () =>
+        this.quotaClient.updateConfig?.(resolvedConfig)
+      );
+      await this.syncComponent('sentry evaluator', () =>
+        this.sentryEvaluator.updateConfig?.({
+          milestoneHours: resolvedConfig.quotaMilestoneHours,
+          alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
+        })
+      );
+      await this.syncComponent('sentry timer', () => {
         if (
           this.timer &&
           resolvedConfig.quotaCheckIntervalSeconds &&
@@ -166,10 +172,21 @@ export class AgylityDaemon {
           this.logger.info('Rescheduling quota sentry timer to %ds interval', newIntervalSeconds);
           this.scheduleSentryTimer(newIntervalSeconds);
         }
-      } catch (err: any) {
-        this.logger.error('Error syncing updated configuration:', err?.message ?? err);
-      }
+      });
     });
+  }
+
+  /** Applies one config-sync step in isolation so a failing component cannot stall the others. */
+  private async syncComponent(name: string, step: () => void | Promise<void>): Promise<void> {
+    try {
+      await step();
+    } catch (err: any) {
+      this.logger.error(
+        'Error syncing %s with updated configuration: %s',
+        name,
+        err?.message ?? err
+      );
+    }
   }
 
   // Factory method to construct and wire all daemon subsystems.
@@ -302,7 +319,8 @@ export class AgylityDaemon {
 
   // Starts the daemon, initializing notifier, loading state, conditionally starting
   public async start(): Promise<void> {
-    if (this.isRunning) {
+    // A daemon whose teardown already began cannot be resurrected, so a later start() is a no-op.
+    if (this.isRunning || this.shutdownPromise) {
       return;
     }
 
@@ -352,6 +370,10 @@ export class AgylityDaemon {
     }
 
     // 5. Setup recurring sentry interval
+    // A shutdown racing the boot probe wins: never schedule a timer onto a torn-down daemon.
+    if (this.shutdownRequested) {
+      return;
+    }
     const intervalSeconds = Math.max(30, resolved.quotaCheckIntervalSeconds ?? 60);
     this.logger.info('Sentry recurring check scheduled every %d seconds.', intervalSeconds);
     this.scheduleSentryTimer(intervalSeconds);
@@ -472,9 +494,16 @@ export class AgylityDaemon {
   private scheduleSentryTimer(intervalSeconds: number): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
-      void this.checkQuota().catch((err) => {
-        this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
-      });
+      // A probe that outlasts its interval must not run beside the next tick and re-alert the same milestone.
+      if (this.probeInFlight) return;
+      this.probeInFlight = true;
+      void this.checkQuota()
+        .catch((err) => {
+          this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
+        })
+        .finally(() => {
+          this.probeInFlight = false;
+        });
     }, intervalSeconds * 1000);
   }
 
@@ -552,7 +581,14 @@ export class AgylityDaemon {
     }
   }
 
-  public async shutdown(): Promise<void> {
+  public shutdown(): Promise<void> {
+    // A second caller (e.g. SIGTERM during an in-flight shutdown) awaits the same teardown.
+    this.shutdownPromise ??= this.performShutdown();
+    return this.shutdownPromise;
+  }
+
+  private async performShutdown(): Promise<void> {
+    this.shutdownRequested = true;
     if (!this.isRunning && this.isDbClosed) {
       return;
     }

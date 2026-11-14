@@ -184,7 +184,7 @@ export const handlePostDispatch = async (
     model: toStringOrUndefined(payload.model),
     models: toStringArray(payload.models),
     effort,
-    allowOverage: Boolean(payload.allowOverage),
+    allowOverage: payload.allowOverage === true,
     pushBranch: typeof payload.pushBranch === 'boolean' ? payload.pushBranch : true,
     autoCreatePr: typeof payload.autoCreatePr === 'boolean' ? payload.autoCreatePr : true,
     expiresAt: toStringOrUndefined(payload.expiresAt),
@@ -259,7 +259,9 @@ export const handlePollTasks = async (
 
   const abortController = new AbortController();
   const onClose = () => abortController.abort();
-  req.once('close', onClose);
+  // The request's own 'close' has already fired once the body is read, so only the response
+  // still reports a client that hangs up mid-poll; without it a task is claimed for a gone runner.
+  res.once('close', onClose);
 
   try {
     const task = await coordinator.pollForTask(
@@ -278,7 +280,7 @@ export const handlePollTasks = async (
       return sendJson(res, 200, { task }, { 'Cache-Control': 'no-store' });
     }
   } finally {
-    req.off('close', onClose);
+    res.off('close', onClose);
   }
 };
 
@@ -418,6 +420,11 @@ export const handleTaskRetry = async (
     autoCreatePr: task.autoCreatePr,
     verifyCommand: task.verifyCommand,
   });
+
+  // A retry is a dispatch, so a safety-floor refusal is a 4xx here too, not a 200 body.
+  if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {
+    return sendJson(res, 400, retryRes);
+  }
 
   return sendJson(res, 200, retryRes);
 };

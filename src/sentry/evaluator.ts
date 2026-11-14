@@ -61,8 +61,9 @@ export class QuotaEvaluator {
   ): { alert: QuotaAlert | null; supersededMilestones: number[] } {
     const remainingPercentage = Math.round(snapshot.remainingFraction * 1000) / 10;
 
-    // Check headroom threshold: alert only if remaining quota headroom is >= threshold
-    if (remainingPercentage < this.alertThresholdPercent) {
+    // The floor is checked against the raw fraction, not the display value: 24.95% rounds to 25.0
+    // and must not clear a 25% floor.
+    if (snapshot.remainingFraction * 100 < this.alertThresholdPercent) {
       return { alert: null, supersededMilestones: [] };
     }
 

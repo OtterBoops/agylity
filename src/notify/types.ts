@@ -87,7 +87,7 @@ export const DispatchRequestSchema = z.object({
   requestedByUserId: z.string().optional(),
   model: z.string().optional(),
   effort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
-  workerMode: z.enum(['headless', 'visible', 'any']).optional(),
+  runnerMode: z.enum(['headless', 'visible', 'any']).optional(),
   poolFamily: z.string().optional(),
   requiredLabels: z.array(z.string()).optional(),
   allowOverage: z.boolean().optional(),

@@ -67,6 +67,14 @@ export const assertRunnerGitCredentials = (
   );
 };
 
+const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'all']);
+
+// An unrecognised policy string (a typo or a blank compose var) must never read as "no restriction".
+export const normalizePrPolicy = (value?: string): PrPolicy | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && PR_POLICIES.has(normalized) ? (normalized as PrPolicy) : undefined;
+};
+
 const buildGitAuthArgs = (repoUrl?: string): string[] => {
   const ghToken = process.env.GITHUB_TOKEN?.trim();
   if (ghToken && (!repoUrl || repoUrl.startsWith('https://github.com/'))) {
@@ -102,6 +110,10 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
   // Fallback covers a prompt whose first word already exceeds the budget.
   return `agy/${shortId}-${slug || 'work'}`;
 };
+
+// execFile's 1 MB default maxBuffer kills the child mid-run (ERR_CHILD_PROCESS_STDIO_MAXBUFFER) and
+// reports only the truncation, not the real result. A 30-minute verbose agent run easily beats it.
+const MAX_CHILD_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 const DOC_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn', '.txt', '.rst', '.adoc']);
 
@@ -219,6 +231,7 @@ export class TaskExecutor {
   private readonly onStatusUpdate?: (
     patch: TaskStatusPatch & { message?: string }
   ) => Promise<void> | void;
+  private abortSignal?: AbortSignal;
 
   constructor(options: TaskExecutorOptions = {}) {
     this.agyBinPath = options.agyBinPath || 'agy';
@@ -226,8 +239,19 @@ export class TaskExecutor {
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
-    this.prPolicy = options.prPolicy ?? ((process.env.PR_POLICY as PrPolicy) || 'docs_only');
+    // An unrecognised PR_POLICY (a typo, a blank compose var) must not fall through the bot guards
+    // as "allow every PR"; unknown values fall back to the restrictive default.
+    this.prPolicy =
+      normalizePrPolicy(options.prPolicy) ??
+      normalizePrPolicy(process.env.PR_POLICY) ??
+      'docs_only';
     this.onStatusUpdate = options.onStatusUpdate;
+  }
+
+  // Lets the owner cancel an in-flight run: execFile kills the child on abort, so a shutdown does
+  // not leave agy (and its own subprocesses) running against the repository.
+  public setAbortSignal(signal?: AbortSignal): void {
+    this.abortSignal = signal;
   }
 
   public async execute(task: SwarmTask): Promise<TaskExecutionResult> {
@@ -264,6 +288,7 @@ export class TaskExecutor {
 
           await this.execFileFn('git', gitCloneArgs, {
             timeout: 120000,
+            ...(this.abortSignal ? { signal: this.abortSignal } : {}),
           });
         } catch (cloneErr: any) {
           let errStr = cloneErr?.message || String(cloneErr);
@@ -389,6 +414,8 @@ export class TaskExecutor {
           {
             cwd,
             timeout: this.timeoutMs,
+            maxBuffer: MAX_CHILD_OUTPUT_BYTES,
+            ...(this.abortSignal ? { signal: this.abortSignal } : {}),
           }
         );
         capturedTelemetryRaw = agyStdout || '';
@@ -428,6 +455,8 @@ export class TaskExecutor {
           await this.execFileFn(cmd, cmdArgs, {
             cwd,
             timeout: 10 * 60 * 1000,
+            maxBuffer: MAX_CHILD_OUTPUT_BYTES,
+            ...(this.abortSignal ? { signal: this.abortSignal } : {}),
           });
         } catch (verifyErr: any) {
           const vMsg =
@@ -504,12 +533,16 @@ export class TaskExecutor {
         } catch {
           // Cleanup best-effort
         }
+        const telemetry = parseAgyTelemetry(capturedTelemetryRaw);
         return {
           success: true,
           noChanges: true,
           branchName,
           output: combinedOutput,
           durationMs: Date.now() - startMs,
+          numTurns: telemetry.numTurns,
+          totalTokens: telemetry.totalTokens,
+          thinkingTokens: telemetry.thinkingTokens,
         };
       }
 
@@ -517,7 +550,8 @@ export class TaskExecutor {
 
       // Policy Guard: Check PR policy before pushing branches or creating PRs
       const isBot = task.actor === 'bot';
-      const effectivePrPolicy: PrPolicy = task.prPolicy ?? this.prPolicy ?? 'docs_only';
+      const effectivePrPolicy: PrPolicy =
+        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'docs_only';
 
       if (isBot) {
         if (effectivePrPolicy === 'none') {
@@ -547,6 +581,9 @@ export class TaskExecutor {
 
         if (effectivePrPolicy === 'docs_only') {
           let nonDocFiles: string[] = [];
+          // A failed diff inspection proves nothing: treating it as "no non-doc files" would let a
+          // bot push code under docs_only, so it is handled exactly like a non-doc change.
+          let diffInspectionFailed = false;
           try {
             const { stdout: diffOut } = await this.execFileFn(
               'git',
@@ -559,6 +596,7 @@ export class TaskExecutor {
               .filter(Boolean);
             nonDocFiles = changedFiles.filter((f) => !isDocumentationFile(f));
           } catch (diffErr: any) {
+            diffInspectionFailed = true;
             this.log.warn(
               'Failed to inspect commit diff for bot policy check on %s: %s',
               branchName,
@@ -566,12 +604,15 @@ export class TaskExecutor {
             );
           }
 
-          if (nonDocFiles.length > 0) {
+          if (diffInspectionFailed || nonDocFiles.length > 0) {
+            const blockDetail = diffInspectionFailed
+              ? 'Could not determine the changed files (git diff failed), so documentation-only cannot be proven.'
+              : `Non-doc files modified: ${nonDocFiles.join(', ')}`;
             this.log.info(
-              'Bot PR policy "docs_only" blocked PR for task %s on %s (non-doc files modified: %s)',
+              'Bot PR policy "docs_only" blocked PR for task %s on %s (%s)',
               task.id,
               branchName,
-              nonDocFiles.join(', ')
+              blockDetail
             );
             try {
               await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
@@ -584,7 +625,7 @@ export class TaskExecutor {
               success: true,
               noChanges: true,
               branchName,
-              output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only (prPolicy='docs_only'). Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`,
+              output: `${combinedOutput}\n\n[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only (prPolicy='docs_only'). Code modifications must be submitted as GitHub Issues.\n${blockDetail}`,
               durationMs: Date.now() - startMs,
               numTurns: telemetry.numTurns,
               totalTokens: telemetry.totalTokens,
@@ -696,7 +737,10 @@ export class TaskExecutor {
       };
     } catch (err: any) {
       const durationMs = Date.now() - startMs;
-      const errMessage = err?.stderr?.trim() || err?.message || String(err);
+      const aborted = err?.name === 'AbortError' || this.abortSignal?.aborted === true;
+      const errMessage = aborted
+        ? 'Task execution aborted before completion (runner is shutting down)'
+        : err?.stderr?.trim() || err?.message || String(err);
       this.log.error('Task %s execution failed: %s', task.id, errMessage);
       if (err?.stdout || err?.stderr) {
         const extra = [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n');
@@ -751,6 +795,7 @@ export class RemoteSwarmRunner {
   private currentExecutingTaskId: string | null = null;
   public isRunning = false;
   private abortController: AbortController | null = null;
+  private taskAbortController: AbortController | null = null;
   private authOkUntil = 0;
   private authBlockedUntil = 0;
   private warnedAuthRequired = false;
@@ -850,13 +895,27 @@ export class RemoteSwarmRunner {
     try {
       const raw = readFileSync(statePath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<PersistedRunnerState>;
-      if (parsed.runnerToken && typeof parsed.runnerToken === 'string') {
+      // Explicit configuration wins over the stale file: a rotated RUNNER_TOKEN or a corrected
+      // RUNNER_ID must take effect, otherwise the runner 401s on every poll with no way out.
+      if (
+        parsed.runnerToken &&
+        typeof parsed.runnerToken === 'string' &&
+        !this.options.runnerToken?.trim()
+      ) {
         this.runnerToken = parsed.runnerToken;
       }
-      if (parsed.runnerId && typeof parsed.runnerId === 'string') {
+      if (
+        parsed.runnerId &&
+        typeof parsed.runnerId === 'string' &&
+        !this.options.runnerId?.trim()
+      ) {
         this.runnerId = parsed.runnerId;
       }
-      if (parsed.runnerName && typeof parsed.runnerName === 'string') {
+      if (
+        parsed.runnerName &&
+        typeof parsed.runnerName === 'string' &&
+        !this.options.runnerName?.trim()
+      ) {
         this.runnerName = parsed.runnerName;
       }
       if (
@@ -1010,12 +1069,29 @@ export class RemoteSwarmRunner {
     heartbeatTimer.unref?.();
 
     this.currentExecutingTaskId = task.id;
+    const taskAbort = new AbortController();
+    this.taskAbortController = taskAbort;
+    this.executor.setAbortSignal(taskAbort.signal);
     let result: TaskExecutionResult;
     try {
       result = await this.executor.execute(task);
+    } catch (execErr: any) {
+      // Without this the task would sit in 'executing' until the 10-minute lease reaper fails it,
+      // and the real error would never reach the coordinator.
+      const message = execErr?.message ?? String(execErr);
+      this.log.error('Task %s threw during execution: %s', task.id, message);
+      result = {
+        success: false,
+        branchName: task.branchName ?? '',
+        output: '',
+        error: message,
+        durationMs: 0,
+      };
     } finally {
       clearInterval(heartbeatTimer);
       this.currentExecutingTaskId = null;
+      this.executor.setAbortSignal(undefined);
+      this.taskAbortController = null;
     }
 
     await this.reportStatus(baseUrl, headers, task.id, {
@@ -1113,5 +1189,7 @@ export class RemoteSwarmRunner {
   public stop(): void {
     this.isRunning = false;
     this.abortController?.abort();
+    // Kill the in-flight agy run too; leaving it alive would keep mutating the repo after shutdown.
+    this.taskAbortController?.abort();
   }
 }

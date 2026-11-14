@@ -1,13 +1,34 @@
 import net from 'node:net';
 import type http from 'node:http';
 
+const MAPPED_V4_PREFIX = '::ffff:';
+
+/** The hex tail of a mapped address (`c0a8:0101`), as a dotted quad. */
+const hexPairToDotted = (tail: string): string | null => {
+  const match = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
+  if (!match) return null;
+  const high = Number.parseInt(match[1]!, 16);
+  const low = Number.parseInt(match[2]!, 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+};
+
 // Normalizes IPv4-mapped IPv6 addresses (e.g. ::ffff:192.168.1.1 -> 192.168.1.1).
+// The suffix is only rewritten when it really is IPv4: slicing blindly turned the equally
+// valid ::ffff:7f00:1 into "7f00:1", which is no address at all.
 export const normalizeIp = (ip: string): string => {
   const trimmed = ip.trim();
-  if (trimmed.startsWith('::ffff:')) {
-    return trimmed.slice(7);
+  if (!trimmed.toLowerCase().startsWith(MAPPED_V4_PREFIX)) {
+    return trimmed;
   }
-  return trimmed;
+
+  const rest = trimmed.slice(MAPPED_V4_PREFIX.length);
+  const slashIdx = rest.indexOf('/');
+  const address = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
+  const prefixSuffix = slashIdx === -1 ? '' : rest.slice(slashIdx);
+
+  if (net.isIP(address) === 4) return address + prefixSuffix;
+  const dotted = hexPairToDotted(address);
+  return dotted === null ? trimmed : dotted + prefixSuffix;
 };
 
 const ipv4ToBigInt = (ip: string): bigint | null => {

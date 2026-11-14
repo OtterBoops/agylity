@@ -14,6 +14,19 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(normalizeIp('10.0.0.1'), '10.0.0.1');
       assert.equal(normalizeIp('2001:db8::1'), '2001:db8::1');
     });
+
+    it('rewrites a hex-pair mapped tail to a dotted quad instead of slicing it blindly', () => {
+      assert.equal(normalizeIp('::ffff:7f00:1'), '127.0.0.1');
+      assert.equal(normalizeIp('::ffff:c0a8:0101'), '192.168.1.1');
+      assert.equal(normalizeIp('::ffff:192.168.1.1'), '192.168.1.1');
+    });
+
+    it('keeps the suffix of a mapped IPv6 prefix instead of slicing mid-string', () => {
+      // The old handler sliced the prefix off blindly and produced "0:0/96", which is no address
+      // at all. This form is not a usable whitelist entry either way (a /96 prefix fails
+      // parseSubnet), so this pins the suffix rather than any CIDR semantics.
+      assert.equal(normalizeIp('::ffff:0:0/96'), '0.0.0.0/96');
+    });
   });
 
   describe('isIpAllowed (Off by Default Invariant)', () => {

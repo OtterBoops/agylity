@@ -3,6 +3,7 @@ import { FORBIDDEN_CONFIG_KEYS } from './schema.js';
 import { AppDatabase } from '../storage/db.js';
 import {
   BUILTIN_DEFAULTS,
+  CONFIG_KEY_ENV_NAMES,
   ENV_TO_CONFIG_KEY,
   parseRawEnv,
   type AppConfig,
@@ -23,6 +24,10 @@ const normalizeKey = (key: string): keyof AppConfig | string => {
   }
   return ENV_TO_CONFIG_KEY[key] ?? key;
 };
+
+// A legacy row may live under the env spelling (e.g. WEB_UI_PORT) while reads use the config key.
+const envSpellingOf = (key: keyof AppConfig | string): string | undefined =>
+  CONFIG_KEY_ENV_NAMES[key as keyof AppConfig];
 
 export class ConfigStore extends EventEmitter implements IConfigStore {
   private database: AppDatabase;
@@ -92,8 +97,26 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public getSources(): Record<string, 'override' | 'env' | 'default'> {
     const overrides = this.getAllOverrides();
     const sources: Record<string, 'override' | 'env' | 'default'> = {};
+    // Both channel keys are derived from the same pair, so they share one origin.
+    const channelSource = (): 'override' | 'env' | 'default' => {
+      if (
+        overrides.notificationChannels !== undefined ||
+        overrides.notificationChannel !== undefined
+      ) {
+        return 'override';
+      }
+      if (
+        this.envConfig.notificationChannels !== undefined ||
+        this.envConfig.notificationChannel !== undefined
+      ) {
+        return 'env';
+      }
+      return 'default';
+    };
     for (const key of Object.keys(this.defaults) as Array<keyof AppConfig>) {
-      if (overrides[key] !== undefined) {
+      if (key === 'notificationChannel' || key === 'notificationChannels') {
+        sources[key] = channelSource();
+      } else if (overrides[key] !== undefined) {
         sources[key] = 'override';
       } else if (this.envConfig[key] !== undefined) {
         sources[key] = 'env';
@@ -107,15 +130,17 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public get<T = unknown>(key: string): T | undefined {
     const normKey = normalizeKey(key) as keyof AppConfig;
 
-    // resolveConfig() derives this one from notificationChannels, so reading it raw would
-    // disagree with the resolved config whenever only the plural form is set.
-    if (normKey === 'notificationChannel') {
-      return this.resolveConfig().notificationChannel as unknown as T;
+    // resolveConfig() derives these from each other, so reading either raw would disagree with
+    // the resolved config whenever only one spelling is set.
+    if (normKey === 'notificationChannel' || normKey === 'notificationChannels') {
+      return this.resolveConfig()[normKey] as unknown as T;
     }
 
-    // Level 1: SQLite
+    // Level 1: SQLite (canonical key first, then the env spelling a legacy row may use)
+    const envSpelling = envSpellingOf(normKey);
     const sqliteVal =
       this.database.get(normKey as string) ??
+      (envSpelling && envSpelling !== normKey ? this.database.get(envSpelling) : undefined) ??
       (normKey !== key ? this.database.get(key) : undefined);
     if (sqliteVal !== undefined && sqliteVal !== null) {
       return sqliteVal as T;
@@ -139,6 +164,11 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     const normKey = normalizeKey(key as string);
     const prev = this.get(normKey as string);
     this.database.set(normKey as string, value);
+    // Drop a legacy row under the env spelling so it cannot shadow or duplicate this override.
+    const envSpelling = envSpellingOf(normKey);
+    if (envSpelling && envSpelling !== normKey) {
+      this.database.delete(envSpelling);
+    }
 
     const resolved = this.resolveConfig();
     this.emit('change', {
@@ -158,6 +188,11 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     const normKey = normalizeKey(key as string);
     const prev = this.get(normKey as string);
     this.database.delete(normKey as string);
+    // Both stored spellings must go, or the override reappears on the next read.
+    const envSpelling = envSpellingOf(normKey);
+    if (envSpelling && envSpelling !== normKey) {
+      this.database.delete(envSpelling);
+    }
     if (normKey !== key) {
       this.database.delete(key as string);
     }

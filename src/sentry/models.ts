@@ -184,8 +184,11 @@ export const FAMILY_ORDER: Record<QuotaFamily, number> = {
   claude: 2,
 };
 
-/** Accepted pool shorthands, in one place so every resolver agrees on them. */
-export const FAMILY_ALIASES: Record<string, QuotaFamily> = {
+/**
+ * Accepted pool shorthands, in one place so every resolver agrees on them. A prototype-free table
+ * keeps an arbitrary state-file key such as `constructor` from resolving to an inherited member.
+ */
+export const FAMILY_ALIASES: Record<string, QuotaFamily> = Object.assign(Object.create(null), {
   'gemini-argon': 'gemini-argon',
   argon: 'gemini-argon',
   'gemini-flash': 'gemini-flash',
@@ -193,7 +196,7 @@ export const FAMILY_ALIASES: Record<string, QuotaFamily> = {
   claude: 'claude',
   sonnet: 'claude',
   '3p': 'claude',
-};
+} as Record<string, QuotaFamily>);
 
 /** User-facing pool names, so no resolver carries its own copy. */
 export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
@@ -231,10 +234,11 @@ export const toSnapshot = (input: {
   overageEnabled?: boolean;
   remainingCredits?: number | null;
   poolId?: string;
+  displayName?: string;
 }): QuotaSnapshot => ({
   poolId: input.poolId ?? input.family,
   family: input.family,
-  displayName: FAMILY_DISPLAY_NAMES[input.family],
+  displayName: input.displayName ?? FAMILY_DISPLAY_NAMES[input.family],
   remainingFraction: input.remainingFraction,
   resetTime: input.resetTime,
   hoursUntilReset: input.hoursUntilReset,
@@ -294,6 +298,15 @@ export const resolveModelFamily = (config: {
 };
 
 // Determines canonical family and defaults from a RetrieveUserQuotaSummary group name.
+/** Stable per-group pool suffix: a pool id is a state key, so it must not drift between polls. */
+const poolIdSlug = (name: string): string => {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'pool';
+};
+
 export const resolveGroupFamily = (
   groupName: string
 ): {
@@ -333,6 +346,9 @@ export const aggregateUserQuotaSummary = (
   extraCredits?: { remainingCredits?: number | null; overageEnabled?: boolean }
 ): QuotaSnapshot[] => {
   const result: QuotaSnapshot[] = [];
+  // A family can arrive as several groups; each needs its own pool id or the stored deadline
+  // flip-flops between them on every poll.
+  const usedPoolIds = new Set<string>();
   // Overage stays undefined when no signal is available so "unknown" is not reported as disabled.
   const { remainingCredits, overageEnabled } = resolveCredits(
     extraCredits,
@@ -392,9 +408,23 @@ export const aggregateUserQuotaSummary = (
     const groupModels = resolved.defaultModels;
 
     if (weeklyBucket) {
+      const basePoolId: string = resolved.family;
+      let poolId: string = basePoolId;
+      if (usedPoolIds.has(poolId)) {
+        const slug = poolIdSlug(group.displayName);
+        poolId = `${basePoolId}:${slug}`;
+        let suffix = 2;
+        while (usedPoolIds.has(poolId)) {
+          poolId = `${basePoolId}:${slug}-${suffix++}`;
+        }
+      }
+      usedPoolIds.add(poolId);
+
       result.push(
         toSnapshot({
           family: resolved.family,
+          poolId,
+          displayName: poolId === basePoolId ? undefined : group.displayName,
           // The weekly limit is the primary eval target
           remainingFraction: weeklyBucket.remainingFraction,
           resetTime: weeklyBucket.resetTime || '',
@@ -547,7 +577,8 @@ export const snapshotsFromSentryState = (
   const snapshots: QuotaSnapshot[] = [];
   for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
     const rawId = poolId.toLowerCase().trim();
-    const family = FAMILY_ALIASES[rawId];
+    // A qualified id such as `gemini-flash:gemini-pro` carries its family as the prefix.
+    const family = FAMILY_ALIASES[rawId] ?? FAMILY_ALIASES[rawId.split(':')[0] ?? ''];
     // An unknown pool id must not be reported as another pool's headroom.
     if (!family) continue;
 
