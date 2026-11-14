@@ -910,6 +910,45 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       }
     });
 
+    it('escapes Slack mention tokens so a notice cannot ping a channel', async () => {
+      let receivedBody: any = null;
+
+      const server = http.createServer((req, res) => {
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', () => {
+          receivedBody = JSON.parse(body);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+        });
+        await notifier.initialize();
+
+        await notifier.notifyInfo({
+          title: 'Rollout <!channel> started',
+          message: 'Ping <@U12345> when done',
+        });
+
+        assert.equal(String(receivedBody?.content).includes('<!channel>'), false);
+        assert.equal(String(receivedBody?.content).includes('<@U12345>'), false);
+        assert.match(String(receivedBody?.content), /&lt;!channel>/);
+        assert.equal(String(receivedBody?.text).includes('<!channel>'), false);
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
     it('retries a POST once so a transient 503 does not lose the notification', async () => {
       let attempts = 0;
       let deliveredBody: any = null;

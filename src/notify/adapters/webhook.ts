@@ -143,6 +143,9 @@ export function isDiscordWebhook(url?: string): boolean {
   }
 }
 
+/** A Slack mention token in a task title or prompt must not ping the channel, so `<` is escaped. */
+const escapeMentions = (text: string): string => text.replace(/<(?=[!@])/g, '&lt;');
+
 export class WebhookNotifier implements Notifier {
   readonly channelName: string = 'webhook';
   public initialized = false;
@@ -180,7 +183,9 @@ export class WebhookNotifier implements Notifier {
     const poolName = alert.pool.displayName || alert.pool.poolId || 'Quota Pool';
     const percent = alert.remainingPercentage;
     const hours = alert.milestoneHours;
-    const textMsg = `[Alert] Quota Milestone: ${poolName} is at ${percent}% with ${hours}h before reset.`;
+    const textMsg = escapeMentions(
+      `[Alert] Quota Milestone: ${poolName} is at ${percent}% with ${hours}h before reset.`
+    );
     const embed = buildQuotaAlertEmbed(alert, {
       ownerUserId: this.config.discordOwnerUserId,
       pingOwner: this.config.discordPingOwner !== false,
@@ -241,7 +246,9 @@ export class WebhookNotifier implements Notifier {
       return;
     }
 
-    const textMsg = `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`;
+    const textMsg = escapeMentions(
+      `[Dispatch] Task status: ${step}${status.message ? ` — ${status.message}` : ''}`
+    );
     const embed = buildDispatchStatusEmbed(status, { baseUrl: this.config.baseUrl });
 
     const payload: WebhookPayload = {
@@ -267,7 +274,7 @@ export class WebhookNotifier implements Notifier {
     this.notices.push(notice);
     if (this.notices.length > 100) this.notices.shift();
 
-    const textMsg = `[Notice] ${notice.title} — ${notice.message}`;
+    const textMsg = escapeMentions(`[Notice] ${notice.title} — ${notice.message}`);
     const embed = buildInfoNoticeEmbed(notice, { baseUrl: this.config.baseUrl });
 
     const payload: WebhookPayload = {

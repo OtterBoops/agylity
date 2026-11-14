@@ -31,6 +31,7 @@ import {
   discoverWindowsLanguageServer,
   parseWindowsNetstatPorts,
   type ExecFileAsyncFn,
+  defaultExecFileAsync,
 } from '../../src/sentry/discovery.js';
 
 // ==========================================
@@ -1740,5 +1741,40 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // pid 1234 appears inside the first row's port (51234) but that row belongs to pid 9999
       assert.deepEqual(parseWindowsNetstatPorts(netstat, '1234'), [60643, 60644]);
     });
+  });
+});
+
+describe('Process execution (defaultExecFileAsync)', () => {
+  it('kills a command that overruns its timeout instead of leaving it running', async () => {
+    const marker = join(
+      tmpdir(),
+      `agylity-kill-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    const script =
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 900);` +
+      `setTimeout(() => {}, 6000);`;
+
+    await assert.rejects(
+      defaultExecFileAsync(process.execPath, ['-e', script], { timeout: 250 }),
+      (err: any) => err?.killed === true && err?.code === 'ETIMEDOUT'
+    );
+
+    // The child is gone, so the write it had scheduled for later never happens.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(existsSync(marker), false);
+  });
+
+  it('resolves stdout and rejects a non-zero exit with the captured streams', async () => {
+    const ok = await defaultExecFileAsync(process.execPath, ['-e', "console.log('hello')"]);
+    assert.equal(ok.stdout.trim(), 'hello');
+
+    await assert.rejects(
+      defaultExecFileAsync(process.execPath, ['-e', "console.error('boom'); process.exit(3)"]),
+      (err: any) => {
+        assert.equal(err.code, 3);
+        assert.match(err.stderr, /boom/);
+        return true;
+      }
+    );
   });
 });

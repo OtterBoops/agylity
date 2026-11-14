@@ -1,10 +1,7 @@
-import { execFile as nodeExecFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-
-const promisifiedExecFile = promisify(nodeExecFile);
 
 export type ExecFileAsyncFn = (
   file: string,
@@ -12,22 +9,139 @@ export type ExecFileAsyncFn = (
   options?: Record<string, unknown>
 ) => Promise<{ stdout: string; stderr: string }>;
 
+type ExecFileFailure = Error & {
+  code?: number | string | null;
+  signal?: string | null;
+  killed?: boolean;
+  stdout?: string;
+  stderr?: string;
+};
+
+// execFile only kills the direct child on timeout/abort, so `agy`'s own children keep running
+// against the checkout. Spawning detached (POSIX) or via taskkill /T (Windows) takes the whole
+// tree down, and the promise contract stays execFile's: { stdout, stderr } or an error carrying both.
 export const defaultExecFileAsync: ExecFileAsyncFn = (
   file: string,
   args: readonly string[],
   options?: Record<string, unknown>
 ): Promise<{ stdout: string; stderr: string }> => {
   const callerEnv = (options?.env as Record<string, string> | undefined) ?? {};
-  return promisifiedExecFile(file, args as string[], {
-    windowsHide: true,
-    ...options,
-    env: {
-      ...process.env,
-      ...callerEnv,
-      // Windows only: agy's update check flashes a console window there.
-      ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
-    },
-  }) as Promise<{ stdout: string; stderr: string }>;
+  const timeoutMs = typeof options?.timeout === 'number' ? options.timeout : 0;
+  const maxBuffer = typeof options?.maxBuffer === 'number' ? options.maxBuffer : 1024 * 1024;
+  const signal = options?.signal as AbortSignal | undefined;
+  const cwd = options?.cwd as string | undefined;
+
+  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+    const child = spawn(file, args as string[], {
+      cwd,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+      env: {
+        ...process.env,
+        ...callerEnv,
+        // Windows only: agy's update check flashes a console window there.
+        ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
+      },
+    });
+
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    let size = 0;
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const killTree = (): void => {
+      if (!child.pid) return;
+      if (process.platform === 'win32') {
+        // /T walks the child tree; /F is required for a process that ignores a polite signal.
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+          windowsHide: true,
+          stdio: 'ignore',
+        });
+        killer.on('error', () => child.kill('SIGKILL'));
+      } else {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }
+    };
+
+    const settle = (error: ExecFileFailure | null): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      const stdout = Buffer.concat(out).toString('utf8');
+      const stderr = Buffer.concat(err).toString('utf8');
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    };
+
+    const onAbort = (): void => {
+      killTree();
+      const abortError = new Error('The operation was aborted') as ExecFileFailure;
+      abortError.name = 'AbortError';
+      settle(abortError);
+    };
+
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        killTree();
+        const timeoutError = new Error(
+          `Command timed out after ${timeoutMs}ms: ${file}`
+        ) as ExecFileFailure;
+        timeoutError.killed = true;
+        timeoutError.code = 'ETIMEDOUT';
+        settle(timeoutError);
+      }, timeoutMs);
+    }
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBuffer) {
+        killTree();
+        const overflow = new Error(`Command output exceeded ${maxBuffer} bytes: ${file}`);
+        overflow.name = 'RangeError';
+        (overflow as ExecFileFailure).code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        settle(overflow as ExecFileFailure);
+        return;
+      }
+      out.push(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      err.push(chunk);
+    });
+
+    child.on('error', (spawnError: NodeJS.ErrnoException) => {
+      const failure = new Error(spawnError.message) as ExecFileFailure;
+      failure.code = spawnError.code;
+      settle(failure);
+    });
+
+    child.on('close', (exitCode, exitSignal) => {
+      if (exitCode === 0) {
+        settle(null);
+        return;
+      }
+      const failure = new Error(`Command failed: ${file} ${args.join(' ')}`) as ExecFileFailure;
+      failure.code = exitCode;
+      failure.signal = exitSignal;
+      settle(failure);
+    });
+  });
 };
 
 export interface DiscoveredLanguageServer {

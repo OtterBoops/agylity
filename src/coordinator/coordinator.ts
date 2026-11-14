@@ -382,14 +382,23 @@ export class Coordinator {
   }
 
   // Re-arms only on a productive run: a failed or aborted task must not keep burning the cycle.
-  private routineMayTriggerAgain(rt: RoutineTaskRecord, resetTime: string): boolean {
-    if (!rt.lastTriggeredResetTime || rt.lastTriggeredResetTime !== resetTime) {
+  // Stamps are per pool, so a run on pool B cannot re-arm a cycle pool A already burned.
+  private routineMayTriggerAgain(
+    rt: RoutineTaskRecord,
+    poolKey: string,
+    resetTime: string
+  ): boolean {
+    const cycles = rt.lastTriggeredCycles ?? {};
+    const stamped = Object.keys(cycles).length > 0 ? cycles[poolKey] : rt.lastTriggeredResetTime;
+    if (!stamped || stamped !== resetTime) {
       return true;
     }
 
+    // The run that decides this pool's rearm is the one that burned this pool's cycle, not
+    // whichever pool the routine dispatched to last.
     const previous =
-      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined) ??
-      this.queue.getLatestTaskForOrigin(rt.id);
+      this.queue.getLatestTaskForOrigin(rt.id, poolKey) ??
+      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined);
     // A stamped cycle whose run can no longer be found stays burned: looping blind burns quota.
     if (!previous) return false;
 
@@ -453,7 +462,7 @@ export class Coordinator {
         }
 
         // Looping inside a cycle is allowed, but only after the cycle's previous run succeeded.
-        if (!this.routineMayTriggerAgain(rt, resetTime)) {
+        if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.family, resetTime)) {
           continue;
         }
 
@@ -522,8 +531,13 @@ export class Coordinator {
         requestedBy: `routine:${rt.id}`,
       });
 
+      const burnedPoolKey = targetPool.poolId || targetPool.family;
       this.queue.updateRoutineTask(rt.id, {
         lastTriggeredResetTime: targetPool.resetTime,
+        lastTriggeredCycles: {
+          ...(rt.lastTriggeredCycles ?? {}),
+          [burnedPoolKey]: targetPool.resetTime,
+        },
         lastTaskId: task.id,
       });
 
