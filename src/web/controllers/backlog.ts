@@ -20,6 +20,8 @@ import {
   type TaskActor,
 } from '../../coordinator/models.js';
 
+const BACKLOG_PATCH_STRING_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
+
 export const handleBacklogTasks = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -43,7 +45,11 @@ export const handleBacklogTasks = async (
     if (!parsed.ok) return;
     const payload: any = parsed.body;
 
-    if (!payload?.title || !payload?.prompt || !payload?.repositoryId) {
+    const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+    const prompt = typeof payload?.prompt === 'string' ? payload.prompt.trim() : '';
+    const repositoryId =
+      typeof payload?.repositoryId === 'string' ? payload.repositoryId.trim() : '';
+    if (!title || !prompt || !repositoryId) {
       return sendJson(res, 400, {
         error: 'title, prompt, and repositoryId are required for backlog task',
       });
@@ -56,9 +62,9 @@ export const handleBacklogTasks = async (
       payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : 'bot';
 
     const created = coordinator.queue.createBacklogTask({
-      title: String(payload.title).trim(),
-      prompt: String(payload.prompt).trim(),
-      repositoryId: String(payload.repositoryId).trim(),
+      title,
+      prompt,
+      repositoryId,
       models: models.length > 0 ? models : ['gemini-3.8-flash'],
       effort,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
@@ -90,7 +96,10 @@ export const handleBacklogTaskById = async (
 
   const coordinator = resolveCoordinator(options);
 
-  if (action === 'dispatch' && method === 'POST') {
+  if (action === 'dispatch') {
+    // The sub-route is POST-only; falling through would let PATCH/DELETE mutate the row.
+    if (method !== 'POST') return methodNotAllowed(res);
+
     const task = coordinator.queue.getBacklogTask(id);
     if (!task) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
 
@@ -142,6 +151,15 @@ export const handleBacklogTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      return sendJson(res, 400, { error: 'Body must be a JSON object' });
+    }
+    // These fields reach `.trim()` in the queue, so a non-string value is a 400, not a 500.
+    if (BACKLOG_PATCH_STRING_FIELDS.some((key) => key in patch && typeof patch[key] !== 'string')) {
+      return sendJson(res, 400, {
+        error: 'title, prompt, and repositoryId must be strings',
+      });
+    }
 
     const updated = coordinator.queue.updateBacklogTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
@@ -183,19 +201,20 @@ export const handleSyncGithubBacklog = async (
   for (const repo of config.repositories) {
     let repoSlug: string | undefined;
     if (repo.cloneUrl) {
-      const match = /github\.com[/:]([^/]+\/[^/.]+)(?:\.git)?/.exec(repo.cloneUrl);
-      if (match) repoSlug = match[1];
+      const match = /github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/.exec(repo.cloneUrl);
+      if (match) repoSlug = `${match[1]}/${match[2]}`;
     }
     if (!repoSlug && repo.id.includes('/')) {
       repoSlug = repo.id;
     }
     if (!repoSlug) continue;
 
-    const issues = await listOpenIssues(repoSlug, targetLabel, ghToken, options.logger);
-    if (!issues) {
+    const listing = await listOpenIssues(repoSlug, targetLabel, ghToken, options.logger);
+    if (!listing) {
       failedRepos.push(repo.id);
       continue;
     }
+    const issues = listing.issues;
 
     try {
       for (const issue of issues) {
@@ -221,16 +240,19 @@ export const handleSyncGithubBacklog = async (
 
       // A fetched repo proves which of its issues are still open, so a row whose issue is gone
       // must not stay queued. Dispatched rows are left alone: their task is in flight.
-      const openNumbers = new Set(issues.map((issue) => issue.number));
-      for (const row of existingBacklog) {
-        if (row.repositoryId !== repo.id || row.githubIssueNumber === undefined) continue;
-        if (openNumbers.has(row.githubIssueNumber)) continue;
-        if (row.status === 'dispatched' || row.status === 'canceled') continue;
-        coordinator.queue.updateBacklogTask(row.id, {
-          status: 'canceled',
-          lastError: 'Issue closed upstream',
-        });
-        canceledCount++;
+      // A listing cut off by the page cap proves nothing about the rows it never returned.
+      if (!listing.truncated) {
+        const openNumbers = new Set(issues.map((issue) => issue.number));
+        for (const row of existingBacklog) {
+          if (row.repositoryId !== repo.id || row.githubIssueNumber === undefined) continue;
+          if (openNumbers.has(row.githubIssueNumber)) continue;
+          if (row.status === 'dispatched' || row.status === 'canceled') continue;
+          coordinator.queue.updateBacklogTask(row.id, {
+            status: 'canceled',
+            lastError: 'Issue closed upstream',
+          });
+          canceledCount++;
+        }
       }
     } catch (err: any) {
       options.logger?.error?.(
@@ -259,18 +281,25 @@ interface GithubIssue {
   url?: string;
 }
 
+interface GithubIssueListing {
+  issues: GithubIssue[];
+  truncated: boolean;
+}
+
 const GITHUB_ISSUE_PAGES = 5;
 const GITHUB_ISSUE_PAGE_SIZE = 100;
+const GH_CLI_ISSUE_LIMIT = 500;
 
 const listOpenIssues = async (
   repoSlug: string,
   label: string,
   ghToken: string | undefined,
   logger?: WebServerOptions['logger']
-): Promise<GithubIssue[] | undefined> => {
+): Promise<GithubIssueListing | undefined> => {
   if (ghToken) {
     try {
       const issues: GithubIssue[] = [];
+      let truncated = false;
       for (let page = 1; page <= GITHUB_ISSUE_PAGES; page++) {
         const batch = await ky
           .get(`https://api.github.com/repos/${repoSlug}/issues`, {
@@ -292,8 +321,9 @@ const listOpenIssues = async (
         // The issues endpoint also returns pull requests.
         issues.push(...batch.filter((item: any) => !item.pull_request));
         if (batch.length < GITHUB_ISSUE_PAGE_SIZE) break;
+        if (page === GITHUB_ISSUE_PAGES) truncated = true;
       }
-      return issues;
+      return { issues, truncated };
     } catch (apiErr) {
       logger?.warn?.(
         'GitHub REST sync failed for %s, falling back to gh CLI: %s',
@@ -316,13 +346,14 @@ const listOpenIssues = async (
         '--state',
         'open',
         '--limit',
-        '500',
+        String(GH_CLI_ISSUE_LIMIT),
         '--json',
         'number,title,body,url',
       ],
       { timeout: 20000 }
     );
-    return stdout && stdout.trim() ? (JSON.parse(stdout) as GithubIssue[]) : [];
+    const issues: GithubIssue[] = stdout && stdout.trim() ? JSON.parse(stdout) : [];
+    return { issues, truncated: issues.length >= GH_CLI_ISSUE_LIMIT };
   } catch (ghCliErr) {
     logger?.debug?.('gh CLI sync failed for %s: %s', repoSlug, ghCliErr);
     return undefined;

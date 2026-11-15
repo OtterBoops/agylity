@@ -65,6 +65,11 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
           `Unable to read the configured secret key file at ${keyFilePath}: ${reason}`
         );
       }
+      // An empty key file must not degrade to sha256(''), a key anyone can recompute.
+      if (raw.length === 0) {
+        logger.child('crypto').error('Secret key file is empty at %s', keyFilePath);
+        throw new Error(`The configured secret key file at ${keyFilePath} is empty`);
+      }
       if (raw.length === 64 && /^[0-9a-fA-F]+$/.test(raw)) {
         return Buffer.from(raw, 'hex');
       }
@@ -135,6 +140,9 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
     );
   }
 };
+
+/** Marks a decrypted payload that carries a JSON value rather than a bare string. */
+export const SECRET_JSON_MARKER = '\u0000json:';
 
 export const SECRET_MASK = '••••••••';
 

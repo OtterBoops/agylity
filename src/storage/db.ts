@@ -7,6 +7,7 @@ import {
   isSecretKey,
   resolveMasterKey,
   ENCRYPTION_PREFIX,
+  SECRET_JSON_MARKER,
 } from './crypto.js';
 import { migrateColumns, type ColumnSpec } from './schema.js';
 
@@ -23,6 +24,17 @@ export interface DatabaseConnectionOptions {
 }
 
 export type DatabaseOptions = string | DatabaseConnectionOptions;
+
+// A marked payload was JSON, so an object secret comes back as an object; everything else is a
+// legacy bare-string secret and must stay a string.
+const decodeSecretPayload = (plaintext: string): unknown => {
+  if (!plaintext.startsWith(SECRET_JSON_MARKER)) return plaintext;
+  try {
+    return JSON.parse(plaintext.slice(SECRET_JSON_MARKER.length));
+  } catch {
+    return plaintext.slice(SECRET_JSON_MARKER.length);
+  }
+};
 
 const SETTINGS_COLUMNS: readonly ColumnSpec[] = [
   { name: 'key', ddl: 'key TEXT PRIMARY KEY' },
@@ -118,7 +130,7 @@ export class AppDatabase {
       parsed = row.value;
     }
     if (typeof parsed === 'string' && parsed.startsWith(ENCRYPTION_PREFIX)) {
-      return decryptSecret(parsed, this.masterKey) as unknown as T;
+      return decodeSecretPayload(decryptSecret(parsed, this.masterKey)) as T;
     }
     return parsed as T;
   }
@@ -134,8 +146,14 @@ export class AppDatabase {
 
   public set(key: string, value: unknown): void {
     let finalValue = value;
-    if (isSecretKey(key) && typeof value === 'string' && value.trim() !== '') {
-      finalValue = encryptSecret(value, this.masterKey);
+    if (isSecretKey(key) && value !== undefined && value !== null) {
+      // A string secret keeps its legacy shape; anything else is JSON-serialised behind a marker
+      // so an object such as webhook headers is encrypted too and still reads back as an object.
+      const payload =
+        typeof value === 'string' ? value : `${SECRET_JSON_MARKER}${JSON.stringify(value)}`;
+      if (payload.trim() !== '') {
+        finalValue = encryptSecret(payload, this.masterKey);
+      }
     }
     const serialized = typeof finalValue === 'undefined' ? 'null' : JSON.stringify(finalValue);
     this.upsertStmt.run(key, serialized);
@@ -157,7 +175,7 @@ export class AppDatabase {
           val = r.value;
         }
         if (typeof val === 'string' && val.startsWith(ENCRYPTION_PREFIX)) {
-          val = decryptSecret(val, this.masterKey);
+          val = decodeSecretPayload(decryptSecret(val, this.masterKey));
         }
         return [r.key, val];
       })

@@ -38,6 +38,7 @@ const POOLS: PoolDef[] = [
 
 export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => {
   const [savingKey, setSavingKey] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const rawPolicies = config.resolved?.poolPolicies || {};
   const currentPolicies = {
@@ -61,6 +62,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
   ) => {
     const key = `${poolKey}:${field}`;
     setSavingKey(key);
+    setError(null);
     try {
       const updated = {
         ...currentPolicies,
@@ -71,6 +73,9 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
       };
       await updateConfig({ poolPolicies: updated });
       onSaved();
+    } catch (err: any) {
+      // The switch reflects server state, so a failed write silently snaps back without this.
+      setError(err?.message || 'Failed to update the pool policy');
     } finally {
       setSavingKey(null);
     }
@@ -88,6 +93,15 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
           model pool.
         </p>
       </div>
+
+      {error && (
+        <p
+          role="alert"
+          class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
+        >
+          {error}
+        </p>
+      )}
 
       <div class="divide-y divide-pine-highlight/40 border-t border-pine-highlight/40">
         {POOLS.map((pool) => {

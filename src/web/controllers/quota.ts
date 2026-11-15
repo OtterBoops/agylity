@@ -71,7 +71,7 @@ export const handleGetAlerts = (
     lastProbeSource: 'unreachable',
     pools: {},
   };
-  return sendJson(res, 200, alertData);
+  return sendJson(res, 200, alertData, { 'Cache-Control': 'no-store' });
 };
 
 /** Dismissal is the only way an early-reset notice clears; the next premature reset replaces it. */

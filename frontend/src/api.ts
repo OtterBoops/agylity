@@ -228,13 +228,29 @@ export const revokeRunner = (runnerId: string): Promise<{ success: boolean; revo
     .delete(`runners/${encodeURIComponent(runnerId)}`)
     .json<{ success: boolean; revoked: boolean }>();
 
-export const testNotification = (
+export const testNotification = async (
   channel?: string,
   overrides?: Record<string, unknown>
-): Promise<{ success: boolean; message: string; channel?: string }> =>
-  api
-    .post('notify/test', { json: { ...(channel ? { channel } : {}), ...(overrides ?? {}) } })
-    .json<{ success: boolean; message: string; channel?: string }>();
+): Promise<{ success: boolean; message: string; channel?: string }> => {
+  try {
+    return await api
+      .post('notify/test', { json: { ...(channel ? { channel } : {}), ...(overrides ?? {}) } })
+      .json<{ success: boolean; message: string; channel?: string }>();
+  } catch (err) {
+    // A refused delivery is a 400 carrying the reason in `message`, not `error`; without this the
+    // diagnostics panel only ever shows the client's generic "HTTP 400" text.
+    if (isHTTPError(err)) {
+      const body = (await err.response
+        .clone()
+        .json()
+        .catch(() => null)) as { message?: unknown } | null;
+      if (body && typeof body.message === 'string' && body.message) {
+        throw new Error(body.message);
+      }
+    }
+    throw err;
+  }
+};
 
 export const getDispatches = (limit = 50): Promise<DispatchRecord[]> =>
   api.get(`dispatches?limit=${limit}`).json<DispatchRecord[]>();

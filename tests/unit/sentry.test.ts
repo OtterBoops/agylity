@@ -31,6 +31,7 @@ import {
   discoverWindowsLanguageServer,
   parseWindowsNetstatPorts,
   type ExecFileAsyncFn,
+  defaultExecFileAsync,
 } from '../../src/sentry/discovery.js';
 
 // ==========================================
@@ -575,6 +576,65 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(reloaded.getEarlyResetNotice(), null);
       assert.equal(reloaded.dismissEarlyResetNotice(), false);
     });
+
+    it('keeps the fired milestones when the same reset instant is re-rendered differently', async () => {
+      const manager = new SentryStateManager(stateFile);
+      await manager.load();
+
+      manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00Z');
+      manager.recordMilestoneFired('claude', 24);
+
+      // Same instant, different rendering: this is not a new cycle.
+      const sameInstant = manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00.000Z');
+      assert.equal(sameInstant.cycleRolled, false);
+      assert.equal(manager.isMilestoneFired('claude', 24), true);
+      assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, ['24h']);
+
+      // A genuinely different deadline is a new cycle and re-arms the milestones.
+      const newCycle = manager.updatePoolQuota('claude', 0.5, '2026-11-21T22:00:00Z');
+      assert.equal(newCycle.cycleRolled, true);
+      assert.equal(manager.isMilestoneFired('claude', 24), false);
+      assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, []);
+    });
+
+    it('keeps the stored deadline and fired milestones when a probe loses the reset time', async () => {
+      const manager = new SentryStateManager(stateFile);
+      await manager.load();
+
+      manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00Z');
+      manager.recordMilestoneFired('claude', 24);
+
+      const lost = manager.updatePoolQuota('claude', 0.5, '');
+      assert.equal(lost.cycleRolled, false);
+      assert.equal(manager.getPoolState('claude')?.resetTime, '2026-11-20T22:00:00Z');
+      assert.equal(manager.isMilestoneFired('claude', 24), true);
+    });
+
+    it('serialises concurrent saves so a dismissed notice is not resurrected by an in-flight write', async () => {
+      const manager = new SentryStateManager(stateFile);
+      await manager.load();
+      manager.recordEarlyResetNotice(
+        [
+          {
+            poolId: 'claude',
+            previousRemainingFraction: 0.3,
+            remainingFraction: 1,
+            previousResetTime: '2026-11-16T12:00:00.000Z',
+            resetTime: '2026-11-16T12:00:00.000Z',
+          },
+        ],
+        '2026-11-14T12:00:00.000Z'
+      );
+
+      const first = manager.save();
+      manager.dismissEarlyResetNotice();
+      await manager.save();
+      await first;
+
+      const reloaded = new SentryStateManager(stateFile);
+      await reloaded.load();
+      assert.equal(reloaded.getEarlyResetNotice(), null);
+    });
   });
 
   // ==========================================
@@ -600,6 +660,31 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const result = evaluator.evaluatePool(snapshot, [], now);
       assert.equal(result.alert, null);
+    });
+
+    it('compares the raw fraction against the threshold, not its rounded display value', () => {
+      const evaluator = new QuotaEvaluator({
+        milestoneHours: [24, 12, 3],
+        alertThresholdPercent: 25,
+      });
+
+      const now = Date.parse('2026-11-14T12:00:00Z');
+      const makeSnapshot = (remainingFraction: number) => ({
+        poolId: 'claude',
+        family: 'claude' as const,
+        displayName: 'Claude 5.5 / Opus',
+        remainingFraction,
+        resetTime: new Date(now + 23 * 3600 * 1000).toISOString(), // inside the 24h milestone
+        hoursUntilReset: 23,
+        models: ['Claude Sonnet 5.5'],
+      });
+
+      // 24.95% rounds to 25.0 for display but is still below a 25% floor.
+      assert.equal(evaluator.evaluatePool(makeSnapshot(0.2495), [], now).alert, null);
+
+      const atFloor = evaluator.evaluatePool(makeSnapshot(0.25), [], now);
+      assert.ok(atFloor.alert);
+      assert.equal(atFloor.alert.milestoneHours, 24);
     });
 
     it('suppresses alert when reset deadline has already passed', () => {
@@ -1051,6 +1136,63 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       }
     });
 
+    it('gives a second group for one family its own pool id and name', () => {
+      const summary = RetrieveUserQuotaSummaryResponseSchema.parse({
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.8,
+                  resetTime: '2026-11-20T22:00:00.000Z',
+                },
+              ],
+            },
+            {
+              displayName: 'Gemini Pro',
+              buckets: [
+                {
+                  bucketId: 'gemini-pro-weekly',
+                  displayName: 'Weekly Limit',
+                  remainingFraction: 0.4,
+                  resetTime: '2026-11-21T22:00:00.000Z',
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const snapshots = aggregateUserQuotaSummary(summary);
+      assert.equal(snapshots.length, 2);
+      // Sharing a pool id would flip the stored deadline between the two on every poll.
+      assert.deepEqual(
+        snapshots.map((s) => s.poolId),
+        ['gemini-flash', 'gemini-flash:gemini-pro']
+      );
+      assert.deepEqual(
+        snapshots.map((s) => s.displayName),
+        ['Gemini Flash', 'Gemini Pro']
+      );
+      assert.equal(snapshots[1]?.family, 'gemini-flash');
+
+      // The cached state path must still resolve a qualified id back to its family.
+      const cached = snapshotsFromSentryState({
+        pools: {
+          'gemini-flash:gemini-pro': {
+            resetTime: '2026-11-21T22:00:00.000Z',
+            remainingFraction: 0.4,
+            firedMilestones: [],
+          },
+        },
+      });
+      assert.equal(cached.length, 1);
+      assert.equal(cached[0]?.family, 'gemini-flash');
+    });
+
     it('parses overageInfo and sets overageEnabled flag accurately', () => {
       // 1. Overage enabled via camelCase overageInfo
       const summaryWithOverage = {
@@ -1197,6 +1339,27 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       for (const pool of snapshots) {
         assert.deepEqual(pool.models, FAMILY_DEFAULT_MODELS[pool.family]);
       }
+    });
+
+    it('skips prototype-named pool keys instead of synthesizing an inherited pool', () => {
+      const state = {
+        version: 1,
+        lastProbeAt: '2026-11-14T12:00:00.000Z',
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          constructor: {
+            resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
+            remainingFraction: 0.9,
+            firedMilestones: [],
+          },
+        },
+      };
+
+      // `constructor` is an inherited member of a plain object, not a pool alias.
+      const snapshots = snapshotsFromSentryState(
+        state as unknown as Parameters<typeof snapshotsFromSentryState>[0]
+      );
+      assert.deepEqual(snapshots, []);
     });
 
     it('derives overageEnabled from GetUserStatus and keeps unknown distinct from disabled', () => {
@@ -1578,5 +1741,40 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // pid 1234 appears inside the first row's port (51234) but that row belongs to pid 9999
       assert.deepEqual(parseWindowsNetstatPorts(netstat, '1234'), [60643, 60644]);
     });
+  });
+});
+
+describe('Process execution (defaultExecFileAsync)', () => {
+  it('kills a command that overruns its timeout instead of leaving it running', async () => {
+    const marker = join(
+      tmpdir(),
+      `agylity-kill-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    const script =
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'survived'), 900);` +
+      `setTimeout(() => {}, 6000);`;
+
+    await assert.rejects(
+      defaultExecFileAsync(process.execPath, ['-e', script], { timeout: 250 }),
+      (err: any) => err?.killed === true && err?.code === 'ETIMEDOUT'
+    );
+
+    // The child is gone, so the write it had scheduled for later never happens.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    assert.equal(existsSync(marker), false);
+  });
+
+  it('resolves stdout and rejects a non-zero exit with the captured streams', async () => {
+    const ok = await defaultExecFileAsync(process.execPath, ['-e', "console.log('hello')"]);
+    assert.equal(ok.stdout.trim(), 'hello');
+
+    await assert.rejects(
+      defaultExecFileAsync(process.execPath, ['-e', "console.error('boom'); process.exit(3)"]),
+      (err: any) => {
+        assert.equal(err.code, 3);
+        assert.match(err.stderr, /boom/);
+        return true;
+      }
+    );
   });
 });

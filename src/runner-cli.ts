@@ -1,6 +1,6 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
-import { RemoteSwarmRunner } from './coordinator/runner.js';
+import { RemoteSwarmRunner, normalizePrPolicy } from './coordinator/runner.js';
 import type { PrPolicy } from './config/schema.js';
 
 export interface RunnerCliOptions {
@@ -98,9 +98,17 @@ export const parseRunnerCliArgs = (
   ).trim();
 
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
-  const pollTimeoutMs = Number(env.RUNNER_POLL_TIMEOUT_MS ?? 25000);
-  const idlePollIntervalMs = Number(env.RUNNER_IDLE_INTERVAL_MS ?? 2000);
-  const prPolicy = (args['pr-policy'] || env.PR_POLICY || '').trim() as PrPolicy | undefined;
+  // A blank value is not a value: compose emits '' for an unset host var, and Number('') is 0 --
+  // that disables long-polling, and with a 0 idle interval the poll loop never sleeps at all.
+  const readIntervalMs = (raw: string | undefined, fallback: number): number => {
+    if (raw === undefined || raw.trim() === '') return fallback;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  };
+  const pollTimeoutMs = readIntervalMs(env.RUNNER_POLL_TIMEOUT_MS, 25000);
+  const idlePollIntervalMs = readIntervalMs(env.RUNNER_IDLE_INTERVAL_MS, 2000);
+  // An unrecognised policy must not reach the bot guards as "anything goes"; unknown inherits.
+  const prPolicy = normalizePrPolicy(args['pr-policy'] || env.PR_POLICY);
 
   return {
     coordinatorUrl,

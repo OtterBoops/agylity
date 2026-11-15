@@ -8,7 +8,7 @@ import {
   snapshotsFromSentryState,
   type QuotaSnapshot,
 } from '../sentry/models.js';
-import type { Notifier } from '../notify/types.js';
+import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';
 import { logger, type Logger } from '../logs/logger.js';
 import {
   calculateEffectiveHeadroomPercent,
@@ -138,6 +138,15 @@ export class Coordinator {
     this.notifier = notifier;
   }
 
+  // Delivery is best-effort: a rejected notify must never rewrite the outcome of a persisted change.
+  private async notifyBestEffort(update: DispatchStatusUpdate): Promise<void> {
+    try {
+      await this.notifier?.notifyDispatchStatus(update);
+    } catch (notifyErr) {
+      this.log.warn('Dispatch notification failed for %s: %s', update.taskId, notifyErr);
+    }
+  }
+
   public getLastManualDispatchAt(): number {
     return this.lastManualDispatchAt;
   }
@@ -217,6 +226,13 @@ export class Coordinator {
     });
   }
 
+  // A claim has already happened, so delivery is fire-and-forget: no rejection may escape it.
+  private fireBurnKickAnnouncement(task: SwarmTask): void {
+    void this.announceOpportunisticBurnKick(task).catch((kickErr) =>
+      this.log.warn('Burn-kick announcement failed for %s: %s', task.id, kickErr)
+    );
+  }
+
   public getActivePools(): QuotaSnapshot[] {
     // A snapshot past its interval is most wrong right after a reset, so it must not
     // authorise dispatch: return nothing and let eligibility fail closed.
@@ -239,7 +255,7 @@ export class Coordinator {
     if (expiredTasks.length > 0) {
       this.log.info('Reaped %d expired runner task lease(s)', expiredTasks.length);
       for (const t of expiredTasks) {
-        void this.notifier?.notifyDispatchStatus({
+        void this.notifyBestEffort({
           taskId: t.id,
           repositoryName: t.repositoryName,
           status: 'failed',
@@ -256,7 +272,10 @@ export class Coordinator {
     this.latestSnapshots = snapshots;
     this.lastSnapshotAt = Date.now();
     this.reapStaleClaims();
-    void this.triggerEligibleAutonomousTasks(snapshots);
+    // Fire-and-forget needs a rejection sink: an unhandled rejection terminates the daemon.
+    void this.triggerEligibleAutonomousTasks(snapshots).catch((autonomyErr) =>
+      this.log.error('Autonomous evaluator failed: %s', autonomyErr)
+    );
     this.bus.emit('task:available');
   }
 
@@ -284,7 +303,8 @@ export class Coordinator {
     // 1. Evaluate Backlog Tasks (Tier 2)
     try {
       const nextBacklog = this.queue.getNextEligibleBacklogTask();
-      if (nextBacklog) {
+      // One run in flight per backlog item: a row left 'pending' beside a live run must not stack a second.
+      if (nextBacklog && !this.queue.hasActiveTaskForOrigin(nextBacklog.id)) {
         // Dual-bucket floor >= 40%
         const modelChoice = evaluateModelPreferenceChain({
           models: nextBacklog.models,
@@ -362,14 +382,23 @@ export class Coordinator {
   }
 
   // Re-arms only on a productive run: a failed or aborted task must not keep burning the cycle.
-  private routineMayTriggerAgain(rt: RoutineTaskRecord, resetTime: string): boolean {
-    if (!rt.lastTriggeredResetTime || rt.lastTriggeredResetTime !== resetTime) {
+  // Stamps are per pool, so a run on pool B cannot re-arm a cycle pool A already burned.
+  private routineMayTriggerAgain(
+    rt: RoutineTaskRecord,
+    poolKey: string,
+    resetTime: string
+  ): boolean {
+    const cycles = rt.lastTriggeredCycles ?? {};
+    const stamped = Object.keys(cycles).length > 0 ? cycles[poolKey] : rt.lastTriggeredResetTime;
+    if (!stamped || stamped !== resetTime) {
       return true;
     }
 
+    // The run that decides this pool's rearm is the one that burned this pool's cycle, not
+    // whichever pool the routine dispatched to last.
     const previous =
-      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined) ??
-      this.queue.getLatestTaskForOrigin(rt.id);
+      this.queue.getLatestTaskForOrigin(rt.id, poolKey) ??
+      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined);
     // A stamped cycle whose run can no longer be found stays burned: looping blind burns quota.
     if (!previous) return false;
 
@@ -433,7 +462,7 @@ export class Coordinator {
         }
 
         // Looping inside a cycle is allowed, but only after the cycle's previous run succeeded.
-        if (!this.routineMayTriggerAgain(rt, resetTime)) {
+        if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.family, resetTime)) {
           continue;
         }
 
@@ -502,19 +531,26 @@ export class Coordinator {
         requestedBy: `routine:${rt.id}`,
       });
 
+      const burnedPoolKey = targetPool.poolId || targetPool.family;
       this.queue.updateRoutineTask(rt.id, {
         lastTriggeredResetTime: targetPool.resetTime,
+        lastTriggeredCycles: {
+          ...(rt.lastTriggeredCycles ?? {}),
+          [burnedPoolKey]: targetPool.resetTime,
+        },
         lastTaskId: task.id,
       });
 
       // After the enqueue: a slow notification channel must never delay the burn it announces.
-      await this.announceBurnKick({
+      void this.announceBurnKick({
         label: `Routine #${rt.taskNumber} "${rt.title}"`,
         pool: targetPool,
         models: [selectedModel],
         headroomPercent: calculateEffectiveHeadroomPercent(targetPool),
         triggerHours,
-      });
+      }).catch((kickErr) =>
+        this.log.warn('Burn-kick announcement failed for %s: %s', targetPool.family, kickErr)
+      );
 
       spawned.push(task);
     }
@@ -745,7 +781,7 @@ export class Coordinator {
       concreteModel
     );
 
-    await this.notifier?.notifyDispatchStatus({
+    await this.notifyBestEffort({
       taskId: task.id,
       status: 'polling',
       repositoryName: repoDisplayName,
@@ -897,7 +933,7 @@ export class Coordinator {
 
     const immediate = tryClaim();
     if (immediate) {
-      void this.announceOpportunisticBurnKick(immediate);
+      this.fireBurnKickAnnouncement(immediate);
       return immediate;
     }
 
@@ -925,7 +961,7 @@ export class Coordinator {
         const claimed = tryClaim();
         if (claimed) {
           cleanup();
-          void this.announceOpportunisticBurnKick(claimed);
+          this.fireBurnKickAnnouncement(claimed);
           resolve(claimed);
         }
       };
@@ -1058,7 +1094,12 @@ export class Coordinator {
             ? `Task ${updated.id} failed: ${updated.error || 'Unknown error'}`
             : `Executing task ${updated.id} on ${updated.repositoryName} (${updated.model})`;
 
-    await this.notifier?.notifyDispatchStatus({
+    // Settle the origin before notifying: the ledger write must not depend on a notification channel.
+    if (updated.tier === 'backlog' && updated.originId) {
+      this.applyBacklogOutcome(updated.originId, updated.status, updated.error);
+    }
+
+    await this.notifyBestEffort({
       taskId: updated.id,
       status: statusStep,
       repositoryName: updated.repositoryName,
@@ -1076,11 +1117,6 @@ export class Coordinator {
     });
 
     this.bus.emit(`task:updated:${taskId}`, updated);
-
-    // Update Backlog task status on terminal swarm outcomes
-    if (updated.tier === 'backlog' && updated.originId) {
-      this.applyBacklogOutcome(updated.originId, updated.status, updated.error);
-    }
 
     return result;
   }

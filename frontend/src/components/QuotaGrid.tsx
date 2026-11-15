@@ -28,6 +28,8 @@ const formatResetDate = (isoStr?: string): string => {
   if (!isoStr) return 'N/A';
   try {
     const d = new Date(isoStr);
+    // A malformed stamp does not throw; it formats as the literal "Invalid Date" in the card.
+    if (Number.isNaN(d.getTime())) return 'N/A';
     return d.toLocaleDateString(undefined, {
       weekday: 'short',
       hour: 'numeric',

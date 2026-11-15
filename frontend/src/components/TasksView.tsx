@@ -176,6 +176,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [formSubmitting, setFormSubmitting] = useState(false);
+  const notificationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const config = useStore(configStore).config;
   const repos = config.resolved?.repositories || [];
@@ -186,8 +188,17 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     setNotification({ type, message });
-    setTimeout(() => setNotification(null), 4000);
+    // Without cancelling the previous timer a second toast is dismissed early by the first.
+    if (notificationTimer.current) clearTimeout(notificationTimer.current);
+    notificationTimer.current = setTimeout(() => setNotification(null), 4000);
   };
+
+  useEffect(
+    () => () => {
+      if (notificationTimer.current) clearTimeout(notificationTimer.current);
+    },
+    []
+  );
 
   // --- Data Loaders ---
   const loadExecutions = useCallback(() => {
@@ -434,6 +445,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
   const handleCreateBacklog = async (e: Event) => {
     e.preventDefault();
+    // The dialog stays open until the POST resolves, so a second click would create a duplicate.
+    if (formSubmitting) return;
     if (!backlogTitle.trim() || !backlogPrompt.trim()) return;
     if (!(backlogRepo || defaultRepoId)) {
       showNotification('error', 'Add a repository in Settings before creating work items.');
@@ -445,6 +458,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       .map((s) => s.trim())
       .filter(Boolean);
 
+    setFormSubmitting(true);
     try {
       await createBacklogTask({
         title: backlogTitle.trim(),
@@ -461,6 +475,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       showNotification('success', `Created backlog task`);
     } catch (err: any) {
       showNotification('error', `Failed to create backlog task: ${err?.message || String(err)}`);
+    } finally {
+      setFormSubmitting(false);
     }
   };
 
@@ -602,6 +618,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
 
   const handleSaveRoutine = async (e: Event) => {
     e.preventDefault();
+    if (formSubmitting) return;
     if (!routineTitle.trim() || !routinePrompt.trim()) return;
     if (!(routineRepo || defaultRepoId)) {
       showNotification('error', 'Add a repository in Settings before creating routines.');
@@ -620,6 +637,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       .map((s) => s.trim())
       .filter(Boolean);
 
+    setFormSubmitting(true);
     try {
       const title = routineTitle.trim();
       if (editingRoutineId) {
@@ -663,6 +681,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         'error',
         `Failed to ${editingRoutineId ? 'update' : 'create'} routine: ${err?.message || String(err)}`
       );
+    } finally {
+      setFormSubmitting(false);
     }
   };
 
@@ -1097,9 +1117,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       </td>
                       <td class="p-3.5 text-sm">
                         <div class="flex flex-wrap gap-1">
-                          {item.models.map((m) => (
+                          {item.models.map((m, idx) => (
                             <span
-                              key={m}
+                              key={`${m}-${idx}`}
                               class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris"
                             >
                               {m}
@@ -1274,9 +1294,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
                       </td>
                       <td class="p-3.5 text-sm">
                         <div class="flex flex-wrap gap-1">
-                          {routine.models.map((m) => (
+                          {routine.models.map((m, idx) => (
                             <span
-                              key={m}
+                              key={`${m}-${idx}`}
                               class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris"
                             >
                               {m}
@@ -1383,6 +1403,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           aria-modal="true"
           ref={executionDialogRef}
           onClose={closeInspector}
+          onCancel={closeInspector}
           onClick={dialogBackdropClickHandler(executionDialogRef, closeInspector)}
           class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
         >
@@ -1552,6 +1573,7 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           aria-modal="true"
           ref={backlogDialogRef}
           onClose={() => setShowCreateBacklog(false)}
+          onCancel={() => setShowCreateBacklog(false)}
           onClick={dialogBackdropClickHandler(backlogDialogRef, () => setShowCreateBacklog(false))}
           class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-lg overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-5 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
         >
@@ -1644,9 +1666,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               </button>
               <button
                 type="submit"
-                class="cursor-pointer rounded-lg bg-pine-iris px-4 py-1.5 font-bold text-pine-base shadow-xs hover:opacity-90"
+                disabled={formSubmitting}
+                class="cursor-pointer rounded-lg bg-pine-iris px-4 py-1.5 font-bold text-pine-base shadow-xs hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                Create Work Item
+                {formSubmitting ? 'Creating...' : 'Create Work Item'}
               </button>
             </div>
           </form>
@@ -1661,6 +1684,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
           aria-labelledby="routineDialogTitle"
           aria-modal="true"
           onClose={() => {
+            setShowCreateRoutine(false);
+            setEditingRoutineId(null);
+          }}
+          onCancel={() => {
             setShowCreateRoutine(false);
             setEditingRoutineId(null);
           }}
@@ -1821,9 +1848,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               </button>
               <button
                 type="submit"
-                class="cursor-pointer rounded-lg bg-pine-iris px-4 py-1.5 font-bold text-pine-base shadow-xs hover:opacity-90"
+                disabled={formSubmitting}
+                class="cursor-pointer rounded-lg bg-pine-iris px-4 py-1.5 font-bold text-pine-base shadow-xs hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                {editingRoutineId ? 'Save Changes' : 'Create Routine'}
+                {formSubmitting
+                  ? 'Saving...'
+                  : editingRoutineId
+                    ? 'Save Changes'
+                    : 'Create Routine'}
               </button>
             </div>
           </form>

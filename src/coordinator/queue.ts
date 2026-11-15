@@ -205,6 +205,8 @@ export interface RoutineTaskRecord {
   triggerBeforeResetHours: number;
   minHeadroomPercent: number;
   lastTriggeredResetTime?: string;
+  /** poolId -> the resetTime of the cycle this routine already burned for that pool. */
+  lastTriggeredCycles: Record<string, string>;
   lastTaskId?: string;
   createdAt: string;
   updatedAt: string;
@@ -336,6 +338,11 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   },
   { name: 'min_headroom_percent', ddl: 'min_headroom_percent REAL NOT NULL DEFAULT 10' },
   { name: 'last_triggered_reset_time', ddl: 'last_triggered_reset_time TEXT' },
+  // Per-pool cycle stamps, so a routine burning several pools tracks each cycle separately.
+  {
+    name: 'last_triggered_cycles_json',
+    ddl: "last_triggered_cycles_json TEXT NOT NULL DEFAULT '{}'",
+  },
   { name: 'last_task_id', ddl: 'last_task_id TEXT' },
   {
     name: 'created_at',
@@ -435,8 +442,27 @@ const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogSt
   return parsed.success ? parsed.data : fallback;
 };
 
-const coerceNullableString = (value: unknown, fallback: string | null): string | null =>
-  typeof value === 'string' ? value : fallback;
+/** Tolerant because the column is a cache of cycle stamps, not a source of truth. */
+const parseCycleMap = (raw: unknown): Record<string, string> => {
+  if (typeof raw !== 'string' || raw.trim() === '') return {};
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const map: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'string') map[key] = value;
+    }
+    return map;
+  } catch {
+    return {};
+  }
+};
+
+// `null` is an explicit clear: callers pass it to drop a stale error or attachment.
+const coerceNullableString = (value: unknown, fallback: string | null): string | null => {
+  if (value === null) return null;
+  return typeof value === 'string' ? value : fallback;
+};
 
 /** Raised for every rejected one-time registration token, so callers can map it to a 401. */
 export class RegistrationTokenError extends Error {}
@@ -546,8 +572,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
                 id, task_number, title, prompt, repository_id, models_json, effort,
                 verify_command, auto_create_pr, actor, enabled, sort_order,
                 trigger_before_reset_hours, min_headroom_percent,
-                last_triggered_reset_time, last_task_id, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                last_triggered_reset_time, last_triggered_cycles_json, last_task_id,
+                created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             )
             .run(
               row.id,
@@ -565,6 +592,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
               row.trigger_before_reset_hours || DEFAULT_QUOTA_BURN_MAX_HOURS,
               10,
               row.last_triggered_reset_time ?? null,
+              '{}',
               row.last_task_id ?? null,
               row.created_at || new Date().toISOString(),
               row.updated_at || new Date().toISOString()
@@ -1013,6 +1041,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
                WHERE status IN (${TERMINAL_STATUS_SQL})
                ORDER BY updated_at DESC
                LIMIT ?
+             )
+             -- The terminal row is the reconciler's only proof its backlog origin already ran;
+             -- deleting it re-dispatches finished work.
+             AND NOT (
+               tier = 'backlog'
+               AND origin_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM backlog_tasks AS b
+                 WHERE b.id = swarm_tasks.origin_id AND b.status = 'dispatched'
+               )
              )`
         )
         .run(keepTerminalCount);
@@ -1044,15 +1082,25 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
   }
 
   // The cycle's run is the newest task the routine produced; a manual trigger counts too.
-  public getLatestTaskForOrigin(originId: string): SwarmTask | undefined {
-    const row = this.rawDb
-      .prepare(
-        `SELECT * FROM swarm_tasks
-         WHERE origin_id = ?
-         ORDER BY created_at DESC, rowid DESC
-         LIMIT 1`
-      )
-      .get(originId) as Record<string, any> | undefined;
+  // poolFamily scopes the lookup to one pool's cycle, which is what a per-pool rearm decision needs.
+  public getLatestTaskForOrigin(originId: string, poolFamily?: string): SwarmTask | undefined {
+    const row = poolFamily
+      ? (this.rawDb
+          .prepare(
+            `SELECT * FROM swarm_tasks
+             WHERE origin_id = ? AND pool_family = ?
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 1`
+          )
+          .get(originId, poolFamily) as Record<string, any> | undefined)
+      : (this.rawDb
+          .prepare(
+            `SELECT * FROM swarm_tasks
+             WHERE origin_id = ?
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT 1`
+          )
+          .get(originId) as Record<string, any> | undefined);
     return row ? this.mapRowToTask(row) : undefined;
   }
 
@@ -1075,7 +1123,12 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       limit?: number;
     } = {}
   ): SwarmTask[] {
-    const limit = Math.min(Math.max(1, options.limit ?? 50), 500);
+    // SQLite rejects a REAL/NaN LIMIT, so the caller's number is floored and range-checked.
+    const requestedLimit = options.limit ?? 50;
+    const limit = Math.min(
+      Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
+      500
+    );
     const conditions: string[] = [];
     const params: any[] = [];
 
@@ -1275,11 +1328,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
+    // An unparsable claimed_at yields NaN, which SQLite rejects as a NOT NULL violation; the
+    // derived duration therefore falls back to the stored value instead of throwing.
+    const elapsedMs = existing.claimedAt
+      ? Date.now() - new Date(existing.claimedAt).getTime()
+      : Number.NaN;
     const durationMs =
       patch.durationMs !== undefined
         ? Math.max(0, Math.round(patch.durationMs))
-        : existing.claimedAt && isTerminal
-          ? Math.max(0, Date.now() - new Date(existing.claimedAt).getTime())
+        : existing.claimedAt && isTerminal && Number.isFinite(elapsedMs)
+          ? Math.max(0, elapsedMs)
           : existing.durationMs;
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
@@ -1935,6 +1993,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       triggerBeforeResetHours: number;
       minHeadroomPercent: number;
       lastTriggeredResetTime: string | null;
+      lastTriggeredCycles: Record<string, string>;
       lastTaskId: string | null;
     }>
   ): RoutineTaskRecord | undefined {
@@ -1978,6 +2037,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       patch.lastTriggeredResetTime,
       existing.lastTriggeredResetTime ?? null
     );
+    const lastTriggeredCyclesJson = JSON.stringify(
+      patch.lastTriggeredCycles ?? existing.lastTriggeredCycles ?? {}
+    );
     const lastTaskId = coerceNullableString(patch.lastTaskId, existing.lastTaskId ?? null);
 
     this.rawDb
@@ -1997,6 +2059,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              trigger_before_reset_hours = ?,
              min_headroom_percent = ?,
              last_triggered_reset_time = ?,
+             last_triggered_cycles_json = ?,
              last_task_id = ?,
              updated_at = ?
          WHERE id = ?`
@@ -2016,6 +2079,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         triggerHours,
         minHeadroom,
         lastReset,
+        lastTriggeredCyclesJson,
         lastTaskId,
         now,
         id
@@ -2059,6 +2123,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       lastTriggeredResetTime: r.last_triggered_reset_time
         ? String(r.last_triggered_reset_time)
         : undefined,
+      lastTriggeredCycles: parseCycleMap(r.last_triggered_cycles_json),
       lastTaskId: r.last_task_id ? String(r.last_task_id) : undefined,
       createdAt: String(r.created_at),
       updatedAt: String(r.updated_at),

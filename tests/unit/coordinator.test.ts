@@ -53,6 +53,31 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(CANONICAL_AGY_MODELS.length, 6);
     });
 
+    it('resolves a shorthand configured default to a concrete model instead of passing it through', () => {
+      // The configured default is user input too: `agy --model claude` is not a model id.
+      assert.equal(resolveConcreteModelId(undefined, 'gemini-flash'), 'gemini-3.8-flash');
+      assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
+      assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
+      assert.equal(resolveConcreteModelId('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen');
+    });
+
+    it('ignores a disabled short-term bucket and floors the effective headroom', () => {
+      assert.equal(
+        calculateEffectiveHeadroomPercent({
+          remainingFraction: 0.8,
+          shortTerm: {
+            bucketId: '3p-5h',
+            displayName: '5-Hour',
+            remainingFraction: 0,
+            disabled: true,
+          },
+        }),
+        80
+      );
+      // 0.29 * 100 is 28.999… in floating point and must still read 29.
+      assert.equal(calculateEffectiveHeadroomPercent({ remainingFraction: 0.29 }), 29);
+    });
+
     it('calculates effectiveHeadroomPercent as min(weekly, 5h shortTerm)', () => {
       const pool: QuotaSnapshot = {
         poolId: 'claude',
@@ -222,11 +247,82 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         cleanup();
       }
     });
+
+    it('floors a fractional listTasks limit and falls back to the default on NaN', () => {
+      const { dir, cleanup } = makeTempDir('orch_list_limit_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        for (const prompt of ['First', 'Second', 'Third']) {
+          queue.enqueue({
+            repositoryName: 'agylity',
+            prompt,
+            scheduleMode: 'immediate',
+            model: 'gemini-4-argon-high',
+          });
+        }
+
+        // SQLite rejects a REAL LIMIT, so 2.5 must be floored rather than passed through.
+        assert.equal(queue.listTasks({ limit: 2.5 }).length, 2);
+
+        // NaN must not reach SQL either: it falls back to the default page size.
+        const fallback = queue.listTasks({ limit: Number.NaN });
+        assert.equal(fallback.length, 3);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
   /* 3. Git Branch Isolation & Official agy CLI TaskExecutor              */
   /* ==================================================================== */
+  describe('2b. Pruning keeps the proof a backlog origin settled', () => {
+    it('does not prune a terminal task whose backlog origin is still dispatched', () => {
+      const { dir, cleanup } = makeTempDir('orch_prune_origin_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const origin = queue.createBacklogTask({
+          title: 'Sync docs',
+          prompt: 'Do the thing',
+          repositoryId: 'agylity',
+        });
+        queue.updateBacklogTask(origin.id, { status: 'dispatched' });
+
+        const linked = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Linked run',
+          scheduleMode: 'immediate',
+          model: 'gemini-3.8-flash-high',
+          tier: 'backlog',
+          originId: origin.id,
+        });
+        const loose = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Loose run',
+          scheduleMode: 'immediate',
+          model: 'gemini-3.8-flash-high',
+        });
+
+        queue.updateTaskStatus(linked.id, { status: 'completed', durationMs: 10 });
+        queue.updateTaskStatus(loose.id, { status: 'completed', durationMs: 10 });
+
+        queue.pruneOldTasks(0);
+
+        // The origin is still 'dispatched', so its terminal row is the reconciler's only evidence.
+        assert.ok(queue.getTask(linked.id));
+        assert.equal(queue.getTask(loose.id), undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+  });
+
   describe('3. Git Branch Isolation & Official agy CLI TaskExecutor', () => {
     it('checks out isolated continuation branch and invokes official agy binary with explicit --model and --effort', async () => {
       const { dir, cleanup } = makeTempDir('orch_exec_');

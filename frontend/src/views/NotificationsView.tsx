@@ -58,6 +58,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const resolved = config.resolved || {};
 
   const serverChannels = useMemo(() => getInitialChannels(resolved), [resolved]);
+  // A refetch replaces `resolved`, so the sync effect below tracks the joined content: an
+  // unchanged server config must not wipe credentials the user has typed but not saved.
+  const serverChannelsKey = serverChannels.join(',');
   const serverDiscordChannelId = useMemo(
     () => String(resolved.discordNotificationChannelId || ''),
     [resolved.discordNotificationChannelId]
@@ -142,7 +145,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordToken('');
     setWebhookSecret('');
   }, [
-    serverChannels,
+    serverChannelsKey,
     serverDiscordChannelId,
     serverDiscordClientId,
     serverDiscordGuildId,

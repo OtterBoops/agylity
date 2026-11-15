@@ -173,6 +173,70 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     assert.equal(result.family, null);
   });
 
+  it('burns a routine cycle per pool, so another pool cannot re-arm it', async () => {
+    const { dir, cleanup } = makeTempDir('tier_routine_cycles_');
+    const { db, coordinator } = makeCoordinator(dir);
+
+    try {
+      const routine = coordinator.queue.createRoutineTask({
+        title: 'Nightly sweep',
+        prompt: 'Sweep the repo',
+        repositoryId: 'agylity',
+        models: ['gemini-3.8-flash', 'claude-sonnet-5-5'],
+        triggerBeforeResetHours: 12,
+        minHeadroomPercent: 10,
+      });
+
+      const flash = pool('gemini-flash', 0.8);
+      const claude = pool('claude', 0.8);
+      const farOut = new Date(Date.now() + 48 * 3600_000).toISOString();
+      const inWindow = new Date(Date.now() + 5 * 3600_000).toISOString();
+
+      // 1. Only the flash pool is inside the window.
+      flash.resetTime = inWindow;
+      claude.resetTime = farOut;
+      claude.hoursUntilReset = 48;
+
+      const first = await coordinator.triggerEligibleRoutines([flash, claude]);
+      assert.equal(first.length, 1);
+      assert.match(first[0]?.model ?? '', /flash/);
+
+      // 2. That run fails, which burns the flash cycle.
+      coordinator.queue.updateTaskStatus(first[0]!.id, {
+        status: 'failed',
+        durationMs: 10,
+        error: 'boom',
+      });
+
+      // 3. The other pool still gets its turn in its own cycle.
+      flash.resetTime = farOut;
+      flash.hoursUntilReset = 48;
+      claude.resetTime = inWindow;
+      claude.hoursUntilReset = 5;
+      const second = await coordinator.triggerEligibleRoutines([flash, claude]);
+      assert.equal(second.length, 1);
+      assert.match(second[0]?.model ?? '', /claude/);
+
+      const stamped = coordinator.queue.getRoutineTask(routine.id);
+      assert.equal(stamped?.lastTriggeredCycles['gemini-flash'], inWindow);
+      assert.equal(stamped?.lastTriggeredCycles.claude, inWindow);
+
+      // 4. Flash is back inside its window on the same cycle: it must stay burned, even though
+      // the routine's most recent run belongs to the claude pool.
+      coordinator.queue.updateTaskStatus(second[0]!.id, { status: 'completed', durationMs: 10 });
+      flash.resetTime = inWindow;
+      flash.hoursUntilReset = 5;
+      claude.resetTime = farOut;
+      claude.hoursUntilReset = 48;
+
+      const third = await coordinator.triggerEligibleRoutines([flash, claude]);
+      assert.equal(third.length, 0);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
   it('falls through to the next model when the first pool is under the floor', async () => {
     const { dir, cleanup } = makeTempDir('tier_chain_');
     const { db, coordinator } = makeCoordinator(dir);

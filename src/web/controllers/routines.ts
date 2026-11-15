@@ -18,6 +18,8 @@ import {
 } from '../../coordinator/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 
+const ROUTINE_PATCH_STRING_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
+
 const parseOptionalPrPolicy = (
   raw: unknown
 ): { ok: true; value: PrPolicy | null | undefined } | { ok: false; error: string } => {
@@ -49,7 +51,11 @@ export const handleRoutineTasks = async (
     if (!parsed.ok) return;
     const payload: any = parsed.body;
 
-    if (!payload?.title || !payload?.prompt || !payload?.repositoryId) {
+    const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+    const prompt = typeof payload?.prompt === 'string' ? payload.prompt.trim() : '';
+    const repositoryId =
+      typeof payload?.repositoryId === 'string' ? payload.repositoryId.trim() : '';
+    if (!title || !prompt || !repositoryId) {
       return sendJson(res, 400, {
         error: 'title, prompt, and repositoryId are required for routine task',
       });
@@ -68,9 +74,9 @@ export const handleRoutineTasks = async (
     }
 
     const created = coordinator.queue.createRoutineTask({
-      title: String(payload.title).trim(),
-      prompt: String(payload.prompt).trim(),
-      repositoryId: String(payload.repositoryId).trim(),
+      title,
+      prompt,
+      repositoryId,
       models: models.length > 0 ? models : ['gemini-3.8-flash'],
       effort,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
@@ -104,7 +110,10 @@ export const handleRoutineTaskById = async (
 
   const coordinator = resolveCoordinator(options);
 
-  if (action === 'trigger' && method === 'POST') {
+  if (action === 'trigger') {
+    // The sub-route is POST-only; falling through would let PATCH/DELETE mutate the row.
+    if (method !== 'POST') return methodNotAllowed(res);
+
     const rt = coordinator.queue.getRoutineTask(id);
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
 
@@ -148,11 +157,20 @@ export const handleRoutineTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
-    const policyParsed = parseOptionalPrPolicy(patch?.prPolicy);
+    // `'prPolicy' in patch` and the queue's `.trim()` calls both throw on a non-object body.
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+      return sendJson(res, 400, { error: 'Body must be a JSON object' });
+    }
+    if (ROUTINE_PATCH_STRING_FIELDS.some((key) => key in patch && typeof patch[key] !== 'string')) {
+      return sendJson(res, 400, {
+        error: 'title, prompt, and repositoryId must be strings',
+      });
+    }
+    const policyParsed = parseOptionalPrPolicy(patch.prPolicy);
     if (!policyParsed.ok) {
       return sendJson(res, 400, { error: policyParsed.error });
     }
-    if (patch && 'prPolicy' in patch) {
+    if ('prPolicy' in patch) {
       patch.prPolicy = policyParsed.value;
     }
 

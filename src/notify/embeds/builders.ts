@@ -26,6 +26,14 @@ const buildDashboardLink = (baseUrl: string | undefined, path: string): string |
   return base ? `${base}${path}` : undefined;
 };
 
+// Discord rejects an embed timestamp it cannot parse, and the rejection loses the whole message.
+const embedTimestamp = (value?: string): string => {
+  const parsed = value ? new Date(value) : null;
+  return parsed && !Number.isNaN(parsed.getTime())
+    ? parsed.toISOString()
+    : new Date().toISOString();
+};
+
 // One pool rendering shared by the status and alert embeds so the two cannot drift. The field
 // NAME carries the pool and its headline figure, so each pool reads as a single scannable line.
 const renderPoolFieldName = (pool: QuotaSnapshot, includePoolName = true): string => {
@@ -59,7 +67,7 @@ export const buildQuotaAlertEmbed = (
   }
 
   return {
-    title: `[Alert] ${poolName}`,
+    title: `[Alert] ${poolName}`.slice(0, 256),
     description: `Crossed the **${hours}h** milestone before reset.`,
     color: 0xf6c177,
     fields: [
@@ -74,7 +82,7 @@ export const buildQuotaAlertEmbed = (
     ],
     url: buildDashboardLink(options?.baseUrl, '/overview'),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
-    timestamp: alert.triggeredAt || new Date().toISOString(),
+    timestamp: embedTimestamp(alert.triggeredAt),
   };
 };
 
@@ -115,7 +123,7 @@ export const buildInfoNoticeEmbed = (
     fields: fields.length > 0 ? fields : undefined,
     url: buildDashboardLink(options?.baseUrl, '/tasks'),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
-    timestamp: notice.timestamp || new Date().toISOString(),
+    timestamp: embedTimestamp(notice.timestamp),
   };
 };
 
@@ -134,7 +142,7 @@ export const buildTestAlertEmbed = (
   const fraction = samplePool?.remainingFraction ?? 0.25;
 
   return {
-    title: `[Alert] Quota Milestone: ${poolName}`,
+    title: `[Alert] Quota Milestone: ${poolName}`.slice(0, 256),
     description: `Milestone threshold: **3h** before quota reset.`,
     color: 0xffa500,
     fields: [
@@ -181,11 +189,14 @@ const DEFAULT_STEP_VISUAL: StepVisualConfig = {
 };
 
 export const formatDurationHuman = (durationMs?: number): string => {
-  if (typeof durationMs !== 'number' || durationMs <= 0) return '0s';
+  if (typeof durationMs !== 'number' || !Number.isFinite(durationMs) || durationMs <= 0)
+    return '0s';
   const sec = durationMs / 1000;
   if (sec < 60) return `${sec.toFixed(1)}s`;
-  const mins = Math.floor(sec / 60);
-  const remSec = Math.round(sec % 60);
+  // Round before splitting, so 119.6s reads "2m" and never "1m 60s".
+  const wholeSec = Math.round(sec);
+  const mins = Math.floor(wholeSec / 60);
+  const remSec = wholeSec % 60;
   return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
 };
 
@@ -281,7 +292,7 @@ export const buildDispatchStatusEmbed = (
           `/tasks?tab=executions&id=${encodeURIComponent(status.taskId)}`
         )
       : undefined,
-    timestamp: status.timestamp || new Date().toISOString(),
+    timestamp: embedTimestamp(status.timestamp),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
   };
 };

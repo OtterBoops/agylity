@@ -197,6 +197,7 @@ export const CommandPalette = ({
       aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
+      onCancel={onClose}
       onClick={handleDialogClick}
       class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
     >

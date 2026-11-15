@@ -392,7 +392,8 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) {
       const trimmed = value.trim();
-      sanitizedEnv[key] = trimmed === '' ? undefined : value;
+      // Keep the trimmed form: consumers use the value verbatim (a padded WEB_UI_HOST fails to bind).
+      sanitizedEnv[key] = trimmed === '' ? undefined : trimmed;
     }
   }
 
@@ -496,7 +497,11 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   }
 
   if (parsed.ALLOW_OVERAGE !== undefined && parsed.ALLOW_OVERAGE.trim() !== '') {
-    result.allowOverage = booleanEnv.parse(parsed.ALLOW_OVERAGE);
+    try {
+      result.allowOverage = booleanEnv.parse(parsed.ALLOW_OVERAGE);
+    } catch {
+      warnEnvFallback('ALLOW_OVERAGE', 'invalid boolean value');
+    }
   }
 
   if (parsed.COORDINATOR_ENABLED !== undefined && parsed.COORDINATOR_ENABLED.trim() !== '') {
@@ -634,7 +639,7 @@ export const validateConfigOverridePatch = (
     if (FORBIDDEN_CONFIG_KEYS.has(key)) {
       throw new Error(`Forbidden configuration key: ${key}`);
     }
-    if (!(key in CONFIG_FIELD_SCHEMAS)) {
+    if (!Object.hasOwn(CONFIG_FIELD_SCHEMAS, key)) {
       throw new Error(`Unknown configuration key: ${key}`);
     }
     const schema = CONFIG_FIELD_SCHEMAS[key as keyof AppConfig];
