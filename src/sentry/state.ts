@@ -146,6 +146,7 @@ export const createInitialState = (): SentryState => ({
 export class SentryStateManager {
   private readonly stateFilePath: string;
   private state: SentryState;
+  private saveChain: Promise<void> = Promise.resolve();
 
   constructor(stateFilePath: string = 'data/state.json') {
     this.stateFilePath = path.resolve(stateFilePath);
@@ -175,7 +176,13 @@ export class SentryStateManager {
         return this.getState();
       }
 
-      // File exists but parsing/validation failed: quarantine it
+      // Only contents that cannot be parsed or validated are quarantined. A read-side failure
+      // (lock, permissions) leaves the file for the next load instead of destroying valid state.
+      const contentInvalid = err instanceof SyntaxError || err instanceof z.ZodError;
+      if (!contentInvalid) {
+        return this.getState();
+      }
+
       const quarantinePath = `${this.stateFilePath}.corrupt.${Date.now()}`;
       try {
         await fs.rename(this.stateFilePath, quarantinePath);
@@ -190,11 +197,23 @@ export class SentryStateManager {
 
   // Atomically saves state to disk using a unique temporary file and fs.rename.
   async save(): Promise<void> {
+    // The probe loop and the web dismissal both save this manager; serialising them keeps a slower
+    // write from renaming its older serialisation over a newer one.
+    const run = this.saveChain.then(() => this.writeState());
+    this.saveChain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  private async writeState(): Promise<void> {
     const dir = path.dirname(this.stateFilePath);
     await fs.mkdir(dir, { recursive: true });
 
     const nonce = Math.random().toString(36).slice(2);
     const tempFile = `${this.stateFilePath}.tmp.${process.pid}.${Date.now()}.${nonce}`;
+    // Serialise inside the queued write so the newest state is what lands on disk.
     const serialized = JSON.stringify(this.state, null, 2);
 
     await fs.writeFile(tempFile, serialized, 'utf-8');

@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
-import { existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { z } from 'zod';
@@ -451,8 +451,23 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.deepEqual(state.pools, {});
 
       // Verify corrupted file was quarantined
-      const files = existsSync(testDir);
-      assert.ok(files);
+      const quarantined = readdirSync(testDir).filter((f) => f.includes('.corrupt.'));
+      assert.equal(quarantined.length, 1);
+    });
+
+    it('leaves a valid state file alone when the read fails for a reason other than its content', async () => {
+      // A directory at the state path makes the read throw EISDIR, not a parse or validation error.
+      const dirAsStatePath = join(testDir, 'state-as-dir');
+      mkdirSync(dirAsStatePath, { recursive: true });
+
+      const manager = new SentryStateManager(dirAsStatePath);
+      const state = await manager.load();
+
+      assert.equal(state.version, 1);
+      assert.deepEqual(state.pools, {});
+      // Quarantining here would rename a file nothing is wrong with; nothing may be created.
+      const quarantined = readdirSync(testDir).filter((f) => f.includes('.corrupt.'));
+      assert.equal(quarantined.length, 0);
     });
 
     it('normalizes milestone keys consistently', () => {
@@ -641,6 +656,44 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const reloaded = new SentryStateManager(stateFile);
       await reloaded.load();
       assert.equal(reloaded.getEarlyResetNotice(), null);
+    });
+
+    it('queues a second save behind an in-flight one instead of writing concurrently', async () => {
+      const manager = new SentryStateManager(stateFile);
+      await manager.load();
+
+      // Park the first write until the assertion has run, so "did a second write start?" is the
+      // observable difference between a queued save and two writes racing to rename the same file.
+      const fsPromises = (await import('node:fs')).promises;
+      const realWriteFile = fsPromises.writeFile;
+      const releases: Array<() => void> = [];
+      let writes = 0;
+      (fsPromises as any).writeFile = async (...args: any[]) => {
+        writes++;
+        if (writes === 1) await new Promise<void>((resolve) => releases.push(resolve));
+        return (realWriteFile as any)(...args);
+      };
+
+      try {
+        manager.updateProbe('cli', '2026-11-14T00:00:00.000Z');
+        const first = manager.save();
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        manager.updateProbe('connect_rpc', '2026-11-14T00:01:00.000Z');
+        const second = manager.save();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        assert.equal(writes, 1, 'the second save must not write while the first is in flight');
+
+        for (const release of releases) release();
+        await Promise.all([first, second]);
+      } finally {
+        (fsPromises as any).writeFile = realWriteFile;
+      }
+
+      const reloaded = new SentryStateManager(stateFile);
+      await reloaded.load();
+      assert.equal(reloaded.getState().lastProbeSource, 'connect_rpc');
     });
   });
 

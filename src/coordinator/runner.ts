@@ -18,6 +18,14 @@ import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask, TaskStatusPatch } 
 import { resolveReasoningEffortForModel } from './models.js';
 import type { PrPolicy } from '../config/schema.js';
 
+const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'all']);
+
+// An unrecognised policy string (a typo or a blank compose var) must never read as "no restriction".
+export const normalizePrPolicy = (value?: string): PrPolicy | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && PR_POLICIES.has(normalized) ? (normalized as PrPolicy) : undefined;
+};
+
 export interface TaskExecutorOptions {
   agyBinPath?: string;
   timeoutMs?: number;
@@ -430,7 +438,10 @@ export class TaskExecutor {
     this.killProcessTreeFn = options.killProcessTreeFn ?? defaultKillProcessTree;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
-    this.prPolicy = options.prPolicy ?? ((process.env.PR_POLICY as PrPolicy) || 'docs_only');
+    this.prPolicy =
+      normalizePrPolicy(options.prPolicy) ??
+      normalizePrPolicy(process.env.PR_POLICY) ??
+      'docs_only';
     this.candidateModels = options.candidateModels;
     this.mirrorCacheDir = options.mirrorCacheDir ?? path.join(os.tmpdir(), 'agylity-repo-mirrors');
     this.useMirrorCache = options.useMirrorCache !== false;
@@ -1103,7 +1114,8 @@ export class TaskExecutor {
       // Policy Guard: an agent-tier run is held to the PR policy; an immediate run is the human
       // asking for the change, so it pushes whatever it produced.
       const agentRun = task.tier !== 'immediate';
-      const effectivePrPolicy: PrPolicy = task.prPolicy ?? this.prPolicy ?? 'docs_only';
+      const effectivePrPolicy: PrPolicy =
+        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'docs_only';
 
       if (agentRun) {
         if (effectivePrPolicy === 'none') {

@@ -1537,6 +1537,150 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   });
 
   /* ==================================================================== */
+  /* 10b. Task Text Fields Must Be Strings On POST                        */
+  /* ==================================================================== */
+  describe('10b. Task Text Fields Must Be Strings On POST', () => {
+    it('rejects POST /api/backlog with an object title and creates no row', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_post_obj_title_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        // A truthy object used to pass validation and be stored as "[object Object]".
+        const res = await ky.post(`${base}/api/backlog`, {
+          json: { title: { x: 1 }, prompt: 'P', repositoryId: 'agylity' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+
+        const listRes = await ky.get(`${base}/api/backlog`, { retry: 0 });
+        assert.equal(listRes.status, 200);
+        const list = await listRes.json<any[]>();
+        assert.deepEqual(list, [], 'a rejected POST must not leave a backlog row behind');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('rejects POST /api/backlog with an array prompt and creates no row', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_post_arr_prompt_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        // An array used to be stringified into the row as "1,2".
+        const res = await ky.post(`${base}/api/backlog`, {
+          json: { title: 'Valid title', prompt: [1, 2], repositoryId: 'agylity' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+
+        const list = await ky.get(`${base}/api/backlog`, { retry: 0 }).json<any[]>();
+        assert.deepEqual(list, [], 'a rejected POST must not leave a backlog row behind');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('rejects POST /api/routines with non-string text fields and creates no row', async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_post_nonstring_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const rejected: Array<Record<string, unknown>> = [
+          { title: 'Valid title', prompt: [1, 2], repositoryId: 'agylity' },
+          { title: 7, prompt: 'Valid prompt', repositoryId: 'agylity' },
+        ];
+        for (const body of rejected) {
+          const res = await ky.post(`${base}/api/routines`, {
+            json: body,
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(
+            res.status,
+            400,
+            `POST ${JSON.stringify(body)} must be a 400, got ${res.status}`
+          );
+        }
+
+        const list = await ky.get(`${base}/api/routines`, { retry: 0 }).json<any[]>();
+        assert.deepEqual(list, [], 'a rejected POST must not leave a routine row behind');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('still accepts a fully valid POST /api/backlog with 201', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_post_valid_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const createdRes = await ky.post(`${base}/api/backlog`, {
+          json: { title: 'Valid backlog row', prompt: 'Do the thing', repositoryId: 'agylity' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(createdRes.status, 201);
+        const created = await createdRes.json<any>();
+        assert.equal(created.title, 'Valid backlog row');
+        assert.equal(created.prompt, 'Do the thing');
+        assert.equal(created.repositoryId, 'agylity');
+
+        const list = await ky.get(`${base}/api/backlog`, { retry: 0 }).json<any[]>();
+        assert.equal(list.length, 1);
+        assert.equal(list[0].title, 'Valid backlog row');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
   /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
   /* ==================================================================== */
   describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {

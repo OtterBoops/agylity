@@ -87,7 +87,11 @@ export const handleRoutineTasks = async (
     if (!parsed.ok) return;
     const payload: any = parsed.body;
 
-    if (!payload?.title || !payload?.prompt || !payload?.repositoryId) {
+    const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
+    const prompt = typeof payload?.prompt === 'string' ? payload.prompt.trim() : '';
+    const repositoryId =
+      typeof payload?.repositoryId === 'string' ? payload.repositoryId.trim() : '';
+    if (!title || !prompt || !repositoryId) {
       return sendJson(res, 400, {
         error: 'title, prompt, and repositoryId are required for routine task',
       });
@@ -109,9 +113,9 @@ export const handleRoutineTasks = async (
     }
 
     const created = coordinator.queue.createRoutineTask({
-      title: String(payload.title).trim(),
-      prompt: String(payload.prompt).trim(),
-      repositoryId: String(payload.repositoryId).trim(),
+      title,
+      prompt,
+      repositoryId,
       models: models.length > 0 ? models : ['gemini-3.8-flash'],
       effort,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),

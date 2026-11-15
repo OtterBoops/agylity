@@ -1605,6 +1605,64 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('survives an unparsable claimed_at instead of failing the duration_ms NOT NULL constraint', () => {
+      const { dir, cleanup } = makeTempDir('orch_bad_claim_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Corrupt claim stamp',
+          model: 'gemini-4-argon',
+        });
+        queue.claimNext({ runnerId: 'runner-1' });
+
+        // An unparsable stamp makes the elapsed derivation NaN; feeding that to duration_ms used to
+        // abort the UPDATE with a NOT NULL constraint violation.
+        db.getRawDb()
+          .prepare("UPDATE swarm_tasks SET claimed_at = 'not-a-timestamp' WHERE id = ?")
+          .run(task.id);
+
+        const patched = queue.updateTaskStatus(task.id, { status: 'completed' });
+        assert.equal(patched?.applied, true);
+
+        const stored = queue.getTask(task.id);
+        assert.ok(stored);
+        assert.equal(stored.status, 'completed');
+        assert.ok(
+          Number.isFinite(stored.durationMs),
+          `expected a finite durationMs, got ${stored.durationMs}`
+        );
+        assert.ok(stored.durationMs >= 0);
+
+        // Positive control: the fallback must not disarm the normal claimed_at -> now derivation.
+        const timed = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Valid claim stamp',
+          model: 'gemini-4-argon',
+        });
+        queue.claimNext({ runnerId: 'runner-2' });
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET claimed_at = ? WHERE id = ?')
+          .run(new Date(Date.now() - 30_000).toISOString(), timed.id);
+
+        const completed = queue.updateTaskStatus(timed.id, { status: 'completed' });
+        assert.equal(completed?.applied, true);
+
+        const timedStored = queue.getTask(timed.id);
+        assert.ok(timedStored);
+        assert.equal(timedStored.status, 'completed');
+        assert.ok(
+          Number.isFinite(timedStored.durationMs) && timedStored.durationMs > 0,
+          `expected a positive derived durationMs, got ${timedStored.durationMs}`
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('rejects cross-worker and queued-to-active status patches from a foreign runner', () => {
       const { dir, cleanup } = makeTempDir('orch_foreign_');
       const db = new AppDatabase(path.join(dir, 'test.db'));

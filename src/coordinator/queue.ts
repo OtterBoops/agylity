@@ -1304,11 +1304,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
+    // An unparsable claimed_at yields NaN, which SQLite rejects as a NOT NULL violation; the
+    // derived duration therefore falls back to the stored value instead of throwing.
+    const elapsedMs = existing.claimedAt
+      ? Date.now() - new Date(existing.claimedAt).getTime()
+      : Number.NaN;
     const durationMs =
       patch.durationMs !== undefined
         ? Math.max(0, Math.round(patch.durationMs))
-        : existing.claimedAt && isTerminal
-          ? Math.max(0, Date.now() - new Date(existing.claimedAt).getTime())
+        : existing.claimedAt && isTerminal && Number.isFinite(elapsedMs)
+          ? Math.max(0, elapsedMs)
           : existing.durationMs;
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
