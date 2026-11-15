@@ -3,7 +3,8 @@ import { sendJson, methodNotAllowed } from '../http.js';
 import { logger } from '../../logs/logger.js';
 import type { WebServerOptions } from '../types.js';
 import type { QuotaFamily, QuotaSnapshot } from '../../sentry/models.js';
-import { snapshotsFromSentryState } from '../../sentry/models.js';
+import { computeBurnProjection, snapshotsFromSentryState } from '../../sentry/models.js';
+import type { SentryStateManager } from '../../sentry/state.js';
 
 /** Live catalog labels per pool, so the Overview cards track `/api/models` rather than a stale list. */
 const withCatalogModels = (
@@ -27,6 +28,23 @@ const withCatalogModels = (
   });
 };
 
+/** A live probe reports one observation, so a projection can only come from the stored history. */
+const withStoredProjections = (
+  snapshots: QuotaSnapshot[],
+  sentryState: SentryStateManager
+): QuotaSnapshot[] => {
+  const pools = sentryState.getState().pools;
+  return snapshots.map((snapshot) => {
+    const pool = pools[snapshot.poolId];
+    if (!pool?.samples || pool.samples.length === 0) return snapshot;
+    const burnProjection = computeBurnProjection({
+      samples: pool.samples,
+      resetTime: snapshot.resetTime,
+    });
+    return burnProjection ? { ...snapshot, burnProjection } : snapshot;
+  });
+};
+
 export const handleGetQuota = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -40,7 +58,8 @@ export const handleGetQuota = async (
     if (options.quotaClient) {
       // ?refresh=1 forces a probe; without it a manual refresh can be served the 30s cache.
       const force = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1';
-      snapshots = await options.quotaClient.fetchQuota(force);
+      const probed = await options.quotaClient.fetchQuota(force);
+      snapshots = options.sentryState ? withStoredProjections(probed, options.sentryState) : probed;
     } else if (options.sentryState) {
       snapshots = snapshotsFromSentryState(options.sentryState.getState());
     }

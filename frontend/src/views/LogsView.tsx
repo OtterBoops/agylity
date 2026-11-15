@@ -14,21 +14,10 @@ const LEVEL_STYLE: Record<LogLevel, string> = {
   error: 'text-pine-love',
 };
 
-type NamespaceFacet = 'all' | 'sentry' | 'notify' | 'web' | 'runner';
-
-const FACET_KEYWORDS: Record<Exclude<NamespaceFacet, 'all'>, string[]> = {
-  sentry: ['sentry', 'quota', 'probe', 'milestone', 'pool'],
-  notify: ['notify', 'discord', 'webhook', 'channel', 'alert'],
-  web: ['web', 'http', 'api', 'server', 'request', 'status'],
-  runner: ['runner', 'dispatch', 'task', 'git', 'worktree'],
-};
-
 export const LogsView = () => {
   const [timeFormat] = useTimeFormat();
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [enabled, setEnabled] = useState(true);
-  const [level, setLevel] = useState<LogLevel>('info');
-  const [namespace, setNamespace] = useState<NamespaceFacet>('all');
   const [query, setQuery] = useState('');
   const [paused, setPaused] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -76,28 +65,11 @@ export const LogsView = () => {
     };
   }, [paused]);
 
-  const rank: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, error: 3 };
   const q = query.trim().toLowerCase();
 
   const visible = useMemo(() => {
-    return entries.filter((e) => {
-      if (rank[e.level] < rank[level]) return false;
-      const msg = e.message.toLowerCase();
-      if (q && !msg.includes(q)) return false;
-      if (namespace !== 'all') {
-        const match = e.message.match(/^\[([a-zA-Z0-9_\-:]+)\]/);
-        if (match && match[1]) {
-          const prefix = match[1].toLowerCase();
-          if (namespace === 'runner' && (prefix.startsWith('runner') || prefix === 'coordinator'))
-            return true;
-          if (prefix.startsWith(namespace)) return true;
-        }
-        const keywords = FACET_KEYWORDS[namespace];
-        if (!keywords.some((kw) => msg.includes(kw))) return false;
-      }
-      return true;
-    });
-  }, [entries, level, q, namespace]);
+    return entries.filter((e) => !q || e.message.toLowerCase().includes(q));
+  }, [entries, q]);
 
   useEffect(() => {
     if (!paused && !q && scroller.current) {
@@ -145,51 +117,16 @@ export const LogsView = () => {
   };
 
   return (
-    <div class="flex flex-col gap-4">
+    <div class="flex min-h-0 flex-1 flex-col gap-4">
       {/* Top Filter Bar */}
       <div class="flex flex-wrap items-center gap-3">
-        <select
-          aria-label="Filter logs by severity level"
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text outline-none focus:border-pine-iris"
-          value={level}
-          onChange={(e) => setLevel((e.target as HTMLSelectElement).value as LogLevel)}
-        >
-          <option value="debug">Debug +</option>
-          <option value="info">Info +</option>
-          <option value="warn">Warnings +</option>
-          <option value="error">Errors only</option>
-        </select>
-
-        {/* Facet pills */}
-        <div
-          role="group"
-          aria-label="Filter by subsystem"
-          class="inline-flex rounded-lg border border-pine-highlight bg-pine-surface p-0.5 text-xs"
-        >
-          {(['all', 'sentry', 'notify', 'web', 'runner'] as NamespaceFacet[]).map((facet) => (
-            <button
-              key={facet}
-              type="button"
-              aria-pressed={namespace === facet}
-              onClick={() => setNamespace(facet)}
-              class={`cursor-pointer rounded-md px-2.5 py-1 font-medium capitalize transition-colors ${
-                namespace === facet
-                  ? 'bg-pine-iris text-pine-base shadow-xs'
-                  : 'text-pine-subtle hover:text-pine-text'
-              }`}
-            >
-              {facet}
-            </button>
-          ))}
-        </div>
-
         <input
           type="search"
           aria-label="Filter log lines"
           autoComplete="off"
           data-1p-ignore="true"
           data-lpignore="true"
-          class="min-w-[198px] flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text placeholder-pine-subtle outline-none focus:border-pine-iris"
+          class="min-w-48 flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 py-1.5 text-sm text-pine-text placeholder-pine-subtle outline-none focus:border-pine-iris"
           placeholder="Filter log lines..."
           value={query}
           onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
@@ -242,7 +179,7 @@ export const LogsView = () => {
       {/* Terminal Output */}
       <div
         ref={scroller}
-        class="h-[60vh] overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 font-mono text-xs/relaxed shadow-sm"
+        class="min-h-96 flex-1 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 font-mono text-xs/relaxed shadow-sm"
       >
         {!enabled ? (
           <p class="text-pine-subtle">
@@ -266,13 +203,10 @@ export const LogsView = () => {
         )}
       </div>
 
-      <div class="flex flex-wrap items-center justify-between text-xs text-pine-subtle">
-        <span>
-          Last {MAX_LINES} lines are kept in memory only and cleared on restart. Tokens and secrets
-          are redacted server-side.
-        </span>
-        <span>Streaming live via /api/logs</span>
-      </div>
+      <p class="text-xs text-pine-subtle">
+        Last {MAX_LINES} lines are kept in memory only and cleared on restart. Tokens and secrets
+        are redacted server-side.
+      </p>
     </div>
   );
 };

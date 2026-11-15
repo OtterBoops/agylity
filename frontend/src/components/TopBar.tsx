@@ -5,7 +5,6 @@ interface TopBarProps {
   title: string;
   isRefreshing: boolean;
   refreshCooldown: number;
-  coordinatorEnabled?: boolean;
   remainingCredits?: number | null;
   onRefresh: () => void;
   onOpenCommandPalette?: () => void;
@@ -22,16 +21,16 @@ export const TopBar = ({
   onOpenAuthModal,
 }: TopBarProps) => {
   return (
-    // The outer columns need a min-content floor: with a fixed 24rem search, 1fr sides collapse to
-    // 0px between 768px and 900px and the view title disappears.
-    <div class="grid h-10 grid-cols-[minmax(min-content,1fr)_minmax(0,24rem)_minmax(min-content,1fr)] items-center gap-3">
-      <div class="flex min-w-0 items-center">
+    // Title and actions keep their content width (shrink-0) so neither can be squeezed out of the
+    // bar; the search is the only region that gives way, and only down to its icon.
+    <div class="flex h-10 items-center gap-3">
+      <div class="flex shrink-0 items-center">
         <h1 class="truncate text-lg font-semibold tracking-tight text-pine-text sm:text-xl">
           {title}
         </h1>
       </div>
 
-      <div class="flex items-center justify-center">
+      <div class="mx-auto max-w-md min-w-0 flex-1">
         {onOpenCommandPalette && (
           <button
             type="button"
@@ -42,7 +41,7 @@ export const TopBar = ({
           >
             <Icon icon={faSearch} class="size-3.5 shrink-0 text-pine-iris" />
             <span class="min-w-0 flex-1 truncate text-left">Search commands, views, tasks...</span>
-            <kbd class="hidden shrink-0 rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-[11px] text-pine-subtle sm:inline-block">
+            <kbd class="hidden shrink-0 rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-subtle sm:inline-block">
               Ctrl K
             </kbd>
           </button>

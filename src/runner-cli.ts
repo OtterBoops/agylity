@@ -1,7 +1,14 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
-import { RemoteSwarmRunner, normalizePrPolicy } from './coordinator/runner.js';
+import { RemoteSwarmRunner } from './coordinator/runner.js';
 import type { PrPolicy } from './config/schema.js';
+
+const VALID_PR_POLICIES: ReadonlySet<string> = new Set(['docs_only', 'all', 'none']);
+
+const normalizePrPolicy = (raw?: string): PrPolicy | undefined => {
+  const trimmed = raw?.trim();
+  return trimmed && VALID_PR_POLICIES.has(trimmed) ? (trimmed as PrPolicy) : undefined;
+};
 
 export interface RunnerCliOptions {
   coordinatorUrl: string;

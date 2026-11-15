@@ -4,20 +4,24 @@ import { createServer, type Server } from 'node:http';
 import { existsSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { z } from 'zod';
 import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
   calculateHoursUntilReset,
+  computeBurnProjection,
   deriveOverageEnabled,
   resolveModelFamily,
   snapshotsFromSentryState,
+  BURN_FLOOR_PERCENT,
   FAMILY_DEFAULT_MODELS,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
   QuotaInfoSchema,
+  QuotaSnapshotSchema,
+  type BurnSample,
   type LanguageServerModelConfig,
-  type LanguageServerResponse,
 } from '../../src/sentry/models.js';
 import { SentryStateManager, normalizeMilestoneKey } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
@@ -37,6 +41,9 @@ import {
 // ==========================================
 // Test Fixtures: 13 Antigravity Models
 // ==========================================
+
+// Local mirror of the response shape; the models module only exports the schema.
+type LanguageServerResponse = z.infer<typeof LanguageServerResponseSchema>;
 
 const SAMPLE_RESET_TIME_CLAUDE = new Date(Date.now() + 20 * 3600 * 1000).toISOString();
 const SAMPLE_RESET_TIME_ARGON = new Date(Date.now() + 100 * 3600 * 1000).toISOString();
@@ -1740,6 +1747,293 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       // pid 1234 appears inside the first row's port (51234) but that row belongs to pid 9999
       assert.deepEqual(parseWindowsNetstatPorts(netstat, '1234'), [60643, 60644]);
+    });
+  });
+
+  // ==========================================
+  // 6. Burn-Rate Sampling & Projection
+  // ==========================================
+  describe('6. Burn-Rate Sampling & Projection', () => {
+    const testDir = join(
+      tmpdir(),
+      'test_sentry_burn_' + Date.now() + '_' + Math.random().toString(36).slice(2)
+    );
+    const stateFile = join(testDir, 'state.json');
+
+    const NOW_MS = Date.parse('2026-11-14T12:00:00Z');
+    const MINUTE_MS = 60_000;
+    const cycleReset = new Date(NOW_MS + 2 * 3600 * 1000).toISOString();
+    const nextCycleReset = new Date(NOW_MS + 7 * 24 * 3600 * 1000).toISOString();
+
+    const sampleAt = (
+      minutesAgo: number,
+      remainingFraction: number,
+      resetTime: string = cycleReset
+    ): BurnSample => ({
+      at: new Date(NOW_MS - minutesAgo * MINUTE_MS).toISOString(),
+      remainingFraction,
+      resetTime,
+    });
+
+    beforeEach(() => {
+      if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+      mkdirSync(testDir, { recursive: true });
+    });
+
+    afterEach(() => {
+      if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
+    });
+
+    it('appends a sample once ten minutes have passed', () => {
+      const manager = new SentryStateManager(stateFile);
+
+      manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.795, cycleReset, NOW_MS + 59_000);
+      assert.equal(manager.getPoolState('claude')?.samples?.length, 1);
+
+      manager.updatePoolQuota('claude', 0.78, cycleReset, NOW_MS + 10 * MINUTE_MS);
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 2);
+      assert.equal(samples[1]?.at, new Date(NOW_MS + 10 * MINUTE_MS).toISOString());
+      assert.equal(samples[1]?.remainingFraction, 0.78);
+      assert.equal(samples[1]?.resetTime, cycleReset);
+    });
+
+    it('ignores a rapid observation whose drain is below the noise floor', () => {
+      const manager = new SentryStateManager(stateFile);
+
+      manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.795, cycleReset, NOW_MS + 30_000);
+
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 1);
+      assert.equal(samples[0]?.remainingFraction, 0.8);
+    });
+
+    it('records a recent observation once the drain reaches a whole percent', () => {
+      const manager = new SentryStateManager(stateFile);
+
+      manager.updatePoolQuota('claude', 0.9, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.88, cycleReset, NOW_MS + 30_000);
+
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 2);
+      assert.equal(samples[1]?.remainingFraction, 0.88);
+    });
+
+    it('clears the history when the reset time rolls into a new cycle', () => {
+      const manager = new SentryStateManager(stateFile);
+
+      manager.updatePoolQuota('claude', 0.5, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.45, cycleReset, NOW_MS + 20 * MINUTE_MS);
+      assert.equal(manager.getPoolState('claude')?.samples?.length, 2);
+
+      const rolled = manager.updatePoolQuota('claude', 1, nextCycleReset, NOW_MS + 21 * MINUTE_MS);
+      assert.equal(rolled.cycleRolled, true);
+
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 1);
+      assert.equal(samples[0]?.remainingFraction, 1);
+      assert.equal(samples[0]?.resetTime, nextCycleReset);
+    });
+
+    it('clears the history when an early refill restarts the balance', () => {
+      const manager = new SentryStateManager(stateFile);
+
+      manager.updatePoolQuota('claude', 0.4, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.35, cycleReset, NOW_MS + 20 * MINUTE_MS);
+      const update = manager.updatePoolQuota('claude', 1, cycleReset, NOW_MS + 21 * MINUTE_MS);
+
+      assert.ok(update.earlyReset);
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 1);
+      assert.equal(samples[0]?.remainingFraction, 1);
+    });
+
+    it('keeps only the newest twenty-four samples', () => {
+      const manager = new SentryStateManager(stateFile);
+      let nowMs = NOW_MS;
+
+      for (let i = 0; i < 30; i++) {
+        manager.updatePoolQuota('claude', 1 - i * 0.02, cycleReset, nowMs);
+        nowMs += 11 * MINUTE_MS;
+      }
+
+      const samples = manager.getPoolState('claude')?.samples ?? [];
+      assert.equal(samples.length, 24);
+      assert.equal(samples[0]?.remainingFraction, 1 - 6 * 0.02);
+      assert.equal(samples[23]?.remainingFraction, 1 - 29 * 0.02);
+    });
+
+    it('round-trips samples and still loads a state file written before them', async () => {
+      const manager = new SentryStateManager(stateFile);
+      manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
+      manager.updatePoolQuota('claude', 0.7, cycleReset, NOW_MS + 30 * MINUTE_MS);
+      await manager.save();
+
+      const reloaded = new SentryStateManager(stateFile);
+      await reloaded.load();
+      assert.equal(reloaded.getPoolState('claude')?.samples?.length, 2);
+
+      const legacyFile = join(testDir, 'legacy.json');
+      writeFileSync(
+        legacyFile,
+        JSON.stringify({
+          version: 1,
+          lastProbeAt: new Date(NOW_MS).toISOString(),
+          lastProbeSource: 'connect_rpc',
+          pools: { claude: { resetTime: cycleReset, remainingFraction: 0.5, firedMilestones: [] } },
+        }),
+        'utf-8'
+      );
+
+      const legacy = new SentryStateManager(legacyFile);
+      const loaded = await legacy.load();
+      assert.equal(loaded.pools['claude']?.remainingFraction, 0.5);
+      assert.equal(loaded.pools['claude']?.samples, undefined);
+      assert.deepEqual(loaded.pools, {
+        claude: { resetTime: cycleReset, remainingFraction: 0.5, firedMilestones: [] },
+      });
+    });
+
+    it('projects nothing from fewer than two samples in the current cycle', () => {
+      assert.equal(
+        computeBurnProjection({ samples: [], resetTime: cycleReset, nowMs: NOW_MS }),
+        undefined
+      );
+      assert.equal(
+        computeBurnProjection({
+          samples: [sampleAt(30, 0.8)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        }),
+        undefined
+      );
+      // Samples from the previous cycle describe a balance the current one no longer has.
+      assert.equal(
+        computeBurnProjection({
+          samples: [sampleAt(120, 0.9, nextCycleReset), sampleAt(30, 0.6, nextCycleReset)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        }),
+        undefined
+      );
+    });
+
+    it('projects nothing when the samples span under five minutes', () => {
+      assert.equal(
+        computeBurnProjection({
+          samples: [sampleAt(4, 0.8), sampleAt(0, 0.7)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        }),
+        undefined
+      );
+      // Five minutes is the inclusive boundary of a usable window.
+      assert.ok(
+        computeBurnProjection({
+          samples: [sampleAt(5, 0.8), sampleAt(0, 0.7)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        })
+      );
+    });
+
+    it('projects nothing for a flat or refilling pool', () => {
+      assert.equal(
+        computeBurnProjection({
+          samples: [sampleAt(60, 0.8), sampleAt(0, 0.8)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        }),
+        undefined
+      );
+      assert.equal(
+        computeBurnProjection({
+          samples: [sampleAt(60, 0.5), sampleAt(0, 0.9)],
+          resetTime: cycleReset,
+          nowMs: NOW_MS,
+        }),
+        undefined
+      );
+    });
+
+    it('derives a linear burn rate and the projected headroom at reset', () => {
+      const projection = computeBurnProjection({
+        samples: [sampleAt(60, 0.8), sampleAt(0, 0.72)],
+        resetTime: cycleReset,
+        nowMs: NOW_MS,
+      });
+
+      assert.ok(projection);
+      assert.ok(Math.abs(projection.burnRatePerHour - 0.08) < 1e-9);
+      // 0.72 - 0.08 * 2h remaining
+      assert.equal(projection.projectedRemainingAtResetPercent, 56);
+      assert.ok(projection.hoursUntilFloor !== null);
+      assert.ok(Math.abs(projection.hoursUntilFloor - (0.72 - 0.1) / 0.08) < 1e-6);
+      assert.equal(BURN_FLOOR_PERCENT, 10);
+    });
+
+    it('clamps a projection that would run past zero before the reset', () => {
+      const farReset = new Date(NOW_MS + 48 * 3600 * 1000).toISOString();
+      const projection = computeBurnProjection({
+        samples: [sampleAt(60, 0.9, farReset), sampleAt(0, 0.8, farReset)],
+        resetTime: farReset,
+        nowMs: NOW_MS,
+      });
+
+      assert.ok(projection);
+      assert.equal(projection.projectedRemainingAtResetPercent, 0);
+      assert.ok(projection.hoursUntilFloor !== null);
+    });
+
+    it('reports no hours to floor once the pool sits at it', () => {
+      const projection = computeBurnProjection({
+        samples: [sampleAt(60, 0.2), sampleAt(0, 0.05)],
+        resetTime: cycleReset,
+        nowMs: NOW_MS,
+      });
+
+      assert.ok(projection);
+      assert.equal(projection.hoursUntilFloor, null);
+      assert.equal(projection.projectedRemainingAtResetPercent, 0);
+    });
+
+    it('attaches a burn projection only to pools carrying enough samples', () => {
+      const snapshots = snapshotsFromSentryState(
+        {
+          pools: {
+            claude: {
+              resetTime: cycleReset,
+              remainingFraction: 0.72,
+              firedMilestones: [],
+              samples: [sampleAt(60, 0.8), sampleAt(0, 0.72)],
+            },
+            'gemini-flash': {
+              resetTime: nextCycleReset,
+              remainingFraction: 0.9,
+              firedMilestones: [],
+            },
+            'gemini-argon': {
+              resetTime: nextCycleReset,
+              remainingFraction: 0.5,
+              firedMilestones: [],
+              samples: [sampleAt(30, 0.5, nextCycleReset)],
+            },
+          },
+        },
+        NOW_MS
+      );
+
+      const byFamily = new Map(snapshots.map((snapshot) => [snapshot.family, snapshot]));
+      assert.equal(byFamily.get('claude')?.burnProjection?.projectedRemainingAtResetPercent, 56);
+      assert.equal(byFamily.get('gemini-flash')?.burnProjection, undefined);
+      // A single sample is history, but not a rate.
+      assert.equal(byFamily.get('gemini-argon')?.burnProjection, undefined);
+
+      // The emitted snapshot must survive the API payload schema.
+      const parsed = QuotaSnapshotSchema.parse(byFamily.get('claude'));
+      assert.equal(parsed.burnProjection?.projectedRemainingAtResetPercent, 56);
     });
   });
 });

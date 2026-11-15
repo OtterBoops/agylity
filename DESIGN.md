@@ -117,7 +117,7 @@ Typography is strictly dual-stack: **Inter / system-ui** for structural copy and
 
 ## Components
 
-- **Data Tables:** Crisp table layout with `p-3.5` cell padding, uppercase monospace headers (`text-xs sm:text-[14.3px] tracking-wider text-pine-muted`), single-line rows, and right-aligned duration metrics.
+- **Data Tables:** Crisp table layout with `p-3.5` cell padding, uppercase monospace headers (`text-xs tracking-wider text-pine-muted`), single-line rows, and right-aligned duration metrics.
 - **Status Badges:** Textual status pills (`[DONE]`, `[FAILED]`, `[ACTIVE]`) with `whitespace-nowrap`, 1px borders, and light alpha backgrounds (`bg-*/15 text-* border-*/40`).
 - **Metric Cards:** Clean numerical displays with dual-tone progress bars and countdown timers.
 

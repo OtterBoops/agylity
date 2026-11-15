@@ -28,9 +28,9 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
 
       <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
         <div class="overflow-x-auto">
-          <table class="w-full min-w-[594px] border-collapse text-left text-sm">
+          <table class="w-full border-collapse text-left text-sm">
             <thead>
-              <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase sm:text-[14.3px]">
+              <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase">
                 <th class="px-4 py-3 whitespace-nowrap">Time</th>
                 <th class="px-4 py-3 whitespace-nowrap">Model Pool</th>
                 <th class="px-4 py-3 whitespace-nowrap">Milestone</th>
@@ -40,8 +40,8 @@ export const AlertsTable = ({ alerts }: AlertsTableProps) => {
             <tbody id="alertsTableBody" class="divide-y divide-pine-highlight/40">
               {firedEvents.length === 0 ? (
                 <tr>
-                  <td colSpan={4} class="px-4 py-8 text-center text-xs text-pine-subtle sm:text-sm">
-                    No milestone alerts have fired in the current cycle.
+                  <td colspan={4} class="px-4 py-3 text-center text-xs text-pine-subtle sm:text-sm">
+                    No milestone alerts fired in the current reset cycle
                   </td>
                 </tr>
               ) : (

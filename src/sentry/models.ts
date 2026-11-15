@@ -40,8 +40,6 @@ export const LanguageServerResponseSchema = z.object({
   defaultOverrideModelConfig: z.record(z.string(), z.unknown()).optional(),
 });
 
-export type LanguageServerResponse = z.infer<typeof LanguageServerResponseSchema>;
-
 // Quota & Sentry Types
 
 export type QuotaFamily = 'claude' | 'gemini-argon' | 'gemini-flash';
@@ -75,6 +73,14 @@ export const QuotaSnapshotSchema = z.object({
   weekly: QuotaBucketSchema.optional(),
   shortTerm: QuotaBucketSchema.optional(),
   buckets: z.array(QuotaBucketSchema).optional(),
+  // Optional: absent until a pool has enough samples to project a burn rate
+  burnProjection: z
+    .object({
+      burnRatePerHour: z.number(),
+      projectedRemainingAtResetPercent: z.number(),
+      hoursUntilFloor: z.number().nullable(),
+    })
+    .optional(),
 });
 
 export type QuotaSnapshot = z.infer<typeof QuotaSnapshotSchema>;
@@ -175,6 +181,69 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   if (diffMs <= 0) return 0;
   const hours = diffMs / (1000 * 60 * 60);
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
+};
+
+// Burn-rate Projection
+
+/** One quota observation inside a single reset cycle. */
+export interface BurnSample {
+  at: string;
+  remainingFraction: number;
+  resetTime: string;
+}
+
+export interface QuotaBurnProjection {
+  burnRatePerHour: number;
+  projectedRemainingAtResetPercent: number;
+  hoursUntilFloor: number | null;
+}
+
+/** The floor a pool should not be projected through. */
+export const BURN_FLOOR_PERCENT = 10;
+
+/** Two observations closer than this cannot separate signal from probe jitter. */
+const BURN_MIN_SPAN_MS = 5 * 60_000;
+/** Below this drain the pool is flat or refilling, which has no meaningful projection. */
+const BURN_MIN_RATE_PER_HOUR = 0.001;
+
+export const computeBurnProjection = (input: {
+  samples?: BurnSample[];
+  resetTime: string;
+  nowMs?: number;
+  floorPercent?: number;
+}): QuotaBurnProjection | undefined => {
+  const nowMs = input.nowMs ?? Date.now();
+  // Samples from an earlier cycle describe a different pool balance, so they are excluded.
+  const cycle = (input.samples ?? []).filter((s) => s.resetTime === input.resetTime);
+  if (cycle.length < 2) return undefined;
+
+  const first = cycle[0]!;
+  const last = cycle[cycle.length - 1]!;
+  const firstMs = Date.parse(first.at);
+  const lastMs = Date.parse(last.at);
+  if (!Number.isFinite(firstMs) || !Number.isFinite(lastMs)) return undefined;
+
+  const elapsedMs = lastMs - firstMs;
+  if (elapsedMs < BURN_MIN_SPAN_MS) return undefined;
+
+  const elapsedHours = elapsedMs / (1000 * 60 * 60);
+  const burnRatePerHour = (first.remainingFraction - last.remainingFraction) / elapsedHours;
+  if (!(burnRatePerHour > BURN_MIN_RATE_PER_HOUR)) return undefined;
+
+  const hoursUntilReset = calculateHoursUntilReset(input.resetTime, nowMs);
+  const projectedFraction = last.remainingFraction - burnRatePerHour * hoursUntilReset;
+
+  const floorFraction = (input.floorPercent ?? BURN_FLOOR_PERCENT) / 100;
+  const hoursUntilFloorRaw = (last.remainingFraction - floorFraction) / burnRatePerHour;
+
+  return {
+    burnRatePerHour,
+    projectedRemainingAtResetPercent: Math.round(Math.min(1, Math.max(0, projectedFraction)) * 100),
+    hoursUntilFloor:
+      last.remainingFraction <= floorFraction || !Number.isFinite(hoursUntilFloorRaw)
+        ? null
+        : hoursUntilFloorRaw,
+  };
 };
 
 /** Canonical pool ordering, shared by every aggregator. */
@@ -564,6 +633,7 @@ export interface QuotaStatePoolLike {
   remainingFraction: number;
   firedMilestones?: string[];
   lastAlertSentAt?: string | null;
+  samples?: BurnSample[];
 }
 
 export interface QuotaStateLike {
@@ -592,18 +662,26 @@ export const snapshotsFromSentryState = (
       hoursUntilReset,
     };
 
-    snapshots.push(
-      toSnapshot({
-        poolId,
-        family,
-        remainingFraction: pool.remainingFraction,
-        resetTime: pool.resetTime,
-        hoursUntilReset,
-        models: [...FAMILY_DEFAULT_MODELS[family]],
-        weekly: weeklyBucket,
-        buckets: [weeklyBucket],
-      })
-    );
+    const snapshot = toSnapshot({
+      poolId,
+      family,
+      remainingFraction: pool.remainingFraction,
+      resetTime: pool.resetTime,
+      hoursUntilReset,
+      models: [...FAMILY_DEFAULT_MODELS[family]],
+      weekly: weeklyBucket,
+      buckets: [weeklyBucket],
+    });
+
+    // A pool without enough current-cycle samples has no projection at all.
+    const burnProjection = computeBurnProjection({
+      samples: pool.samples,
+      resetTime: pool.resetTime,
+      nowMs,
+    });
+    if (burnProjection) snapshot.burnProjection = burnProjection;
+
+    snapshots.push(snapshot);
   }
 
   return snapshots.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);

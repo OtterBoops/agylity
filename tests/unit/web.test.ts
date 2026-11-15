@@ -1770,4 +1770,844 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
   });
+
+  /* ==================================================================== */
+  /* 10. Task Retry, Routine Trigger Stamping & Patch Validation          */
+  /* ==================================================================== */
+  describe('10. Task Retry, Routine Trigger Stamping & Patch Validation', () => {
+    const runnerHeaders = { 'x-agylity-runner-token': 'swarm-secret-token-999' };
+
+    const poolResetTime = () => new Date(Date.now() + 6 * 3600 * 1000).toISOString();
+
+    const healthySentryState = (dir: string, resetTime: string): SentryStateManager => {
+      const state = new SentryStateManager(path.join(dir, 'state.json'));
+      state.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime,
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      return state;
+    };
+
+    it('POST /api/tasks/:id/retry answers 400 for a safety-floor block and 200 for a real retry', async () => {
+      const { dir, cleanup } = makeTempDir('web_task_retry_');
+      const resetTime = poolResetTime();
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+        repositories: [
+          {
+            id: 'agylity',
+            name: 'Agylity',
+            path: dir,
+            cloneUrl: 'https://example.invalid/example.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState: healthySentryState(dir, resetTime),
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${base}/api/dispatch`, {
+            json: {
+              repositoryId: 'agylity',
+              prompt: 'Retry a finished dispatch',
+              model: 'gemini-3.8-flash',
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(disp.success, true);
+        assert.ok(disp.taskId);
+
+        await ky.post(`${base}/api/tasks/${disp.taskId}/status`, {
+          headers: runnerHeaders,
+          json: { status: 'completed', branchName: 'antigravity/task-retry' },
+          retry: 0,
+        });
+
+        // Raise the floor above the pool's remaining headroom: the retry is a 400, not a 200.
+        store.set('minDispatchHeadroomPercent', 90);
+        const blocked = await ky.post(`${base}/api/tasks/${disp.taskId}/retry`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(blocked.status, 400);
+        const blockedBody = await blocked.json<any>();
+        assert.equal(blockedBody.success, false);
+        assert.equal(blockedBody.code, 'OVERAGE_PROTECTION_TRIGGERED');
+        assert.match(blockedBody.error, /safety floor/);
+
+        // Nothing was enqueued by the refused retry.
+        const afterBlock = await ky.get(`${base}/api/tasks`).json<any[]>();
+        assert.equal(afterBlock.length, 1);
+
+        // With the floor back under the pool's headroom the same retry succeeds.
+        store.set('minDispatchHeadroomPercent', 10);
+        const retried = await ky
+          .post(`${base}/api/tasks/${disp.taskId}/retry`, { retry: 0 })
+          .json<any>();
+        assert.equal(retried.success, true);
+        assert.ok(retried.taskId);
+        assert.notEqual(retried.taskId, disp.taskId);
+
+        const afterRetry = await ky.get(`${base}/api/tasks`).json<any[]>();
+        assert.equal(afterRetry.length, 2);
+        assert.equal(afterRetry.find((t) => t.id === retried.taskId)?.status, 'queued');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/tasks/:id/retry repoints a backlog origin at the retried task', async () => {
+      const { dir, cleanup } = makeTempDir('web_task_retry_origin_');
+      const resetTime = poolResetTime();
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+        repositories: [
+          {
+            id: 'agylity',
+            name: 'Agylity',
+            path: dir,
+            cloneUrl: 'https://example.invalid/example.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState: healthySentryState(dir, resetTime),
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: {
+              title: 'Retry a backlog row',
+              prompt: 'The retried task must replace the origin pointer',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.ok(created.id);
+
+        const disp = await ky
+          .post(`${base}/api/backlog/${created.id}/dispatch`, { retry: 0 })
+          .json<any>();
+        assert.equal(disp.success, true);
+        assert.ok(disp.taskId);
+
+        // The run failed, so the row is back in the queue with the failure recorded.
+        await ky.post(`${base}/api/tasks/${disp.taskId}/status`, {
+          headers: runnerHeaders,
+          json: { status: 'failed', error: 'runner crashed' },
+          retry: 0,
+        });
+        const pending = await ky.get(`${base}/api/backlog/${created.id}`).json<any>();
+        assert.equal(pending.status, 'pending');
+
+        const retried = await ky
+          .post(`${base}/api/tasks/${disp.taskId}/retry`, { retry: 0 })
+          .json<any>();
+        assert.equal(retried.success, true);
+        assert.notEqual(retried.taskId, disp.taskId);
+
+        const row = await ky.get(`${base}/api/backlog/${created.id}`).json<any>();
+        assert.equal(row.status, 'dispatched');
+        assert.equal(row.swarmTaskId, retried.taskId);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/routines/:id/trigger stamps lastTriggeredResetTime from the matching active pool', async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_trigger_stamp_');
+      const resetTime = poolResetTime();
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        repositories: [
+          {
+            id: 'agylity',
+            name: 'Agylity',
+            path: dir,
+            cloneUrl: 'https://example.invalid/example.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState: healthySentryState(dir, resetTime),
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const routine = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Pre-reset sweep',
+              prompt: 'Burn the remaining flash quota before it resets',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+              triggerBeforeResetHours: 12,
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.ok(routine.id);
+        assert.equal(routine.lastTriggeredResetTime, undefined);
+
+        const triggered = await ky
+          .post(`${base}/api/routines/${routine.id}/trigger`, { retry: 0 })
+          .json<any>();
+        assert.equal(triggered.success, true);
+        assert.ok(triggered.taskId);
+
+        const row = await ky.get(`${base}/api/routines/${routine.id}`).json<any>();
+        assert.equal(row.lastTaskId, triggered.taskId);
+        assert.equal(row.lastTriggeredResetTime, resetTime);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('PATCH /api/routines/:id rejects blank text and unusable burn limits, then applies a valid edit', async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_patch_guard_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const routine = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Guarded routine',
+              prompt: 'Original prompt',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+              triggerBeforeResetHours: 12,
+              minHeadroomPercent: 15,
+            },
+            retry: 0,
+          })
+          .json<any>();
+        const url = `${base}/api/routines/${routine.id}`;
+
+        const rejected: Array<Record<string, unknown>> = [
+          { title: '   ' },
+          { title: '' },
+          { title: 42 },
+          { prompt: '' },
+          { prompt: '  \t ' },
+          { repositoryId: '' },
+          { repositoryId: 7 },
+          { triggerBeforeResetHours: 0 },
+          { triggerBeforeResetHours: -1 },
+          { triggerBeforeResetHours: 'abc' },
+          { minHeadroomPercent: -1 },
+          { minHeadroomPercent: 101 },
+        ];
+        for (const patch of rejected) {
+          const res = await ky.patch(url, { json: patch, retry: 0, throwHttpErrors: false });
+          assert.equal(
+            res.status,
+            400,
+            `PATCH ${JSON.stringify(patch)} must be a 400, got ${res.status}`
+          );
+        }
+
+        // 1e999 parses to Infinity, which is never a usable burn window.
+        const infinite = await ky.patch(url, {
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"triggerBeforeResetHours": 1e999}',
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(infinite.status, 400);
+
+        // JSON has no NaN literal, so a client sending one fails to parse: still a 400, not a 200.
+        const nan = await ky.patch(url, {
+          headers: { 'Content-Type': 'application/json' },
+          body: '{"minHeadroomPercent": NaN}',
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(nan.status, 400);
+
+        // The refused patches changed nothing.
+        const untouched = await ky.get(url).json<any>();
+        assert.equal(untouched.title, 'Guarded routine');
+        assert.equal(untouched.triggerBeforeResetHours, 12);
+        assert.equal(untouched.minHeadroomPercent, 15);
+
+        // A real edit still lands.
+        const updated = await ky
+          .patch(url, {
+            json: { title: 'Renamed routine', triggerBeforeResetHours: 6, minHeadroomPercent: 25 },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(updated.title, 'Renamed routine');
+        assert.equal(updated.triggerBeforeResetHours, 6);
+        assert.equal(updated.minHeadroomPercent, 25);
+
+        const reread = await ky.get(url).json<any>();
+        assert.equal(reread.title, 'Renamed routine');
+        assert.equal(reread.prompt, 'Original prompt');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('PATCH /api/backlog/:id rejects blank text fields and still applies a valid edit', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_patch_guard_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const backlog = await ky
+          .post(`${base}/api/backlog`, {
+            json: {
+              title: 'Guarded backlog row',
+              prompt: 'Original backlog prompt',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+            },
+            retry: 0,
+          })
+          .json<any>();
+        const url = `${base}/api/backlog/${backlog.id}`;
+
+        for (const patch of [
+          { title: '   ' },
+          { title: '' },
+          { prompt: '' },
+          { prompt: ' \t ' },
+          { repositoryId: '' },
+          { title: 7 },
+        ]) {
+          const res = await ky.patch(url, { json: patch, retry: 0, throwHttpErrors: false });
+          assert.equal(
+            res.status,
+            400,
+            `PATCH ${JSON.stringify(patch)} must be a 400, got ${res.status}`
+          );
+        }
+
+        const untouched = await ky.get(url).json<any>();
+        assert.equal(untouched.title, 'Guarded backlog row');
+        assert.equal(untouched.prompt, 'Original backlog prompt');
+        assert.equal(untouched.repositoryId, 'agylity');
+
+        const updated = await ky
+          .patch(url, {
+            json: { title: 'Renamed backlog row', prompt: 'Rewritten prompt' },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(updated.title, 'Renamed backlog row');
+        assert.equal(updated.prompt, 'Rewritten prompt');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 11. Routine Eligibility & Runner Heartbeat                           */
+  /* ==================================================================== */
+  describe('11. Routine Eligibility & Runner Heartbeat', () => {
+    const runnerToken = 'swarm-secret-token-999';
+    const runnerHeaders = { 'x-agylity-runner-token': runnerToken };
+    const HEARTBEAT_TAIL_CAP = 16384;
+    const ELIGIBILITY_STATES = new Set([
+      'disabled',
+      'running',
+      'ready',
+      'waiting_window',
+      'cycle_complete',
+      'cycle_failed',
+      'pool_disabled',
+      'low_headroom',
+      'no_telemetry',
+    ]);
+
+    // The dashboard renders label/detail verbatim: a blank one is a broken card, not a style nit.
+    const assertEligibility = (value: any, where: string): void => {
+      assert.ok(value && typeof value === 'object', `${where}: eligibility must be an object`);
+      assert.ok(
+        ELIGIBILITY_STATES.has(value.state),
+        `${where}: unexpected eligibility state ${String(value.state)}`
+      );
+      assert.equal(typeof value.label, 'string', `${where}: label must be a string`);
+      assert.ok(value.label.length > 0, `${where}: label must not be empty`);
+      assert.equal(typeof value.detail, 'string', `${where}: detail must be a string`);
+      assert.ok(value.detail.length > 0, `${where}: detail must not be empty`);
+    };
+
+    it('returns an eligibility block alongside the routine on list, create, GET by id and PATCH', async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_eligibility_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const createdRes = await ky.post(`${base}/api/routines`, {
+          json: {
+            title: 'Eligibility list routine',
+            prompt: 'Audit the dispatch queue',
+            repositoryId: 'agylity',
+            models: ['gemini-3.8-flash'],
+          },
+          retry: 0,
+        });
+        assert.equal(createdRes.status, 201);
+        const created = await createdRes.json<any>();
+        const url = `${base}/api/routines/${created.id}`;
+
+        // Server-side verdict travels with the routine, and the routine keeps all of its own fields.
+        assertEligibility(created.eligibility, 'POST /api/routines');
+        assert.equal(created.title, 'Eligibility list routine');
+        assert.equal(created.prompt, 'Audit the dispatch queue');
+        assert.equal(created.repositoryId, 'agylity');
+        assert.equal(created.enabled, true);
+
+        const listRes = await ky.get(`${base}/api/routines`, { retry: 0 });
+        assert.equal(listRes.status, 200);
+        const list = await listRes.json<any[]>();
+        assert.equal(list.length, 1);
+        const listed = list[0];
+        assertEligibility(listed.eligibility, 'GET /api/routines');
+        assert.equal(listed.id, created.id);
+        assert.equal(listed.taskNumber, created.taskNumber);
+        assert.equal(listed.title, 'Eligibility list routine');
+        assert.equal(listed.repositoryId, 'agylity');
+        assert.deepEqual(listed.models, ['gemini-3.8-flash']);
+
+        const fetched = await ky.get(url, { retry: 0 }).json<any>();
+        assertEligibility(fetched.eligibility, 'GET /api/routines/:id');
+        assert.equal(fetched.id, created.id);
+        assert.equal(fetched.title, 'Eligibility list routine');
+
+        const patchedRes = await ky.patch(url, {
+          json: { title: 'Renamed eligibility routine', minHeadroomPercent: 30 },
+          retry: 0,
+        });
+        assert.equal(patchedRes.status, 200);
+        const patched = await patchedRes.json<any>();
+        assertEligibility(patched.eligibility, 'PATCH /api/routines/:id');
+        assert.equal(patched.id, created.id);
+        assert.equal(patched.title, 'Renamed eligibility routine');
+        assert.equal(patched.minHeadroomPercent, 30);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it("reports 'disabled' for a disabled routine and 'no_telemetry' when no quota telemetry is live", async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_eligibility_states_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      // No sentryState: getActivePools() is empty, so an enabled routine cannot validate dispatch.
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const disabled = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Paused routine',
+              prompt: 'Never dispatch me',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+              enabled: false,
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(disabled.enabled, false);
+        assertEligibility(disabled.eligibility, 'POST disabled routine');
+        assert.equal(disabled.eligibility.state, 'disabled');
+
+        const live = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Live routine',
+              prompt: 'Dispatch me when telemetry exists',
+              repositoryId: 'agylity',
+              models: ['gemini-3.8-flash'],
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(live.enabled, true);
+        assertEligibility(live.eligibility, 'POST enabled routine');
+        assert.equal(live.eligibility.state, 'no_telemetry');
+
+        // The list recomputes the same verdicts for both rows.
+        const list = await ky.get(`${base}/api/routines`, { retry: 0 }).json<any[]>();
+        const byId = new Map(list.map((rt) => [rt.id, rt]));
+        assert.equal(byId.get(disabled.id)?.eligibility.state, 'disabled');
+        assert.equal(byId.get(live.id)?.eligibility.state, 'no_telemetry');
+        for (const rt of list) assertEligibility(rt.eligibility, 'GET /api/routines');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('accepts a claimed task heartbeat, streams the output tail and truncates it to the last 16384 chars', async () => {
+      const { dir, cleanup } = makeTempDir('web_heartbeat_output_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: runnerToken,
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${base}/api/dispatch`, {
+            json: { repositoryId: 'agylity', prompt: 'Stream your output', allowOverage: true },
+            retry: 0,
+          })
+          .json<any>();
+        assert.ok(disp.taskId);
+
+        const poll = await ky
+          .post(`${base}/api/tasks/poll`, {
+            headers: runnerHeaders,
+            json: { runnerId: 'runner-hb', timeoutMs: 0 },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(poll.task?.id, disp.taskId);
+        assert.equal(poll.task?.status, 'claimed');
+
+        const first = await ky
+          .post(`${base}/api/runner/heartbeat`, {
+            headers: runnerHeaders,
+            json: {
+              taskId: disp.taskId,
+              runnerId: 'runner-hb',
+              leaseDurationMs: 60000,
+              outputTail: 'compiling...\nok',
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(first.leaseOk, true);
+        assert.equal(first.status, 'claimed');
+        assert.equal(first.task?.id, disp.taskId);
+        assert.equal(first.task?.output, 'compiling...\nok');
+
+        // 20000 chars: only the last 16384 may be persisted.
+        const longTail = 'H'.repeat(5000) + 'T'.repeat(15000);
+        assert.equal(longTail.length, 20000);
+        const second = await ky
+          .post(`${base}/api/runner/heartbeat`, {
+            headers: runnerHeaders,
+            json: {
+              taskId: disp.taskId,
+              runnerId: 'runner-hb',
+              leaseDurationMs: 60000,
+              outputTail: longTail,
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(second.leaseOk, true);
+        assert.equal(second.task.output.length, HEARTBEAT_TAIL_CAP);
+        assert.equal(second.task.output, longTail.slice(-HEARTBEAT_TAIL_CAP));
+        assert.notEqual(second.task.output, longTail);
+
+        // The persisted row (not just the response echo) carries the capped tail.
+        const row = await ky.get(`${base}/api/tasks/${disp.taskId}`, { retry: 0 }).json<any>();
+        assert.equal(row.status, 'claimed');
+        assert.equal(row.output.length, HEARTBEAT_TAIL_CAP);
+        assert.equal(row.output, longTail.slice(-HEARTBEAT_TAIL_CAP));
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('answers 409 leaseOk:false for a terminal task and leaves its output untouched', async () => {
+      const { dir, cleanup } = makeTempDir('web_heartbeat_terminal_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: runnerToken,
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${base}/api/dispatch`, {
+            json: { repositoryId: 'agylity', prompt: 'Dies mid-run', allowOverage: true },
+            retry: 0,
+          })
+          .json<any>();
+
+        await ky.post(`${base}/api/tasks/poll`, {
+          headers: runnerHeaders,
+          json: { runnerId: 'runner-hb', timeoutMs: 0 },
+          retry: 0,
+        });
+
+        const warm = await ky
+          .post(`${base}/api/runner/heartbeat`, {
+            headers: runnerHeaders,
+            json: {
+              taskId: disp.taskId,
+              runnerId: 'runner-hb',
+              leaseDurationMs: 60000,
+              outputTail: 'before-terminal',
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(warm.leaseOk, true);
+        assert.equal(warm.task.output, 'before-terminal');
+
+        const failed = await ky
+          .post(`${base}/api/tasks/${disp.taskId}/status`, {
+            headers: runnerHeaders,
+            json: { status: 'failed', error: 'runner crashed', runnerId: 'runner-hb' },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(failed.task.status, 'failed');
+
+        const refusedRes = await ky.post(`${base}/api/runner/heartbeat`, {
+          headers: runnerHeaders,
+          json: {
+            taskId: disp.taskId,
+            runnerId: 'runner-hb',
+            leaseDurationMs: 60000,
+            outputTail: 'after-terminal-must-not-land',
+          },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(refusedRes.status, 409);
+        const refused = await refusedRes.json<any>();
+        assert.equal(refused.leaseOk, false);
+        assert.equal(refused.status, 'failed');
+        assert.equal(refused.task.status, 'failed');
+        assert.equal(refused.task.output, 'before-terminal');
+
+        // Neither the status transition nor the refused beat clobbered the stored tail.
+        const row = await ky.get(`${base}/api/tasks/${disp.taskId}`, { retry: 0 }).json<any>();
+        assert.equal(row.status, 'failed');
+        assert.equal(row.error, 'runner crashed');
+        assert.equal(row.output, 'before-terminal');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('rejects heartbeats without a runner token, without a taskId, or for an unknown task', async () => {
+      const { dir, cleanup } = makeTempDir('web_heartbeat_guards_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: runnerToken,
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const url = `${base}/api/runner/heartbeat`;
+
+        const anonymous = await ky.post(url, {
+          json: { taskId: 'any-task' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(anonymous.status, 401);
+
+        const wrongToken = await ky.post(url, {
+          headers: { 'x-agylity-runner-token': 'not-the-secret' },
+          json: { taskId: 'any-task' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(wrongToken.status, 401);
+
+        const missingTask = await ky.post(url, {
+          headers: runnerHeaders,
+          json: { runnerId: 'runner-hb' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(missingTask.status, 400);
+
+        const unknown = await ky.post(url, {
+          headers: runnerHeaders,
+          json: { taskId: 'nope', runnerId: 'runner-hb' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(unknown.status, 404);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('serves a single task by id without shadowing poll, status, cancel or retry', async () => {
+      const { dir, cleanup } = makeTempDir('web_task_by_id_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: runnerToken,
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${base}/api/dispatch`, {
+            json: { repositoryId: 'agylity', prompt: 'Inspect me by id', allowOverage: true },
+            retry: 0,
+          })
+          .json<any>();
+        assert.ok(disp.taskId);
+
+        const fetchedRes = await ky.get(`${base}/api/tasks/${disp.taskId}`, { retry: 0 });
+        assert.equal(fetchedRes.status, 200);
+        const fetched = await fetchedRes.json<any>();
+        assert.equal(fetched.id, disp.taskId);
+        assert.equal(fetched.repositoryId, 'agylity');
+        assert.equal(fetched.prompt, 'Inspect me by id');
+        assert.equal(fetched.status, 'queued');
+
+        const missingRes = await ky.get(`${base}/api/tasks/nope`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(missingRes.status, 404);
+        const missing = await missingRes.json<any>();
+        assert.match(String(missing.error), /nope/);
+
+        // Route-order regression guard: the id route must not swallow the runner subroutes.
+        const poll = await ky
+          .post(`${base}/api/tasks/poll`, {
+            headers: runnerHeaders,
+            json: { runnerId: 'runner-hb', timeoutMs: 0 },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(poll.task?.id, disp.taskId);
+        assert.equal(poll.task?.status, 'claimed');
+
+        const statusRes = await ky.post(`${base}/api/tasks/${disp.taskId}/status`, {
+          headers: runnerHeaders,
+          json: { status: 'executing', runnerId: 'runner-hb' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(statusRes.status, 200);
+
+        const afterStatus = await ky
+          .get(`${base}/api/tasks/${disp.taskId}`, { retry: 0 })
+          .json<any>();
+        assert.equal(afterStatus.status, 'executing');
+
+        const cancelRes = await ky.post(`${base}/api/tasks/${disp.taskId}/cancel`, {
+          headers: runnerHeaders,
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(cancelRes.status, 200);
+
+        const retryRes = await ky.post(`${base}/api/tasks/${disp.taskId}/retry`, {
+          headers: runnerHeaders,
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(retryRes.status, 200);
+        const retried = await retryRes.json<any>();
+        assert.equal(retried.success, true);
+        assert.notEqual(retried.task?.id, disp.taskId);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
 });

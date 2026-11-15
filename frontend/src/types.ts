@@ -29,6 +29,16 @@ export interface QuotaBucket {
   disabled?: boolean;
 }
 
+/**
+ * Forecast from the observed burn rate; `hoursUntilFloor` is null when the projection never
+ * reaches the safety floor before the window resets.
+ */
+export interface QuotaBurnProjection {
+  burnRatePerHour: number;
+  projectedRemainingAtResetPercent: number;
+  hoursUntilFloor: number | null;
+}
+
 export interface QuotaSnapshot {
   poolId: string;
   family: string;
@@ -39,6 +49,7 @@ export interface QuotaSnapshot {
   models: string[];
   overageEnabled?: boolean;
   remainingCredits?: number | null;
+  burnProjection?: QuotaBurnProjection;
   weekly?: QuotaBucket;
   shortTerm?: QuotaBucket;
   buckets?: QuotaBucket[];
@@ -98,30 +109,6 @@ export interface LogEntry {
   message: string;
 }
 
-export interface DispatchRecord {
-  id: string | number;
-  taskNumber?: number;
-  title?: string;
-  tier?: 'immediate' | 'backlog' | 'routine';
-  originId?: string;
-  originNumber?: number;
-  originTitle?: string;
-  createdAt: string;
-  repository: string;
-  repositoryName?: string;
-  prompt: string;
-  requestedBy: string;
-  success: boolean;
-  status?: TaskStatus;
-  model?: string;
-  effort?: string;
-  branchName?: string;
-  prUrl?: string;
-  output?: string;
-  error?: string;
-  durationMs: number;
-}
-
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
 export interface ModelCatalogEntry {
@@ -166,11 +153,18 @@ export interface RunnerRegistrationTokenResult {
   createdAt: string;
 }
 
+/** `running` is the heartbeat state a runner reports while output is still streaming. */
 export type TaskStatus =
-  'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
+  | 'queued'
+  | 'claimed'
+  | 'running'
+  | 'executing'
+  | 'completed'
+  | 'no_changes'
+  | 'failed'
+  | 'aborted';
 
 export type PrPolicy = 'docs_only' | 'all' | 'none';
-export type TaskActor = 'user' | 'bot';
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
 
@@ -191,7 +185,6 @@ export interface SwarmTask {
   defaultBranch?: string;
   prompt: string;
   requestedBy: string;
-  actor?: TaskActor;
   prPolicy?: PrPolicy;
   scheduleMode: 'immediate' | 'pre_reset';
   requiredLabels: string[];
@@ -225,7 +218,6 @@ export interface BacklogTaskRecord {
   effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
-  actor: TaskActor;
   priorityOrder: number;
   status: BacklogStatus;
   attemptCount: number;
@@ -238,6 +230,27 @@ export interface BacklogTaskRecord {
   updatedAt: string;
 }
 
+/**
+ * Server-computed reason a routine will or will not dispatch this cycle. The label and detail
+ * are authoritative copy — the UI never re-derives them from quota state.
+ */
+export type RoutineEligibilityState =
+  | 'disabled'
+  | 'running'
+  | 'ready'
+  | 'waiting_window'
+  | 'cycle_complete'
+  | 'cycle_failed'
+  | 'pool_disabled'
+  | 'low_headroom'
+  | 'no_telemetry';
+
+export interface RoutineEligibility {
+  state: RoutineEligibilityState;
+  label: string;
+  detail: string;
+}
+
 export interface RoutineTaskRecord {
   id: string;
   taskNumber: number;
@@ -248,7 +261,6 @@ export interface RoutineTaskRecord {
   effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
-  actor: TaskActor;
   prPolicy?: PrPolicy;
   enabled: boolean;
   sortOrder: number;
@@ -258,10 +270,9 @@ export interface RoutineTaskRecord {
   lastTaskId?: string;
   createdAt: string;
   updatedAt: string;
+  /** Absent only while a cached, pre-upgrade payload is still being served. */
+  eligibility?: RoutineEligibility;
 }
-
-// Deprecated alias for legacy views transitioning to routines
-export type StandingTaskRecord = RoutineTaskRecord;
 
 export interface RepositoryConfig {
   id: string;

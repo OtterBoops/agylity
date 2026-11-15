@@ -196,7 +196,7 @@ export const Sidebar = ({
         <button
           type="button"
           onClick={() => setMobileOpen(!mobileOpen)}
-          class="flex size-11 min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+          class="flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
           aria-label="Toggle navigation menu"
           aria-expanded={mobileOpen}
         >

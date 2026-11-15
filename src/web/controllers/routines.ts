@@ -11,14 +11,8 @@ import {
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { resolveCoordinator } from './dispatch.js';
-import {
-  ReasoningEffortSchema,
-  type ReasoningEffort,
-  type TaskActor,
-} from '../../coordinator/models.js';
+import { ReasoningEffortSchema, type ReasoningEffort } from '../../coordinator/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
-
-const ROUTINE_PATCH_STRING_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
 const parseOptionalPrPolicy = (
   raw: unknown
@@ -32,6 +26,43 @@ const parseOptionalPrPolicy = (
   return { ok: true, value: parsed.data };
 };
 
+const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
+
+// A present text field must survive a trim: a blank one is a client bug, not a request to clear it.
+const validateTextFieldPatch = (body: any): string | undefined => {
+  if (!body || typeof body !== 'object') return undefined;
+  for (const field of TEXT_FIELDS) {
+    if (!(field in body)) continue;
+    const value = body[field];
+    if (typeof value !== 'string' || value.trim() === '') {
+      return `${field} must be a non-empty string`;
+    }
+  }
+  return undefined;
+};
+
+const validateRoutineLimits = (body: any): string | undefined => {
+  if (!body || typeof body !== 'object') return undefined;
+  if (body.triggerBeforeResetHours !== undefined) {
+    const hours = body.triggerBeforeResetHours;
+    if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0) {
+      return 'triggerBeforeResetHours must be a finite number greater than 0';
+    }
+  }
+  if (body.minHeadroomPercent !== undefined) {
+    const headroom = body.minHeadroomPercent;
+    if (
+      typeof headroom !== 'number' ||
+      !Number.isFinite(headroom) ||
+      headroom < 0 ||
+      headroom > 100
+    ) {
+      return 'minHeadroomPercent must be a finite number between 0 and 100';
+    }
+  }
+  return undefined;
+};
+
 export const handleRoutineTasks = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -43,7 +74,12 @@ export const handleRoutineTasks = async (
 
   if (method === 'GET') {
     const list = coordinator.queue.listRoutineTasks();
-    return sendJson(res, 200, list, { 'Cache-Control': 'no-store' });
+    return sendJson(
+      res,
+      200,
+      list.map((rt) => ({ ...rt, eligibility: coordinator.computeRoutineEligibility(rt) })),
+      { 'Cache-Control': 'no-store' }
+    );
   }
 
   if (method === 'POST') {
@@ -51,14 +87,15 @@ export const handleRoutineTasks = async (
     if (!parsed.ok) return;
     const payload: any = parsed.body;
 
-    const title = typeof payload?.title === 'string' ? payload.title.trim() : '';
-    const prompt = typeof payload?.prompt === 'string' ? payload.prompt.trim() : '';
-    const repositoryId =
-      typeof payload?.repositoryId === 'string' ? payload.repositoryId.trim() : '';
-    if (!title || !prompt || !repositoryId) {
+    if (!payload?.title || !payload?.prompt || !payload?.repositoryId) {
       return sendJson(res, 400, {
         error: 'title, prompt, and repositoryId are required for routine task',
       });
+    }
+
+    const limitError = validateRoutineLimits(payload);
+    if (limitError) {
+      return sendJson(res, 400, { error: limitError });
     }
 
     const effortParse = ReasoningEffortSchema.safeParse(payload.effort ?? 'high');
@@ -66,22 +103,19 @@ export const handleRoutineTasks = async (
     const models =
       toStringArray(payload.models) ??
       (payload.model ? [String(payload.model)] : ['gemini-3.8-flash']);
-    const actor: TaskActor =
-      payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : 'bot';
     const policyParsed = parseOptionalPrPolicy(payload.prPolicy);
     if (!policyParsed.ok) {
       return sendJson(res, 400, { error: policyParsed.error });
     }
 
     const created = coordinator.queue.createRoutineTask({
-      title,
-      prompt,
-      repositoryId,
+      title: String(payload.title).trim(),
+      prompt: String(payload.prompt).trim(),
+      repositoryId: String(payload.repositoryId).trim(),
       models: models.length > 0 ? models : ['gemini-3.8-flash'],
       effort,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
       autoCreatePr: payload.autoCreatePr !== false,
-      actor,
       prPolicy: policyParsed.value,
       enabled: payload.enabled !== false,
       sortOrder: toFiniteNumberOrUndefined(payload.sortOrder) ?? 0,
@@ -90,7 +124,10 @@ export const handleRoutineTasks = async (
       minHeadroomPercent: toFiniteNumberOrUndefined(payload.minHeadroomPercent) ?? 10,
     });
 
-    return sendJson(res, 201, created);
+    return sendJson(res, 201, {
+      ...created,
+      eligibility: coordinator.computeRoutineEligibility(created),
+    });
   }
 
   return methodNotAllowed(res);
@@ -111,9 +148,7 @@ export const handleRoutineTaskById = async (
   const coordinator = resolveCoordinator(options);
 
   if (action === 'trigger') {
-    // The sub-route is POST-only; falling through would let PATCH/DELETE mutate the row.
-    if (method !== 'POST') return methodNotAllowed(res);
-
+    if (method !== 'POST') return sendJson(res, 405, { error: 'Method Not Allowed' });
     const rt = coordinator.queue.getRoutineTask(id);
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
 
@@ -131,7 +166,6 @@ export const handleRoutineTaskById = async (
       models: rt.models,
       effort: rt.effort,
       autoCreatePr: rt.autoCreatePr,
-      actor: rt.actor || 'bot',
       prPolicy: rt.prPolicy ?? resolved.prPolicy,
       verifyCommand: rt.verifyCommand,
       scheduleMode: 'immediate',
@@ -139,8 +173,12 @@ export const handleRoutineTaskById = async (
     });
 
     if (dispatchRes.success && dispatchRes.taskId) {
+      const pool = coordinator
+        .getActivePools()
+        .find((p) => p.family === dispatchRes.poolFamily || p.poolId === dispatchRes.poolFamily);
       coordinator.queue.updateRoutineTask(rt.id, {
         lastTaskId: dispatchRes.taskId,
+        ...(pool?.resetTime ? { lastTriggeredResetTime: pool.resetTime } : {}),
       });
     }
 
@@ -150,33 +188,41 @@ export const handleRoutineTaskById = async (
   if (method === 'GET') {
     const rt = coordinator.queue.getRoutineTask(id);
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
-    return sendJson(res, 200, rt, { 'Cache-Control': 'no-store' });
+    return sendJson(
+      res,
+      200,
+      { ...rt, eligibility: coordinator.computeRoutineEligibility(rt) },
+      { 'Cache-Control': 'no-store' }
+    );
   }
 
   if (method === 'PATCH') {
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
-    // `'prPolicy' in patch` and the queue's `.trim()` calls both throw on a non-object body.
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
-      return sendJson(res, 400, { error: 'Body must be a JSON object' });
+      return sendJson(res, 400, { error: 'Request body must be a JSON object' });
     }
-    if (ROUTINE_PATCH_STRING_FIELDS.some((key) => key in patch && typeof patch[key] !== 'string')) {
-      return sendJson(res, 400, {
-        error: 'title, prompt, and repositoryId must be strings',
-      });
-    }
-    const policyParsed = parseOptionalPrPolicy(patch.prPolicy);
+
+    const textError = validateTextFieldPatch(patch);
+    if (textError) return sendJson(res, 400, { error: textError });
+    const limitError = validateRoutineLimits(patch);
+    if (limitError) return sendJson(res, 400, { error: limitError });
+
+    const policyParsed = parseOptionalPrPolicy(patch?.prPolicy);
     if (!policyParsed.ok) {
       return sendJson(res, 400, { error: policyParsed.error });
     }
-    if ('prPolicy' in patch) {
+    if (patch && 'prPolicy' in patch) {
       patch.prPolicy = policyParsed.value;
     }
 
     const updated = coordinator.queue.updateRoutineTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Routine task ${id} not found` });
-    return sendJson(res, 200, updated);
+    return sendJson(res, 200, {
+      ...updated,
+      eligibility: coordinator.computeRoutineEligibility(updated),
+    });
   }
 
   if (method === 'DELETE') {

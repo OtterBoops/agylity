@@ -21,12 +21,6 @@ export const taskStatusBadgeClass = (status: TaskStatus | string): string =>
         ? toneBadgeClass('bad')
         : toneBadgeClass('neutral');
 
-/** Dispatch outcome is a success flag, not a task status, but shares the palette. */
-export const dispatchOutcomeBadgeClass = (success: boolean): string =>
-  toneBadgeClass(success ? 'good' : 'bad');
-
-export const dispatchOutcomeLabel = (success: boolean): string => (success ? 'Done' : 'Failed');
-
 export const runnerStatusBadgeClass = (status: string): string =>
   status === 'busy'
     ? toneBadgeClass('busy')

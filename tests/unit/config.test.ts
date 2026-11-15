@@ -12,7 +12,8 @@ import {
   DEFAULT_QUOTA_BURN_MAX_HOURS,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
-import { logger, createMemorySink } from '../../src/logs/logger.js';
+import { logger } from '../../src/logs/logger.js';
+import { createMemorySink } from '../e2e/harness/index.js';
 
 describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses valid environment variables with correct coerced types', () => {

@@ -1,5 +1,5 @@
 import { format } from 'node:util';
-import { LEVEL_PRIORITY, type LogBuffer, type LogLevel } from './buffer.js';
+import { LEVEL_PRIORITY, type LogLevel } from './buffer.js';
 
 export type { LogLevel };
 
@@ -183,29 +183,6 @@ export const createConsoleSink = (): LogSink => {
         console.error(record.formatted);
         break;
     }
-  };
-};
-
-// Sink that forwards records directly to an in-memory LogBuffer.
-export const createBufferSink = (buffer: LogBuffer): LogSink => {
-  return (record: LogRecord) => {
-    buffer.push(record.level, record.formatted);
-  };
-};
-
-// In-memory sink recording log entries for assertions and tests.
-export const createMemorySink = () => {
-  const records: LogRecord[] = [];
-  return {
-    sink: (record: LogRecord) => {
-      records.push(record);
-    },
-    get records() {
-      return [...records];
-    },
-    clear: () => {
-      records.length = 0;
-    },
   };
 };
 

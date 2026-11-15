@@ -121,7 +121,7 @@ export const buildInfoNoticeEmbed = (
     description: notice.message.slice(0, 4096),
     color: 0x9ccfd8,
     fields: fields.length > 0 ? fields : undefined,
-    url: buildDashboardLink(options?.baseUrl, '/tasks'),
+    url: buildDashboardLink(options?.baseUrl, notice.path || '/tasks'),
     footer: { text: `Agylity v${AGYLITY_VERSION}` },
     timestamp: embedTimestamp(notice.timestamp),
   };

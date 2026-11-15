@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { route } from 'preact-router';
+import { getBacklogTasks, getRoutines, getTasks } from '../api';
+import type { BacklogTaskRecord, RoutineTaskRecord, SwarmTask } from '../types';
 import { dialogBackdropClickHandler } from '../utils/dialog';
 import {
   faBell,
-  faBolt,
   faChartPie,
   faCheckToSlot,
   faCodeBranch,
   faNetworkWired,
+  faPlus,
   faRotate,
   faSearch,
   faSliders,
@@ -15,15 +17,36 @@ import {
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
+import { isActiveTaskStatus } from './tasks/badges';
+
+type CommandCategory = 'Navigation' | 'Action' | 'Tasks & Routines';
 
 interface CommandItem {
   id: string;
   title: string;
-  category: 'Navigation' | 'Action';
+  category: CommandCategory;
   shortcut?: string;
   icon: IconDefinition;
   action: () => void;
 }
+
+interface LiveTasks {
+  routines: RoutineTaskRecord[];
+  backlog: BacklogTaskRecord[];
+  executions: SwarmTask[];
+}
+
+const NO_LIVE_TASKS: LiveTasks = { routines: [], backlog: [], executions: [] };
+
+const LABEL_MAX = 72;
+
+// Rows are labelled from human fields only: a raw UUID is unreadable in a scannable result list.
+const taskLabel = (taskNumber: number | undefined, title?: string, prompt?: string): string => {
+  const raw = title?.trim() || prompt?.trim() || 'Untitled task';
+  const oneLine = raw.replace(/\s+/g, ' ');
+  const clipped = oneLine.length > LABEL_MAX ? `${oneLine.slice(0, LABEL_MAX - 1)}...` : oneLine;
+  return taskNumber ? `#${taskNumber} ${clipped}` : clipped;
+};
 
 interface CommandPaletteProps {
   isOpen: boolean;
@@ -42,8 +65,10 @@ export const CommandPalette = ({
 }: CommandPaletteProps) => {
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [liveTasks, setLiveTasks] = useState<LiveTasks>(NO_LIVE_TASKS);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const liveRequested = useRef(false);
 
   const commands: CommandItem[] = [
     {
@@ -63,6 +88,36 @@ export const CommandPalette = ({
       icon: faTerminal,
       action: () => {
         route('/logs');
+        onClose();
+      },
+    },
+    {
+      id: 'nav-settings-general',
+      title: 'Go to General Settings',
+      category: 'Navigation',
+      icon: faSliders,
+      action: () => {
+        route('/settings/general');
+        onClose();
+      },
+    },
+    {
+      id: 'nav-schedules',
+      title: 'Go to Schedules & Queue',
+      category: 'Navigation',
+      icon: faCheckToSlot,
+      action: () => {
+        route('/tasks?tab=schedules');
+        onClose();
+      },
+    },
+    {
+      id: 'nav-executions',
+      title: 'Go to Execution History',
+      category: 'Navigation',
+      icon: faTerminal,
+      action: () => {
+        route('/tasks?tab=executions');
         onClose();
       },
     },
@@ -108,19 +163,19 @@ export const CommandPalette = ({
               onClose();
             },
           },
-          {
-            id: 'act-dispatch',
-            title: 'Dispatch New Autonomous Task...',
-            category: 'Action' as const,
-            shortcut: 'Alt D',
-            icon: faBolt,
-            action: () => {
-              onClose();
-              onOpenDispatch();
-            },
-          },
         ]
       : []),
+    {
+      id: 'act-new-task',
+      title: 'Create New Task...',
+      category: 'Action',
+      shortcut: 'Alt D',
+      icon: faPlus,
+      action: () => {
+        onClose();
+        onOpenDispatch();
+      },
+    },
     {
       id: 'nav-advanced',
       title: 'Advanced Daemon Settings',
@@ -144,8 +199,44 @@ export const CommandPalette = ({
     },
   ];
 
+  const liveCommands: CommandItem[] = [
+    ...liveTasks.routines.map((routine) => ({
+      id: `routine-${routine.id}`,
+      title: taskLabel(routine.taskNumber, routine.title, routine.prompt),
+      category: 'Tasks & Routines' as const,
+      icon: faCheckToSlot,
+      action: () => {
+        route(`/tasks?tab=schedules&id=${encodeURIComponent(routine.id)}`);
+        onClose();
+      },
+    })),
+    ...liveTasks.backlog.map((item) => ({
+      id: `backlog-${item.id}`,
+      title: taskLabel(item.taskNumber, item.title, item.prompt),
+      category: 'Tasks & Routines' as const,
+      icon: faCheckToSlot,
+      action: () => {
+        route(`/tasks?tab=schedules&id=${encodeURIComponent(item.id)}`);
+        onClose();
+      },
+    })),
+    ...liveTasks.executions.map((task) => ({
+      id: `execution-${task.id}`,
+      title: taskLabel(task.taskNumber, task.title, task.prompt),
+      category: 'Tasks & Routines' as const,
+      icon: faTerminal,
+      action: () => {
+        const tab = isActiveTaskStatus(task.status) ? 'schedules' : 'executions';
+        route(`/tasks?tab=${tab}&id=${encodeURIComponent(task.id)}`);
+        onClose();
+      },
+    })),
+  ];
+
+  const allCommands = [...commands, ...liveCommands];
+
   const q = query.trim().toLowerCase();
-  const filtered = commands.filter(
+  const filtered = allCommands.filter(
     (c) => !q || c.title.toLowerCase().includes(q) || c.category.toLowerCase().includes(q)
   );
 
@@ -162,9 +253,37 @@ export const CommandPalette = ({
     }
   }, [isOpen]);
 
+  // One fetch per open: refetching as the user types would hammer the control plane per keystroke.
+  useEffect(() => {
+    if (!isOpen || !coordinatorEnabled) {
+      liveRequested.current = false;
+      setLiveTasks(NO_LIVE_TASKS);
+      return;
+    }
+    if (liveRequested.current) return;
+    liveRequested.current = true;
+    let cancelled = false;
+    Promise.all([getTasks(20), getRoutines(), getBacklogTasks()])
+      .then(([executions, routines, backlog]) => {
+        if (cancelled) return;
+        setLiveTasks({ executions, routines, backlog });
+      })
+      .catch(() => {
+        // Offline control plane: static commands must still work, so failures are swallowed.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, coordinatorEnabled]);
+
   useEffect(() => {
     setSelectedIndex(0);
   }, [query]);
+
+  // Live results land while the list is open; a stale index would make Enter a no-op.
+  useEffect(() => {
+    setSelectedIndex((prev) => (prev < filtered.length ? prev : 0));
+  }, [filtered.length]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -236,15 +355,15 @@ export const CommandPalette = ({
                 type="button"
                 onClick={() => cmd.action()}
                 onMouseEnter={() => setSelectedIndex(idx)}
-                class={`flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-xs transition-colors ${
+                class={`flex w-full cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-xs transition-colors ${
                   isSelected
                     ? 'bg-pine-iris/15 font-medium text-pine-iris'
                     : 'text-pine-text hover:bg-pine-overlay'
                 }`}
               >
-                <div class="flex items-center gap-3">
+                <div class="flex min-w-0 items-center gap-3">
                   <div
-                    class={`flex size-6 items-center justify-center rounded-md border ${
+                    class={`flex size-6 shrink-0 items-center justify-center rounded-md border ${
                       isSelected
                         ? 'border-pine-iris/40 bg-pine-iris/20 text-pine-iris'
                         : 'border-pine-highlight bg-pine-overlay text-pine-muted'
@@ -252,11 +371,11 @@ export const CommandPalette = ({
                   >
                     <Icon icon={cmd.icon} class="size-3" />
                   </div>
-                  <span>{cmd.title}</span>
+                  <span class="truncate">{cmd.title}</span>
                 </div>
 
-                <div class="flex items-center gap-2">
-                  <span class="rounded-sm bg-pine-overlay/60 px-1.5 py-0.5 text-xs text-pine-muted">
+                <div class="flex shrink-0 items-center gap-2">
+                  <span class="rounded-sm bg-pine-overlay/60 px-1.5 py-0.5 text-xs whitespace-nowrap text-pine-muted">
                     {cmd.category}
                   </span>
                   {cmd.shortcut && (

@@ -29,11 +29,12 @@ import {
 } from './controllers/config.js';
 import { handleTestNotify } from './controllers/notify.js';
 import {
-  handleGetDispatches,
   handlePostDispatch,
   handleGetModels,
   handleGetTasks,
+  handleGetTaskById,
   handlePollTasks,
+  handleRunnerHeartbeat,
   handleTaskStatus,
   handleTaskCancel,
   handleTaskRetry,
@@ -148,6 +149,7 @@ const isControlPlaneRoute = (pathname: string): boolean => {
   if (pathname === '/api/health') return false;
   // Outbound pull-runner endpoints (authenticated independently via runnerToken)
   if (pathname === '/api/tasks/poll') return false;
+  if (pathname === '/api/runner/heartbeat') return false;
   if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) return false;
   if (pathname === '/api/runners/register') return false;
 
@@ -232,8 +234,6 @@ export const handleRequest = async (
       clearAuthFailures(clientIp);
     }
 
-    // Each dispatch below is awaited: a bare `return handleX(...)` would reject outside this
-    // try block, so the 413 handling and error mapping below would never run.
     if (pathname === '/favicon.ico') {
       res.writeHead(204).end();
       return;
@@ -260,126 +260,131 @@ export const handleRequest = async (
       pathname.endsWith('.png') ||
       pathname.endsWith('.ico')
     ) {
-      return await handleStaticAsset(req, res, pathname, method);
+      return handleStaticAsset(req, res, pathname, method);
     }
 
     // Client-side SPA routes (preact-router HTML5 history navigation). Deriving the fallback
     // from the path shape keeps a new client route from 404ing on a hard refresh.
     if (!pathname.startsWith('/api/') && !pathname.slice(1).includes('.')) {
-      return await handleIndexHtml(req, res, method);
+      return handleIndexHtml(req, res, method);
     }
 
     // Quota Snapshot
     if (pathname === '/api/quota') {
-      return await handleGetQuota(req, res, options, method);
+      return handleGetQuota(req, res, options, method);
     }
 
     // Alert State
     if (pathname === '/api/alerts') {
-      return await handleGetAlerts(req, res, options, method);
+      return handleGetAlerts(req, res, options, method);
     }
 
     if (pathname === '/api/alerts/dismiss') {
-      return await handleDismissAlerts(req, res, options, method);
+      return handleDismissAlerts(req, res, options, method);
     }
 
     // In-Memory Ring Buffer Logs
     if (pathname === '/api/logs') {
-      return await handleGetLogs(req, res, options, url, method);
-    }
-
-    // Dispatch History
-    if (pathname === '/api/dispatches') {
-      return await handleGetDispatches(req, res, options, url, method);
+      return handleGetLogs(req, res, options, url, method);
     }
 
     // Config GET & POST
     if (pathname === '/api/config') {
-      return await handleConfigEndpoint(req, res, options, method);
+      return handleConfigEndpoint(req, res, options, method);
     }
 
     // Config Override DELETE
     if (pathname.startsWith('/api/config/')) {
-      return await handleDeleteConfigOverride(req, res, options, pathname, method);
+      return handleDeleteConfigOverride(req, res, options, pathname, method);
     }
 
     // Notification Testing
     if (pathname === '/api/notify/test') {
-      return await handleTestNotify(req, res, options, method);
+      return handleTestNotify(req, res, options, method);
     }
 
     // Task Dispatch
     if (pathname === '/api/dispatch') {
-      return await handlePostDispatch(req, res, options, method);
+      return handlePostDispatch(req, res, options, method);
     }
 
     // Available Model Catalog & Live Pool Headroom
     if (pathname === '/api/models') {
-      return await handleGetModels(req, res, options, method);
+      return handleGetModels(req, res, options, method);
     }
 
     // Swarm Task Queue Listing
     if (pathname === '/api/tasks') {
-      return await handleGetTasks(req, res, options, url, method);
+      return handleGetTasks(req, res, options, url, method);
     }
 
     // Swarm Worker Outbound Long-Poll Claim
     if (pathname === '/api/tasks/poll') {
-      return await handlePollTasks(req, res, options, method);
+      return handlePollTasks(req, res, options, method);
+    }
+
+    // Swarm Runner Lease Heartbeat (live output tail)
+    if (pathname === '/api/runner/heartbeat') {
+      return handleRunnerHeartbeat(req, res, options, method);
     }
 
     // Swarm Task Status & Completion Callback
     if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) {
-      return await handleTaskStatus(req, res, options, pathname, method);
+      return handleTaskStatus(req, res, options, pathname, method);
     }
 
     // Task Cancel / Abort
     if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/cancel')) {
-      return await handleTaskCancel(req, res, options, pathname, method);
+      return handleTaskCancel(req, res, options, pathname, method);
     }
 
     // Task Retry / Re-run
     if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/retry')) {
-      return await handleTaskRetry(req, res, options, pathname, method);
+      return handleTaskRetry(req, res, options, pathname, method);
+    }
+
+    // Single Swarm Task (inspector polling) — every other /api/tasks/<id>/... verb is matched above
+    if (pathname.startsWith('/api/tasks/') && !pathname.slice('/api/tasks/'.length).includes('/')) {
+      return handleGetTaskById(req, res, options, pathname, method);
     }
 
     // Backlog Tasks CRUD, Trigger & GitHub Sync
     if (pathname === '/api/backlog/sync-github') {
-      return await handleSyncGithubBacklog(req, res, options, method);
+      return handleSyncGithubBacklog(req, res, options, method);
     }
 
     if (pathname === '/api/backlog') {
-      return await handleBacklogTasks(req, res, options, url, method);
+      return handleBacklogTasks(req, res, options, url, method);
     }
 
     if (pathname.startsWith('/api/backlog/')) {
-      return await handleBacklogTaskById(req, res, options, pathname, method);
+      return handleBacklogTaskById(req, res, options, pathname, method);
     }
 
     // Routine Tasks CRUD & Trigger
     if (pathname === '/api/routines') {
-      return await handleRoutineTasks(req, res, options, url, method);
+      return handleRoutineTasks(req, res, options, url, method);
     }
 
     if (pathname.startsWith('/api/routines/')) {
-      return await handleRoutineTaskById(req, res, options, pathname, method);
+      return handleRoutineTaskById(req, res, options, pathname, method);
     }
 
     // Registered Swarm Runners & Runner Registration Flow
     if (pathname === '/api/runners') {
-      return await handleGetRunners(req, res, options, method);
+      return handleGetRunners(req, res, options, method);
     }
 
     if (pathname === '/api/runners/registration-token') {
-      return await handleCreateRegistrationToken(req, res, options, method);
+      return handleCreateRegistrationToken(req, res, options, method);
     }
 
     if (pathname === '/api/runners/register') {
-      return await handleRegisterRunner(req, res, options, method);
+      return handleRegisterRunner(req, res, options, method);
     }
 
     if (pathname.startsWith('/api/runners/')) {
-      return await handleManageRunnerById(req, res, options, pathname, method);
+      return handleManageRunnerById(req, res, options, pathname, method);
     }
 
     // Route Guard 404

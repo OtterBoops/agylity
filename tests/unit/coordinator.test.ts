@@ -680,14 +680,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(claimedTask?.model, 'gemini-3.8-flash');
         assert.equal(executedTasks.length, 1);
 
-        // 5. Verify task is marked completed in GET /api/tasks and GET /api/dispatches
+        // 5. Verify task is marked completed in GET /api/tasks
         const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
         assert.equal(tasks[0]?.status, 'completed');
         assert.ok(tasks[0]?.branchName?.startsWith('agy/'));
-
-        const dispatches = await ky.get(`${baseUrl}/api/dispatches`).json<any[]>();
-        assert.equal(dispatches.length, 1);
-        assert.equal(dispatches[0]?.success, true);
 
         const workers = await ky.get(`${baseUrl}/api/runners`).json<any[]>();
         assert.equal(workers.length, 1);
@@ -2591,12 +2587,304 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         cleanup();
       }
     });
+
+    const routineFixture = () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_batch2_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      const configStore = new ConfigStore(db, {
+        coordinatorEnabled: true,
+        defaultDispatchModel: 'claude-sonnet-5-5',
+        poolPolicies: {
+          claude: { alertsEnabled: true, dispatchEnabled: true },
+          'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+          'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+        },
+        repositories: [
+          {
+            id: 'agylity',
+            name: 'OtterBoops/agylity',
+            path: dir,
+            cloneUrl: 'https://github.com/OtterBoops/agylity',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      return { db, cleanup, coordinator: new Coordinator({ configStore }) };
+    };
+
+    const poolSnapshot = (
+      family: 'claude' | 'gemini-argon' | 'gemini-flash',
+      hoursUntilReset: number,
+      remainingFraction: number
+    ): QuotaSnapshot => ({
+      poolId: family,
+      family,
+      displayName: `${family} models`,
+      remainingFraction,
+      resetTime: '2026-11-08T01:30:44Z',
+      hoursUntilReset,
+      models: [],
+    });
+
+    it('dispatches one routine per pool family inside a single autonomous tick', async () => {
+      const { db, cleanup, coordinator } = routineFixture();
+      try {
+        const claudeRoutine = coordinator.queue.createRoutineTask({
+          title: 'Claude Burn',
+          prompt: 'Burn the claude pool',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+        const argonRoutine = coordinator.queue.createRoutineTask({
+          title: 'Argon Burn',
+          prompt: 'Burn the argon pool',
+          repositoryId: 'agylity',
+          models: ['gemini-4-argon'],
+          triggerBeforeResetHours: 12,
+        });
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks([
+          poolSnapshot('claude', 10, 0.5),
+          poolSnapshot('gemini-argon', 8, 0.6),
+        ]);
+
+        // One slot per family: both pools inside their window must both fire, not just the first.
+        assert.equal(spawned.length, 2);
+        assert.deepEqual(
+          spawned.map((t) => t.poolFamily).sort(),
+          ['claude', 'gemini-argon'].sort()
+        );
+        assert.deepEqual(
+          spawned.map((t) => t.originId).sort(),
+          [claudeRoutine.id, argonRoutine.id].sort()
+        );
+        assert.equal(
+          spawned.every((t) => t.tier === 'routine'),
+          true
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('orders routine candidates least-recently-triggered first so a fast loop cannot starve its neighbour', async () => {
+      const { db, cleanup, coordinator } = routineFixture();
+      try {
+        const firstInOrder = coordinator.queue.createRoutineTask({
+          title: 'First In Order',
+          prompt: 'Burn quota first',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+          sortOrder: 0,
+        });
+        const secondInOrder = coordinator.queue.createRoutineTask({
+          title: 'Second In Order',
+          prompt: 'Burn quota second',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+          sortOrder: 1,
+        });
+        const snapshots = [poolSnapshot('claude', 10, 0.5)];
+
+        // Neither has run yet, so the single claude slot goes to sortOrder.
+        const firstTick = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(firstTick.length, 1);
+        assert.equal(firstTick[0]!.originId, firstInOrder.id);
+
+        // A completed run re-arms its own cycle, so only run recency can move the slot onward.
+        await coordinator.reportTaskStatus(firstTick[0]!.id, { status: 'completed' });
+        assert.equal(
+          coordinator.queue.getRoutineTask(firstInOrder.id)?.lastTriggeredResetTime,
+          '2026-11-08T01:30:44Z'
+        );
+
+        const secondTick = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(secondTick.length, 1);
+        assert.equal(secondTick[0]!.originId, secondInOrder.id);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('computes every routine eligibility state from live pool telemetry', async () => {
+      const { db, cleanup, coordinator } = routineFixture();
+      try {
+        const disabled = coordinator.queue.createRoutineTask({
+          title: 'Disabled Routine',
+          prompt: 'Never dispatches',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          enabled: false,
+        });
+        assert.equal(
+          coordinator.computeRoutineEligibility(disabled, [poolSnapshot('claude', 1, 0.9)]).state,
+          'disabled'
+        );
+
+        // Its own pool family, so the 10h claude snapshot below cannot make it dispatchable.
+        const waiting = coordinator.queue.createRoutineTask({
+          title: 'Waiting Routine',
+          prompt: 'Waits for the window',
+          repositoryId: 'agylity',
+          models: ['gemini-3.8-flash'],
+          triggerBeforeResetHours: 12,
+        });
+        assert.equal(
+          coordinator.computeRoutineEligibility(waiting, [poolSnapshot('gemini-flash', 15, 0.9)])
+            .state,
+          'waiting_window'
+        );
+
+        const starved = coordinator.queue.createRoutineTask({
+          title: 'Starved Routine',
+          prompt: 'No headroom left',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+        assert.equal(
+          coordinator.computeRoutineEligibility(starved, [poolSnapshot('claude', 10, 0.05)]).state,
+          'low_headroom'
+        );
+
+        const ready = coordinator.queue.createRoutineTask({
+          title: 'Ready Routine',
+          prompt: 'Eligible right now',
+          repositoryId: 'agylity',
+          models: ['gemini-4-hydrogen'],
+          triggerBeforeResetHours: 12,
+        });
+        assert.equal(
+          coordinator.computeRoutineEligibility(ready, [poolSnapshot('gemini-flash', 10, 0.5)])
+            .state,
+          'ready'
+        );
+
+        // Disabled and under-floor routines must not claim the claude slot either.
+        assert.equal(
+          (await coordinator.triggerEligibleRoutines([poolSnapshot('claude', 10, 0.05)])).length,
+          0
+        );
+
+        const settled = coordinator.queue.createRoutineTask({
+          title: 'Settled Routine',
+          prompt: 'Already burned this cycle',
+          repositoryId: 'agylity',
+          models: ['gemini-4-argon'],
+          triggerBeforeResetHours: 12,
+        });
+        const settledRun = await coordinator.triggerEligibleRoutines([
+          poolSnapshot('gemini-argon', 10, 0.5),
+        ]);
+        assert.equal(settledRun.length, 1);
+        assert.equal(settledRun[0]!.originId, settled.id);
+
+        // Re-read the record: the cycle stamp lives in the queue, not in the create() return value.
+        const readSettled = () => coordinator.queue.getRoutineTask(settled.id)!;
+
+        // A productive run re-arms its own cycle, so the loop is still entitled to the next slot.
+        await coordinator.reportTaskStatus(settledRun[0]!.id, { status: 'completed' });
+        assert.equal(
+          coordinator.computeRoutineEligibility(readSettled(), [
+            poolSnapshot('gemini-argon', 10, 0.5),
+          ]).state,
+          'ready'
+        );
+
+        // A no_changes run burns the cycle: there is nothing left for this reset to spend.
+        const loopRun = await coordinator.triggerEligibleRoutines([
+          poolSnapshot('gemini-argon', 10, 0.5),
+        ]);
+        assert.equal(loopRun.length, 1);
+        assert.notEqual(loopRun[0]!.id, settledRun[0]!.id);
+        await coordinator.reportTaskStatus(loopRun[0]!.id, { status: 'no_changes' });
+        assert.equal(
+          coordinator.computeRoutineEligibility(readSettled(), [
+            poolSnapshot('gemini-argon', 10, 0.5),
+          ]).state,
+          'cycle_complete'
+        );
+
+        const failing = coordinator.queue.createRoutineTask({
+          title: 'Failing Routine',
+          prompt: 'Failed this cycle',
+          repositoryId: 'agylity',
+          models: ['gemini-4-argon'],
+          triggerBeforeResetHours: 12,
+        });
+        const failedRun = await coordinator.triggerEligibleRoutines([
+          poolSnapshot('gemini-argon', 10, 0.5),
+        ]);
+        assert.equal(failedRun.length, 1);
+        assert.equal(failedRun[0]!.originId, failing.id);
+
+        // A failure is terminal for the cycle and must read as a failure, not as completed work.
+        await coordinator.reportTaskStatus(failedRun[0]!.id, {
+          status: 'failed',
+          error: 'runner exited 1',
+        });
+        const failedStatus = coordinator.computeRoutineEligibility(
+          coordinator.queue.getRoutineTask(failing.id)!,
+          [poolSnapshot('gemini-argon', 10, 0.5)]
+        );
+        assert.equal(failedStatus.state, 'cycle_failed');
+        assert.match(failedStatus.detail, /last run failed/);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('streams the runner output tail into a running task on heartbeat', () => {
+      const { db, cleanup, coordinator } = routineFixture();
+      try {
+        const task = coordinator.queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'OtterBoops/agylity',
+          prompt: 'Stream the run output',
+          model: 'claude-sonnet-5-5',
+        });
+        const claimed = coordinator.queue.claimNext({
+          runnerId: 'runner-test',
+          runnerName: 'test',
+        });
+        assert.equal(claimed?.id, task.id);
+        coordinator.queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          runnerId: 'runner-test',
+        });
+
+        const beat = coordinator.heartbeatTask(task.id, 'runner-test', undefined, 'step 1\nstep 2');
+        assert.equal(beat?.applied, true);
+        assert.equal(beat?.task.status, 'executing');
+        assert.equal(beat?.task.output, 'step 1\nstep 2');
+
+        // A tail-less beat refreshes the lease without blanking what the previous beat delivered.
+        const bareBeat = coordinator.heartbeatTask(task.id, 'runner-test');
+        assert.equal(bareBeat?.applied, true);
+        assert.equal(bareBeat?.task.output, 'step 1\nstep 2');
+
+        // A foreign runner cannot write into a run it does not own.
+        const stolen = coordinator.heartbeatTask(task.id, 'runner-other', undefined, 'stolen');
+        assert.equal(stolen?.applied, false);
+        assert.equal(coordinator.queue.getTask(task.id)?.output, 'step 1\nstep 2');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
-  /* 12. Flat Disclosure Footer & Bot PR Governance Policy                */
+  /* 12. Flat Disclosure Footer & Autonomous PR Governance Policy          */
   /* ==================================================================== */
-  describe('12. Flat Disclosure Footer & Bot PR Governance Policy', () => {
+  describe('12. Flat Disclosure Footer & Autonomous PR Governance Policy', () => {
     it('isDocumentationFile accurately identifies documentation files and paths', () => {
       // Documentation files
       assert.equal(isDocumentationFile('README.md'), true);
@@ -2617,35 +2905,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(isDocumentationFile('scripts/build.sh'), false);
     });
 
-    it('sets default actor properly in TaskQueue for swarm tasks and standing tasks', () => {
-      const { dir, cleanup } = makeTempDir('orch_actor_defaults_');
-      const db = new AppDatabase(path.join(dir, 'test.db'));
-      try {
-        const queue = new TaskQueue(db);
-
-        // Swarm task defaults actor to 'user'
-        const userTask = queue.enqueue({
-          repositoryName: 'agylity',
-          repositoryPath: dir,
-          prompt: 'User task',
-          model: 'gemini-3.8-flash',
-        });
-        assert.equal(userTask.actor, 'user');
-
-        // Routine task defaults actor to 'bot'
-        const routine = queue.createRoutineTask({
-          title: 'Claude Audit',
-          prompt: 'Audit codebase',
-          repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
-        });
-        assert.equal(routine.actor, 'bot');
-      } finally {
-        db.close();
-        cleanup();
-      }
-    });
-
     it('always appends flat disclosure footer without agylity[bot] commit authorship', async () => {
       const { dir, cleanup } = makeTempDir('orch_flat_disclosure_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -2657,7 +2916,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           prompt: 'Fix bug in auth',
           model: 'gemini-4-hydrogen',
           effort: 'medium',
-          actor: 'bot',
           prPolicy: 'all',
           pushBranch: true,
           autoCreatePr: true,
@@ -2705,7 +2963,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           prompt: 'User task',
           model: 'gemini-3.8-flash',
           effort: 'low',
-          actor: 'user',
           pushBranch: false,
           autoCreatePr: false,
         });
@@ -2721,7 +2978,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('blocks bot PRs and deletes branch when bot modifies code under prPolicy=docs_only', async () => {
+    it('blocks autonomous PRs and deletes the branch when an agent run modifies code under prPolicy=docs_only', async () => {
       const { dir, cleanup } = makeTempDir('orch_bot_docs_only_block_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
@@ -2731,7 +2988,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryPath: dir,
           prompt: 'Refactor auth',
           model: 'claude-sonnet-5-5',
-          actor: 'bot',
+          tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
         });
@@ -2760,7 +3017,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(res.noChanges, true);
         assert.ok(
           res.output.includes(
-            '[Policy Guard] Bot PR suppressed: bot is restricted to documentation PRs only'
+            "[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only', so only"
           )
         );
         assert.ok(res.output.includes('src/auth.ts'));
@@ -2772,7 +3029,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('allows bot PRs when bot modifies only documentation under prPolicy=docs_only', async () => {
+    it('allows autonomous PRs when an agent run modifies only documentation under prPolicy=docs_only', async () => {
       const { dir, cleanup } = makeTempDir('orch_bot_docs_only_allow_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
@@ -2782,7 +3039,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryPath: dir,
           prompt: 'Update docs',
           model: 'claude-sonnet-5-5',
-          actor: 'bot',
+          tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
         });
@@ -2830,7 +3087,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryPath: dir,
           prompt: 'Audit only',
           model: 'claude-sonnet-5-5',
-          actor: 'bot',
+          tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
         });
@@ -2854,7 +3111,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const res = await executor.execute(task);
         assert.equal(res.success, true);
         assert.equal(res.noChanges, true);
-        assert.ok(res.output.includes("[Policy Guard] Bot PR suppressed: bot PR policy is 'none'"));
+        assert.ok(
+          res.output.includes("[Policy Guard] Autonomous PR suppressed: PR policy is 'none'")
+        );
         assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
       } finally {
         db.close();
@@ -2882,6 +3141,308 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         const restored = queue.updateRoutineTask(routine.id, { prPolicy: 'none' });
         assert.equal(restored?.prPolicy, 'none');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 13. Retry Origin Sync, Blank-Patch Fallback & Early-Reset Recovery   */
+  /* ==================================================================== */
+  describe('13. Retry Origin Sync, Blank-Patch Fallback & Early-Reset Recovery', () => {
+    const freshFlashPools = (
+      resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString()
+    ): QuotaSnapshot[] => [
+      {
+        poolId: 'gemini-flash',
+        family: 'gemini-flash',
+        displayName: 'Gemini Flash',
+        remainingFraction: 0.8,
+        resetTime,
+        hoursUntilReset: 6,
+        models: ['gemini-3.8-flash'],
+      },
+    ];
+
+    const retryConfig = (dir: string) => ({
+      coordinatorEnabled: true,
+      defaultDispatchModel: 'gemini-3.8-flash',
+      repositories: [
+        {
+          id: 'agylity',
+          name: 'Agylity',
+          path: dir,
+          cloneUrl: 'https://example.invalid/example.git',
+          defaultBranch: 'main',
+        },
+      ],
+    });
+
+    it('retries a failed backlog-tier task and repoints the backlog row at the retried swarm task', async () => {
+      const { dir, cleanup } = makeTempDir('coord_retry_backlog_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), retryConfig(dir));
+
+      try {
+        const coordinator = new Coordinator({ configStore: store });
+        coordinator.onQuotaUpdated(freshFlashPools());
+
+        const backlog = coordinator.queue.createBacklogTask({
+          title: 'Repoint the backlog origin',
+          prompt: 'A retry must carry the origin row to the new task',
+          repositoryId: 'agylity',
+          models: ['gemini-3.8-flash'],
+        });
+
+        const first = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: backlog.prompt,
+          title: backlog.title,
+          tier: 'backlog',
+          originId: backlog.id,
+          originNumber: backlog.taskNumber,
+          originTitle: backlog.title,
+          requestedBy: `backlog:${backlog.id}`,
+          scheduleMode: 'immediate',
+          model: 'gemini-3.8-flash',
+        });
+        assert.equal(first.success, true);
+        assert.ok(first.taskId, 'the first attempt must enqueue a swarm task');
+
+        // The attempt failed: the origin row goes back to pending with the failure recorded.
+        await coordinator.reportTaskStatus(first.taskId!, {
+          status: 'failed',
+          error: 'runner crashed',
+        });
+        const pendingRow = coordinator.queue.getBacklogTask(backlog.id);
+        assert.equal(pendingRow?.status, 'pending');
+        assert.equal(pendingRow?.lastError, 'runner crashed');
+
+        const finished = coordinator.queue.getTask(first.taskId!);
+        assert.equal(finished?.status, 'failed');
+
+        const retry = await coordinator.retryTask(finished!);
+        assert.equal(retry.success, true);
+        assert.ok(retry.taskId);
+        assert.notEqual(retry.taskId, first.taskId);
+
+        const row = coordinator.queue.getBacklogTask(backlog.id);
+        assert.equal(row?.status, 'dispatched');
+        assert.equal(row?.swarmTaskId, retry.taskId);
+        assert.equal(row?.lastError, undefined);
+
+        const retriedTask = coordinator.queue.getTask(retry.taskId!);
+        assert.equal(retriedTask?.tier, 'backlog');
+        assert.equal(retriedTask?.originId, backlog.id);
+        // The finished run is left exactly as it ended.
+        assert.equal(coordinator.queue.getTask(first.taskId!)?.status, 'failed');
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('retries a finished routine-tier task and repoints lastTaskId at the retried task', async () => {
+      const { dir, cleanup } = makeTempDir('coord_retry_routine_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), retryConfig(dir));
+
+      try {
+        const coordinator = new Coordinator({ configStore: store });
+        coordinator.onQuotaUpdated(freshFlashPools());
+
+        const routine = coordinator.queue.createRoutineTask({
+          title: 'Nightly retention sweep',
+          prompt: 'A retry must repoint the routine at the new task',
+          repositoryId: 'agylity',
+          models: ['gemini-3.8-flash'],
+          triggerBeforeResetHours: 12,
+        });
+
+        const first = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: routine.prompt,
+          title: routine.title,
+          tier: 'routine',
+          originId: routine.id,
+          originNumber: routine.taskNumber,
+          originTitle: routine.title,
+          requestedBy: `routine:${routine.id}`,
+          scheduleMode: 'immediate',
+          model: 'gemini-3.8-flash',
+        });
+        assert.equal(first.success, true);
+        assert.ok(first.taskId, 'the first run must enqueue a swarm task');
+
+        await coordinator.reportTaskStatus(first.taskId!, { status: 'completed' });
+
+        const resetTime = '2026-11-09T01:30:44Z';
+        coordinator.queue.updateRoutineTask(routine.id, {
+          lastTaskId: first.taskId!,
+          lastTriggeredResetTime: resetTime,
+        });
+
+        const retry = await coordinator.retryTask(coordinator.queue.getTask(first.taskId!)!);
+        assert.equal(retry.success, true);
+        assert.ok(retry.taskId);
+        assert.notEqual(retry.taskId, first.taskId);
+
+        const row = coordinator.queue.getRoutineTask(routine.id);
+        assert.equal(row?.lastTaskId, retry.taskId);
+        // A retry is a new run in the same cycle, not a new cycle.
+        assert.equal(row?.lastTriggeredResetTime, resetTime);
+
+        const retriedTask = coordinator.queue.getTask(retry.taskId!);
+        assert.equal(retriedTask?.tier, 'routine');
+        assert.equal(retriedTask?.originId, routine.id);
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('forgets the announced burn kick for a replenished pool without touching other pools', () => {
+      const { dir, cleanup } = makeTempDir('coord_early_reset_kick_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, { coordinatorEnabled: true });
+        const coordinator = new Coordinator({ configStore });
+
+        const previousResetTime = '2026-11-08T01:30:44Z';
+        const resetTime = '2026-11-09T01:30:44Z';
+        coordinator.queue.setRuntimeValue(
+          'burnKickAnnouncedCycles',
+          JSON.stringify({ claude: previousResetTime, 'gemini-flash': resetTime })
+        );
+
+        coordinator.onEarlyQuotaReset([
+          {
+            poolId: 'claude',
+            displayName: 'Claude and GPT models',
+            previousRemainingFraction: 0.15,
+            remainingFraction: 0.95,
+            previousResetTime,
+            resetTime,
+          },
+        ]);
+
+        const cycles = JSON.parse(
+          coordinator.queue.getRuntimeValue('burnKickAnnouncedCycles') ?? '{}'
+        ) as Record<string, string>;
+        assert.equal(Object.hasOwn(cycles, 'claude'), false);
+        // Only the pool that actually replenished reopens its announcement window.
+        assert.equal(cycles['gemini-flash'], resetTime);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('resets lastTriggeredResetTime only on routines stamped for the replenished cycle', () => {
+      const { dir, cleanup } = makeTempDir('coord_early_reset_routine_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'gemini-3.8-flash',
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const previousResetTime = '2026-11-08T01:30:44Z';
+        const resetTime = '2026-11-09T01:30:44Z';
+        const staleCycle = '2026-11-07T01:30:44Z';
+
+        const stamped = coordinator.queue.createRoutineTask({
+          title: 'Claude pre-reset burn',
+          prompt: 'Burn the cycle that just reset early',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+        coordinator.queue.updateRoutineTask(stamped.id, {
+          lastTriggeredResetTime: previousResetTime,
+        });
+
+        const nextCycle = coordinator.queue.createRoutineTask({
+          title: 'Claude later cycle',
+          prompt: 'Stamped for a different cycle',
+          repositoryId: 'agylity',
+          models: ['claude-sonnet-5-5'],
+          triggerBeforeResetHours: 12,
+        });
+        coordinator.queue.updateRoutineTask(nextCycle.id, { lastTriggeredResetTime: staleCycle });
+
+        coordinator.onEarlyQuotaReset([
+          {
+            poolId: 'claude',
+            displayName: 'Claude and GPT models',
+            previousRemainingFraction: 0.15,
+            remainingFraction: 0.95,
+            previousResetTime,
+            resetTime,
+          },
+        ]);
+
+        assert.equal(
+          coordinator.queue.getRoutineTask(stamped.id)?.lastTriggeredResetTime,
+          undefined
+        );
+        assert.equal(
+          coordinator.queue.getRoutineTask(nextCycle.id)?.lastTriggeredResetTime,
+          staleCycle
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('keeps the stored routine and backlog text when a patch supplies only blank fields', () => {
+      const { dir, cleanup } = makeTempDir('coord_blank_patch_fallback_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+
+        const routine = queue.createRoutineTask({
+          title: 'Routine title',
+          prompt: 'Routine prompt',
+          repositoryId: 'agylity',
+          models: ['gemini-3.8-flash'],
+        });
+        const patchedRoutine = queue.updateRoutineTask(routine.id, {
+          title: '   ',
+          prompt: '',
+          repositoryId: '  ',
+        });
+        assert.equal(patchedRoutine?.title, 'Routine title');
+        assert.equal(patchedRoutine?.prompt, 'Routine prompt');
+        assert.equal(patchedRoutine?.repositoryId, 'agylity');
+        // A real value still overwrites, trimmed.
+        assert.equal(
+          queue.updateRoutineTask(routine.id, { title: ' Renamed routine ' })?.title,
+          'Renamed routine'
+        );
+
+        const backlog = queue.createBacklogTask({
+          title: 'Backlog title',
+          prompt: 'Backlog prompt',
+          repositoryId: 'agylity',
+        });
+        const patchedBacklog = queue.updateBacklogTask(backlog.id, {
+          title: '',
+          prompt: ' \t ',
+          repositoryId: ' ',
+        });
+        assert.equal(patchedBacklog?.title, 'Backlog title');
+        assert.equal(patchedBacklog?.prompt, 'Backlog prompt');
+        assert.equal(patchedBacklog?.repositoryId, 'agylity');
+        assert.equal(
+          queue.updateBacklogTask(backlog.id, { prompt: ' Rewritten prompt ' })?.prompt,
+          'Rewritten prompt'
+        );
       } finally {
         db.close();
         cleanup();

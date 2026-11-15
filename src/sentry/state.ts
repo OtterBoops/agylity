@@ -1,15 +1,29 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import type { QuotaAlert } from './models.js';
+import type { BurnSample } from './models.js';
 
 // Persistent State Schema
+
+/** Newest sample last; the cap bounds both the state file and the projection window. */
+const SAMPLE_HISTORY_LIMIT = 24;
+const SAMPLE_MIN_INTERVAL_MS = 10 * 60_000;
+/** Drain below this fraction is probe jitter, not usage. */
+const SAMPLE_MIN_DELTA = 0.01;
+
+export const PoolSampleSchema = z.object({
+  at: z.string(),
+  remainingFraction: z.number().min(0).max(1),
+  resetTime: z.string(),
+});
 
 export const PoolStateSchema = z.object({
   resetTime: z.string(),
   remainingFraction: z.number().min(0).max(1),
   firedMilestones: z.array(z.string()),
   lastAlertSentAt: z.string().nullable().optional(),
+  /** Absent in files written before burn-rate sampling existed. */
+  samples: z.array(PoolSampleSchema).optional(),
 });
 
 export type PoolState = z.infer<typeof PoolStateSchema>;
@@ -69,6 +83,28 @@ const detectEarlyReset = (
   };
 };
 
+/** A sample is only recorded when it carries information the last one did not. */
+const appendSample = (
+  samples: BurnSample[] | undefined,
+  remainingFraction: number,
+  resetTime: string,
+  nowMs: number
+): BurnSample[] => {
+  const history = samples ?? [];
+  const last = history[history.length - 1];
+  const sample: BurnSample = {
+    at: new Date(nowMs).toISOString(),
+    remainingFraction,
+    resetTime,
+  };
+  const due =
+    !last ||
+    nowMs - Date.parse(last.at) >= SAMPLE_MIN_INTERVAL_MS ||
+    Math.abs(remainingFraction - last.remainingFraction) >= SAMPLE_MIN_DELTA;
+  if (!due) return history;
+  return [...history, sample].slice(-SAMPLE_HISTORY_LIMIT);
+};
+
 /** Probe sources, so the schema and its callers cannot disagree. */
 export const PROBE_SOURCES = [
   'connect_rpc',
@@ -110,7 +146,6 @@ export const createInitialState = (): SentryState => ({
 export class SentryStateManager {
   private readonly stateFilePath: string;
   private state: SentryState;
-  private saveChain: Promise<void> = Promise.resolve();
 
   constructor(stateFilePath: string = 'data/state.json') {
     this.stateFilePath = path.resolve(stateFilePath);
@@ -140,13 +175,7 @@ export class SentryStateManager {
         return this.getState();
       }
 
-      // Only contents that cannot be parsed or validated are quarantined. A read-side failure
-      // (lock, permissions) leaves the file for the next load instead of destroying valid state.
-      const contentInvalid = err instanceof SyntaxError || err instanceof z.ZodError;
-      if (!contentInvalid) {
-        return this.getState();
-      }
-
+      // File exists but parsing/validation failed: quarantine it
       const quarantinePath = `${this.stateFilePath}.corrupt.${Date.now()}`;
       try {
         await fs.rename(this.stateFilePath, quarantinePath);
@@ -161,23 +190,11 @@ export class SentryStateManager {
 
   // Atomically saves state to disk using a unique temporary file and fs.rename.
   async save(): Promise<void> {
-    // The probe loop and the web dismissal both save this manager; serialising them keeps a slower
-    // write from renaming its older serialisation over a newer one.
-    const run = this.saveChain.then(() => this.writeState());
-    this.saveChain = run.then(
-      () => undefined,
-      () => undefined
-    );
-    return run;
-  }
-
-  private async writeState(): Promise<void> {
     const dir = path.dirname(this.stateFilePath);
     await fs.mkdir(dir, { recursive: true });
 
     const nonce = Math.random().toString(36).slice(2);
     const tempFile = `${this.stateFilePath}.tmp.${process.pid}.${Date.now()}.${nonce}`;
-    // Serialise inside the queued write so the newest state is what lands on disk.
     const serialized = JSON.stringify(this.state, null, 2);
 
     await fs.writeFile(tempFile, serialized, 'utf-8');
@@ -235,6 +252,7 @@ export class SentryStateManager {
         remainingFraction,
         firedMilestones: [],
         lastAlertSentAt: null,
+        samples: appendSample(undefined, remainingFraction, resetTime, nowMs),
       };
       return { cycleRolled: true, earlyReset: null };
     }
@@ -258,10 +276,12 @@ export class SentryStateManager {
       Number.isFinite(priorResetMs) &&
       nextResetMs !== priorResetMs
     ) {
+      // Upstream reset time changed: cycle rollover
       existing.resetTime = resetTime;
       existing.remainingFraction = remainingFraction;
       existing.firedMilestones = [];
       existing.lastAlertSentAt = null;
+      existing.samples = appendSample(undefined, remainingFraction, resetTime, nowMs);
       return { cycleRolled: true, earlyReset };
     }
 
@@ -269,7 +289,16 @@ export class SentryStateManager {
     if (Number.isFinite(nextResetMs)) {
       existing.resetTime = resetTime;
     }
+
+    if (earlyReset) {
+      // A premature refill restarted the balance, so earlier samples describe a dead cycle.
+      existing.remainingFraction = remainingFraction;
+      existing.samples = appendSample(undefined, remainingFraction, effectiveResetTime, nowMs);
+      return { cycleRolled: false, earlyReset };
+    }
+
     existing.remainingFraction = remainingFraction;
+    existing.samples = appendSample(existing.samples, remainingFraction, effectiveResetTime, nowMs);
     return { cycleRolled: false, earlyReset };
   }
 
@@ -334,11 +363,6 @@ export class SentryStateManager {
         pool.firedMilestones.push(key);
       }
     }
-  }
-
-  async recordAlert(alert: QuotaAlert): Promise<void> {
-    this.recordMilestoneFired(alert.pool.poolId, alert.milestoneHours, alert.triggeredAt);
-    await this.save();
   }
 
   getPoolState(poolId: string): PoolState | undefined {

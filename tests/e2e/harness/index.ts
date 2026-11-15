@@ -1,41 +1,8 @@
-import http from 'node:http';
-import net from 'node:net';
 import fs from 'node:fs';
-import path from 'node:path';
 import os from 'node:os';
-
-/**
- * Safely imports a module, returning null if the file does not yet exist.
- * This allows progressive testability while milestones are implemented.
- */
-export const tryImport = async <T>(specifier: string): Promise<T | null> => {
-  try {
-    return await import(specifier);
-  } catch (err: any) {
-    if (
-      err.code === 'ERR_MODULE_NOT_FOUND' ||
-      err.message?.includes('Cannot find module') ||
-      err.message?.includes('Failed to load')
-    ) {
-      return null;
-    }
-    throw err;
-  }
-};
-
-/**
- * Allocates an ephemeral unused TCP port on localhost.
- */
-export const getFreePort = async (): Promise<number> => {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close((err) => (err ? reject(err) : resolve(port)));
-    });
-    srv.on('error', reject);
-  });
-};
+import path from 'node:path';
+import type { LogBuffer } from '../../../src/logs/buffer.js';
+import type { LogRecord, LogSink } from '../../../src/logs/logger.js';
 
 /**
  * Creates an isolated temporary directory for test databases and state files.
@@ -54,273 +21,25 @@ export const makeTempDir = (prefix = 'agylity_test_'): { dir: string; cleanup: (
   };
 };
 
-export interface MockRpcOptions {
-  expectedCsrfToken?: string;
-  statusCode?: number;
-  responseBody?: unknown;
-  onRequest?: (req: http.IncomingMessage, body: string) => void;
-}
-
-/**
- * Creates a mock HTTP server simulating Antigravity Language Server Connect-RPC.
- */
-export const createMockRpcServer = async (
-  port = 0,
-  options: MockRpcOptions = {}
-): Promise<{ server: http.Server; port: number; url: string; close: () => Promise<void> }> => {
-  const expectedToken = options.expectedCsrfToken ?? 'test-csrf-token';
-  const defaultBody = options.responseBody ?? {
-    clientModelConfigs: [
-      {
-        model: 'MODEL_CLAUDE_3_5_SONNET',
-        modelFamily: 'claude',
-        displayName: 'Claude 3.5 Sonnet',
-        remainingFraction: 0.82,
-        resetTime: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-      },
-      {
-        model: 'MODEL_GEMINI_2_5_PRO',
-        modelFamily: 'gemini-argon',
-        displayName: 'Gemini 2.5 Pro',
-        remainingFraction: 0.5,
-        resetTime: new Date(Date.now() + 12 * 3600 * 1000).toISOString(),
-      },
-      {
-        model: 'MODEL_GEMINI_2_5_FLASH',
-        modelFamily: 'gemini-flash',
-        displayName: 'Gemini 2.5 Flash',
-        remainingFraction: 0.95,
-        resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
-      },
-    ],
+/** Sink that forwards records directly to an in-memory LogBuffer. */
+export const createBufferSink =
+  (buffer: LogBuffer): LogSink =>
+  (record: LogRecord) => {
+    buffer.push(record.level, record.formatted);
   };
 
-  const server = http.createServer((req, res) => {
-    let rawBody = '';
-    req.on('data', (chunk) => {
-      rawBody += chunk;
-    });
-
-    req.on('end', () => {
-      if (options.onRequest) {
-        options.onRequest(req, rawBody);
-      }
-
-      if (req.method !== 'POST') {
-        res.writeHead(405, { 'Content-Type': 'text/plain' });
-        res.end('Method Not Allowed');
-        return;
-      }
-
-      if (req.url !== '/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData') {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('404 page not found');
-        return;
-      }
-
-      const csrf = req.headers['x-codeium-csrf-token'];
-      if (!csrf || csrf !== expectedToken) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            code: 'unauthenticated',
-            message: 'unauthenticated: invalid or missing CSRF token',
-          })
-        );
-        return;
-      }
-
-      const contentType = req.headers['content-type'];
-      if (!contentType || !contentType.includes('application/json')) {
-        res.writeHead(415, { 'Content-Type': 'text/plain' });
-        res.end('Unsupported Media Type');
-        return;
-      }
-
-      const code = options.statusCode ?? 200;
-      res.writeHead(code, { 'Content-Type': 'application/json' });
-      res.end(
-        typeof options.responseBody === 'string'
-          ? options.responseBody
-          : JSON.stringify(defaultBody)
-      );
-    });
-  });
-
-  const sockets = new Set<net.Socket>();
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
-  const addr = server.address() as { port: number };
-
+/** In-memory sink recording log entries for assertions. */
+export const createMemorySink = () => {
+  const records: LogRecord[] = [];
   return {
-    server,
-    port: addr.port,
-    url: `http://127.0.0.1:${addr.port}`,
-    close: async () => {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      sockets.clear();
-
-      if (typeof server.closeAllConnections === 'function') {
-        try {
-          server.closeAllConnections();
-        } catch {
-          // ignore
-        }
-      }
-
-      return new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
+    sink: (record: LogRecord) => {
+      records.push(record);
     },
-  };
-};
-
-export interface MockWebhookOptions {
-  statusCode?: number;
-  responseBody?: unknown;
-  onRequest?: (req: http.IncomingMessage, body: string, headers: http.IncomingHttpHeaders) => void;
-}
-
-export interface MockWebhookServer {
-  server: http.Server;
-  port: number;
-  url: string;
-  requests: Array<{ headers: http.IncomingHttpHeaders; body: any; rawBody: string }>;
-  close: () => Promise<void>;
-}
-
-/**
- * Creates a mock HTTP webhook server tracking active connections for leak-free tests.
- */
-export const createMockWebhookServer = async (
-  port = 0,
-  options: MockWebhookOptions = {}
-): Promise<MockWebhookServer> => {
-  const requests: MockWebhookServer['requests'] = [];
-  const sockets = new Set<net.Socket>();
-
-  const server = http.createServer((req, res) => {
-    let rawBody = '';
-    req.on('data', (chunk) => {
-      rawBody += chunk;
-    });
-
-    req.on('end', () => {
-      let parsedBody: any = null;
-      try {
-        parsedBody = JSON.parse(rawBody);
-      } catch {
-        parsedBody = rawBody;
-      }
-
-      requests.push({
-        headers: req.headers,
-        body: parsedBody,
-        rawBody,
-      });
-
-      if (options.onRequest) {
-        options.onRequest(req, rawBody, req.headers);
-      }
-
-      const status = options.statusCode ?? 200;
-      const resp = options.responseBody ?? { ok: true };
-      res.writeHead(status, { 'Content-Type': 'application/json' });
-      res.end(typeof resp === 'string' ? resp : JSON.stringify(resp));
-    });
-  });
-
-  server.on('connection', (socket) => {
-    sockets.add(socket);
-    socket.once('close', () => sockets.delete(socket));
-  });
-
-  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', () => resolve()));
-  const addr = server.address() as { port: number };
-
-  return {
-    server,
-    port: addr.port,
-    url: `http://127.0.0.1:${addr.port}`,
-    requests,
-    close: async () => {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      sockets.clear();
-
-      if (typeof server.closeAllConnections === 'function') {
-        try {
-          server.closeAllConnections();
-        } catch {
-          // ignore
-        }
-      }
-
-      return new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      });
+    get records() {
+      return [...records];
     },
-  };
-};
-
-/**
- * Mock Discord interaction object simulating commands, selects, and modals.
- */
-export const createMockDiscordInteraction = (
-  options: {
-    userId?: string;
-    channelId?: string;
-    commandName?: string;
-    selectedRepo?: string;
-    taskPrompt?: string;
-  } = {}
-) => {
-  let deferred = false;
-  let deferredAt: number | null = null;
-  let replied = false;
-  let replyData: unknown = null;
-  let editedData: unknown = null;
-  let modalShown: unknown = null;
-
-  return {
-    user: { id: options.userId ?? 'user-123', username: 'otter' },
-    channelId: options.channelId ?? 'channel-sentry-1',
-    commandName: options.commandName ?? 'quota',
-    values: options.selectedRepo ? [options.selectedRepo] : [],
-    fields: {
-      getTextInputValue: (id: string) =>
-        id === 'task_prompt' ? (options.taskPrompt ?? 'Fix memory leak') : '',
-    },
-    isChatInputCommand: () => options.commandName !== undefined,
-    isStringSelectMenu: () => options.selectedRepo !== undefined,
-    isModalSubmit: () => options.taskPrompt !== undefined,
-    async deferReply(opts?: { ephemeral?: boolean }) {
-      deferred = true;
-      deferredAt = Date.now();
-      return { deferred: true, opts };
-    },
-    async reply(payload: unknown) {
-      replied = true;
-      replyData = payload;
-      return payload;
-    },
-    async editReply(payload: unknown) {
-      editedData = payload;
-      return payload;
-    },
-    async showModal(modal: unknown) {
-      modalShown = modal;
-      return modal;
-    },
-    get state() {
-      return { deferred, deferredAt, replied, replyData, editedData, modalShown };
+    clear: () => {
+      records.length = 0;
     },
   };
 };

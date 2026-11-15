@@ -8,12 +8,10 @@ import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import {
   BacklogStatusSchema,
   ReasoningEffortSchema,
-  TaskActorSchema,
   resolvePoolFamilyForModel,
   type BacklogStatus,
   type ReasoningEffort,
   type ScheduleMode,
-  type TaskActor,
   type TaskStatus,
   type TaskTier,
   TERMINAL_TASK_STATUSES,
@@ -21,7 +19,7 @@ import {
 } from './models.js';
 import { logger } from '../logs/logger.js';
 
-export type { TaskActor, TaskTier, BacklogStatus };
+export type { TaskTier, BacklogStatus };
 
 export interface RunnerSystemInfo {
   hostname?: string;
@@ -46,11 +44,12 @@ export interface SwarmTask {
   defaultBranch: string;
   prompt: string;
   requestedBy: string;
-  actor: TaskActor;
   prPolicy?: PrPolicy;
   scheduleMode: ScheduleMode;
   requiredLabels: string[];
   model: string;
+  /** Ordered fallbacks the runner may retry with when upstream capacity is exhausted. */
+  candidateModels: string[];
   poolFamily: QuotaFamily;
   effort: ReasoningEffort;
   allowOverage: boolean;
@@ -89,11 +88,11 @@ export interface EnqueueTaskInput {
   defaultBranch?: string;
   prompt: string;
   requestedBy?: string;
-  actor?: TaskActor;
   prPolicy?: PrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   model: string;
+  candidateModels?: string[];
   effort?: ReasoningEffort;
   allowOverage?: boolean;
   pushBranch?: boolean;
@@ -175,7 +174,6 @@ export interface BacklogTaskRecord {
   effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
-  actor: TaskActor;
   priorityOrder: number;
   status: BacklogStatus;
   attemptCount: number;
@@ -198,7 +196,6 @@ export interface RoutineTaskRecord {
   effort: ReasoningEffort;
   verifyCommand?: string;
   autoCreatePr: boolean;
-  actor: TaskActor;
   prPolicy?: PrPolicy;
   enabled: boolean;
   sortOrder: number;
@@ -207,27 +204,6 @@ export interface RoutineTaskRecord {
   lastTriggeredResetTime?: string;
   /** poolId -> the resetTime of the cycle this routine already burned for that pool. */
   lastTriggeredCycles: Record<string, string>;
-  lastTaskId?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-// Retained for transitional coordinator references
-export interface StandingTaskRecord {
-  id: string;
-  title: string;
-  prompt: string;
-  repositoryId: string;
-  model: string;
-  effort: ReasoningEffort;
-  verifyCommand?: string;
-  autoCreatePr: boolean;
-  actor: TaskActor;
-  prPolicy?: PrPolicy;
-  enabled: boolean;
-  sortOrder: number;
-  triggerBeforeResetHours: number;
-  lastTriggeredResetTime?: string;
   lastTaskId?: string;
   createdAt: string;
   updatedAt: string;
@@ -261,11 +237,11 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'default_branch', ddl: "default_branch TEXT NOT NULL DEFAULT 'main'" },
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'requested_by', ddl: "requested_by TEXT NOT NULL DEFAULT 'web-ui'" },
-  { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'user'" },
   { name: 'pr_policy', ddl: 'pr_policy TEXT' },
   { name: 'schedule_mode', ddl: "schedule_mode TEXT NOT NULL DEFAULT 'immediate'" },
   { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'model', ddl: 'model TEXT NOT NULL' },
+  { name: 'candidate_models_json', ddl: "candidate_models_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'pool_family', ddl: 'pool_family TEXT NOT NULL' },
   { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'allow_overage', ddl: 'allow_overage INTEGER NOT NULL DEFAULT 0' },
@@ -299,7 +275,6 @@ const BACKLOG_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
-  { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'bot'" },
   { name: 'priority_order', ddl: 'priority_order INTEGER NOT NULL DEFAULT 0' },
   { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'pending'" },
   { name: 'attempt_count', ddl: 'attempt_count INTEGER NOT NULL DEFAULT 0' },
@@ -328,7 +303,6 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
-  { name: 'actor', ddl: "actor TEXT NOT NULL DEFAULT 'bot'" },
   { name: 'pr_policy', ddl: 'pr_policy TEXT' },
   { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
   { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
@@ -338,7 +312,6 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   },
   { name: 'min_headroom_percent', ddl: 'min_headroom_percent REAL NOT NULL DEFAULT 10' },
   { name: 'last_triggered_reset_time', ddl: 'last_triggered_reset_time TEXT' },
-  // Per-pool cycle stamps, so a routine burning several pools tracks each cycle separately.
   {
     name: 'last_triggered_cycles_json',
     ddl: "last_triggered_cycles_json TEXT NOT NULL DEFAULT '{}'",
@@ -430,16 +403,23 @@ const coerceEffort = (value: unknown, fallback: ReasoningEffort): ReasoningEffor
   return parsed.success ? parsed.data : fallback;
 };
 
-const coerceActor = (value: unknown, fallback: TaskActor): TaskActor => {
-  if (value === undefined) return fallback;
-  const parsed = TaskActorSchema.safeParse(value);
-  return parsed.success ? parsed.data : fallback;
-};
-
 const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogStatus => {
   if (value === undefined) return fallback;
   const parsed = BacklogStatusSchema.safeParse(value);
   return parsed.success ? parsed.data : fallback;
+};
+
+// An explicit null clears the column; an omitted key keeps it, so the two must not collapse.
+const coerceNullableString = (value: unknown, fallback: string | null): string | null => {
+  if (value === null) return null;
+  return typeof value === 'string' ? value : fallback;
+};
+
+// A provided-but-blank field is an absent field: the stored value survives the patch.
+const coerceTrimmedString = (value: unknown, fallback: string): string => {
+  if (typeof value !== 'string') return fallback;
+  const trimmed = value.trim();
+  return trimmed === '' ? fallback : trimmed;
 };
 
 /** Tolerant because the column is a cache of cycle stamps, not a source of truth. */
@@ -450,18 +430,14 @@ const parseCycleMap = (raw: unknown): Record<string, string> => {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
     const map: Record<string, string> = {};
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'string') map[key] = value;
+      if (typeof value === 'string' && value.trim() !== '') {
+        map[key] = value;
+      }
     }
     return map;
   } catch {
     return {};
   }
-};
-
-// `null` is an explicit clear: callers pass it to drop a stale error or attachment.
-const coerceNullableString = (value: unknown, fallback: string | null): string | null => {
-  if (value === null) return null;
-  return typeof value === 'string' ? value : fallback;
 };
 
 /** Raised for every rejected one-time registration token, so callers can map it to a 401. */
@@ -570,11 +546,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
             .prepare(
               `INSERT OR IGNORE INTO routine_tasks (
                 id, task_number, title, prompt, repository_id, models_json, effort,
-                verify_command, auto_create_pr, actor, enabled, sort_order,
+                verify_command, auto_create_pr, enabled, sort_order,
                 trigger_before_reset_hours, min_headroom_percent,
-                last_triggered_reset_time, last_triggered_cycles_json, last_task_id,
-                created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+                last_triggered_reset_time, last_task_id, created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
             )
             .run(
               row.id,
@@ -586,13 +561,11 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
               row.effort || 'high',
               row.verify_command ?? null,
               row.auto_create_pr !== undefined ? row.auto_create_pr : 1,
-              row.actor || 'bot',
               row.enabled !== undefined ? row.enabled : 1,
               row.sort_order || 0,
               row.trigger_before_reset_hours || DEFAULT_QUOTA_BURN_MAX_HOURS,
               10,
               row.last_triggered_reset_time ?? null,
-              '{}',
               row.last_task_id ?? null,
               row.created_at || new Date().toISOString(),
               row.updated_at || new Date().toISOString()
@@ -960,13 +933,17 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     // Bounded, not truncated for real input: GitHub's own issue body limit is 65536.
     const prompt = input.prompt.slice(0, 20000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
-    const actor: TaskActor = input.actor ?? 'user';
     const prPolicy = input.prPolicy ?? null;
     const scheduleMode: ScheduleMode = input.scheduleMode ?? 'immediate';
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
     );
     const model = (input.model ?? 'gemini-3.8-flash').trim();
+    // The selected model leads the chain so a capacity retry never re-tries it first.
+    const candidateModels = Array.from(
+      new Set([model, ...(input.candidateModels ?? []).map((m) => m.trim())].filter(Boolean))
+    );
+
     const poolFamily = resolvePoolFamilyForModel(model);
     const effort: ReasoningEffort = input.effort ?? 'high';
     const allowOverage = Boolean(input.allowOverage);
@@ -989,9 +966,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         `INSERT INTO swarm_tasks (
           id, task_number, title, tier, origin_id, origin_number, origin_title,
           created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, actor, pr_policy, schedule_mode,
-          required_labels_json, model, pool_family, effort, allow_overage, push_branch,
-          auto_create_pr, expires_at, standing_task_id, verify_command, status
+          clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
+          required_labels_json, model, candidate_models_json, pool_family, effort, allow_overage,
+          push_branch, auto_create_pr, expires_at, standing_task_id, verify_command, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
       )
       .run(
@@ -1011,11 +988,11 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         defaultBranch,
         prompt,
         requestedBy,
-        actor,
         prPolicy,
         scheduleMode,
         JSON.stringify(requiredLabels),
         model,
+        JSON.stringify(candidateModels),
         poolFamily,
         effort,
         allowOverage ? 1 : 0,
@@ -1123,7 +1100,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       limit?: number;
     } = {}
   ): SwarmTask[] {
-    // SQLite rejects a REAL/NaN LIMIT, so the caller's number is floored and range-checked.
     const requestedLimit = options.limit ?? 50;
     const limit = Math.min(
       Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
@@ -1328,16 +1304,11 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
-    // An unparsable claimed_at yields NaN, which SQLite rejects as a NOT NULL violation; the
-    // derived duration therefore falls back to the stored value instead of throwing.
-    const elapsedMs = existing.claimedAt
-      ? Date.now() - new Date(existing.claimedAt).getTime()
-      : Number.NaN;
     const durationMs =
       patch.durationMs !== undefined
         ? Math.max(0, Math.round(patch.durationMs))
-        : existing.claimedAt && isTerminal && Number.isFinite(elapsedMs)
-          ? Math.max(0, elapsedMs)
+        : existing.claimedAt && isTerminal
+          ? Math.max(0, Date.now() - new Date(existing.claimedAt).getTime())
           : existing.durationMs;
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
@@ -1411,6 +1382,55 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       );
     }
 
+    return { task: this.getTask(taskId) ?? existing, applied: true };
+  }
+
+  // A live lease beat: refreshes heartbeat_at and streams the runner's tail into output. The task
+  // stays in its active status, so nothing here can advance a run.
+  public heartbeatTask(
+    taskId: string,
+    runnerId: string,
+    leaseDurationMs?: number,
+    outputTail?: string
+  ): { task: SwarmTask; applied: boolean } | undefined {
+    const existing = this.getTask(taskId);
+    if (!existing) return undefined;
+
+    if (existing.status !== 'claimed' && existing.status !== 'executing') {
+      return { task: existing, applied: false };
+    }
+    if (existing.runnerId !== undefined && existing.runnerId !== runnerId) {
+      return { task: existing, applied: false };
+    }
+
+    // A beat that lands after its own lease window is worthless: the reaper owns that row now.
+    const lastBeatMs = Date.parse(existing.heartbeatAt ?? existing.claimedAt ?? existing.updatedAt);
+    if (
+      leaseDurationMs !== undefined &&
+      leaseDurationMs > 0 &&
+      !Number.isNaN(lastBeatMs) &&
+      Date.now() - lastBeatMs > leaseDurationMs
+    ) {
+      return { task: existing, applied: false };
+    }
+
+    const now = new Date().toISOString();
+    const tail = outputTail && outputTail.length > 0 ? outputTail.slice(-16384) : undefined;
+    const updateResult = this.rawDb
+      .prepare(
+        `UPDATE swarm_tasks
+         SET heartbeat_at = ?,
+             output = COALESCE(?, output),
+             updated_at = ?
+         WHERE id = ? AND status IN ('claimed', 'executing')`
+      )
+      .run(now, tail ?? null, now, taskId) as unknown as { changes?: number };
+
+    if ((updateResult?.changes ?? 0) === 0) {
+      return { task: this.getTask(taskId) ?? existing, applied: false };
+    }
+
+    this.registerRunnerHeartbeat({ runnerId, activeTaskId: taskId, status: 'busy' });
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
@@ -1576,6 +1596,14 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       requiredLabels = JSON.parse(String(row.required_labels_json || '[]'));
     } catch {}
 
+    // A row written before the chain column existed still needs one usable candidate.
+    let candidateModels: string[] = [];
+    try {
+      const parsed = JSON.parse(String(row.candidate_models_json || '[]'));
+      if (Array.isArray(parsed)) candidateModels = parsed.map(String).filter(Boolean);
+    } catch {}
+    if (candidateModels.length === 0) candidateModels = [String(row.model)];
+
     const firstLinePrompt = (
       String(row.prompt || '')
         .trim()
@@ -1605,11 +1633,11 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       defaultBranch: String(row.default_branch || 'main'),
       prompt: String(row.prompt),
       requestedBy: String(row.requested_by || 'web-ui'),
-      actor: (row.actor as TaskActor) || 'user',
       prPolicy: (row.pr_policy as PrPolicy) || undefined,
       scheduleMode: (row.schedule_mode as ScheduleMode) || 'immediate',
       requiredLabels,
       model: String(row.model),
+      candidateModels,
       poolFamily: (row.pool_family as QuotaFamily) || 'gemini-argon',
       effort: (row.effort as ReasoningEffort) || 'high',
       allowOverage: row.allow_overage === 1,
@@ -1693,7 +1721,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     effort?: ReasoningEffort;
     verifyCommand?: string;
     autoCreatePr?: boolean;
-    actor?: TaskActor;
     priorityOrder?: number;
     maxAttempts?: number;
     githubIssueNumber?: number;
@@ -1708,7 +1735,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const models = coerceModelList(input.models, ['gemini-3.8-flash']);
     const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
-    const actor: TaskActor = coerceActor(input.actor, 'bot');
     const priorityOrder = coerceNumber(input.priorityOrder, 0);
     const maxAttempts = coerceNumber(input.maxAttempts, 2);
 
@@ -1716,10 +1742,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       .prepare(
         `INSERT INTO backlog_tasks (
           id, task_number, title, prompt, repository_id, models_json, effort,
-          verify_command, auto_create_pr, actor, priority_order, status,
+          verify_command, auto_create_pr, priority_order, status,
           attempt_count, max_attempts, github_issue_number, github_issue_url,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1731,7 +1757,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         effort,
         input.verifyCommand ?? null,
         autoCreatePr,
-        actor,
         priorityOrder,
         maxAttempts,
         input.githubIssueNumber ?? null,
@@ -1753,7 +1778,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       effort: ReasoningEffort;
       verifyCommand: string | null;
       autoCreatePr: boolean;
-      actor: TaskActor;
       priorityOrder: number;
       status: BacklogStatus;
       attemptCount: number;
@@ -1768,10 +1792,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     if (!existing) return undefined;
 
     const now = new Date().toISOString();
-    const title = patch.title !== undefined ? patch.title.trim() : existing.title;
-    const prompt = patch.prompt !== undefined ? patch.prompt.trim() : existing.prompt;
-    const repositoryId =
-      patch.repositoryId !== undefined ? patch.repositoryId.trim() : existing.repositoryId;
+    const title = coerceTrimmedString(patch.title, existing.title);
+    const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
+    const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
     const modelsJson = JSON.stringify(
       patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
     );
@@ -1785,7 +1808,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         : existing.autoCreatePr
           ? 1
           : 0;
-    const actor = coerceActor(patch.actor ?? existing.actor, existing.actor);
     const priorityOrder = coerceNumber(patch.priorityOrder, existing.priorityOrder);
     const status = coerceBacklogStatus(patch.status ?? existing.status, existing.status);
     const attemptCount = coerceNumber(patch.attemptCount, existing.attemptCount);
@@ -1811,7 +1833,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              effort = ?,
              verify_command = ?,
              auto_create_pr = ?,
-             actor = ?,
              priority_order = ?,
              status = ?,
              attempt_count = ?,
@@ -1831,7 +1852,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         effort,
         verifyCommand,
         autoCreatePr,
-        actor,
         priorityOrder,
         status,
         attemptCount,
@@ -1873,7 +1893,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       effort: (r.effort as ReasoningEffort) || 'high',
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
-      actor: (r.actor as TaskActor) || 'bot',
       priorityOrder: Number(r.priority_order ?? 0),
       status: (r.status as BacklogStatus) || 'pending',
       attemptCount: Number(r.attempt_count ?? 0),
@@ -1919,7 +1938,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     effort?: ReasoningEffort;
     verifyCommand?: string;
     autoCreatePr?: boolean;
-    actor?: TaskActor;
     prPolicy?: PrPolicy | null;
     enabled?: boolean;
     sortOrder?: number;
@@ -1935,7 +1953,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const models = coerceModelList(input.models, ['gemini-3.8-flash']);
     const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
-    const actor: TaskActor = coerceActor(input.actor, 'bot');
     const prPolicy =
       input.prPolicy === 'docs_only' || input.prPolicy === 'all' || input.prPolicy === 'none'
         ? input.prPolicy
@@ -1949,9 +1966,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       .prepare(
         `INSERT INTO routine_tasks (
           id, task_number, title, prompt, repository_id, models_json, effort,
-          verify_command, auto_create_pr, actor, pr_policy, enabled, sort_order,
+          verify_command, auto_create_pr, pr_policy, enabled, sort_order,
           trigger_before_reset_hours, min_headroom_percent, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1963,7 +1980,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         effort,
         input.verifyCommand ?? null,
         autoCreatePr,
-        actor,
         prPolicy,
         enabled,
         sortOrder,
@@ -1986,7 +2002,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       effort: ReasoningEffort;
       verifyCommand: string | null;
       autoCreatePr: boolean;
-      actor: TaskActor;
       prPolicy: PrPolicy | null;
       enabled: boolean;
       sortOrder: number;
@@ -2001,10 +2016,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     if (!existing) return undefined;
 
     const now = new Date().toISOString();
-    const title = patch.title !== undefined ? patch.title.trim() : existing.title;
-    const prompt = patch.prompt !== undefined ? patch.prompt.trim() : existing.prompt;
-    const repositoryId =
-      patch.repositoryId !== undefined ? patch.repositoryId.trim() : existing.repositoryId;
+    const title = coerceTrimmedString(patch.title, existing.title);
+    const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
+    const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
     const modelsJson = JSON.stringify(
       patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
     );
@@ -2018,7 +2032,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         : existing.autoCreatePr
           ? 1
           : 0;
-    const actor = coerceActor(patch.actor ?? existing.actor, existing.actor);
     const prPolicy =
       patch.prPolicy === null
         ? null
@@ -2052,7 +2065,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              effort = ?,
              verify_command = ?,
              auto_create_pr = ?,
-             actor = ?,
              pr_policy = ?,
              enabled = ?,
              sort_order = ?,
@@ -2072,7 +2084,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         effort,
         verifyCommand,
         autoCreatePr,
-        actor,
         prPolicy,
         enabled,
         sortOrder,
@@ -2114,7 +2125,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       effort: (r.effort as ReasoningEffort) || 'high',
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
-      actor: (r.actor as TaskActor) || 'bot',
       prPolicy: (r.pr_policy as PrPolicy) || undefined,
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),

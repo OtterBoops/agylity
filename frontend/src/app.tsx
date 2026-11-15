@@ -54,7 +54,8 @@ export const App = () => {
   });
 
   const handleRouteChange = (e: RouterOnChangeArgs) => {
-    setCurrentUrl(e.url);
+    // Query strings carry tab and selection state, so the title map keys off the bare path only.
+    setCurrentUrl(e.url.split(/[?#]/)[0] || '/');
   };
   const { quota, alerts, error: quotaError } = useStore(quotaStore);
   const { config } = useStore(configStore);
@@ -216,12 +217,11 @@ export const App = () => {
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
         {/* Desktop Header: pinned at top of right pane */}
         <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
-          <div class="mx-auto max-w-7xl 2xl:max-w-[2112px]">
+          <div class="mx-auto max-w-7xl 2xl:max-w-none">
             <TopBar
               title={title}
               isRefreshing={isRefreshing}
               refreshCooldown={refreshCooldown}
-              coordinatorEnabled={isCoordinatorEnabled}
               remainingCredits={remainingCredits}
               onRefresh={handleManualRefresh}
               onOpenCommandPalette={() => setCommandPaletteOpen(true)}
@@ -231,8 +231,8 @@ export const App = () => {
         </header>
 
         {/* Scrollable View Area: content scrolls cleanly inside this div */}
-        <div class="min-w-0 flex-1 p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
-          <div class="mx-auto max-w-7xl 2xl:max-w-[2112px]">
+        <div class="flex min-h-0 min-w-0 flex-1 flex-col p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
+          <div class="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col 2xl:max-w-none">
             {Boolean(
               alerts?.lastProbeSource === 'auth_required' ||
               alerts?.authRequired === true ||
@@ -268,7 +268,7 @@ export const App = () => {
               </div>
             )}
 
-            <main>
+            <main class="flex min-h-0 flex-1 flex-col">
               <Router onChange={handleRouteChange}>
                 <OverviewView
                   path="/"

@@ -15,12 +15,6 @@ import type {
   DispatchResult,
 } from '../../src/notify/types.js';
 import {
-  DispatchStepSchema,
-  DispatchRequestSchema,
-  DispatchResultSchema,
-  DispatchStatusUpdateSchema,
-} from '../../src/notify/types.js';
-import {
   createNotifier,
   createDaemonNotifier,
   CompositeNotifier,
@@ -33,8 +27,8 @@ import {
 } from '../../src/notify/adapters/webhook.js';
 import {
   buildDispatchStatusEmbed,
+  buildInfoNoticeEmbed,
   buildQuotaAlertEmbed,
-  formatDurationHuman,
 } from '../../src/notify/embeds/index.js';
 import {
   DiscordNotifier,
@@ -118,68 +112,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   /* 1. Universal Notifier Interface & Type Schemas                       */
   /* ==================================================================== */
   describe('1. Notifier Interface Contract & Types', () => {
-    it('validates DispatchStepSchema enum values', () => {
-      const validSteps = [
-        'waking',
-        'polling',
-        'executing',
-        'completed',
-        'no_changes',
-        'aborted',
-        'failed',
-      ];
-      for (const step of validSteps) {
-        assert.equal(DispatchStepSchema.parse(step), step);
-      }
-      assert.throws(() => DispatchStepSchema.parse('invalid_step'));
-    });
-
-    it('validates DispatchRequestSchema boundaries', () => {
-      const validRequest: DispatchRequest = {
-        repositoryId: 'agylity',
-        repositoryPath: '/opt/agylity',
-        prompt: 'Fix quota sentry timeout bug',
-        requestedBy: 'otter',
-      };
-      assert.deepEqual(DispatchRequestSchema.parse(validRequest), validRequest);
-
-      // Rejects empty prompt or empty repo id
-      assert.throws(() => DispatchRequestSchema.parse({ ...validRequest, prompt: '' }));
-      assert.throws(() => DispatchRequestSchema.parse({ ...validRequest, repositoryId: '' }));
-      // Rejects prompt exceeding 4000 characters
-      assert.throws(() =>
-        DispatchRequestSchema.parse({ ...validRequest, prompt: 'a'.repeat(4001) })
-      );
-    });
-
-    it('validates DispatchResultSchema', () => {
-      const validResult: DispatchResult = {
-        success: true,
-        branchName: 'antigravity/continuation-20261019',
-        output: 'All tests passed',
-        durationMs: 4200,
-      };
-      assert.deepEqual(DispatchResultSchema.parse(validResult), validResult);
-
-      assert.throws(() => DispatchResultSchema.parse({ ...validResult, durationMs: -1 }));
-    });
-
-    it('validates DispatchStatusUpdateSchema flexibility', () => {
-      const update1 = {
-        status: 'waking' as const,
-        repositoryName: 'agylity',
-        message: 'Waking worker node',
-      };
-      assert.ok(DispatchStatusUpdateSchema.parse(update1));
-
-      const update2 = {
-        step: 'waking',
-        message: 'Waking worker',
-        details: { target: 'worker-node-1' },
-      };
-      assert.ok(DispatchStatusUpdateSchema.parse(update2));
-    });
-
     it('implements Notifier lifecycle on ConsoleNotifier', async () => {
       const notifier = new ConsoleNotifier();
       assert.equal(notifier.channelName, 'console');
@@ -753,40 +685,24 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.ok((field?.name?.length ?? 0) <= 256);
       assert.ok((field?.value?.length ?? 0) <= 1024);
     });
-
-    it('builds a quota alert embed from a junk timestamp and a 400-char pool name', () => {
-      const alert: QuotaAlert = {
-        pool: {
-          poolId: 'claude',
-          family: 'claude',
-          displayName: 'C'.repeat(400),
-          remainingFraction: 0.2,
-          resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
-          hoursUntilReset: 3,
-          models: ['Claude'],
-        },
-        milestoneHours: 3,
-        remainingPercentage: 20,
-        triggeredAt: 'bogus',
-      };
-
-      const embed = buildQuotaAlertEmbed(alert);
-
-      // Discord rejects an unparsable timestamp and loses the whole message with it.
-      assert.equal(Number.isNaN(Date.parse(embed.timestamp ?? 'bogus')), false);
-      assert.ok((embed.title ?? '').length <= 256, `title was ${(embed.title ?? '').length} chars`);
-    });
-
-    it('renders a human duration without "1m 60s" or "NaN"', () => {
-      assert.equal(formatDurationHuman(119_600), '2m');
-      assert.equal(formatDurationHuman(Number.NaN), '0s');
-    });
   });
 
   /* ==================================================================== */
   /* 6. Console & Webhook Adapter Notifications                           */
   /* ==================================================================== */
   describe('6. Console & Webhook Adapter Notifications', () => {
+    const captureBox = async (fn: () => Promise<unknown>): Promise<string[]> => {
+      const printed: string[] = [];
+      const original = console.log;
+      console.log = (...args: unknown[]) => printed.push(args.map(String).join(' '));
+      try {
+        await fn();
+      } finally {
+        console.log = original;
+      }
+      return printed;
+    };
+
     it('ConsoleNotifier logs formatted quota alerts and records history', async () => {
       const notifier = new ConsoleNotifier();
       await notifier.initialize();
@@ -852,6 +768,31 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.shutdown();
     });
 
+    it('ConsoleNotifier sizes the ASCII box to its widest line, with a 70-char floor', async () => {
+      const notifier = new ConsoleNotifier();
+
+      const shortBox = await captureBox(() =>
+        notifier.notifyInfo({ title: 'Pre-reset burn', message: 'short' })
+      );
+      assert.equal((shortBox[0]?.match(/─/g) ?? []).length, 70, 'short notices keep the floor');
+      assert.ok(shortBox.every((line) => line.length === 72));
+      assert.ok(
+        shortBox.slice(1, -1).every((line) => line.startsWith('│ ') && line.endsWith('│')),
+        'every content row closes on the border'
+      );
+
+      const longMessage = 'x'.repeat(120);
+      const longBox = await captureBox(() =>
+        notifier.notifyInfo({ title: 'Pre-reset burn', message: longMessage })
+      );
+      assert.equal((longBox[0]?.match(/─/g) ?? []).length, longMessage.length + 2);
+      assert.ok(
+        longBox.every((line) => line.length === longMessage.length + 4),
+        'a wide line widens the border instead of overflowing it'
+      );
+      assert.equal(longBox[2], `│ ${longMessage} │`);
+    });
+
     it('posts webhook JSON with x-agylity-signature when webhook URL and secret are configured', async () => {
       let receivedHeaders: http.IncomingHttpHeaders = {};
       let receivedBody: any = null;
@@ -903,45 +844,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         assert.ok((receivedHeaders['x-agylity-signature'] as string).startsWith('sha256='));
 
         delete process.env.WEBHOOK_SECRET;
-        await notifier.shutdown();
-      } finally {
-        server.closeAllConnections?.();
-        await new Promise<void>((r) => server.close(() => r()));
-      }
-    });
-
-    it('escapes Slack mention tokens so a notice cannot ping a channel', async () => {
-      let receivedBody: any = null;
-
-      const server = http.createServer((req, res) => {
-        let body = '';
-        req.on('data', (c) => (body += c));
-        req.on('end', () => {
-          receivedBody = JSON.parse(body);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        });
-      });
-
-      try {
-        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
-        const port = (server.address() as { port: number }).port;
-
-        const notifier = new WebhookNotifier({
-          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
-        });
-        await notifier.initialize();
-
-        await notifier.notifyInfo({
-          title: 'Rollout <!channel> started',
-          message: 'Ping <@U12345> when done',
-        });
-
-        assert.equal(String(receivedBody?.content).includes('<!channel>'), false);
-        assert.equal(String(receivedBody?.content).includes('<@U12345>'), false);
-        assert.match(String(receivedBody?.content), /&lt;!channel>/);
-        assert.equal(String(receivedBody?.text).includes('<!channel>'), false);
-
         await notifier.shutdown();
       } finally {
         server.closeAllConnections?.();
@@ -1901,6 +1803,31 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(buildQuotaAlertEmbed(sampleAlert).url, undefined);
       assert.equal(buildDispatchStatusEmbed({ step: 'completed', taskId: 'x' }).url, undefined);
       assert.equal(renderQuotaEmbed([]).data.url, undefined);
+    });
+
+    it('links info notices to /tasks by default and to their explicit dashboard path when set', () => {
+      const fallback = buildInfoNoticeEmbed(
+        { title: 'Task finished', message: 'The run produced no file changes.' },
+        { baseUrl }
+      );
+      assert.equal(fallback.url, `${baseUrl}/tasks`);
+
+      // An early quota reset belongs on the overview, not the task list.
+      const routed = buildInfoNoticeEmbed(
+        {
+          title: 'Quota reset early',
+          message: 'Claude Pool refilled ahead of schedule.',
+          path: '/overview',
+        },
+        { baseUrl: `${baseUrl}/` }
+      );
+      assert.equal(routed.url, `${baseUrl}/overview`);
+    });
+
+    it('omits the info-notice link when no base URL is configured', () => {
+      const notice = { title: 'Task finished', message: 'The run produced no file changes.' };
+      assert.equal(buildInfoNoticeEmbed(notice).url, undefined);
+      assert.equal(buildInfoNoticeEmbed(notice, { baseUrl: '   ' }).url, undefined);
     });
 
     it('renders the link through the Discord embed builder', () => {

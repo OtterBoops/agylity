@@ -165,6 +165,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   private cachedSnapshotProvider?: () => QuotaSnapshot[];
   private overageEnabledProvider?: () => boolean;
   private lastKnownSnapshots: QuotaSnapshot[] = [];
+  private lastLoggedQuotaSignature?: string;
   private minRefreshIntervalMs: number;
   private lastFetchedAt: number = 0;
   private activeProvider: 'rpc' | 'cli' | 'unknown' = 'unknown';
@@ -431,10 +432,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return false;
   }
 
-  public getActiveProvider(): 'rpc' | 'cli' | 'unknown' {
-    return this.activeProvider;
-  }
-
   public getLastProbeSource(): 'connect_rpc' | 'cli' | 'cli_fallback' {
     return this.lastProbeSource;
   }
@@ -522,6 +519,25 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return this.cachedRemainingCredits;
   }
 
+  // Signature is rounded to whole percent, so sub-1% jitter between polls logs at debug.
+  private logQuotaStatus(snapshots: QuotaSnapshot[]): void {
+    const summary = snapshots
+      .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
+      .join(', ');
+    const signature = snapshots
+      .map((s) => `${s.poolId}=${Math.round(s.remainingFraction * 100)}@${s.resetTime}`)
+      .sort()
+      .join('|');
+    const unchanged = snapshots.length > 0 && signature === this.lastLoggedQuotaSignature;
+    this.lastLoggedQuotaSignature = snapshots.length > 0 ? signature : undefined;
+
+    if (unchanged) {
+      this.logger.debug('Quota status: %s', summary);
+      return;
+    }
+    this.logger.info('Quota status: %s', summary);
+  }
+
   // Tries to query Language Server Connect-RPC endpoint across configured ports.
   private async tryConnectRpc(): Promise<QuotaSnapshot[]> {
     const targetBases: string[] = [];
@@ -568,10 +584,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
             remainingCredits,
             overageEnabled,
           });
-          const summary = snapshots
-            .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
-            .join(', ');
-          this.logger.info('Quota status: %s', summary);
+          this.logQuotaStatus(snapshots);
           return snapshots;
         }
       } catch (err: unknown) {
@@ -613,10 +626,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           remainingCredits,
           overageEnabled: this.overageEnabledProvider?.(),
         });
-        const summary = snapshots
-          .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
-          .join(', ');
-        this.logger.info('Quota status: %s', summary);
+        this.logQuotaStatus(snapshots);
         return snapshots;
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));

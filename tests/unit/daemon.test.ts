@@ -9,6 +9,7 @@ import { SentryStateManager } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
+import { buildInfoNoticeEmbed } from '../../src/notify/embeds/index.js';
 import type { QuotaAlert, DeliveryOutcome, InfoNotice } from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { logger } from '../../src/logs/logger.js';
@@ -499,6 +500,101 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         assert.equal(notices.length, 0);
         assert.equal(daemon.sentryState.getState().earlyResetNotice, undefined);
         assert.equal(daemon.sentryState.getState().pools['claude']?.resetTime, floatedResetTime);
+      } finally {
+        await daemon.shutdown();
+        cleanup();
+      }
+    });
+
+    it('routes the early-reset notice to /overview and fires it before the quota update', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_early_reset_order_');
+      const dbPath = path.join(dir, 'test.db');
+      const statePath = path.join(dir, 'state.json');
+
+      const now = Date.now();
+      const resetTime = new Date(now + 100 * 3600 * 1000).toISOString();
+
+      // Same refill shape as above: 25% left on a deadline 100h out, then 98% on the same deadline.
+      const sentryState = new SentryStateManager(statePath);
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date(now).toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          claude: {
+            resetTime,
+            remainingFraction: 0.25,
+            firedMilestones: ['48h', '24h', '12h'],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      const notices: InfoNotice[] = [];
+      class RecordingNotifier extends ConsoleNotifier {
+        override async notifyInfo(notice: InfoNotice): Promise<void> {
+          notices.push(notice);
+        }
+      }
+
+      const mockClient = {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [
+            {
+              poolId: 'claude',
+              family: 'claude' as const,
+              displayName: 'Claude Pool',
+              remainingFraction: 0.98,
+              resetTime,
+              hoursUntilReset: 100,
+              models: ['claude-3-5-sonnet'],
+            },
+          ];
+        },
+      };
+
+      const daemon = await createDaemon({
+        dbPath,
+        statePath,
+        quotaClient: mockClient,
+        notifier: new RecordingNotifier(),
+        sentryState,
+        autoCheckOnStart: false,
+        config: {
+          quotaMilestoneHours: [48, 24, 12],
+          quotaAlertThresholdPercent: 25,
+          webUiEnabled: false,
+        },
+      });
+
+      try {
+        // Pins the documented ordering: the early-reset hook must run BEFORE onQuotaUpdated swaps the
+        // quota view, because the hook re-arms routines keyed on the reset time the new snapshot no longer carries.
+        const callOrder: string[] = [];
+        const coordinator = daemon.coordinator;
+        const earlyResetHook = coordinator.onEarlyQuotaReset.bind(coordinator);
+        const quotaUpdatedHook = coordinator.onQuotaUpdated.bind(coordinator);
+        coordinator.onEarlyQuotaReset = (pools) => {
+          callOrder.push('onEarlyQuotaReset');
+          earlyResetHook(pools);
+        };
+        coordinator.onQuotaUpdated = (snapshots) => {
+          callOrder.push('onQuotaUpdated');
+          quotaUpdatedHook(snapshots);
+        };
+
+        await daemon.checkQuota();
+
+        assert.equal(notices.length, 1);
+        const notice = notices[0];
+        assert.ok(notice);
+        assert.equal(notice.path, '/overview');
+        // The path is what routes the Discord/webhook embed to the dashboard overview.
+        assert.equal(
+          buildInfoNoticeEmbed(notice, { baseUrl: 'https://agylity.example.com' }).url,
+          'https://agylity.example.com/overview'
+        );
+        assert.deepEqual(callOrder, ['onEarlyQuotaReset', 'onQuotaUpdated']);
       } finally {
         await daemon.shutdown();
         cleanup();

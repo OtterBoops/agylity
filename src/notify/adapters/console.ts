@@ -11,6 +11,19 @@ import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { normalizeStep } from '../embeds/formatters.js';
 import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 
+const BOX_MIN_WIDTH = 70;
+
+// Border spans the inner width, so rows must pad to it and not past it.
+const printAsciiBox = (lines: string[]): void => {
+  const width = Math.max(BOX_MIN_WIDTH, ...lines.map((line) => line.length + 2));
+  const border = '─'.repeat(width);
+  console.log(`┌${border}┐`);
+  for (const line of lines) {
+    console.log(`│${` ${line}`.padEnd(width)}│`);
+  }
+  console.log(`└${border}┘`);
+};
+
 export class ConsoleNotifier implements Notifier {
   readonly channelName: string = 'console';
   public initialized = false;
@@ -37,23 +50,12 @@ export class ConsoleNotifier implements Notifier {
     this.alerts.push(alert);
     if (this.alerts.length > 100) this.alerts.shift();
 
-    // Format rich ASCII box for console output
     const poolName = alert.pool.displayName || alert.pool.poolId;
-    const remainingPct = `${alert.remainingPercentage}%`;
-    const milestoneText = `${alert.milestoneHours}h before reset`;
-    const resetTime = alert.pool.resetTime;
-
-    const line1 = `│ [QUOTA ALERT] ${poolName}`.padEnd(72) + '│';
-    const line2 =
-      `│ Headroom: ${remainingPct} remaining | Milestone: ${milestoneText}`.padEnd(72) + '│';
-    const line3 =
-      `│ Reset Deadline: ${resetTime} | Triggered: ${alert.triggeredAt}`.padEnd(72) + '│';
-
-    console.log('┌' + '─'.repeat(71) + '┐');
-    console.log(line1);
-    console.log(line2);
-    console.log(line3);
-    console.log('└' + '─'.repeat(71) + '┘');
+    printAsciiBox([
+      `[QUOTA ALERT] ${poolName}`,
+      `Headroom: ${alert.remainingPercentage}% remaining | Milestone: ${alert.milestoneHours}h before reset`,
+      `Reset Deadline: ${alert.pool.resetTime} | Triggered: ${alert.triggeredAt}`,
+    ]);
     return { delivered: true, results: { [this.channelName]: { success: true } } };
   }
 
@@ -62,51 +64,27 @@ export class ConsoleNotifier implements Notifier {
     if (this.statuses.length > 100) this.statuses.shift();
 
     const step = normalizeStep(status);
-    const repo = status.repositoryName ?? 'N/A';
-    const branch = status.branchName ?? 'N/A';
-    const msg = status.message ?? '';
-
-    const line1 = `│ [DISPATCH STATUS] Step: ${step.toUpperCase()}`.padEnd(72) + '│';
-    const line2 = `│ Repo: ${repo} | Branch: ${branch}`.padEnd(72) + '│';
-    const line3 = `│ Message: ${msg}`.padEnd(72) + '│';
-
-    console.log('┌' + '─'.repeat(71) + '┐');
-    console.log(line1);
-    console.log(line2);
-    console.log(line3);
-    console.log('└' + '─'.repeat(71) + '┘');
+    printAsciiBox([
+      `[DISPATCH STATUS] Step: ${step.toUpperCase()}`,
+      `Repo: ${status.repositoryName ?? 'N/A'} | Branch: ${status.branchName ?? 'N/A'}`,
+      `Message: ${status.message ?? ''}`,
+    ]);
   }
 
   async notifyInfo(notice: InfoNotice): Promise<void> {
     this.notices.push(notice);
     if (this.notices.length > 100) this.notices.shift();
 
-    const line1 = `│ [NOTICE] ${notice.title}`.padEnd(72) + '│';
-    const line2 = `│ ${notice.message}`.padEnd(72) + '│';
-
-    console.log('┌' + '─'.repeat(71) + '┐');
-    console.log(line1);
-    console.log(line2);
-    console.log('└' + '─'.repeat(71) + '┘');
+    printAsciiBox([`[NOTICE] ${notice.title}`, notice.message]);
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
-    const poolName = FAMILY_DISPLAY_NAMES.claude;
-    const remainingPct = '25%';
-    const milestoneText = '3h before reset';
     const resetTime = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
-    const triggeredAt = new Date().toISOString();
-
-    const line1 = `│ [TEST QUOTA ALERT] ${poolName}`.padEnd(72) + '│';
-    const line2 =
-      `│ Headroom: ${remainingPct} remaining | Milestone: ${milestoneText}`.padEnd(72) + '│';
-    const line3 = `│ Reset Deadline: ${resetTime} | Triggered: ${triggeredAt}`.padEnd(72) + '│';
-
-    console.log('┌' + '─'.repeat(71) + '┐');
-    console.log(line1);
-    console.log(line2);
-    console.log(line3);
-    console.log('└' + '─'.repeat(71) + '┘');
+    printAsciiBox([
+      `[TEST QUOTA ALERT] ${FAMILY_DISPLAY_NAMES.claude}`,
+      'Headroom: 25% remaining | Milestone: 3h before reset',
+      `Reset Deadline: ${resetTime} | Triggered: ${new Date().toISOString()}`,
+    ]);
 
     return {
       success: true,

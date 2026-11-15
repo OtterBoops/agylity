@@ -4,14 +4,15 @@ import type {
   SentryAlertState,
   ConfigData,
   LogEntry,
-  DispatchRecord,
   ModelCatalogEntry,
   SwarmRunnerRecord,
   RunnerRegistrationTokenResult,
   SwarmTask,
   BacklogTaskRecord,
+  BacklogStatus,
   RoutineTaskRecord,
   ReasoningEffort,
+  PrPolicy,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -167,16 +168,24 @@ export const retryTask = (id: string): Promise<{ success: boolean }> =>
 export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
   api.get(`tasks?limit=${limit}`).json<SwarmTask[]>();
 
+/** Single-task read, used by the inspector to stream a live run without refetching the list. */
+export const getTask = (id: string): Promise<SwarmTask> =>
+  api.get(`tasks/${encodeURIComponent(id)}`).json<SwarmTask>();
+
 export const triggerDispatch = (payload: {
   repositoryId: string;
   repositoryName?: string;
   repositoryPath?: string;
   cloneUrl?: string;
   prompt: string;
+  title?: string;
+  models?: string[];
   requestedBy?: string;
   model?: string;
   scheduleMode?: 'immediate' | 'pre_reset';
   effort?: ReasoningEffort;
+  prPolicy?: PrPolicy;
+  verifyCommand?: string;
   autoCreatePr?: boolean;
   allowOverage?: boolean;
 }): Promise<{
@@ -252,9 +261,6 @@ export const testNotification = async (
   }
 };
 
-export const getDispatches = (limit = 50): Promise<DispatchRecord[]> =>
-  api.get(`dispatches?limit=${limit}`).json<DispatchRecord[]>();
-
 export const getLogs = (
   since = 0,
   level = 'debug'
@@ -299,17 +305,6 @@ export const triggerRoutine = (
     .post(`routines/${encodeURIComponent(id)}/trigger`)
     .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
-// Backwards-compatible aliases during UI migration
-export const getStandingTasks = getRoutines;
-export const createStandingTask = (input: any) =>
-  createRoutine({
-    ...input,
-    models: input.models || (input.model ? [input.model] : undefined),
-  });
-export const updateStandingTask = updateRoutine;
-export const deleteStandingTask = deleteRoutine;
-export const triggerStandingTask = triggerRoutine;
-
 // --- Backlog API ---
 
 export const getBacklogTasks = (status?: string): Promise<BacklogTaskRecord[]> =>
@@ -326,9 +321,22 @@ export const createBacklogTask = (
   }
 ): Promise<BacklogTaskRecord> => api.post('backlog', { json: input }).json<BacklogTaskRecord>();
 
+/** The editable surface of a backlog item; `PATCH /api/backlog/:id` accepts exactly these. */
+export interface BacklogTaskPatch {
+  title?: string;
+  prompt?: string;
+  repositoryId?: string;
+  models?: string[];
+  effort?: ReasoningEffort;
+  verifyCommand?: string | null;
+  autoCreatePr?: boolean;
+  priorityOrder?: number;
+  status?: BacklogStatus;
+}
+
 export const updateBacklogTask = (
   id: string,
-  patch: Partial<BacklogTaskRecord>
+  patch: BacklogTaskPatch
 ): Promise<BacklogTaskRecord> =>
   api.patch(`backlog/${encodeURIComponent(id)}`, { json: patch }).json<BacklogTaskRecord>();
 

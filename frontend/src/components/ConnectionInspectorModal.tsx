@@ -11,6 +11,7 @@ import { dialogBackdropClickHandler } from '../utils/dialog';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
+import { configStore, useStore } from '../state';
 
 interface ConnectionInspectorModalProps {
   isOpen: boolean;
@@ -30,6 +31,7 @@ export const ConnectionInspectorModal = ({
   minHeadroomPercent = 10,
 }: ConnectionInspectorModalProps) => {
   const [timeFormat] = useTimeFormat();
+  const { config } = useStore(configStore);
   const [copied, setCopied] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{
     hasUpdate: boolean;
@@ -73,6 +75,13 @@ export const ConnectionInspectorModal = ({
 
   const { label: probeStatus, color: probeColor } = describeProbe(lastProbeSource);
 
+  const resolved = config.resolved ?? {};
+  const probeIntervalSeconds = resolved.quotaCheckIntervalSeconds;
+  const channels = resolved.notificationChannels;
+  const probeIntervalLabel =
+    typeof probeIntervalSeconds === 'number' ? `${probeIntervalSeconds}s` : '—';
+  const channelsLabel = Array.isArray(channels) && channels.length > 0 ? channels.join(', ') : '—';
+
   const handleCopyDiagnostics = async () => {
     const diag = {
       appVersion: APP_VERSION,
@@ -106,104 +115,88 @@ export const ConnectionInspectorModal = ({
       class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
       {/* Header */}
-      <div class="flex items-center justify-between border-b border-pine-highlight pb-4">
-        <div class="flex items-center gap-2.5">
-          <div class="flex size-8 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay text-pine-iris">
+      <div class="flex items-center justify-between gap-3 border-b border-pine-highlight pb-4">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay text-pine-iris">
             <Icon icon={faWifi} class="size-4" />
           </div>
-          <div>
-            <h3 id="connection-inspector-title" class="text-base font-bold text-pine-text">
-              System &amp; Connection Inspector
-            </h3>
-            <p class="text-xs text-pine-muted">Runtime telemetry &amp; Antigravity sentry link</p>
-          </div>
+          <h3 id="connection-inspector-title" class="text-base font-bold text-pine-text">
+            System &amp; Connection Inspector
+          </h3>
         </div>
         <button
           type="button"
           onClick={onClose}
           aria-label="Close connection inspector"
-          class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+          class="inline-flex size-11 shrink-0 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
         >
           <Icon icon={faTimes} class="size-4" />
         </button>
       </div>
 
-      {/* Diagnostic Grid */}
-      <div class="mt-4 flex flex-col gap-3">
-        <div class="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2">
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Telemetry Probe Source</span>
-            <div class="mt-0.5 flex items-center gap-2 font-medium text-pine-text">
-              <span class={`size-2 rounded-full ${probeColor}`}></span>
-              <span>{probeStatus}</span>
-            </div>
-          </div>
-
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Sentry Evaluation</span>
-            <div class="mt-0.5 font-medium text-pine-text">Multi-tier (Weekly &amp; 5h)</div>
-          </div>
-
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Last Telemetry Probe</span>
-            <div class="mt-0.5 font-mono text-xs text-pine-text">
-              {lastProbeAt
-                ? formatTime(lastProbeAt, { includeSeconds: true, timeFormat })
-                : 'Pending'}
-            </div>
-          </div>
-
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Safety Floor Guard</span>
-            <div class="mt-0.5 font-mono font-medium text-pine-foam">
-              {minHeadroomPercent}% headroom lock
-            </div>
-          </div>
-
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Autonomous Coordinator</span>
-            <div class="mt-0.5 font-medium text-pine-text">
-              {coordinatorEnabled ? (
-                <span class="font-semibold text-pine-foam">Enabled</span>
-              ) : (
-                <span class="text-pine-muted">Disabled</span>
-              )}
-            </div>
-          </div>
-
-          <div class="flex flex-col gap-1 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3">
-            <span class="text-pine-muted">Software Release</span>
-            <div class="mt-0.5 flex items-center justify-between font-mono text-xs text-pine-text">
-              <span>v{APP_VERSION}</span>
-              {updateInfo.hasUpdate ? (
-                <a
-                  href={
-                    updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
-                >
-                  <span>Update v{updateInfo.latestVersion}</span>
-                  <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
-                </a>
-              ) : (
-                <span class="font-sans text-xs text-pine-foam">Up to date</span>
-              )}
-            </div>
-          </div>
+      <dl class="mt-4 flex shrink-0 flex-col divide-y divide-pine-highlight/40 overflow-hidden rounded-xl border border-pine-highlight bg-pine-overlay/20 text-xs">
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Telemetry Probe Source</dt>
+          <dd class="flex items-center gap-2 font-mono text-pine-text">
+            <span class={`size-2 shrink-0 rounded-full ${probeColor}`}></span>
+            <span>{probeStatus}</span>
+          </dd>
         </div>
 
-        <div class="rounded-lg border border-pine-highlight bg-pine-overlay/20 p-3 text-xs text-pine-subtle">
-          <p>
-            Agylity communicates with Google Antigravity Language Server RPC to inspect pool quotas
-            and coordinates autonomous Git tasks strictly within your safe quota budget.
-          </p>
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Last Telemetry Probe</dt>
+          <dd class="font-mono text-pine-text">
+            {lastProbeAt
+              ? formatTime(lastProbeAt, { includeSeconds: true, timeFormat })
+              : 'Pending'}
+          </dd>
         </div>
-      </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Probe Interval</dt>
+          <dd class="font-mono text-pine-text">{probeIntervalLabel}</dd>
+        </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Notification Channels</dt>
+          <dd class="font-mono text-pine-text">{channelsLabel}</dd>
+        </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Safety Floor Guard</dt>
+          <dd class="font-mono text-pine-text">{minHeadroomPercent}%</dd>
+        </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Autonomous Coordinator</dt>
+          <dd class="font-mono text-pine-text">{coordinatorEnabled ? 'Enabled' : 'Disabled'}</dd>
+        </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Software Release</dt>
+          <dd class="flex flex-wrap items-center gap-2 font-mono text-pine-text">
+            <span>v{APP_VERSION}</span>
+            {updateInfo.hasUpdate ? (
+              <a
+                href={
+                  updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
+                }
+                target="_blank"
+                rel="noopener noreferrer"
+                class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
+              >
+                <span>Update v{updateInfo.latestVersion}</span>
+                <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+              </a>
+            ) : (
+              <span class="font-sans text-xs text-pine-subtle">Up to date</span>
+            )}
+          </dd>
+        </div>
+      </dl>
 
       {/* Modal Footer */}
-      <div class="mt-5 flex items-center justify-between border-t border-pine-highlight pt-4">
+      <div class="mt-5 flex items-center border-t border-pine-highlight pt-4">
         <button
           type="button"
           onClick={handleCopyDiagnostics}
@@ -211,14 +204,6 @@ export const ConnectionInspectorModal = ({
         >
           <Icon icon={copied ? faCheck : faCopy} class="size-3 text-pine-foam" />
           <span>{copied ? 'Copied' : 'Copy Diagnostics'}</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onClose}
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-1.5 text-xs font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
-        >
-          Close
         </button>
       </div>
     </dialog>

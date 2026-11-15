@@ -1,8 +1,8 @@
-import { faBolt, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faPlus, faTriangleExclamation, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { dialogBackdropClickHandler } from '../utils/dialog';
-import type { ConfigData, QuotaSnapshot, ReasoningEffort, ToastState } from '../types';
-import { triggerDispatch } from '../api';
+import type { ConfigData, PrPolicy, QuotaSnapshot, ReasoningEffort, ToastState } from '../types';
+import { createBacklogTask, createRoutine, triggerDispatch } from '../api';
 import { normalizeModelId, resolveModelEffort } from '../config/fields';
 import { loadModelCatalog, useModelCatalog } from '../state/modelCatalogStore';
 import { Icon } from './Icon';
@@ -11,6 +11,7 @@ import {
   FALLBACK_MODELS,
   computePoolHeadroomPct,
   type RepoItem,
+  type TaskCreateMode,
 } from './DispatchFormFields';
 import { DispatchOverageWarning } from './DispatchOverageWarning';
 import { StatusBanner } from './StatusBanner';
@@ -23,10 +24,21 @@ interface DispatchModalProps {
 }
 
 const EMPTY_REPOS: RepoItem[] = [];
+const PR_POLICIES: readonly string[] = ['docs_only', 'all', 'none'];
+
+/** `Number('')` is 0, so an empty optional number must not collapse to a real bound. */
+const parseBounded = (raw: string, min: number, max: number): number | undefined => {
+  const trimmed = raw.trim();
+  if (trimmed === '') return undefined;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || value < min || value > max) return undefined;
+  return value;
+};
 
 export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchModalProps) => {
   const repos: RepoItem[] = (config.resolved?.repositories as unknown as RepoItem[]) || EMPTY_REPOS;
-  const defaultRepo = repos.length === 1 ? repos[0]!.name : '';
+  const singleRepoId = repos.length === 1 ? (repos[0]?.id ?? repos[0]?.name ?? '') : '';
+  const routinesEnabled = config.resolved?.routinesEnabled !== false;
   const catalog = useModelCatalog();
   const catalogModels = catalog.models;
 
@@ -40,15 +52,25 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     ? rawEffort
     : defaultEfforts.defaultEffort;
 
-  const [selectedRepo, setSelectedRepo] = useState(defaultRepo);
-  const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
-  const [scheduleMode, setScheduleMode] = useState<'immediate' | 'pre_reset'>('immediate');
-  const [effort, setEffort] = useState<ReasoningEffort>(configuredDefaultEffort);
-  const [autoCreatePr, setAutoCreatePr] = useState(true);
+  const configuredPrPolicy = String(config.resolved?.prPolicy ?? '');
+  const defaultPrPolicy: PrPolicy = PR_POLICIES.includes(configuredPrPolicy)
+    ? (configuredPrPolicy as PrPolicy)
+    : 'docs_only';
+  const defaultMinHeadroom = Number(config.resolved?.minDispatchHeadroomPercent ?? 10);
+
+  const [mode, setMode] = useState<TaskCreateMode>('run');
+  const [selectedRepo, setSelectedRepo] = useState(singleRepoId);
+  const [title, setTitle] = useState('');
   const [taskPrompt, setTaskPrompt] = useState('');
-  const [requestedBy, setRequestedBy] = useState('web-ui');
+  const [selectedModel, setSelectedModel] = useState(configuredDefaultModel);
+  const [effort, setEffort] = useState<ReasoningEffort>(configuredDefaultEffort);
+  const [prPolicy, setPrPolicy] = useState<PrPolicy>(defaultPrPolicy);
+  const [verifyCommand, setVerifyCommand] = useState('');
+  const [priority, setPriority] = useState('0');
+  const [triggerHours, setTriggerHours] = useState('4');
+  const [minHeadroom, setMinHeadroom] = useState(String(defaultMinHeadroom));
   const [allowOverage, setAllowOverage] = useState(false);
-  const [isDispatching, setIsDispatching] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [status, setStatus] = useState<ToastState | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -59,22 +81,17 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     };
   }, []);
 
-  const handleModelChange = (newModel: string) => {
-    setSelectedModel(newModel);
-    setAllowOverage(false);
-    const { supported, defaultEffort } = resolveModelEffort(catalogModels, newModel);
-    if (!supported.includes(effort)) {
-      setEffort(defaultEffort);
-    }
-  };
-
-  useEffect(() => {
-    if (isOpen) return;
+  const resetModelDefaults = () => {
     const nextModel = normalizeModelId(config.resolved?.defaultDispatchModel, catalogModels);
     setSelectedModel(nextModel);
     const { supported, defaultEffort } = resolveModelEffort(catalogModels, nextModel);
     const raw = config.resolved?.defaultDispatchEffort as any;
     setEffort(supported.includes(raw) ? raw : defaultEffort);
+  };
+
+  useEffect(() => {
+    if (isOpen) return;
+    resetModelDefaults();
   }, [
     isOpen,
     config.resolved?.defaultDispatchModel,
@@ -88,9 +105,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
     if (isOpen) {
       if (!dialog.open) dialog.showModal();
       setAllowOverage(false);
-      if (repos.length === 1 && repos[0]) {
-        setSelectedRepo(repos[0].id || repos[0].name || '');
-      }
+      if (singleRepoId) setSelectedRepo(singleRepoId);
     } else {
       if (dialog.open) dialog.close();
       setAllowOverage(false);
@@ -102,7 +117,6 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   }, [isOpen]);
 
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
-  const minHeadroom = config.resolved?.minDispatchHeadroomPercent ?? 10;
 
   // A model absent from the catalog has no family, so it can claim no pool's headroom.
   const activeLive = catalogModels.find((m) => m.id === selectedModel);
@@ -116,73 +130,139 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
   const selectedPoolHeadroomPct = knownHeadroomPct ?? 100;
   // Unknown headroom must not read as headroom below the floor; the server locks that dispatch.
   const isLowHeadroom =
-    activeFamily !== null && knownHeadroomPct !== null && knownHeadroomPct < minHeadroom;
+    activeFamily !== null && knownHeadroomPct !== null && knownHeadroomPct < defaultMinHeadroom;
 
-  const handleDispatch = (e: Event) => {
-    e.preventDefault();
-    if (!isCoordinatorEnabled) {
-      setStatus({
-        type: 'error',
-        message:
-          'Task coordinator is disabled. Enable it in Settings > Coordinator or set COORDINATOR_ENABLED=true.',
-      });
-      return;
-    }
-    if (!selectedRepo || !taskPrompt.trim()) return;
-    if (isLowHeadroom && !allowOverage) return;
+  const handleModelChange = (newModel: string) => {
+    setSelectedModel(newModel);
+    setAllowOverage(false);
+    const { supported, defaultEffort } = resolveModelEffort(catalogModels, newModel);
+    if (!supported.includes(effort)) setEffort(defaultEffort);
+  };
 
-    setIsDispatching(true);
-    setStatus(null);
+  const parsedPriority = parseBounded(priority, 0, 9999);
+  const parsedTriggerHours = parseBounded(triggerHours, 1, 24);
+  const parsedMinHeadroom = parseBounded(minHeadroom, 1, 90);
+  const routineBoundsValid = parsedTriggerHours !== undefined && parsedMinHeadroom !== undefined;
 
-    const matchedRepo = repos.find((r) => r.name === selectedRepo || r.id === selectedRepo);
+  const isReady = Boolean(selectedRepo) && Boolean(title.trim()) && Boolean(taskPrompt.trim());
+  const submitDisabled =
+    isSubmitting ||
+    !isReady ||
+    (mode === 'run' && !isCoordinatorEnabled) ||
+    (mode === 'run' && isLowHeadroom && !allowOverage) ||
+    (mode === 'routine' && !routineBoundsValid);
 
-    triggerDispatch({
+  const closeSoon = () => {
+    if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
+    closeTimerRef.current = setTimeout(() => {
+      onClose();
+      setMode('run');
+      setStatus(null);
+    }, 2500);
+  };
+
+  const submitRun = async (cleanTitle: string, cleanPrompt: string) => {
+    const matchedRepo = repos.find((r) => r.id === selectedRepo || r.name === selectedRepo);
+    const data = await triggerDispatch({
       repositoryId: matchedRepo?.id || selectedRepo,
       repositoryName: matchedRepo?.name,
       repositoryPath: matchedRepo?.path,
       cloneUrl: matchedRepo?.cloneUrl,
-      prompt: taskPrompt.trim(),
-      requestedBy: requestedBy.trim() || 'web-ui',
+      title: cleanTitle,
+      prompt: cleanPrompt,
+      models: [selectedModel],
       model: selectedModel,
-      scheduleMode,
       effort,
-      autoCreatePr,
+      prPolicy,
+      verifyCommand: verifyCommand.trim() || undefined,
+      autoCreatePr: prPolicy !== 'none',
+      scheduleMode: 'immediate',
       allowOverage,
-    })
-      .then((data) => {
-        if (!data.success) {
-          setStatus({
-            type: 'error',
-            message:
-              data.error || 'Task coordinator is disabled while running in alerting-only mode.',
-          });
-          return;
-        }
-        const label =
-          data.status === 'queued'
-            ? `Task queued (${scheduleMode}, ${data.model || selectedModel})! Planned branch: ${data.branchName || 'antigravity/continuation'}`
-            : `Task dispatched (${data.model || selectedModel})! Branch: ${data.branchName || 'antigravity/continuation'}`;
-        setStatus({
-          type: 'success',
-          message: label,
-        });
-        setTaskPrompt('');
-        setAllowOverage(false);
-        if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-        closeTimerRef.current = setTimeout(() => {
-          onClose();
-          setStatus(null);
-        }, 2500);
-      })
-      .catch((err) => {
-        setStatus({ type: 'error', message: err.message || 'Dispatch failed' });
-      })
-      .finally(() => {
-        setIsDispatching(false);
+    });
+    if (!data.success) {
+      setStatus({
+        type: 'error',
+        message: data.error || 'Task coordinator is disabled while running in alerting-only mode.',
       });
+      return;
+    }
+    const branch = data.branchName ? ` · Branch: ${data.branchName}` : '';
+    setStatus({
+      type: 'success',
+      message: `${data.status === 'queued' ? 'Run queued' : 'Run started'} (${data.model || selectedModel})${branch}`,
+    });
+    setTitle('');
+    setTaskPrompt('');
+    setAllowOverage(false);
+    closeSoon();
   };
 
-  const handleDialogClick = dialogBackdropClickHandler(dialogRef, onClose);
+  const submitBacklog = async (cleanTitle: string, cleanPrompt: string) => {
+    await createBacklogTask({
+      title: cleanTitle,
+      prompt: cleanPrompt,
+      repositoryId: selectedRepo,
+      models: [selectedModel],
+      effort,
+      autoCreatePr: prPolicy !== 'none',
+      priorityOrder: parsedPriority ?? 0,
+      verifyCommand: verifyCommand.trim() || undefined,
+    });
+    setStatus({ type: 'success', message: `Backlog item "${cleanTitle}" created` });
+    setTitle('');
+    setTaskPrompt('');
+    closeSoon();
+  };
+
+  const submitRoutine = async (cleanTitle: string, cleanPrompt: string) => {
+    await createRoutine({
+      title: cleanTitle,
+      prompt: cleanPrompt,
+      repositoryId: selectedRepo,
+      models: [selectedModel],
+      effort,
+      autoCreatePr: prPolicy !== 'none',
+      prPolicy,
+      verifyCommand: verifyCommand.trim() || undefined,
+      enabled: true,
+      triggerBeforeResetHours: parsedTriggerHours,
+      minHeadroomPercent: parsedMinHeadroom,
+    });
+    setStatus({ type: 'success', message: `Routine "${cleanTitle}" created` });
+    setTitle('');
+    setTaskPrompt('');
+    closeSoon();
+  };
+
+  const handleSubmit = async (e: Event) => {
+    e.preventDefault();
+    if (submitDisabled) return;
+    const cleanTitle = title.trim();
+    const cleanPrompt = taskPrompt.trim();
+
+    setIsSubmitting(true);
+    setStatus(null);
+    try {
+      if (mode === 'run') await submitRun(cleanTitle, cleanPrompt);
+      else if (mode === 'backlog') await submitBacklog(cleanTitle, cleanPrompt);
+      else await submitRoutine(cleanTitle, cleanPrompt);
+    } catch (err: any) {
+      setStatus({
+        type: 'error',
+        message: err?.message || String(err) || 'Task creation failed',
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const submitLabel = isSubmitting
+    ? 'Creating...'
+    : mode === 'run'
+      ? 'Run Task'
+      : mode === 'backlog'
+        ? 'Add to Backlog'
+        : 'Create Routine';
 
   return (
     <dialog
@@ -191,8 +271,7 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
       aria-modal="true"
       ref={dialogRef}
       onClose={onClose}
-      onCancel={onClose}
-      onClick={handleDialogClick}
+      onClick={dialogBackdropClickHandler(dialogRef, onClose)}
       class={`fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-xl flex-col gap-4 overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6 ${
         !isOpen ? 'hidden' : ''
       }`}
@@ -203,14 +282,14 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
             id="dispatchModalTitle"
             class="flex items-center gap-2 text-lg font-semibold text-pine-text"
           >
-            <Icon icon={faBolt} class="size-4 text-pine-iris" />
-            <span>Dispatch Continuation Task</span>
+            <Icon icon={faPlus} class="size-4 text-pine-iris" />
+            <span>New Task</span>
           </h2>
           <button
             type="button"
-            class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer items-center justify-center rounded-lg text-pine-subtle transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            class="inline-flex size-11 cursor-pointer items-center justify-center rounded-lg text-pine-subtle transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             onClick={onClose}
-            aria-label="Close dispatch modal"
+            aria-label="Close new task dialog"
           >
             <Icon icon={faXmark} class="size-4" />
           </button>
@@ -221,38 +300,48 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
             <Icon icon={faTriangleExclamation} class="mt-0.5 size-4 shrink-0" />
             <span>
               <strong>Coordinator Inactive:</strong> Task coordinator is currently disabled (Agylity
-              is operating purely as a 24/7 quota sentry). You can enable it anytime under{' '}
-              <strong>Settings &gt; Coordinator</strong>.
+              is operating purely as a 24/7 quota sentry). Runs cannot start until you enable it
+              under <strong>Settings &gt; Coordinator</strong>; backlog items and routines can still
+              be saved.
             </span>
           </div>
         )}
 
-        <form onSubmit={handleDispatch} class="flex flex-col gap-4">
+        <form onSubmit={handleSubmit} class="flex flex-col gap-4">
           <DispatchFormFields
+            mode={mode}
+            onModeChange={setMode}
+            routinesEnabled={routinesEnabled}
             repos={repos}
             selectedRepo={selectedRepo}
             onRepoChange={setSelectedRepo}
+            title={title}
+            onTitleChange={setTitle}
+            taskPrompt={taskPrompt}
+            onTaskPromptChange={setTaskPrompt}
             selectedModel={selectedModel}
             onModelChange={handleModelChange}
             catalogModels={catalogModels}
             quota={quota}
-            scheduleMode={scheduleMode}
-            onScheduleModeChange={setScheduleMode}
             effort={effort}
             onEffortChange={setEffort}
-            requestedBy={requestedBy}
-            onRequestedByChange={setRequestedBy}
-            autoCreatePr={autoCreatePr}
-            onAutoCreatePrChange={setAutoCreatePr}
-            taskPrompt={taskPrompt}
-            onTaskPromptChange={setTaskPrompt}
+            prPolicy={prPolicy}
+            onPrPolicyChange={setPrPolicy}
+            verifyCommand={verifyCommand}
+            onVerifyCommandChange={setVerifyCommand}
+            priority={priority}
+            onPriorityChange={setPriority}
+            triggerHours={triggerHours}
+            onTriggerHoursChange={setTriggerHours}
+            minHeadroom={minHeadroom}
+            onMinHeadroomChange={setMinHeadroom}
           />
 
-          {isLowHeadroom && (
+          {mode === 'run' && isLowHeadroom && (
             <DispatchOverageWarning
               family={activeFamily ?? 'unknown pool'}
               headroomPct={selectedPoolHeadroomPct}
-              minHeadroom={minHeadroom}
+              minHeadroom={defaultMinHeadroom}
               allowOverage={allowOverage}
               onAllowOverageChange={setAllowOverage}
             />
@@ -265,22 +354,16 @@ export const DispatchModal = ({ isOpen, onClose, config, quota = [] }: DispatchM
               type="button"
               class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-sm font-medium text-pine-text transition-colors hover:bg-pine-highlight/50"
               onClick={onClose}
-              disabled={isDispatching}
+              disabled={isSubmitting}
             >
               Cancel
             </button>
             <button
               type="submit"
               class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
-              disabled={
-                !isCoordinatorEnabled ||
-                isDispatching ||
-                !selectedRepo ||
-                !taskPrompt.trim() ||
-                (isLowHeadroom && !allowOverage)
-              }
+              disabled={submitDisabled}
             >
-              {isDispatching ? 'Dispatching...' : 'Dispatch Task'}
+              {submitLabel}
             </button>
           </div>
         </form>

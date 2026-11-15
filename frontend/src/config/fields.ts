@@ -25,7 +25,7 @@ export const PR_POLICY_OPTIONS: Array<{
 }> = [
   { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
   { value: 'all', label: 'All files (Allow code & doc PRs)' },
-  { value: 'none', label: 'None (Disable bot PRs & branch pushes)' },
+  { value: 'none', label: 'None (Disable autonomous PRs & branch pushes)' },
 ];
 
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));

@@ -59,27 +59,6 @@ const extractRunnerToken = (req: http.IncomingMessage): string | undefined => {
   return undefined;
 };
 
-export const handleGetDispatches = (
-  _req: http.IncomingMessage,
-  res: http.ServerResponse,
-  options: WebServerOptions,
-  url: URL,
-  method: string
-): void => {
-  if (method !== 'GET') return methodNotAllowed(res);
-  const coordinator = resolveCoordinator(options);
-  const limit = Number(url.searchParams.get('limit') ?? 50);
-  const tasks = coordinator.queue.listTasks({
-    limit: Number.isFinite(limit) ? limit : 50,
-  });
-  const mapped = tasks.map((t) => ({
-    ...t,
-    repository: t.repositoryName,
-    success: t.status === 'completed' || t.status === 'no_changes',
-  }));
-  return sendJson(res, 200, mapped, { 'Cache-Control': 'no-store' });
-};
-
 export const handleGetModels = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -174,7 +153,6 @@ export const handlePostDispatch = async (
     originNumber: toFiniteNumberOrUndefined(payload.originNumber),
     originTitle: toStringOrUndefined(payload.originTitle),
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
-    actor: payload.actor === 'bot' || payload.actor === 'user' ? payload.actor : undefined,
     prPolicy:
       payload.prPolicy === 'docs_only' || payload.prPolicy === 'all' || payload.prPolicy === 'none'
         ? payload.prPolicy
@@ -282,6 +260,62 @@ export const handlePollTasks = async (
   } finally {
     res.off('close', onClose);
   }
+};
+
+export const handleGetTaskById = (
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  pathname: string,
+  method: string
+): void => {
+  if (method !== 'GET') return methodNotAllowed(res);
+  const match = /^\/api\/tasks\/([^/]+)$/.exec(pathname);
+  const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
+  if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
+
+  const coordinator = resolveCoordinator(options);
+  const task = coordinator.queue.getTask(taskId);
+  if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+  return sendJson(res, 200, task, { 'Cache-Control': 'no-store' });
+};
+
+// Runner lease beat: refreshes heartbeat_at and pushes the run's live output tail into the row.
+export const handleRunnerHeartbeat = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  method: string
+): Promise<void> => {
+  if (method !== 'POST') return methodNotAllowed(res);
+
+  const coordinator = resolveCoordinator(options);
+  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
+  if (!auth.authenticated) {
+    return sendJson(res, 401, { error: 'Unauthorized runner token' });
+  }
+
+  const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
+
+  const taskId = toTrimmedStringOrUndefined(payload?.taskId);
+  if (!taskId) return sendJson(res, 400, { error: 'taskId is required' });
+
+  const result = coordinator.heartbeatTask(
+    taskId,
+    auth.runner?.runnerId ?? toTrimmedStringOrUndefined(payload?.runnerId) ?? 'runner-default',
+    toFiniteNumberOrUndefined(payload?.leaseDurationMs),
+    toStringOrUndefined(payload?.outputTail)
+  );
+
+  if (!result) return sendJson(res, 404, { error: `Task ${taskId} not found` });
+  // A refused lease is how a runner learns to abort: the task was cancelled or its lease lapsed.
+  return sendJson(res, result.applied ? 200 : 409, {
+    leaseOk: result.applied,
+    status: result.task.status,
+    task: result.task,
+  });
 };
 
 export const handleTaskStatus = async (
@@ -395,31 +429,11 @@ export const handleTaskRetry = async (
     });
   }
 
-  const retryRes = await coordinator.dispatch({
-    repositoryId: task.repositoryId,
-    repositoryName: task.repositoryName,
-    repositoryPath: task.repositoryPath,
-    cloneUrl: task.cloneUrl,
-    prompt: task.prompt,
-    title: task.title,
-    tier: task.tier,
-    originId: task.originId,
-    originNumber: task.originNumber,
-    originTitle: task.originTitle,
-    requestedBy: 'web-ui (retry)',
-    actor: task.actor,
-    prPolicy: task.prPolicy,
-    scheduleMode: task.scheduleMode,
-    model: task.model,
-    effort: task.effort,
-    requiredLabels: task.requiredLabels,
-    expiresAt: task.expiresAt,
-    standingTaskId: task.standingTaskId,
-    allowOverage: task.allowOverage,
-    pushBranch: task.pushBranch,
-    autoCreatePr: task.autoCreatePr,
-    verifyCommand: task.verifyCommand,
-  });
+  const retryRes = await coordinator.retryTask(task);
+
+  if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {
+    return sendJson(res, 400, retryRes);
+  }
 
   // A retry is a dispatch, so a safety-floor refusal is a 4xx here too, not a 200 body.
   if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {

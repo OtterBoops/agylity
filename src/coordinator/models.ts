@@ -13,15 +13,11 @@ export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
-export const TaskTierSchema = z.enum(['immediate', 'backlog', 'routine']).default('immediate');
 
 export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
 export const BacklogStatusSchema = z
   .enum(['pending', 'dispatched', 'completed', 'failed', 'canceled'])
   .default('pending');
-
-export type TaskActor = 'user' | 'bot';
-export const TaskActorSchema = z.enum(['user', 'bot']).default('user');
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).default('high');
@@ -34,6 +30,24 @@ export const isTerminalTaskStatus = (status: string): boolean =>
 
 /** Only an achieved run re-arms a routine inside its reset cycle; anything else ends the cycle. */
 export const ROUTINE_CYCLE_REARM_STATUSES = ['completed'] as const;
+
+/** Why a routine is or is not dispatching right now, computed server-side so the UI cannot drift. */
+export type RoutineEligibilityState =
+  | 'disabled'
+  | 'running'
+  | 'ready'
+  | 'waiting_window'
+  | 'cycle_complete'
+  | 'cycle_failed'
+  | 'pool_disabled'
+  | 'low_headroom'
+  | 'no_telemetry';
+
+export interface RoutineEligibilityStatus {
+  state: RoutineEligibilityState;
+  label: string;
+  detail: string;
+}
 
 export type TaskStatus =
   'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';

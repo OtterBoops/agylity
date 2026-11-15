@@ -133,10 +133,14 @@ export const QuotaGrid = ({
         const weeklyPct = Math.round(weeklyFraction * 100);
         const shortTerm = pool.shortTerm;
         const shortTermPct = shortTerm ? Math.round(shortTerm.remainingFraction * 100) : null;
+        // Upstream reports a 5-hour bucket without a live fraction when the window is disabled.
+        const hasShortTermBar =
+          shortTerm !== undefined && shortTerm.disabled !== true && shortTermPct !== null;
 
         const catalogModels = catalogLabelsByFamily.get(pool.family);
         const poolModels =
           catalogModels && catalogModels.length > 0 ? catalogModels : (pool.models ?? []);
+        const poolModelsLabel = poolModels.join(', ') || 'N/A';
 
         // Badges use the effective budget: min(weekly, shortTerm).
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
@@ -178,18 +182,27 @@ export const QuotaGrid = ({
         const weeklyCountdown = getLiveCountdown(weeklyResetTime, weeklyHours);
         const weeklyDateStr = formatResetDate(weeklyResetTime);
 
-        let velocityLabel = null;
+        // Burn projection rides in the reset footer: no extra row, no chip that can clip.
+        const projection = pool.burnProjection;
+        const projectionText = projection
+          ? projection.hoursUntilFloor === null
+            ? `~${projection.projectedRemainingAtResetPercent}% at reset`
+            : `floor in ~${Math.round(projection.hoursUntilFloor)}h`
+          : null;
+
+        // Pace needs a live window: a pool past its floor or past its reset has nothing to pace.
+        let paceLabel = null;
         if (weeklyPct <= minHeadroomPercent) {
-          velocityLabel = (
-            <span class="inline-flex items-center gap-1 font-mono text-xs font-semibold text-pine-foam">
+          paceLabel = (
+            <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-foam">
               Floor engaged
             </span>
           );
         } else if (weeklyHours > 0) {
           const burnRate = ((weeklyFraction * 100) / weeklyHours).toFixed(1);
-          velocityLabel = (
+          paceLabel = (
             <span
-              class="inline-flex items-center gap-1 font-mono text-xs font-semibold text-pine-iris"
+              class="font-mono text-xs font-semibold whitespace-nowrap text-pine-iris"
               title="Target consumption pace to fully utilize pool before reset"
             >
               ~{burnRate}%/hr pace
@@ -200,25 +213,20 @@ export const QuotaGrid = ({
         return (
           <div
             key={pool.poolId}
-            class="flex h-full flex-col justify-between gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm transition-colors hover:border-pine-iris/50 sm:gap-4 sm:p-5"
+            class="flex h-full flex-col justify-start gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm transition-colors hover:border-pine-iris/50 sm:p-5"
           >
-            {/* Header: Title, Pool ID, and Weekly Eval Status Badge */}
-            <div class="flex items-start justify-between gap-3">
+            {/* Fixed header height keeps the Weekly Limit bars on one line across cards. */}
+            <div class="flex h-17 items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
                 <h2
-                  class="text-base/snug font-semibold text-pine-text sm:text-lg"
+                  class="line-clamp-2 text-base/snug font-semibold text-pine-text sm:text-lg"
                   title={poolDisplayName}
                 >
                   {poolDisplayName}
                 </h2>
-                <div class="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-pine-subtle">
-                  <span class="inline-flex items-center gap-1">
-                    Pool:{' '}
-                    <span class="rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs whitespace-nowrap text-pine-iris">
-                      {pool.poolId}
-                    </span>
-                  </span>
-                </div>
+                <p class="mt-0.5 truncate text-xs text-pine-subtle" title={poolModelsLabel}>
+                  {poolModelsLabel}
+                </p>
               </div>
               <span
                 class={`shrink-0 rounded-sm px-2.5 py-1 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${badgeClasses}`}
@@ -244,50 +252,50 @@ export const QuotaGrid = ({
                 class="h-2 overflow-hidden rounded-full bg-pine-overlay sm:h-2.5"
               >
                 <div
-                  class={`h-full rounded-full transition-[width] duration-500 ease-out ${barColor}`}
+                  class={`h-full rounded-full transition-all duration-500 ease-out ${barColor}`}
                   style={{ width: `${Math.min(100, Math.max(0, weeklyPct))}%` }}
                 />
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
-                <span class="font-mono font-medium text-pine-text">
-                  Resets in {weeklyCountdown}
+              <div class="mt-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-pine-subtle">
+                <span class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-mono font-medium text-pine-text">
+                    Resets in {weeklyCountdown}
+                  </span>
+                  {paceLabel && (
+                    <>
+                      <span aria-hidden="true" class="text-pine-muted">
+                        ·
+                      </span>
+                      {paceLabel}
+                    </>
+                  )}
+                  {projectionText && (
+                    <>
+                      <span aria-hidden="true" class="text-pine-muted">
+                        ·
+                      </span>
+                      <span
+                        class="whitespace-nowrap"
+                        title={
+                          projection
+                            ? `Projected from a burn rate of ${projection.burnRatePerHour.toFixed(1)}%/hour`
+                            : undefined
+                        }
+                      >
+                        {projectionText}
+                      </span>
+                    </>
+                  )}
                 </span>
-                <span class="font-mono text-xs text-pine-subtle">{weeklyDateStr}</span>
+                <span class="font-mono text-xs whitespace-nowrap text-pine-subtle">
+                  {weeklyDateStr}
+                </span>
               </div>
-              {velocityLabel && (
-                <div class="mt-1 flex items-center justify-between border-t border-pine-highlight/30 pt-1 text-xs text-pine-subtle">
-                  <span>Pacing Guidance:</span>
-                  {velocityLabel}
-                </div>
-              )}
             </div>
 
-            {/* Quota 2: 5-Hour Limit (Capacity Rate Limiter) */}
-            {shortTerm?.disabled ? (
-              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
-                <div class="flex items-center justify-between text-sm sm:text-base">
-                  <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-subtle">
-                    Not applicable
-                  </span>
-                </div>
-                <div
-                  role="progressbar"
-                  aria-valuenow={0}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-label={`${pool.displayName || pool.poolId} 5-hour limit`}
-                  class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2"
-                >
-                  <div class="h-full rounded-full bg-pine-highlight" style={{ width: '0%' }} />
-                </div>
-                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
-                  <span>Capacity throttle</span>
-                  <span>Reported disabled by the quota server</span>
-                </div>
-              </div>
-            ) : shortTerm && shortTermPct !== null ? (
-              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
+            {/* The 5-hour bar renders only for a live window; disabled or absent collapses to one row */}
+            {hasShortTermBar && shortTerm && shortTermPct !== null ? (
+              <div class="mt-auto flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
                 <div class="flex items-center justify-between text-sm sm:text-base">
                   <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
                   <span class="font-mono text-sm font-bold text-pine-text sm:text-base">
@@ -303,7 +311,7 @@ export const QuotaGrid = ({
                   class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2"
                 >
                   <div
-                    class="h-full rounded-full bg-pine-iris/75 transition-[width] duration-500 ease-out"
+                    class="h-full rounded-full bg-pine-iris/75 transition-all duration-500 ease-out"
                     style={{ width: `${Math.min(100, Math.max(0, shortTermPct))}%` }}
                   />
                 </div>
@@ -315,31 +323,13 @@ export const QuotaGrid = ({
                 </div>
               </div>
             ) : (
-              <div class="flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
-                <div class="flex items-center justify-between text-sm sm:text-base">
-                  <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="text-xs font-medium text-pine-subtle">No 5h cap</span>
-                </div>
-                <div class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2">
-                  <div class="size-full rounded-full bg-pine-muted/20" />
-                </div>
-                <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
-                  <span>Capacity throttle</span>
-                  <span>Uncapped 5h window</span>
-                </div>
+              <div class="mt-auto flex items-center justify-between border-t border-pine-highlight/30 pt-2.5 text-xs text-pine-subtle">
+                <span>5-Hour Rolling Limit</span>
+                <span class="font-mono whitespace-nowrap text-pine-text">
+                  {shortTerm?.disabled ? 'Disabled upstream' : 'Uncapped'}
+                </span>
               </div>
             )}
-
-            {/* Models in Pool - Responsive flex layout */}
-            <div class="mt-auto flex items-center justify-between gap-2 border-t border-pine-highlight pt-2.5 text-xs text-pine-subtle">
-              <span class="shrink-0 text-pine-subtle">Models:</span>
-              <span
-                class="min-w-0 flex-1 truncate text-right font-medium text-pine-text"
-                title={poolModels.join(', ')}
-              >
-                {poolModels.join(', ') || 'N/A'}
-              </span>
-            </div>
           </div>
         );
       })}

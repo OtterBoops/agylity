@@ -2,10 +2,11 @@ import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
-import type { SentryStateManager } from '../sentry/state.js';
+import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
   snapshotsFromSentryState,
+  type QuotaFamily,
   type QuotaSnapshot,
 } from '../sentry/models.js';
 import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';
@@ -21,8 +22,8 @@ import {
   ROUTINE_CYCLE_REARM_STATUSES,
   type ModelEligibilityResult,
   type ReasoningEffort,
+  type RoutineEligibilityStatus,
   type ScheduleMode,
-  type TaskActor,
   type TaskStatus,
   type TaskTier,
 } from './models.js';
@@ -55,7 +56,6 @@ export interface DispatchTaskRequest {
   originTitle?: string;
   requestedBy?: string;
   requestedByUserId?: string;
-  actor?: TaskActor;
   prPolicy?: PrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
@@ -157,27 +157,28 @@ export class Coordinator {
   }
 
   // One burn-kick notice per pool per reset cycle: the map records the cycle a pool was announced for.
-  private hasAnnouncedBurnKick(family: string, resetTime: string): boolean {
+  private readBurnKickCycles(): Record<string, string> {
     const raw = this.queue.getRuntimeValue(BURN_KICK_CYCLES_KEY);
-    if (!raw) return false;
+    if (!raw) return {};
     try {
-      const cycles = JSON.parse(raw) as Record<string, string>;
-      return cycles[family] === resetTime;
+      return (JSON.parse(raw) as Record<string, string>) ?? {};
     } catch {
-      return false;
+      return {};
     }
   }
 
-  private recordBurnKick(family: string, resetTime: string): void {
-    const raw = this.queue.getRuntimeValue(BURN_KICK_CYCLES_KEY);
-    let cycles: Record<string, string> = {};
-    try {
-      cycles = raw ? (JSON.parse(raw) as Record<string, string>) : {};
-    } catch {
-      cycles = {};
-    }
-    cycles[family] = resetTime;
+  private writeBurnKickCycles(cycles: Record<string, string>): void {
     this.queue.setRuntimeValue(BURN_KICK_CYCLES_KEY, JSON.stringify(cycles));
+  }
+
+  private hasAnnouncedBurnKick(family: string, resetTime: string): boolean {
+    return this.readBurnKickCycles()[family] === resetTime;
+  }
+
+  private recordBurnKick(family: string, resetTime: string): void {
+    const cycles = this.readBurnKickCycles();
+    cycles[family] = resetTime;
+    this.writeBurnKickCycles(cycles);
   }
 
   // Informational only: notifyInfo never mentions the owner, so this cannot ring a phone.
@@ -279,6 +280,65 @@ export class Coordinator {
     this.bus.emit('task:available');
   }
 
+  // An early reset reopens the window, so the pools it touched forget their announced cycle.
+  public onEarlyQuotaReset(earlyResets: EarlyResetPool[]): void {
+    if (earlyResets.length === 0) return;
+
+    const cycles = this.readBurnKickCycles();
+    let changed = false;
+    for (const pool of earlyResets) {
+      if (Object.hasOwn(cycles, pool.poolId)) {
+        delete cycles[pool.poolId];
+        changed = true;
+      }
+    }
+    if (changed) this.writeBurnKickCycles(cycles);
+
+    const routines = this.queue.listRoutineTasks();
+    if (routines.length === 0) return;
+
+    const { defaultDispatchModel } = this.configStore.resolveConfig();
+    for (const rt of routines) {
+      const families = new Set<string>(
+        rt.models.map((m) =>
+          resolvePoolFamilyForModel(resolveConcreteModelId(m, defaultDispatchModel))
+        )
+      );
+      const hit = earlyResets.some(
+        (pool) =>
+          families.has(pool.poolId) &&
+          (pool.previousResetTime === rt.lastTriggeredResetTime ||
+            pool.resetTime === rt.lastTriggeredResetTime)
+      );
+      if (hit) {
+        this.queue.updateRoutineTask(rt.id, { lastTriggeredResetTime: null });
+      }
+    }
+  }
+
+  // The runner may fail over on upstream capacity, so it needs the rest of the viable chain.
+  private resolveFallbackCandidates(params: {
+    models: string[];
+    selectedModel: string;
+    pools: QuotaSnapshot[];
+    minHeadroomPercent: number;
+    isPoolDispatchEnabled: (family: QuotaFamily) => boolean;
+    defaultModel?: string;
+  }): string[] {
+    const viable: string[] = [];
+    for (const model of params.models) {
+      const evaluation = evaluateModelPreferenceChain({
+        models: [model],
+        defaultModel: params.defaultModel,
+        pools: params.pools,
+        minHeadroomPercent: params.minHeadroomPercent,
+        isPoolDispatchEnabled: params.isPoolDispatchEnabled,
+      });
+      if (evaluation.allowed && evaluation.selectedModel) viable.push(evaluation.selectedModel);
+    }
+    return Array.from(new Set([params.selectedModel, ...viable]));
+  }
+
   // Evaluates autonomous tasks (Tier 2 Backlog and Tier 3 Routines) under 2-hour inactivity quench.
   public async triggerEligibleAutonomousTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
     if (snapshots.length > 0) {
@@ -337,10 +397,18 @@ export class Coordinator {
             originNumber: nextBacklog.taskNumber,
             originTitle: nextBacklog.title,
             requestedBy: `backlog:${nextBacklog.id}`,
-            actor: nextBacklog.actor || 'bot',
             prPolicy: resolved.prPolicy,
             scheduleMode: 'immediate',
             model: modelChoice.selectedModel,
+            candidateModels: this.resolveFallbackCandidates({
+              models: nextBacklog.models,
+              selectedModel: modelChoice.selectedModel,
+              pools: snapshots,
+              minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
+              isPoolDispatchEnabled: (family) =>
+                resolved.poolPolicies?.[family]?.dispatchEnabled !== false,
+              defaultModel: resolved.defaultDispatchModel,
+            }),
             effort: nextBacklog.effort,
             autoCreatePr: nextBacklog.autoCreatePr,
             verifyCommand: nextBacklog.verifyCommand,
@@ -394,8 +462,6 @@ export class Coordinator {
       return true;
     }
 
-    // The run that decides this pool's rearm is the one that burned this pool's cycle, not
-    // whichever pool the routine dispatched to last.
     const previous =
       this.queue.getLatestTaskForOrigin(rt.id, poolKey) ??
       (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined);
@@ -405,6 +471,21 @@ export class Coordinator {
     return (ROUTINE_CYCLE_REARM_STATUSES as readonly string[]).includes(previous.status);
   }
 
+  // Least-recently-triggered first: a fast no_changes loop must not starve the routine behind it.
+  private orderRoutineCandidates(routines: RoutineTaskRecord[]): RoutineTaskRecord[] {
+    const lastRunMs = (rt: RoutineTaskRecord): number => {
+      if (!rt.lastTaskId) return 0;
+      const previous = this.queue.getTask(rt.lastTaskId);
+      const parsed = previous ? Date.parse(previous.createdAt) : 0;
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    return [...routines].sort(
+      (a, b) =>
+        lastRunMs(a) - lastRunMs(b) || a.sortOrder - b.sortOrder || a.taskNumber - b.taskNumber
+    );
+  }
+
   // Evaluates enabled routine tasks against live quota pools and triggers any due for pre-reset burn.
   public async triggerEligibleRoutines(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
     const resolved = this.configStore.resolveConfig();
@@ -412,12 +493,17 @@ export class Coordinator {
       return [];
     }
 
-    const routines = this.queue.listRoutineTasks().filter((t) => t.enabled);
+    const routines = this.orderRoutineCandidates(
+      this.queue.listRoutineTasks().filter((t) => t.enabled)
+    );
     if (routines.length === 0 || snapshots.length === 0) {
       return [];
     }
 
     const spawned: SwarmTask[] = [];
+    // One dispatch per pool family per probe tick: a single global break lets the hottest pool starve
+    // every other family, which is exactly the case when two pools are both inside their burn window.
+    const dispatchedPools = new Set<string>();
 
     for (const rt of routines) {
       // One in-flight run per routine: the evaluator must never stack runs on itself.
@@ -425,14 +511,18 @@ export class Coordinator {
         continue;
       }
 
-      let selectedModel: string | undefined;
-      let targetPool: QuotaSnapshot | undefined;
       // The routine's own window wins; the global burn window is only a fallback.
       const triggerHours =
         rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
           ? rt.triggerBeforeResetHours
           : (resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS);
+      const minHeadroom = Math.max(
+        rt.minHeadroomPercent ?? 10,
+        resolved.minDispatchHeadroomPercent ?? 0
+      );
 
+      // Every model that could carry this routine right now, in declared order.
+      const passing: Array<{ model: string; family: string; pool: QuotaSnapshot }> = [];
       for (const m of rt.models) {
         const concreteModel = resolveConcreteModelId(m, resolved.defaultDispatchModel);
         const family = resolvePoolFamilyForModel(concreteModel);
@@ -472,23 +562,23 @@ export class Coordinator {
 
         // Check headroom: must have quota remaining to burn
         const headroom = calculateEffectiveHeadroomPercent(pool);
-        const minHeadroom = Math.max(
-          rt.minHeadroomPercent ?? 10,
-          resolved.minDispatchHeadroomPercent ?? 0
-        );
-
         if (headroom === null || headroom < minHeadroom) {
           continue;
         }
 
-        selectedModel = concreteModel;
-        targetPool = pool;
-        break;
+        passing.push({ model: concreteModel, family, pool });
       }
 
-      if (!selectedModel || !targetPool) {
+      const choice = passing.find((candidate) => !dispatchedPools.has(candidate.family));
+      if (!choice) {
         continue;
       }
+
+      const selectedModel = choice.model;
+      const targetPool = choice.pool;
+      // The runner fails over on upstream capacity exhaustion, so it carries the whole viable chain.
+      const candidateModels = Array.from(new Set([selectedModel, ...passing.map((c) => c.model)]));
+      dispatchedPools.add(choice.family);
 
       this.log.info(
         'Auto-triggering routine task #%d ("%s") for pool %s with model %s (reset in %sh, headroom=%d%%)',
@@ -522,9 +612,9 @@ export class Coordinator {
         originNumber: rt.taskNumber,
         originTitle: rt.title,
         model: selectedModel,
+        candidateModels,
         effort: rt.effort,
         autoCreatePr: rt.autoCreatePr,
-        actor: rt.actor || 'bot',
         prPolicy: rt.prPolicy ?? resolved.prPolicy,
         verifyCommand: rt.verifyCommand,
         scheduleMode: 'immediate',
@@ -558,9 +648,161 @@ export class Coordinator {
     return spawned;
   }
 
-  // Compatibility bridge for test suites transitioning from standing tasks
-  public async triggerEligibleStandingTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
-    return this.triggerEligibleRoutines(snapshots);
+  // Server-side verdict on why a routine is or is not dispatching, so no client re-derives the rules.
+  public computeRoutineEligibility(
+    rt: RoutineTaskRecord,
+    snapshots?: QuotaSnapshot[]
+  ): RoutineEligibilityStatus {
+    const resolved = this.configStore.resolveConfig();
+
+    if (!rt.enabled) {
+      return {
+        state: 'disabled',
+        label: 'Disabled',
+        detail: 'This routine is disabled and will not dispatch.',
+      };
+    }
+
+    if (this.queue.hasActiveTaskForOrigin(rt.id)) {
+      const active = this.queue.getLatestTaskForOrigin(rt.id);
+      return {
+        state: 'running',
+        label: 'Looping',
+        detail: `Task ${active?.id ?? 'run'} is ${active?.status ?? 'in flight'} on this routine.`,
+      };
+    }
+
+    const pools = snapshots && snapshots.length > 0 ? snapshots : this.getActivePools();
+    if (pools.length === 0) {
+      return {
+        state: 'no_telemetry',
+        label: 'No Telemetry',
+        detail: 'No live quota telemetry is available, so dispatch cannot be validated.',
+      };
+    }
+
+    const triggerHours =
+      rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
+        ? rt.triggerBeforeResetHours
+        : (resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS);
+    const minHeadroom = Math.max(
+      rt.minHeadroomPercent ?? 10,
+      resolved.minDispatchHeadroomPercent ?? 0
+    );
+
+    const targets = rt.models.map((raw) => {
+      const model = resolveConcreteModelId(raw, resolved.defaultDispatchModel);
+      return { model, family: resolvePoolFamilyForModel(model) };
+    });
+    const families = Array.from(new Set(targets.map((t) => t.family)));
+
+    // Pool policy is a hard gate on every model the routine names.
+    const enabledFamilies = new Set(
+      families.filter((family) => resolved.poolPolicies?.[family]?.dispatchEnabled !== false)
+    );
+    if (enabledFamilies.size === 0) {
+      return {
+        state: 'pool_disabled',
+        label: 'Pool Disabled',
+        detail: `Dispatching is disabled for every pool this routine targets (${families.join(', ')}).`,
+      };
+    }
+
+    let sawPool = false;
+    let cycleComplete: string | undefined;
+    let cycleFailed: string | undefined;
+    let waitingWindow: string | undefined;
+    let lowHeadroom: string | undefined;
+
+    for (const { model, family } of targets) {
+      if (!enabledFamilies.has(family)) continue;
+
+      const pool = pools.find(
+        (p) =>
+          p.family === family ||
+          p.poolId === family ||
+          resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+      );
+      if (!pool) continue;
+      sawPool = true;
+
+      const poolLabel = pool.displayName || pool.poolId;
+      const hoursUntilReset =
+        typeof pool.hoursUntilReset === 'number' && pool.hoursUntilReset > 0
+          ? pool.hoursUntilReset
+          : calculateHoursUntilReset(pool.resetTime, Date.now());
+
+      if (!pool.resetTime || hoursUntilReset === null || hoursUntilReset <= 0) {
+        waitingWindow ??= `${poolLabel} has no pending reset deadline; waiting for the next probe cycle.`;
+        continue;
+      }
+
+      if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.family, pool.resetTime)) {
+        const previous =
+          this.queue.getLatestTaskForOrigin(rt.id, pool.poolId || pool.family) ??
+          (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined);
+        const detail =
+          `Cycle for ${poolLabel} is already burned for the reset at ${pool.resetTime}` +
+          (previous ? ` (last run ${previous.status}).` : '.');
+        // A cycle whose run failed or aborted ended in a terminal error, which reads differently.
+        if (previous && (previous.status === 'failed' || previous.status === 'aborted')) {
+          cycleFailed ??= detail;
+        } else {
+          cycleComplete ??= detail;
+        }
+        continue;
+      }
+
+      if (hoursUntilReset > triggerHours) {
+        waitingWindow ??= `Reset in ${hoursUntilReset.toFixed(1)}h on ${poolLabel}; this routine opens at <=${triggerHours}h.`;
+        continue;
+      }
+
+      const headroom = calculateEffectiveHeadroomPercent(pool);
+      if (headroom === null) {
+        lowHeadroom ??= `No usable headroom telemetry for ${poolLabel}.`;
+        continue;
+      }
+      if (headroom < minHeadroom) {
+        lowHeadroom ??= `${poolLabel} at ${headroom}% headroom, below the ${minHeadroom}% floor.`;
+        continue;
+      }
+
+      return {
+        state: 'ready',
+        label: 'Ready',
+        detail: `Dispatches on ${model} at the next probe (reset in ${hoursUntilReset.toFixed(1)}h, ${headroom}% headroom).`,
+      };
+    }
+
+    if (cycleFailed) return { state: 'cycle_failed', label: 'Cycle Failed', detail: cycleFailed };
+    if (cycleComplete) {
+      return { state: 'cycle_complete', label: 'Cycle Complete', detail: cycleComplete };
+    }
+    if (waitingWindow) {
+      return { state: 'waiting_window', label: 'Waiting Window', detail: waitingWindow };
+    }
+    if (lowHeadroom) return { state: 'low_headroom', label: 'Low Headroom', detail: lowHeadroom };
+
+    return {
+      state: 'no_telemetry',
+      label: 'No Telemetry',
+      detail: sawPool
+        ? 'No pending dispatch condition is satisfied yet.'
+        : `No quota pool matches ${families.join(', ')}.`,
+    };
+  }
+
+  // Live runner lease beat: refreshes the lease and streams the run's output tail into the task row.
+  public heartbeatTask(
+    taskId: string,
+    runnerId: string,
+    leaseDurationMs?: number,
+    outputTail?: string
+  ): { task: SwarmTask; applied: boolean } | undefined {
+    const result = this.queue.heartbeatTask(taskId, runnerId, leaseDurationMs, outputTail);
+    if (result?.applied) this.bus.emit(`task:updated:${taskId}`, result.task);
+    return result;
   }
 
   public evaluateEligibility(params: {
@@ -739,7 +981,7 @@ export class Coordinator {
     const originTitle = req.originTitle;
     const title = req.title;
 
-    if (tier === 'immediate' && req.actor !== 'bot') {
+    if (tier === 'immediate') {
       this.setLastManualDispatchAt(Date.now());
     }
 
@@ -757,7 +999,6 @@ export class Coordinator {
       originNumber,
       originTitle,
       requestedBy: req.requestedBy || 'web-ui',
-      actor: req.actor ?? 'user',
       prPolicy: req.prPolicy ?? resolved.prPolicy,
       scheduleMode,
       requiredLabels,
@@ -830,6 +1071,49 @@ export class Coordinator {
     };
   }
 
+  // A retry must carry the origin row to the new task, or the queue keeps pointing at the old run.
+  public async retryTask(task: SwarmTask): Promise<DispatchTaskResponse> {
+    const result = await this.dispatch({
+      repositoryId: task.repositoryId,
+      repositoryName: task.repositoryName,
+      repositoryPath: task.repositoryPath,
+      cloneUrl: task.cloneUrl,
+      prompt: task.prompt,
+      title: task.title,
+      tier: task.tier,
+      originId: task.originId,
+      originNumber: task.originNumber,
+      originTitle: task.originTitle,
+      requestedBy: 'web-ui (retry)',
+      prPolicy: task.prPolicy,
+      scheduleMode: task.scheduleMode,
+      model: task.model,
+      effort: task.effort,
+      requiredLabels: task.requiredLabels,
+      expiresAt: task.expiresAt,
+      standingTaskId: task.standingTaskId,
+      allowOverage: task.allowOverage,
+      pushBranch: task.pushBranch,
+      autoCreatePr: task.autoCreatePr,
+      verifyCommand: task.verifyCommand,
+    });
+
+    if (result.success && result.taskId) {
+      if (task.tier === 'backlog' && task.originId) {
+        this.queue.updateBacklogTask(task.originId, {
+          status: 'dispatched',
+          swarmTaskId: result.taskId,
+          lastError: null,
+        });
+      }
+      if (task.tier === 'routine' && task.originId) {
+        this.queue.updateRoutineTask(task.originId, { lastTaskId: result.taskId });
+      }
+    }
+
+    return result;
+  }
+
   public async dispatchContinuation(params: {
     taskId?: string;
     branchName?: string;
@@ -852,7 +1136,7 @@ export class Coordinator {
       prompt: params.prompt,
       requestedBy: params.requestedBy || parentTask?.requestedBy,
       requestedByUserId: params.requestedByUserId,
-      actor: parentTask?.actor ?? 'user',
+      tier: parentTask?.tier ?? 'immediate',
       prPolicy: parentTask?.prPolicy,
       effort: params.effort || parentTask?.effort,
       model: params.model || parentTask?.model,

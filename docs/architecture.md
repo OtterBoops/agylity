@@ -207,8 +207,7 @@ Agylity incorporates a lightweight, universal logging subsystem designed for pro
    - Consumers can add or replace sinks via `logger.addSink(sink)`, `logger.removeSink(sink)`, and `logger.setSinks([...])`.
    - Built-in sinks:
      - `createConsoleSink()`: Standard output to stdout/stderr with component tagging (`[sentry]`, `[daemon]`, `[web]`).
-     - `createBufferSink(buffer)`: Feeds structured logs directly into the bounded, secret-redacting in-memory `LogBuffer`.
-     - `createMemorySink()`: Records log entries in an array for unit testing assertions.
+   - The buffer and in-memory sinks live in the test harness (`tests/e2e/harness/index.ts`): `createBufferSink(buffer)` feeds the bounded, secret-redacting `LogBuffer`, and `createMemorySink()` records entries for assertion.
 3. **Fault-Isolated Execution**:
    - Sinks are executed inside individual `try ... catch` blocks. A failing or throwing sink (e.g. disk write failure or network transport crash) will never crash the daemon or prevent other sinks from logging.
 4. **Child Namespacing & Tag Cleanliness**:
@@ -265,7 +264,7 @@ Every `swarm_tasks` row carries `tier`, `origin_id`, `origin_number` and `origin
 lets the dashboard link a run back to the item that produced it.
 
 - **Autonomy quench**: the autonomous evaluator runs on each quota probe but stays quiet for two hours
-  after a manual (`actor: 'user'`) immediate dispatch. The timestamp lives in `runtime_state`, so a
+  after an `immediate`-tier dispatch (a human started it now). The timestamp lives in `runtime_state`, so a
   redeploy does not re-arm autonomous work.
 - **Tier 2 (backlog)**: at most one item per probe, gated on effective headroom of at least
   `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.

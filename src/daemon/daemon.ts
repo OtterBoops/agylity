@@ -51,6 +51,7 @@ const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): Inf
     message: `${lines.join(' ')} Upstream replenished ${
       pools.length === 1 ? 'this pool' : 'these pools'
     } ahead of schedule.`,
+    path: '/overview',
     poolFamily: single?.poolId,
     poolName: single?.displayName,
     resetTime: single?.resetTime,
@@ -390,10 +391,14 @@ export class AgylityDaemon {
     try {
       this.logger.debug('Running scheduled quota evaluation...');
       const snapshots = await this.quotaClient.fetchQuota();
-      this.coordinator.onQuotaUpdated(snapshots);
-      reaped = true;
       const plan = this.evaluateMilestonePlan(snapshots);
       const alerts = plan.alerts;
+      // Early resets reach the coordinator before onQuotaUpdated replaces its quota view.
+      if (plan.earlyResets && plan.earlyResets.length > 0) {
+        this.coordinator.onEarlyQuotaReset(plan.earlyResets);
+      }
+      this.coordinator.onQuotaUpdated(snapshots);
+      reaped = true;
 
       // Informational status when quota is low or pool exhausted (deduplicated per reset cycle)
       for (const s of snapshots) {

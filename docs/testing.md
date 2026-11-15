@@ -9,7 +9,7 @@ This document details the testing methodology, layout, and boundary verification
 Agylity uses Node's native test runner (`node:test`) and strict assertions (`node:assert/strict`) executed directly via `tsx`. There is no Jest, Vitest, Mocha or Sinon — the test toolchain adds no runtime dependency.
 
 1. **Opaque-Box Verification**: Tests exercise public contracts, wire protocols, mathematical calculations, and state machines rather than internal private variables.
-2. **Deterministic & Isolated Execution**: Ephemeral mock Connect-RPC servers, mock webhook servers, free-port allocation and in-memory SQLite instances verify network and database behaviour deterministically, with no external internet access.
+2. **Deterministic & Isolated Execution**: The real web server binds an ephemeral loopback port, RPC and webhook transports are replaced by stubbed `fetch` functions, and every database is a throwaway SQLite file — so network and storage behaviour is verified deterministically, with no external internet access.
 3. **Handle Hygiene**: Any test that binds an HTTP server, socket or child process tears it down inside `try ... finally` (or `t.after()`), so a failing assertion can never leave an open handle that silently hangs the runner.
 4. **Adversarial & Boundary Rigor**: Subsystems are hardened against malformed payloads, unicode edge cases, timing hazards and unexpected process crashes.
 
@@ -21,8 +21,7 @@ Agylity uses Node's native test runner (`node:test`) and strict assertions (`nod
 tests/
 ├── e2e/
 │   ├── harness/
-│   │   └── index.ts            # Shared helpers: mock RPC server, mock webhook server,
-│   │                           # mock Discord interaction, free-port allocation, temp dirs
+│   │   └── index.ts            # Shared helpers: temp dirs and the in-memory log sinks
 │   └── dispatch.test.ts        # Full dispatch lifecycle against a real temp git repository
 └── unit/
     ├── config.test.ts          # Zod schema, preprocessors, store fallback precedence
@@ -58,7 +57,7 @@ tests/
 
 ### End-to-end suite (`tests/e2e/`)
 
-`dispatch.test.ts` drives a full dispatch against a **real temporary git repository**: it initialises the repo, runs the coordinator and a runner through enqueue → claim → execute → report, and asserts on the resulting branch and task record. The harness in `tests/e2e/harness/index.ts` supplies the mock RPC server, mock webhook server, mock Discord interaction, `getFreePort()` and `makeTempDir()`.
+`dispatch.test.ts` drives a full dispatch against a **real temporary git repository**: it initialises the repo, runs the coordinator and a runner through enqueue → claim → execute → report, and asserts on the resulting branch and task record. The harness in `tests/e2e/harness/index.ts` supplies `makeTempDir()` (used by most unit suites) and the `createBufferSink` / `createMemorySink` log sinks.
 
 ---
 
