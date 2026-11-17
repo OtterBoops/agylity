@@ -23,6 +23,9 @@ interface NotificationChannelCardProps {
   isExpanded: boolean;
   onToggleExpand: () => void;
   onToggleChannel: () => void;
+  testLabel: string;
+  onSendTest: () => void;
+  isTesting: boolean;
   children?: ComponentChildren;
 }
 
@@ -32,17 +35,19 @@ export const NotificationChannelCard = ({
   isExpanded,
   onToggleExpand,
   onToggleChannel,
+  testLabel,
+  onSendTest,
+  isTesting,
   children,
 }: NotificationChannelCardProps) => {
   return (
     <div
       class={`overflow-hidden rounded-xl border transition-all ${
         isEnabled
-          ? 'border-pine-iris/50 bg-pine-surface shadow-xs'
+          ? 'border-pine-iris/50 bg-pine-surface'
           : 'border-pine-highlight bg-pine-surface/50 hover:border-pine-iris/50'
       }`}
     >
-      {/* Card Header Row: Expand trigger + Icon/Label + Badges + Toggle Switch */}
       <div class="flex items-center justify-between gap-4 p-4 select-none md:p-5">
         <button
           type="button"
@@ -75,8 +80,16 @@ export const NotificationChannelCard = ({
           </div>
         </button>
 
-        {/* Right-aligned Toggle Switch */}
         <div class="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onSendTest}
+            disabled={!isEnabled || isTesting}
+            title={isEnabled ? testLabel : `Enable ${channel.label} to test`}
+            class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 py-1 text-xs font-medium whitespace-nowrap text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-pine-highlight disabled:hover:text-pine-subtle"
+          >
+            {isTesting ? 'Testing...' : testLabel}
+          </button>
           <ToggleSwitch
             checked={isEnabled}
             onChange={onToggleChannel}
@@ -85,7 +98,6 @@ export const NotificationChannelCard = ({
         </div>
       </div>
 
-      {/* Nested Config Section: Expanded configuration */}
       {isExpanded && (
         <div
           id={`channel-config-${channel.id}`}

@@ -9,8 +9,6 @@ interface WebhookChannelFormProps {
   onSecretChange: (val: string) => void;
   isSecretSet: boolean;
   onClearSecret: () => Promise<void>;
-  onSendTest: () => void;
-  isTesting: boolean;
   diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
@@ -23,26 +21,12 @@ export const WebhookChannelForm = ({
   onSecretChange,
   isSecretSet,
   onClearSecret,
-  onSendTest,
-  isTesting,
   diagnostics,
 }: WebhookChannelFormProps) => {
   const [showSecret, setShowSecret] = useState(false);
 
   return (
     <div class="flex flex-col gap-5">
-      <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
-        <span class="text-xs font-semibold text-pine-subtle">Webhook Endpoint &amp; Security</span>
-        <button
-          type="button"
-          onClick={onSendTest}
-          disabled={isTesting}
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isTesting ? 'Testing...' : 'Test Webhook Ping'}
-        </button>
-      </div>
-
       {diagnostics && (
         <div
           class={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${

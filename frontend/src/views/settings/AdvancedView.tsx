@@ -6,9 +6,10 @@ import { NETWORK_SECURITY_FIELDS, TELEMETRY_OVERRIDE_FIELDS } from '../../config
 interface AdvancedViewProps {
   config: ConfigData;
   onChanged: () => void;
+  searchQuery?: string;
 }
 
-export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
+export const AdvancedView = ({ config, onChanged, searchQuery }: AdvancedViewProps) => (
   <SettingsLayout>
     <SettingsForm
       title="Network &amp; Access Control"
@@ -16,6 +17,7 @@ export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
       fields={NETWORK_SECURITY_FIELDS}
       config={config}
       onSaved={onChanged}
+      searchQuery={searchQuery}
     />
 
     <SettingsForm
@@ -24,6 +26,7 @@ export const AdvancedView = ({ config, onChanged }: AdvancedViewProps) => (
       fields={TELEMETRY_OVERRIDE_FIELDS}
       config={config}
       onSaved={onChanged}
+      searchQuery={searchQuery}
     />
   </SettingsLayout>
 );

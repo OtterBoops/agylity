@@ -1,144 +1,233 @@
-import type { ComponentChildren } from 'preact';
 import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../../types';
-import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
+import { formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
-import { ACTIVE_TASK_STATUSES, taskBadgeClass } from './badges';
+import { TableHeadRow, TableRow, TableShell, TH } from '../TableShell';
+import { ACTIVE_TASK_STATUSES } from './badges';
+import { formatCompactDateTime, statusDotTextClass } from './executionRow';
+import { statusLabel } from './statusLabels';
+import { moveRowIndex, resolveRowKey } from './TaskKeyboardNav';
 
 interface ExecutionTableProps {
-  /** Already filtered by the page's status filter. */
   tasks: SwarmTask[];
   loadError: string | null;
-  actionLoading: boolean;
+  activeTaskId: string | null;
+  onActiveTaskId: (taskId: string | null) => void;
   onOpen: (task: SwarmTask) => void;
   onAbort: (taskId: string) => void;
-  onRetry: (taskId: string) => void;
-  /** Origin links belong to the page, which owns the backlog and routine lists. */
-  renderOrigin: (task: SwarmTask) => ComponentChildren;
+  activeFilterLabel: string;
+  onClearFilters: () => void;
+  pendingAbortId: string | null;
+  selectable?: boolean;
+  selectedIds?: Set<string>;
+  onToggleSelected?: (id: string) => void;
+  onToggleAll?: () => void;
+  allSelected?: boolean;
 }
 
-/** The dense run log: a table, because the rows are scanned rather than read one at a time. */
+const CELL = 'truncate px-2.5 align-middle';
+
+const CHECKBOX = 'block size-3.5 cursor-pointer accent-pine-iris';
+
 export const ExecutionTable = ({
   tasks,
   loadError,
-  actionLoading,
+  activeTaskId,
+  onActiveTaskId,
   onOpen,
   onAbort,
-  onRetry,
-  renderOrigin,
+  activeFilterLabel,
+  onClearFilters,
+  pendingAbortId,
+  selectable = false,
+  selectedIds,
+  onToggleSelected,
+  onToggleAll,
+  allSelected = false,
 }: ExecutionTableProps) => {
   const [timeFormat] = useTimeFormat();
 
+  // Rows are keyed by data-task-id so the focus target survives the re-render the move triggers.
+  const focusRow = (taskId: string): void => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(`[data-task-id="${taskId}"]`)?.focus();
+    });
+  };
+
+  const handleRowKeyDown = (event: KeyboardEvent, task: SwarmTask, index: number): void => {
+    if ((event.target as HTMLElement | null)?.tagName === 'INPUT') return;
+    const action = resolveRowKey(event);
+    if (!action) return;
+    event.preventDefault();
+    if (action === 'open') {
+      onOpen(task);
+      return;
+    }
+    if (action === 'abort') {
+      if (ACTIVE_TASK_STATUSES.has(task.status)) onAbort(task.id);
+      return;
+    }
+    if (action === 'filter') {
+      document.getElementById('task-filter-input')?.focus();
+      return;
+    }
+    const next = tasks[moveRowIndex(index, tasks.length, action)];
+    if (!next) return;
+    onActiveTaskId(next.id);
+    focusRow(next.id);
+  };
+
   return (
-    <div class="overflow-x-auto rounded-xl border border-pine-highlight bg-pine-surface shadow-sm">
-      <table class="w-full text-left text-xs">
+    <TableShell>
+      <table class="w-full table-fixed text-left">
+        <caption class="sr-only">Execution history</caption>
+        <colgroup>
+          {selectable && <col class="w-[36px]" />}
+          <col class="w-[64px]" />
+          <col />
+          <col class="w-[131px]" />
+          <col class="w-[128px]" />
+          <col class="w-[150px]" />
+          <col class="w-[230px]" />
+        </colgroup>
         <thead>
-          <tr class="border-b border-pine-highlight bg-pine-overlay/40 font-mono text-xs tracking-wider text-pine-subtle uppercase">
-            <th class="p-3.5 whitespace-nowrap">Task</th>
-            <th class="p-3.5 whitespace-nowrap">When</th>
-            <th class="p-3.5 whitespace-nowrap">Repository</th>
-            <th class="p-3.5 whitespace-nowrap">Model / Effort</th>
-            <th class="p-3.5 whitespace-nowrap">By</th>
-            <th class="p-3.5 whitespace-nowrap">Branch / PR</th>
-            <th class="p-3.5 whitespace-nowrap">Duration</th>
-            <th class="p-3.5 whitespace-nowrap">Status</th>
-            <th class="p-3.5 text-right whitespace-nowrap">Actions</th>
-          </tr>
+          <TableHeadRow>
+            {selectable && (
+              <TH>
+                <input
+                  type="checkbox"
+                  aria-label="Select all visible tasks"
+                  checked={allSelected}
+                  onChange={onToggleAll}
+                  class={CHECKBOX}
+                />
+              </TH>
+            )}
+            <TH>#ID</TH>
+            <TH>Task</TH>
+            <TH>Status</TH>
+            <TH>When</TH>
+            <TH>Repo</TH>
+            <TH>Model &middot; Duration</TH>
+          </TableHeadRow>
         </thead>
-        <tbody class="divide-y divide-pine-highlight/40">
+        <tbody>
           {tasks.length === 0 ? (
             <tr>
-              <td colSpan={9} class="p-8 text-center text-sm text-pine-subtle">
-                {loadError
-                  ? `Could not load executions: ${loadError}`
-                  : 'No executions matching the selected filter.'}
+              <td
+                colSpan={selectable ? 7 : 6}
+                class="px-2.5 py-[32px] text-center text-sm text-pine-subtle"
+              >
+                {loadError ? (
+                  `Could not load executions: ${loadError}`
+                ) : (
+                  <span class="inline-flex flex-wrap items-center justify-center gap-2.5">
+                    <span>
+                      No executions match <span class="text-pine-text">{activeFilterLabel}</span>.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={onClearFilters}
+                      class="cursor-pointer rounded-[4px] border border-pine-highlight bg-pine-overlay px-[8px] py-[3px] text-xs font-semibold text-pine-text hover:bg-pine-highlight"
+                    >
+                      Clear filters
+                    </button>
+                  </span>
+                )}
               </td>
             </tr>
           ) : (
-            tasks.map((task) => (
-              <tr
-                key={task.id}
-                onClick={() => onOpen(task)}
-                class="cursor-pointer transition-colors hover:bg-pine-overlay/30"
-              >
-                <td class="max-w-xs min-w-56 p-3.5 md:max-w-sm xl:max-w-md">
-                  <div class="flex items-center gap-1.5">
-                    <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
-                      #{task.taskNumber || 0}
-                    </span>
-                    <span
-                      class="truncate text-sm font-medium text-pine-text"
-                      title={task.title || task.prompt}
-                    >
-                      {task.title || 'Task'}
-                    </span>
-                  </div>
-                </td>
-                <td class="p-3.5 text-sm whitespace-nowrap text-pine-subtle">
-                  {formatDateTime(task.createdAt, { timeFormat })}
-                </td>
-                <td class="p-3.5 font-mono text-sm text-pine-text">{task.repositoryName}</td>
-                <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-iris">
-                  {task.model}
-                  <span class="text-pine-subtle"> · {task.effort}</span>
-                </td>
-                <td class="p-3.5 text-sm whitespace-nowrap">{renderOrigin(task)}</td>
-                <td class="p-3.5 font-mono text-sm text-pine-subtle">
-                  {task.prUrl ? (
-                    <a
-                      href={task.prUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      class="inline-flex items-center gap-1 text-pine-iris hover:underline"
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <span>PR</span>
-                      <Icon icon={faExternalLinkAlt} class="size-2.5" />
-                    </a>
-                  ) : task.branchName ? (
-                    <span class="inline-block max-w-36 truncate" title={task.branchName}>
-                      {task.branchName}
-                    </span>
-                  ) : (
-                    '—'
+            tasks.map((task, index) => {
+              const isActive = task.id === activeTaskId;
+              const tabbable = isActive || (activeTaskId === null && index === 0);
+              return (
+                <TableRow
+                  key={task.id}
+                  id={`task-row-${task.id}`}
+                  data-task-id={task.id}
+                  role="row"
+                  aria-selected={isActive}
+                  tabIndex={tabbable ? 0 : -1}
+                  onClick={() => {
+                    onActiveTaskId(task.id);
+                    onOpen(task);
+                  }}
+                  onKeyDown={(event) => handleRowKeyDown(event, task, index)}
+                  class={`cursor-pointer transition-colors focus-visible:bg-pine-overlay/60 focus-visible:outline-hidden ${
+                    isActive ? 'bg-pine-overlay/40' : ''
+                  }`}
+                >
+                  {selectable && (
+                    <td class={CELL}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select task ${task.taskNumber}`}
+                        checked={selectedIds?.has(task.id) ?? false}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={() => onToggleSelected?.(task.id)}
+                        class={CHECKBOX}
+                      />
+                    </td>
                   )}
-                </td>
-                <td class="p-3.5 font-mono text-sm whitespace-nowrap text-pine-subtle">
-                  {formatDuration(task.durationMs)}
-                </td>
-                <td class="p-3.5 whitespace-nowrap">
-                  <span
-                    class={`inline-flex items-center rounded-md border px-2.5 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${taskBadgeClass(task.status)}`}
-                  >
-                    {task.status}
-                  </span>
-                </td>
-                <td class="p-3.5 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
-                  {ACTIVE_TASK_STATUSES.has(task.status) || task.status === 'claimed' ? (
-                    <button
-                      type="button"
-                      onClick={() => onAbort(task.id)}
-                      disabled={actionLoading}
-                      class="cursor-pointer rounded-sm border border-pine-love/30 bg-pine-love/10 px-2.5 py-1 text-xs font-semibold text-pine-love hover:bg-pine-love hover:text-pine-base"
-                    >
-                      Abort
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => onRetry(task.id)}
-                      disabled={actionLoading}
-                      class="cursor-pointer rounded-sm border border-pine-highlight bg-pine-overlay px-2.5 py-1 text-xs font-semibold text-pine-text hover:bg-pine-highlight"
-                    >
-                      Retry
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))
+                  <td class={`${CELL} font-mono text-xs text-pine-muted`}>
+                    #{task.taskNumber ?? 0}
+                  </td>
+                  <td class={`${CELL} text-sm text-pine-text`} title={task.title || task.prompt}>
+                    {task.title || 'Task'}
+                  </td>
+                  <td class={CELL}>
+                    <span class="flex items-center gap-1.5">
+                      <span class={statusDotTextClass(task.status)}>
+                        <span class="inline-block size-1.5 rounded-full bg-current" />
+                      </span>
+                      <span
+                        class="min-w-0 truncate text-xs tracking-wider text-pine-subtle uppercase"
+                        title={task.status}
+                      >
+                        {statusLabel(task.status)}
+                      </span>
+                    </span>
+                  </td>
+                  <td class={`${CELL} font-mono text-xs text-pine-subtle tabular-nums`}>
+                    {formatCompactDateTime(task.createdAt, timeFormat)}
+                  </td>
+                  <td class={`${CELL} font-mono text-xs text-pine-subtle`}>
+                    {task.repositoryName}
+                  </td>
+                  <td class={CELL}>
+                    {pendingAbortId === task.id ? (
+                      <span class="font-mono text-xs whitespace-nowrap text-pine-love">
+                        press x again to abort
+                      </span>
+                    ) : (
+                      <span class="flex min-w-0 items-center gap-1.5">
+                        <span class="min-w-0 flex-1 truncate font-mono text-xs text-pine-text">
+                          {task.model}
+                        </span>
+                        <span class="shrink-0 font-mono text-xs text-pine-subtle tabular-nums">
+                          {formatDuration(task.durationMs)}
+                        </span>
+                        {task.prUrl && (
+                          <a
+                            href={task.prUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label="Open pull request"
+                            class="inline-flex shrink-0 items-center text-pine-iris hover:text-pine-foam"
+                          >
+                            <Icon icon={faExternalLinkAlt} class="size-4" />
+                          </a>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                </TableRow>
+              );
+            })
           )}
         </tbody>
       </table>
-    </div>
+    </TableShell>
   );
 };

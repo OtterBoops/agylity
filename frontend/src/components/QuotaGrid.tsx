@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { QuotaSnapshot } from '../types';
+import type { QuotaBurnProjection, QuotaSnapshot } from '../types';
 import { useModelCatalog } from '../state/modelCatalogStore';
 
 interface QuotaGridProps {
@@ -24,11 +24,18 @@ const formatResetHuman = (hours: number): string => {
   return `${h}h ${m}m`;
 };
 
+// `burnRatePerHour` is a fraction of the pool per hour, so every render scales it to percent.
+const burnPercentPerHour = (projection: QuotaBurnProjection): number =>
+  projection.burnRatePerHour * 100;
+
+// Mirrors the server's toPercentFloor: rounding up would show a pool clearing a floor the gate blocks.
+const percentFloor = (fraction: number): number =>
+  Math.floor(Number((fraction * 100).toPrecision(12)));
+
 const formatResetDate = (isoStr?: string): string => {
   if (!isoStr) return 'N/A';
   try {
     const d = new Date(isoStr);
-    // A malformed stamp does not throw; it formats as the literal "Invalid Date" in the card.
     if (Number.isNaN(d.getTime())) return 'N/A';
     return d.toLocaleDateString(undefined, {
       weekday: 'short',
@@ -49,8 +56,6 @@ export const QuotaGrid = ({
   const [now, setNow] = useState(Date.now());
   const catalog = useModelCatalog();
 
-  // The live catalog outranks `pool.models`, which a cached or fallback snapshot may have
-  // populated from a stale description.
   const catalogLabelsByFamily = new Map<string, string[]>();
   for (const entry of catalog.models) {
     const labels = catalogLabelsByFamily.get(entry.family) ?? [];
@@ -89,10 +94,10 @@ export const QuotaGrid = ({
   if (quota.length === 0) {
     if (error) {
       return (
-        <div id="quotaGrid" class="mb-8 grid grid-cols-1">
+        <div id="quotaGrid" class="grid grid-cols-1">
           <div
             role="alert"
-            class="flex flex-col gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 p-5 text-pine-love shadow-sm sm:p-6"
+            class="flex flex-col gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 p-5 text-pine-love sm:p-6"
           >
             <div class="flex items-center justify-between">
               <span class="text-sm font-semibold">[Error] Sentry Telemetry Offline</span>
@@ -112,11 +117,8 @@ export const QuotaGrid = ({
       );
     }
     return (
-      <div
-        id="quotaGrid"
-        class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3"
-      >
-        <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-5 shadow-sm sm:p-6">
+      <div id="quotaGrid" class="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
+        <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-5 sm:p-6">
           <p class="text-sm text-pine-subtle">Probing Antigravity Language Server models...</p>
         </div>
       </div>
@@ -124,16 +126,18 @@ export const QuotaGrid = ({
   }
 
   return (
-    <div id="quotaGrid" class="mb-8 grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
+    <div
+      id="quotaGrid"
+      class="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-pine-highlight bg-pine-highlight/70 md:grid-cols-2 xl:grid-cols-3"
+    >
       {quota.map((pool) => {
         const poolDisplayName = pool.displayName || pool.family || pool.poolId;
         const weeklyFraction = pool.weekly?.remainingFraction ?? pool.remainingFraction;
         const weeklyHours = pool.weekly?.hoursUntilReset ?? pool.hoursUntilReset;
         const weeklyResetTime = pool.weekly?.resetTime ?? pool.resetTime;
-        const weeklyPct = Math.round(weeklyFraction * 100);
+        const weeklyPct = percentFloor(weeklyFraction);
         const shortTerm = pool.shortTerm;
-        const shortTermPct = shortTerm ? Math.round(shortTerm.remainingFraction * 100) : null;
-        // Upstream reports a 5-hour bucket without a live fraction when the window is disabled.
+        const shortTermPct = shortTerm ? percentFloor(shortTerm.remainingFraction) : null;
         const hasShortTermBar =
           shortTerm !== undefined && shortTerm.disabled !== true && shortTermPct !== null;
 
@@ -142,9 +146,8 @@ export const QuotaGrid = ({
           catalogModels && catalogModels.length > 0 ? catalogModels : (pool.models ?? []);
         const poolModelsLabel = poolModels.join(', ') || 'N/A';
 
-        // Badges use the effective budget: min(weekly, shortTerm).
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
-        let badgeClasses = 'bg-pine-iris/20 text-pine-iris border border-pine-iris';
+        let statusTone = 'text-pine-iris';
         let barColor = 'bg-pine-iris';
         let statusText = 'Ready to burn';
 
@@ -153,28 +156,27 @@ export const QuotaGrid = ({
           shortTermPct <= minHeadroomPercent &&
           weeklyPct > minHeadroomPercent
         ) {
-          badgeClasses = 'bg-pine-gold/20 text-pine-gold border border-pine-gold';
+          statusTone = 'text-pine-gold';
           barColor = 'bg-pine-gold';
           statusText = '5h Burst Cooldown';
         } else if (weeklyPct === 0) {
-          badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
+          statusTone = 'text-pine-foam';
           barColor = 'bg-pine-pine';
           statusText = 'Tapped out';
         } else if (effectivePct <= minHeadroomPercent) {
-          // At or below the safety floor, dispatch is blocked by default
-          badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
+          statusTone = 'text-pine-foam';
           barColor = 'bg-pine-foam';
           statusText = minHeadroomPercent > 0 ? 'Safety floor' : 'Well spent';
         } else if (effectivePct <= 25) {
-          badgeClasses = 'bg-pine-pine/20 text-pine-foam border border-pine-pine';
+          statusTone = 'text-pine-foam';
           barColor = 'bg-pine-foam';
           statusText = 'Well spent';
         } else if (weeklyHours <= 3) {
-          badgeClasses = 'bg-pine-love/20 text-pine-love border border-pine-love';
+          statusTone = 'text-pine-love';
           barColor = 'bg-pine-love';
           statusText = 'Use it or lose it';
         } else if (weeklyHours <= 12) {
-          badgeClasses = 'bg-pine-gold/20 text-pine-gold border border-pine-gold';
+          statusTone = 'text-pine-gold';
           barColor = 'bg-pine-gold';
           statusText = 'Expiring soon';
         }
@@ -190,7 +192,6 @@ export const QuotaGrid = ({
             : `floor in ~${Math.round(projection.hoursUntilFloor)}h`
           : null;
 
-        // Pace needs a live window: a pool past its floor or past its reset has nothing to pace.
         let paceLabel = null;
         if (weeklyPct <= minHeadroomPercent) {
           paceLabel = (
@@ -213,13 +214,13 @@ export const QuotaGrid = ({
         return (
           <div
             key={pool.poolId}
-            class="flex h-full flex-col justify-start gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm transition-colors hover:border-pine-iris/50 sm:p-5"
+            class="flex h-full flex-col justify-start gap-4 bg-pine-surface p-4 sm:p-5"
           >
             {/* Fixed header height keeps the Weekly Limit bars on one line across cards. */}
             <div class="flex h-17 items-start justify-between gap-3">
               <div class="min-w-0 flex-1">
                 <h2
-                  class="line-clamp-2 text-base/snug font-semibold text-pine-text sm:text-lg"
+                  class="line-clamp-2 text-base/snug font-semibold text-pine-text"
                   title={poolDisplayName}
                 >
                   {poolDisplayName}
@@ -228,18 +229,18 @@ export const QuotaGrid = ({
                   {poolModelsLabel}
                 </p>
               </div>
-              <span
-                class={`shrink-0 rounded-sm px-2.5 py-1 text-xs font-bold tracking-wider whitespace-nowrap uppercase ${badgeClasses}`}
-              >
-                {statusText}
+              <span class={`flex shrink-0 items-center gap-1.5 ${statusTone}`}>
+                <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
+                <span class="font-mono text-xs tracking-wider whitespace-nowrap uppercase">
+                  {statusText}
+                </span>
               </span>
             </div>
 
-            {/* Quota 1: Weekly Limit */}
             <div class="flex flex-col gap-2 border-t border-pine-highlight/40 pt-2">
-              <div class="flex items-center justify-between text-sm font-semibold sm:text-base">
-                <span class="font-medium text-pine-text">Weekly Limit</span>
-                <span class="font-mono text-sm font-bold text-pine-text sm:text-base">
+              <div class="flex items-center justify-between gap-3">
+                <span class="text-xs tracking-wider text-pine-subtle uppercase">Weekly Limit</span>
+                <span class="text-right text-2xl font-semibold tracking-tight text-pine-text tabular-nums">
                   {weeklyPct}%
                 </span>
               </div>
@@ -249,56 +250,71 @@ export const QuotaGrid = ({
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-label={`${pool.displayName || pool.poolId} weekly quota remaining`}
-                class="h-2 overflow-hidden rounded-full bg-pine-overlay sm:h-2.5"
+                class="relative h-1 bg-pine-sunken"
               >
                 <div
-                  class={`h-full rounded-full transition-all duration-500 ease-out ${barColor}`}
+                  class={`h-full transition-all duration-500 ease-out ${barColor}`}
                   style={{ width: `${Math.min(100, Math.max(0, weeklyPct))}%` }}
                 />
+                {projection && projection.projectedRemainingAtResetPercent < weeklyPct && (
+                  <div
+                    class="absolute inset-y-0"
+                    style={{
+                      left: `${Math.min(100, Math.max(0, projection.projectedRemainingAtResetPercent))}%`,
+                      width: `${Math.min(100, weeklyPct) - Math.max(0, projection.projectedRemainingAtResetPercent)}%`,
+                      backgroundImage:
+                        'repeating-linear-gradient(45deg, var(--accent-amber) 0 1px, transparent 1px 5px)',
+                      opacity: 0.55,
+                    }}
+                    aria-hidden="true"
+                  />
+                )}
+                <div
+                  class="absolute inset-y-0 w-px bg-pine-text/70"
+                  style={{ left: `${Math.min(100, Math.max(0, minHeadroomPercent))}%` }}
+                  title={`Dispatching stops below ${minHeadroomPercent}%`}
+                  aria-hidden="true"
+                />
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs text-pine-subtle">
-                <span class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-mono font-medium text-pine-text">
-                    Resets in {weeklyCountdown}
-                  </span>
-                  {paceLabel && (
-                    <>
-                      <span aria-hidden="true" class="text-pine-muted">
-                        ·
-                      </span>
-                      {paceLabel}
-                    </>
-                  )}
-                  {projectionText && (
-                    <>
-                      <span aria-hidden="true" class="text-pine-muted">
-                        ·
-                      </span>
-                      <span
-                        class="whitespace-nowrap"
-                        title={
-                          projection
-                            ? `Projected from a burn rate of ${projection.burnRatePerHour.toFixed(1)}%/hour`
-                            : undefined
-                        }
-                      >
-                        {projectionText}
-                      </span>
-                    </>
-                  )}
-                </span>
-                <span class="font-mono text-xs whitespace-nowrap text-pine-subtle">
-                  {weeklyDateStr}
-                </span>
+              <div class="mt-0.5 flex flex-col gap-0.5 text-xs text-pine-subtle">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-mono text-pine-text">Resets in {weeklyCountdown}</span>
+                  <span class="font-mono whitespace-nowrap">{weeklyDateStr}</span>
+                </div>
+                {(paceLabel || projectionText) && (
+                  <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
+                    <span class="flex flex-wrap items-center gap-1.5">
+                      {paceLabel && <span>{paceLabel}</span>}
+                      {paceLabel && projectionText && (
+                        <span aria-hidden="true" class="text-pine-muted">
+                          ·
+                        </span>
+                      )}
+                      {projectionText && (
+                        <span
+                          class="whitespace-nowrap"
+                          title={
+                            projection
+                              ? `Projected from a burn rate of ${burnPercentPerHour(projection).toFixed(1)}%/hour`
+                              : undefined
+                          }
+                        >
+                          {projectionText}
+                        </span>
+                      )}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
-            {/* The 5-hour bar renders only for a live window; disabled or absent collapses to one row */}
             {hasShortTermBar && shortTerm && shortTermPct !== null ? (
               <div class="mt-auto flex flex-col gap-1.5 border-t border-pine-highlight/30 pt-2">
-                <div class="flex items-center justify-between text-sm sm:text-base">
-                  <span class="font-medium text-pine-subtle">5-Hour Rolling Limit</span>
-                  <span class="font-mono text-sm font-bold text-pine-text sm:text-base">
+                <div class="flex items-center justify-between gap-3">
+                  <span class="text-xs tracking-wider text-pine-subtle uppercase">
+                    5-Hour Rolling Limit
+                  </span>
+                  <span class="text-right text-lg font-semibold text-pine-text tabular-nums">
                     {shortTermPct}%
                   </span>
                 </div>
@@ -308,15 +324,15 @@ export const QuotaGrid = ({
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-label={`${pool.displayName || pool.poolId} 5-hour rolling limit remaining`}
-                  class="h-1.5 overflow-hidden rounded-full bg-pine-overlay sm:h-2"
+                  class="h-1 overflow-hidden bg-pine-sunken"
                 >
                   <div
-                    class="h-full rounded-full bg-pine-iris/75 transition-all duration-500 ease-out"
+                    class="h-full bg-pine-iris/75 transition-all duration-500 ease-out"
                     style={{ width: `${Math.min(100, Math.max(0, shortTermPct))}%` }}
                   />
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
-                  <span>Capacity throttle</span>
+                  <span>Rolling window</span>
                   <span>
                     Refreshes in {getLiveCountdown(shortTerm.resetTime, shortTerm.hoursUntilReset)}
                   </span>

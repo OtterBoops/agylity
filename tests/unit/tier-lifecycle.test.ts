@@ -46,14 +46,14 @@ const dispatchBacklogTask = (coordinator: Coordinator, dir: string) => {
     title: 'Backlog item',
     prompt: 'Do the thing',
     repositoryId: 'agylity',
-    models: ['gemini-3.8-flash'],
+    cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
   });
   const task = coordinator.queue.enqueue({
     repositoryId: 'agylity',
     repositoryName: 'agylity',
     repositoryPath: dir,
     prompt: 'Do the thing',
-    model: 'gemini-3.8-flash',
+    cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
     tier: 'backlog',
     originId: backlog.id,
   });
@@ -137,17 +137,25 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
         title: 'B',
         prompt: 'P',
         repositoryId: 'agylity',
-        models: ['gemini-3.8-flash'],
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
       });
       const updated = coordinator.queue.updateBacklogTask(created.id, {
-        models: 'gemini-3.8-flash' as any,
+        cascade: 'gemini-4-hydrogen' as any,
         attemptCount: 'nope' as any,
-        effort: 'ultra' as any,
-      });
-      assert.deepEqual(updated?.models, ['gemini-3.8-flash']);
+        // A legacy scalar effort is not a record field any more, so it cannot resurrect one.
+        effort: 'ultra',
+      } as any);
+      // A single id is one hop, and a garbage value falls back to the hop a string still names.
+      assert.deepEqual(updated?.cascade, [{ model: 'gemini-4-hydrogen', effort: 'medium' }]);
       assert.equal(updated?.attemptCount, 0);
-      assert.equal(updated?.effort, 'high');
+      assert.equal((updated as any)?.effort, undefined);
       assert.equal(updated?.githubIssueNumber, undefined);
+
+      // An unknown effort is clamped to the model's default, never persisted verbatim.
+      const clamped = coordinator.queue.updateBacklogTask(created.id, {
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'ultra' as any }],
+      });
+      assert.deepEqual(clamped?.cascade, [{ model: 'gemini-4-hydrogen', effort: 'medium' }]);
 
       const withIssue = coordinator.queue.updateBacklogTask(created.id, { githubIssueNumber: 42 });
       assert.equal(withIssue?.githubIssueNumber, 42);
@@ -182,7 +190,10 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
         title: 'Nightly sweep',
         prompt: 'Sweep the repo',
         repositoryId: 'agylity',
-        models: ['gemini-3.8-flash', 'claude-sonnet-5-5'],
+        cascade: [
+          { model: 'gemini-4-hydrogen', effort: 'medium' },
+          { model: 'claude-sonnet-5-5', effort: 'high' },
+        ],
         triggerBeforeResetHours: 12,
         minHeadroomPercent: 10,
       });
@@ -199,7 +210,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
       const first = await coordinator.triggerEligibleRoutines([flash, claude]);
       assert.equal(first.length, 1);
-      assert.match(first[0]?.model ?? '', /flash/);
+      assert.match(first[0]?.model ?? '', /hydrogen/);
 
       // 2. That run fails, which burns the flash cycle.
       coordinator.queue.updateTaskStatus(first[0]!.id, {
@@ -245,10 +256,119 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'chain test',
-        models: ['claude-sonnet-5-5', 'gemini-3.8-flash'],
+        cascade: [
+          { model: 'claude-sonnet-5-5', effort: 'high' },
+          { model: 'gemini-4-hydrogen', effort: 'low' },
+        ],
       });
       assert.equal(res.success, true);
-      assert.equal(res.model, 'gemini-3.8-flash');
+      assert.equal(res.model, 'gemini-4-hydrogen');
+      // The winning hop's effort travels with it: the first hop's 'high' must not leak through.
+      const queued = coordinator.queue.getTask(res.taskId!);
+      assert.equal(queued?.model, 'gemini-4-hydrogen');
+      assert.equal(queued?.effort, 'low');
+      assert.deepEqual(queued?.cascade[0], { model: 'gemini-4-hydrogen', effort: 'low' });
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it("dispatches a cascade's first hop with that hop's own effort", async () => {
+    const { dir, cleanup } = makeTempDir('tier_cascade_first_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([pool('gemini-flash', 0.8), pool('claude', 0.8)]);
+      const res = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'first hop wins',
+        cascade: [
+          { model: 'gemini-4-hydrogen', effort: 'low' },
+          { model: 'claude-sonnet-5-5', effort: 'xhigh' },
+        ],
+      });
+
+      assert.equal(res.success, true);
+      assert.equal(res.model, 'gemini-4-hydrogen');
+      assert.equal(res.poolFamily, 'gemini-flash');
+
+      const queued = coordinator.queue.getTask(res.taskId!);
+      assert.equal(queued?.model, 'gemini-4-hydrogen');
+      // The hop's effort, not the model's default ('medium') and not a global scalar.
+      assert.equal(queued?.effort, 'low');
+      // The rest of the chain stays available to the runner as ordered failover.
+      assert.deepEqual(
+        queued?.cascade.map((hop) => hop.model),
+        ['gemini-4-hydrogen', 'claude-sonnet-5-5']
+      );
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it("picks the second hop and carries ITS effort when the first hop's pool is under the floor", async () => {
+    const { dir, cleanup } = makeTempDir('tier_cascade_blocked_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      // claude is below the floor, flash is healthy: hop 0 can never run.
+      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-flash', 0.8)]);
+      const res = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'second hop wins',
+        cascade: [
+          { model: 'claude-sonnet-5-5', effort: 'low' },
+          { model: 'gemini-4-hydrogen', effort: 'xhigh' },
+        ],
+      });
+
+      assert.equal(res.success, true);
+      assert.equal(res.model, 'gemini-4-hydrogen');
+
+      const queued = coordinator.queue.getTask(res.taskId!);
+      assert.equal(queued?.model, 'gemini-4-hydrogen');
+      // xhigh belongs to the winning hop; the blocked hop's 'low' must not travel with it.
+      assert.equal(queued?.effort, 'xhigh');
+      assert.ok(
+        queued?.cascade.some((hop) => hop.model === 'gemini-4-hydrogen' && hop.effort === 'xhigh'),
+        'the chosen hop must keep its own effort inside the stored chain'
+      );
+      assert.notEqual(queued?.effort, 'low');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('skips a hop whose pool has dispatch disabled instead of borrowing its effort', async () => {
+    const { dir, cleanup } = makeTempDir('tier_cascade_disabled_');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+    const configStore = new ConfigStore(db, {
+      coordinatorEnabled: true,
+      repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
+      poolPolicies: {
+        claude: { alertsEnabled: true, dispatchEnabled: false },
+        'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+        'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+      },
+    });
+    const coordinator = new Coordinator({ configStore });
+    try {
+      // Both pools are healthy, so only the dispatch switch can reject hop 0.
+      coordinator.onQuotaUpdated([pool('claude', 0.9), pool('gemini-flash', 0.9)]);
+      const res = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'disabled pool wins nothing',
+        cascade: [
+          { model: 'claude-sonnet-5-5', effort: 'low' },
+          { model: 'gemini-4-hydrogen', effort: 'xhigh' },
+        ],
+      });
+
+      assert.equal(res.success, true);
+      assert.equal(res.model, 'gemini-4-hydrogen');
+      const queued = coordinator.queue.getTask(res.taskId!);
+      assert.equal(queued?.effort, 'xhigh');
     } finally {
       db.close();
       cleanup();
@@ -303,7 +423,7 @@ describe('Tier lifecycle: HTTP contracts', () => {
         repositoryName: 'agylity',
         repositoryPath: dir,
         prompt: 'already done',
-        model: 'gemini-3.8-flash',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
       });
       coordinator.queue.updateTaskStatus(finished.id, { status: 'completed' });
 
@@ -329,7 +449,7 @@ describe('Runner: a mounted working copy is never destroyed', () => {
         repositoryName: 'agylity',
         repositoryPath: dir,
         prompt: 'Stash test',
-        model: 'gemini-3.8-flash',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
       });
 
       const calls: string[][] = [];

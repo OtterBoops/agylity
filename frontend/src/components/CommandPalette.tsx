@@ -19,7 +19,7 @@ import {
 import { Icon } from './Icon';
 import { isActiveTaskStatus } from './tasks/badges';
 
-type CommandCategory = 'Navigation' | 'Action' | 'Tasks & Routines';
+type CommandCategory = 'Navigation' | 'Action' | 'Tasks & Routines' | 'Execution';
 
 interface CommandItem {
   id: string;
@@ -33,14 +33,24 @@ interface CommandItem {
 interface LiveTasks {
   routines: RoutineTaskRecord[];
   backlog: BacklogTaskRecord[];
-  executions: SwarmTask[];
 }
 
-const NO_LIVE_TASKS: LiveTasks = { routines: [], backlog: [], executions: [] };
+const NO_LIVE_TASKS: LiveTasks = { routines: [], backlog: [] };
 
 const LABEL_MAX = 72;
+const EXECUTION_DEBOUNCE_MS = 175;
+const EXECUTION_LIMIT = 8;
 
-// Rows are labelled from human fields only: a raw UUID is unreadable in a scannable result list.
+type ExecutionQuery = { taskNumber: number } | { q: string } | null;
+
+const parseExecutionQuery = (raw: string): ExecutionQuery => {
+  const text = raw.trim();
+  const numbered = /^#0*(\d+)$/.exec(text);
+  if (numbered) return { taskNumber: Number(numbered[1]) };
+  const needle = text.startsWith('#') ? text.slice(1).trim() : text;
+  return needle.length >= 2 ? { q: needle } : null;
+};
+
 const taskLabel = (taskNumber: number | undefined, title?: string, prompt?: string): string => {
   const raw = title?.trim() || prompt?.trim() || 'Untitled task';
   const oneLine = raw.replace(/\s+/g, ' ');
@@ -66,9 +76,11 @@ export const CommandPalette = ({
   const [query, setQuery] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [liveTasks, setLiveTasks] = useState<LiveTasks>(NO_LIVE_TASKS);
+  const [executions, setExecutions] = useState<SwarmTask[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const liveRequested = useRef(false);
+  const currentExecutionQuery = useRef('');
 
   const commands: CommandItem[] = [
     {
@@ -199,46 +211,56 @@ export const CommandPalette = ({
     },
   ];
 
-  const liveCommands: CommandItem[] = [
-    ...liveTasks.routines.map((routine) => ({
-      id: `routine-${routine.id}`,
-      title: taskLabel(routine.taskNumber, routine.title, routine.prompt),
-      category: 'Tasks & Routines' as const,
-      icon: faCheckToSlot,
-      action: () => {
-        route(`/tasks?tab=schedules&id=${encodeURIComponent(routine.id)}`);
-        onClose();
-      },
-    })),
-    ...liveTasks.backlog.map((item) => ({
-      id: `backlog-${item.id}`,
-      title: taskLabel(item.taskNumber, item.title, item.prompt),
-      category: 'Tasks & Routines' as const,
-      icon: faCheckToSlot,
-      action: () => {
-        route(`/tasks?tab=schedules&id=${encodeURIComponent(item.id)}`);
-        onClose();
-      },
-    })),
-    ...liveTasks.executions.map((task) => ({
+  const routineCommands: CommandItem[] = liveTasks.routines.map((routine) => ({
+    id: `routine-${routine.id}`,
+    title: taskLabel(routine.taskNumber, routine.title, routine.prompt),
+    category: 'Tasks & Routines',
+    icon: faCheckToSlot,
+    action: () => {
+      route(`/tasks?tab=schedules&id=${encodeURIComponent(routine.id)}`);
+      onClose();
+    },
+  }));
+
+  const backlogCommands: CommandItem[] = liveTasks.backlog.map((item) => ({
+    id: `backlog-${item.id}`,
+    title: taskLabel(item.taskNumber, item.title, item.prompt),
+    category: 'Tasks & Routines',
+    icon: faCheckToSlot,
+    action: () => {
+      route(`/tasks?tab=schedules&id=${encodeURIComponent(item.id)}`);
+      onClose();
+    },
+  }));
+
+  const staticTitles = new Set(commands.map((c) => c.title.toLowerCase()));
+  const executionCommands: CommandItem[] = executions
+    .map((task) => ({
       id: `execution-${task.id}`,
       title: taskLabel(task.taskNumber, task.title, task.prompt),
-      category: 'Tasks & Routines' as const,
+      category: 'Execution' as const,
       icon: faTerminal,
+      task,
+    }))
+    .filter((row) => !staticTitles.has(row.title.toLowerCase()))
+    .map(({ task, ...row }) => ({
+      ...row,
       action: () => {
         const tab = isActiveTaskStatus(task.status) ? 'schedules' : 'executions';
         route(`/tasks?tab=${tab}&id=${encodeURIComponent(task.id)}`);
         onClose();
       },
-    })),
-  ];
-
-  const allCommands = [...commands, ...liveCommands];
+    }));
 
   const q = query.trim().toLowerCase();
-  const filtered = allCommands.filter(
-    (c) => !q || c.title.toLowerCase().includes(q) || c.category.toLowerCase().includes(q)
-  );
+  const matchesLocal = (c: CommandItem) =>
+    !q || c.title.toLowerCase().includes(q) || c.id.toLowerCase().includes(q);
+  const filtered = [
+    ...commands.filter(matchesLocal),
+    ...routineCommands.filter(matchesLocal),
+    ...backlogCommands.filter(matchesLocal),
+    ...executionCommands,
+  ];
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -253,7 +275,6 @@ export const CommandPalette = ({
     }
   }, [isOpen]);
 
-  // One fetch per open: refetching as the user types would hammer the control plane per keystroke.
   useEffect(() => {
     if (!isOpen || !coordinatorEnabled) {
       liveRequested.current = false;
@@ -263,13 +284,13 @@ export const CommandPalette = ({
     if (liveRequested.current) return;
     liveRequested.current = true;
     let cancelled = false;
-    Promise.all([getTasks(20), getRoutines(), getBacklogTasks()])
-      .then(([executions, routines, backlog]) => {
+    Promise.all([getRoutines(), getBacklogTasks()])
+      .then(([routines, backlog]) => {
         if (cancelled) return;
-        setLiveTasks({ executions, routines, backlog });
+        setLiveTasks({ routines, backlog });
       })
       .catch(() => {
-        // Offline control plane: static commands must still work, so failures are swallowed.
+        // Offline control plane: static commands still work.
       });
     return () => {
       cancelled = true;
@@ -277,10 +298,40 @@ export const CommandPalette = ({
   }, [isOpen, coordinatorEnabled]);
 
   useEffect(() => {
+    if (!isOpen || !coordinatorEnabled) {
+      currentExecutionQuery.current = '';
+      setExecutions([]);
+      return;
+    }
+    const parsed = parseExecutionQuery(query);
+    const key = query.trim();
+    currentExecutionQuery.current = key;
+    if (!parsed) {
+      setExecutions([]);
+      return;
+    }
+    // Keep the previous rows on screen until the next page lands, so the list never blinks empty.
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      getTasks({ ...parsed, limit: EXECUTION_LIMIT }, controller.signal)
+        .then((page) => {
+          if (controller.signal.aborted || currentExecutionQuery.current !== key) return;
+          setExecutions(page?.tasks ?? []);
+        })
+        .catch(() => {
+          // Aborted or offline: the previous rows stay readable.
+        });
+    }, EXECUTION_DEBOUNCE_MS);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [isOpen, coordinatorEnabled, query]);
+
+  useEffect(() => {
     setSelectedIndex(0);
   }, [query]);
 
-  // Live results land while the list is open; a stale index would make Enter a no-op.
   useEffect(() => {
     setSelectedIndex((prev) => (prev < filtered.length ? prev : 0));
   }, [filtered.length]);
@@ -318,9 +369,8 @@ export const CommandPalette = ({
       onClose={onClose}
       onCancel={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+      class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs"
     >
-      {/* Search Input Bar */}
       <div class="flex items-center gap-3 border-b border-pine-highlight px-4 py-3">
         <Icon icon={faSearch} class="size-4 text-pine-muted" />
         <input
@@ -340,7 +390,6 @@ export const CommandPalette = ({
         </kbd>
       </div>
 
-      {/* Command list */}
       <div class="max-h-80 overflow-y-auto p-2">
         {filtered.length === 0 ? (
           <div class="px-4 py-8 text-center text-xs text-pine-muted">
@@ -388,9 +437,16 @@ export const CommandPalette = ({
             );
           })
         )}
+        {!q && (
+          <div class="mt-2 flex items-center gap-2 border-t border-pine-highlight/60 px-3 pt-3 pb-1 text-xs text-pine-subtle">
+            <kbd class="rounded-sm border border-pine-highlight bg-pine-overlay px-1.5 py-0.5 font-mono text-xs text-pine-subtle">
+              #
+            </kbd>
+            <span>Search executions by task number or title</span>
+          </div>
+        )}
       </div>
 
-      {/* Footer shortcuts hint */}
       <div class="flex items-center justify-between border-t border-pine-highlight bg-pine-overlay/30 px-3 py-2 text-xs text-pine-muted">
         <div class="flex items-center gap-3">
           <span>

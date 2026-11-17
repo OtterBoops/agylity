@@ -1,11 +1,9 @@
 import { z } from 'zod';
 import { logger } from '../logs/logger.js';
 
-// A malformed env value must degrade to the built-in default, never crash the daemon at boot.
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
 
-// Safe boolean preprocessor preventing Boolean('false') === true coercion trap
 export const booleanEnv = z.preprocess((val) => {
   if (typeof val === 'boolean') return val;
   if (typeof val === 'string') {
@@ -16,13 +14,10 @@ export const booleanEnv = z.preprocess((val) => {
   return val;
 }, z.boolean());
 
-/** Default milestone hours, referenced by the parser, the schema and the evaluator. */
 export const DEFAULT_MILESTONE_HOURS = [48, 24, 12];
 
-/** Default pre-reset trigger window, shared by the coordinator, the queue DDL and the routines API. */
 export const DEFAULT_QUOTA_BURN_MAX_HOURS = 4;
 
-// Safe comma-separated milestone parser ("48,24,12" -> [48, 24, 12])
 export const milestoneHoursEnv = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val.map(Number).filter((n) => !Number.isNaN(n) && n > 0);
@@ -38,7 +33,6 @@ export const milestoneHoursEnv = z.preprocess((val) => {
   return val;
 }, z.array(z.number().positive()).min(1).default(DEFAULT_MILESTONE_HOURS));
 
-// Repository schema
 export const RepositorySchema = z.preprocess(
   (val) => {
     if (typeof val === 'object' && val !== null) {
@@ -110,7 +104,6 @@ export const DEFAULT_POOL_POLICIES: PoolPolicies = {
   claude: { alertsEnabled: false, dispatchEnabled: false },
 };
 
-// Repositories JSON parser
 export const RepositoriesJsonSchema = z.preprocess((val) => {
   if (Array.isArray(val)) return val;
   if (typeof val === 'string') {
@@ -128,7 +121,6 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
 export const PrPolicyEnum = z.enum(['docs_only', 'all', 'none']);
 export type PrPolicy = z.infer<typeof PrPolicyEnum>;
 
-// Notification channels
 export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);
 export type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
 
@@ -149,9 +141,7 @@ export const NotificationChannelsSchema = z.preprocess((val) => {
   return [];
 }, z.array(NotificationChannelEnum).default([]));
 
-// Raw Environment Schema for process.env ingestion
 export const RawEnvSchema = z.object({
-  /* Notification Channels */
   NOTIFICATION_CHANNELS: z.string().optional(),
   NOTIFICATION_CHANNEL: NotificationChannelEnum.optional(),
   NOTIFICATION_WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
@@ -164,8 +154,6 @@ export const RawEnvSchema = z.object({
   DISCORD_NOTIFICATION_CHANNEL_ID: z.string().optional(),
   DISCORD_OWNER_USER_ID: z.string().optional(),
   DISCORD_PING_OWNER: z.string().optional(),
-
-  /* Quota Sentry & RPC */
   ANTIGRAVITY_ENDPOINT_URL: z.string().url().optional().or(z.literal('')),
   ANTIGRAVITY_CSRF_TOKEN: z.string().optional(),
   QUOTA_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(30).optional(),
@@ -173,10 +161,7 @@ export const RawEnvSchema = z.object({
   QUOTA_MILESTONE_HOURS: z.string().optional(),
   MIN_DISPATCH_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
 
-  /* Repositories */
   REPOSITORIES_JSON: z.string().optional(),
-
-  /* Optional Coordinator */
   COORDINATOR_ENABLED: z.string().optional(),
   ROUTINES_ENABLED: z.string().optional(),
   GITHUB_BACKLOG_LABEL: z.string().optional(),
@@ -187,7 +172,6 @@ export const RawEnvSchema = z.object({
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
 
-  /* Optional Web UI */
   WEB_UI_ENABLED: z.string().optional(),
   ALLOW_OVERAGE: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
@@ -196,17 +180,14 @@ export const RawEnvSchema = z.object({
   WEB_UI_AUTH_EXEMPT_LOCALHOST: z.string().optional(),
   BASE_URL: z.string().url().optional().or(z.literal('')),
 
-  /* In-App Network & IP Security */
   ALLOWED_IP_RANGES: z.string().optional(),
   TRUSTED_PROXIES: z.string().optional(),
 
-  /* Logging */
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).optional(),
 });
 
 export type RawEnv = z.infer<typeof RawEnvSchema>;
 
-// Full Typed Application Configuration Contract
 export interface AppConfig {
   notificationChannel: NotificationChannelType;
   notificationChannels: NotificationChannelType[];
@@ -241,9 +222,7 @@ export interface AppConfig {
   quotaBurnMinHeadroomPercent: number;
 
   webUiEnabled: boolean;
-  // Public origin of the dashboard; notification embeds carry a link only when this is set.
   baseUrl?: string;
-  /** Whether usage past 0% quota may draw billable credits; the language server does not report this. */
   allowOverage: boolean;
   webUiPort: number;
   webUiHost: string;
@@ -258,7 +237,6 @@ export interface AppConfig {
 
 export type ResolvedConfig = AppConfig;
 
-// Authoritative env-var spelling per config key; the reverse lookup and secret env names derive from it.
 export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   notificationChannels: 'NOTIFICATION_CHANNELS',
   notificationChannel: 'NOTIFICATION_CHANNEL',
@@ -299,12 +277,10 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   logLevel: 'LOG_LEVEL',
 };
 
-/** Env spellings accepted as aliases; not the primary name for their key. */
 export const CONFIG_ENV_ALIASES: Record<string, keyof AppConfig> = {
   WEBHOOK_URL: 'notificationWebhookUrl',
 };
 
-/** env name -> config key, so the UI API accepts either spelling. */
 export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   ...Object.fromEntries(
     Object.entries(CONFIG_KEY_ENV_NAMES).map(([key, env]) => [
@@ -315,7 +291,6 @@ export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   ...CONFIG_ENV_ALIASES,
 };
 
-/** Which config keys are secret is declared once; their env names come from the map above. */
 export const CANONICAL_SECRET_CONFIG_KEYS = [
   'discordToken',
   'antigravityCsrfToken',
@@ -326,7 +301,6 @@ export const CANONICAL_SECRET_CONFIG_KEYS = [
   'webUiAuthToken',
 ] as const satisfies readonly (keyof AppConfig)[];
 
-/** The control-plane bearer token, resolved identically wherever it is needed. */
 export const resolveWebUiAuthToken = (
   config: { webUiAuthToken?: string } | undefined,
   env: Record<string, string | undefined> = process.env
@@ -336,7 +310,6 @@ export const SECRET_CONFIG_KEY_ENV_NAMES: Record<string, string> = Object.fromEn
   CANONICAL_SECRET_CONFIG_KEYS.map((k) => [k, CONFIG_KEY_ENV_NAMES[k]!])
 );
 
-// Built-in Defaults (Level 3 Fallback)
 export const BUILTIN_DEFAULTS: AppConfig = {
   notificationChannel: 'none',
   notificationChannels: [],
@@ -352,7 +325,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
 
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
-  quotaCheckIntervalSeconds: 60, // 60 seconds (1 minute default, minimum 30s)
+  quotaCheckIntervalSeconds: 60,
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
   quotaMilestoneHours: DEFAULT_MILESTONE_HOURS,
   minDispatchHeadroomPercent: 10, // 10% safety floor preventing billable overages
@@ -363,10 +336,10 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   coordinatorEnabled: false,
   routinesEnabled: true,
   githubBacklogLabel: 'backlog',
-  defaultDispatchModel: 'gemini-3.8-flash',
+  defaultDispatchModel: 'gemini-4-hydrogen',
   defaultDispatchEffort: 'medium',
   runnerSharedSecret: undefined,
-  prPolicy: 'docs_only',
+  prPolicy: 'all',
   quotaBurnMaxHours: DEFAULT_QUOTA_BURN_MAX_HOURS,
   quotaBurnMinHeadroomPercent: 30,
 
@@ -384,6 +357,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   logLevel: 'info',
 };
 
+// A copied example env (`your_bot_token_here`) must not read as a configured secret.
 export const isTemplatePlaceholder = (val: string | undefined): boolean =>
   typeof val === 'string' && /^your_[a-z0-9_]+_here$/i.test(val.trim());
 
@@ -392,7 +366,6 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   for (const [key, value] of Object.entries(env)) {
     if (value !== undefined) {
       const trimmed = value.trim();
-      // Keep the trimmed form: consumers use the value verbatim (a padded WEB_UI_HOST fails to bind).
       sanitizedEnv[key] = trimmed === '' ? undefined : trimmed;
     }
   }
@@ -431,9 +404,7 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.WEBHOOK_CUSTOM_HEADERS) {
     try {
       result.webhookCustomHeaders = JSON.parse(parsed.WEBHOOK_CUSTOM_HEADERS);
-    } catch {
-      // Ignore invalid JSON in custom headers
-    }
+    } catch {}
   }
 
   if (parsed.DISCORD_TOKEN && !isTemplatePlaceholder(parsed.DISCORD_TOKEN)) {
@@ -624,7 +595,6 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   logLevel: z.enum(['debug', 'info', 'warn', 'error']),
 };
 
-/** Prototype-pollution guard, shared with the store's key normaliser. */
 export const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 export const validateConfigOverridePatch = (

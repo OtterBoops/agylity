@@ -97,7 +97,7 @@ export const ConnectionInspectorModal = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // fallback
+      // Clipboard access can be blocked; the copy just does not happen.
     }
   };
 
@@ -112,9 +112,8 @@ export const ConnectionInspectorModal = ({
       onClose={onClose}
       onCancel={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+      class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
-      {/* Header */}
       <div class="flex items-center justify-between gap-3 border-b border-pine-highlight pb-4">
         <div class="flex min-w-0 items-center gap-2.5">
           <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay text-pine-iris">
@@ -195,7 +194,6 @@ export const ConnectionInspectorModal = ({
         </div>
       </dl>
 
-      {/* Modal Footer */}
       <div class="mt-5 flex items-center border-t border-pine-highlight pt-4">
         <button
           type="button"

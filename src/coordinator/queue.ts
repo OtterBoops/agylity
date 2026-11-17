@@ -1,15 +1,18 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
-import { migrateColumns, renderColumns, type ColumnSpec } from '../storage/schema.js';
+import { renderColumns, type ColumnSpec } from '../storage/schema.js';
 import type { QuotaFamily } from '../sentry/models.js';
 import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import {
   BacklogStatusSchema,
-  ReasoningEffortSchema,
+  CATALOG_BY_ID,
+  normalizeCascade,
   resolvePoolFamilyForModel,
+  resolveReasoningEffortForModel,
   type BacklogStatus,
+  type CascadeHop,
   type ReasoningEffort,
   type ScheduleMode,
   type TaskStatus,
@@ -18,6 +21,7 @@ import {
   isTerminalTaskStatus,
 } from './models.js';
 import { logger } from '../logs/logger.js';
+import { ensureSentryStateSchema } from '../sentry/store.js';
 
 export type { TaskTier, BacklogStatus };
 
@@ -48,8 +52,7 @@ export interface SwarmTask {
   scheduleMode: ScheduleMode;
   requiredLabels: string[];
   model: string;
-  /** Ordered fallbacks the runner may retry with when upstream capacity is exhausted. */
-  candidateModels: string[];
+  cascade: CascadeHop[];
   poolFamily: QuotaFamily;
   effort: ReasoningEffort;
   allowOverage: boolean;
@@ -57,7 +60,6 @@ export interface SwarmTask {
   autoCreatePr: boolean;
   prUrl?: string;
   expiresAt?: string;
-  standingTaskId?: string;
   verifyCommand?: string;
   status: TaskStatus;
   runnerId?: string;
@@ -91,14 +93,11 @@ export interface EnqueueTaskInput {
   prPolicy?: PrPolicy;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
-  model: string;
-  candidateModels?: string[];
-  effort?: ReasoningEffort;
+  cascade?: readonly CascadeHop[];
   allowOverage?: boolean;
   pushBranch?: boolean;
   autoCreatePr?: boolean;
   expiresAt?: string;
-  standingTaskId?: string;
   verifyCommand?: string;
 }
 
@@ -122,6 +121,18 @@ export interface TaskStatusPatch {
   numTurns?: number;
   totalTokens?: number;
   thinkingTokens?: number;
+}
+
+export interface TaskListFilters {
+  status?: TaskStatus;
+  scheduleMode?: ScheduleMode;
+  q?: string;
+  taskNumber?: number;
+}
+
+export interface TaskListOptions extends TaskListFilters {
+  limit?: number;
+  offset?: number;
 }
 
 export interface SwarmRunnerRecord {
@@ -170,8 +181,7 @@ export interface BacklogTaskRecord {
   title: string;
   prompt: string;
   repositoryId: string;
-  models: string[];
-  effort: ReasoningEffort;
+  cascade: CascadeHop[];
   verifyCommand?: string;
   autoCreatePr: boolean;
   priorityOrder: number;
@@ -192,8 +202,7 @@ export interface RoutineTaskRecord {
   title: string;
   prompt: string;
   repositoryId: string;
-  models: string[];
-  effort: ReasoningEffort;
+  cascade: CascadeHop[];
   verifyCommand?: string;
   autoCreatePr: boolean;
   prPolicy?: PrPolicy;
@@ -202,7 +211,6 @@ export interface RoutineTaskRecord {
   triggerBeforeResetHours: number;
   minHeadroomPercent: number;
   lastTriggeredResetTime?: string;
-  /** poolId -> the resetTime of the cycle this routine already burned for that pool. */
   lastTriggeredCycles: Record<string, string>;
   lastTaskId?: string;
   createdAt: string;
@@ -212,8 +220,6 @@ export interface RoutineTaskRecord {
 export const hashRunnerToken = (token: string): string =>
   createHash('sha256').update(token.trim()).digest('hex');
 
-// Single source of truth for every managed table: initSchema renders CREATE TABLE from these and
-// migrateSchema ALTER TABLE ADD COLUMNs any that an older database is missing.
 const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
   { name: 'task_number', ddl: 'task_number INTEGER NOT NULL DEFAULT 0' },
@@ -237,7 +243,7 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'default_branch', ddl: "default_branch TEXT NOT NULL DEFAULT 'main'" },
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'requested_by', ddl: "requested_by TEXT NOT NULL DEFAULT 'web-ui'" },
-  { name: 'pr_policy', ddl: 'pr_policy TEXT' },
+  { name: 'pr_policy', ddl: "pr_policy TEXT NOT NULL DEFAULT 'inherit'" },
   { name: 'schedule_mode', ddl: "schedule_mode TEXT NOT NULL DEFAULT 'immediate'" },
   { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'model', ddl: 'model TEXT NOT NULL' },
@@ -249,7 +255,6 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
   { name: 'pr_url', ddl: 'pr_url TEXT' },
   { name: 'expires_at', ddl: 'expires_at TEXT' },
-  { name: 'standing_task_id', ddl: 'standing_task_id TEXT' },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'queued'" },
   { name: 'runner_id', ddl: 'runner_id TEXT' },
@@ -265,6 +270,29 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'thinking_tokens', ddl: 'thinking_tokens INTEGER' },
 ];
 
+const TASK_LIST_COLUMNS = SWARM_TASK_COLUMNS.filter((column) => column.name !== 'output')
+  .map((column) => column.name)
+  .join(', ');
+
+const OUTPUT_CAP = 512 * 1024;
+
+/** Keeps the tail, which is where a failure explains itself, and says how much was dropped. */
+const capOutput = (text: string, cap: number = OUTPUT_CAP): string => {
+  if (text.length <= cap) return text;
+  const kept = text.slice(-cap);
+  return `[truncated ${text.length - kept.length} bytes]\n${kept}`;
+};
+
+/** The last `cap` UTF-16 units, nudged off a surrogate pair so the head never renders as U+FFFD. */
+export const tailWindow = (text: string, cap: number): string => {
+  let start = Math.max(0, text.length - cap);
+  if (start > 0) {
+    const code = text.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff) start -= 1;
+  }
+  return text.slice(start);
+};
+
 const BACKLOG_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
   { name: 'task_number', ddl: 'task_number INTEGER NOT NULL DEFAULT 0' },
@@ -272,9 +300,9 @@ const BACKLOG_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'repository_id', ddl: 'repository_id TEXT NOT NULL' },
   { name: 'models_json', ddl: "models_json TEXT NOT NULL DEFAULT '[]'" },
-  { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
+  { name: 'pr_policy', ddl: "pr_policy TEXT NOT NULL DEFAULT 'inherit'" },
   { name: 'priority_order', ddl: 'priority_order INTEGER NOT NULL DEFAULT 0' },
   { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'pending'" },
   { name: 'attempt_count', ddl: 'attempt_count INTEGER NOT NULL DEFAULT 0' },
@@ -300,10 +328,9 @@ const ROUTINE_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'prompt', ddl: 'prompt TEXT NOT NULL' },
   { name: 'repository_id', ddl: 'repository_id TEXT NOT NULL' },
   { name: 'models_json', ddl: "models_json TEXT NOT NULL DEFAULT '[]'" },
-  { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
-  { name: 'pr_policy', ddl: 'pr_policy TEXT' },
+  { name: 'pr_policy', ddl: "pr_policy TEXT NOT NULL DEFAULT 'inherit'" },
   { name: 'enabled', ddl: 'enabled INTEGER NOT NULL DEFAULT 1' },
   { name: 'sort_order', ddl: 'sort_order INTEGER NOT NULL DEFAULT 0' },
   {
@@ -374,18 +401,166 @@ const SCHEMA_TABLES: ReadonlyArray<{ name: string; columns: readonly ColumnSpec[
   { name: 'runtime_state', columns: RUNTIME_STATE_COLUMNS },
 ];
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_MIGRATIONS_COLUMNS: readonly ColumnSpec[] = [
+  { name: 'version', ddl: 'version INTEGER PRIMARY KEY' },
+  { name: 'name', ddl: 'name TEXT NOT NULL' },
+  { name: 'applied_at', ddl: 'applied_at TEXT NOT NULL' },
+];
+
+// Indexes are part of the schema, so they live in a migration and never in a boot-time repair.
+const V1_INDEXES = `
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_swarm_tasks_number ON swarm_tasks (task_number);
+      CREATE INDEX IF NOT EXISTS idx_swarm_tasks_queue ON swarm_tasks (status, created_at ASC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_backlog_tasks_number ON backlog_tasks (task_number);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_tasks_number ON routine_tasks (task_number);
+    `;
+
+interface Migration {
+  version: number;
+  name: string;
+  up: (db: DatabaseSync) => void;
+}
+
+/** A fresh database is built from the current column specs, so the ALTERs must tolerate re-running. */
+const tableHasColumn = (db: DatabaseSync, table: string, column: string): boolean => {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>;
+  return rows.some((row) => String(row.name) === column);
+};
+
+const legacyHopEffort = (model: string): ReasoningEffort =>
+  CATALOG_BY_ID.get(model)?.defaultEffort ?? 'medium';
+
+const upgradeStoredChain = (raw: unknown): string | null => {
+  let parsed: unknown = raw;
+  if (typeof raw === 'string') {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return null;
+
+  let changed = false;
+  const seen = new Set<string>();
+  const hops: CascadeHop[] = [];
+
+  for (const entry of parsed) {
+    if (typeof entry === 'string') {
+      changed = true;
+      const model = entry.trim();
+      if (model === '' || seen.has(model)) continue;
+      seen.add(model);
+      hops.push({ model, effort: legacyHopEffort(model) });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') {
+      changed = true;
+      continue;
+    }
+    const hop = entry as { model?: unknown; effort?: unknown };
+    const model = typeof hop.model === 'string' ? hop.model.trim() : '';
+    if (model === '' || seen.has(model)) {
+      changed = true;
+      continue;
+    }
+    seen.add(model);
+    hops.push({
+      model,
+      effort: resolveReasoningEffortForModel(
+        model,
+        typeof hop.effort === 'string' ? hop.effort : undefined
+      ),
+    });
+  }
+
+  return changed ? JSON.stringify(hops) : null;
+};
+
+const rewriteChainColumn = (db: DatabaseSync, table: string, column: string): void => {
+  const rows = db
+    .prepare(`SELECT rowid AS row_id, ${column} AS chain FROM ${table}`)
+    .all() as Array<{
+    row_id?: number;
+    chain?: unknown;
+  }>;
+  const update = db.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
+  let rewritten = 0;
+  for (const row of rows) {
+    const next = upgradeStoredChain(row.chain);
+    if (next === null) continue;
+    update.run(next, Number(row.row_id));
+    rewritten += 1;
+  }
+  if (rewritten > 0) {
+    logger.info(
+      'Migration v3: rewrote %d legacy %s.%s row(s) into cascade hops',
+      rewritten,
+      table,
+      column
+    );
+  }
+};
+
+// Forward-only. A shipped migration is never edited; a schema change is a new version.
+const MIGRATIONS: readonly Migration[] = [
+  {
+    version: 1,
+    name: 'v1_baseline',
+    up: (db) => {
+      for (const table of SCHEMA_TABLES) {
+        db.exec(
+          `CREATE TABLE IF NOT EXISTS ${table.name} (\n${renderColumns(table.columns)}\n      )`
+        );
+      }
+      db.exec(V1_INDEXES);
+    },
+  },
+  {
+    version: 2,
+    name: 'v2_sentry_state',
+    up: (db) => {
+      ensureSentryStateSchema(db);
+    },
+  },
+  {
+    version: 3,
+    name: 'v3_cascade_hops',
+    up: (db) => {
+      for (const target of [
+        { table: 'swarm_tasks', column: 'candidate_models_json' },
+        { table: 'backlog_tasks', column: 'models_json' },
+        { table: 'routine_tasks', column: 'models_json' },
+      ]) {
+        if (!tableHasColumn(db, target.table, target.column)) continue;
+        rewriteChainColumn(db, target.table, target.column);
+      }
+
+      for (const table of ['backlog_tasks', 'routine_tasks']) {
+        if (!tableHasColumn(db, table, 'effort')) continue;
+        try {
+          db.exec(`ALTER TABLE ${table} DROP COLUMN effort`);
+        } catch (dropErr: any) {
+          logger.error(
+            'Migration v3 could not drop %s.effort (%s); the column is left in place unread',
+            table,
+            dropErr?.message ?? dropErr
+          );
+        }
+      }
+    },
+  },
+];
 
 const REGISTRATION_TOKEN_RETENTION = 50;
 
 const TERMINAL_STATUS_SQL = TERMINAL_TASK_STATUSES.map((s) => `'${s}'`).join(', ');
 
-// Patches are untyped JSON: a string `models` would make `models[0]` a single character.
-const coerceModelList = (value: unknown, fallback: string[]): string[] => {
-  if (!Array.isArray(value)) return fallback;
-  const list = value.map((v) => String(v).trim()).filter(Boolean);
-  return list.length > 0 ? list : fallback;
-};
+/** The queue cannot read config, so an unconfigured cascade falls back to this catalog-wide model. */
+const QUEUE_DEFAULT_DISPATCH_MODEL = 'gemini-4-hydrogen';
+
+const coerceCascade = (value: unknown, fallbackModel?: string): CascadeHop[] =>
+  normalizeCascade(value, fallbackModel ?? QUEUE_DEFAULT_DISPATCH_MODEL);
 
 const coerceNumber = (value: unknown, fallback: number): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
@@ -394,13 +569,6 @@ const coerceNullableNumber = (value: unknown, fallback: number | null): number |
   if (value === null) return null;
   if (typeof value === 'number' && Number.isFinite(value)) return value;
   return fallback;
-};
-
-// The schemas carry defaults, so `undefined` must not be parsed: it means "keep the fallback".
-const coerceEffort = (value: unknown, fallback: ReasoningEffort): ReasoningEffort => {
-  if (value === undefined) return fallback;
-  const parsed = ReasoningEffortSchema.safeParse(value);
-  return parsed.success ? parsed.data : fallback;
 };
 
 const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogStatus => {
@@ -415,14 +583,12 @@ const coerceNullableString = (value: unknown, fallback: string | null): string |
   return typeof value === 'string' ? value : fallback;
 };
 
-// A provided-but-blank field is an absent field: the stored value survives the patch.
 const coerceTrimmedString = (value: unknown, fallback: string): string => {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
   return trimmed === '' ? fallback : trimmed;
 };
 
-/** Tolerant because the column is a cache of cycle stamps, not a source of truth. */
 const parseCycleMap = (raw: unknown): Record<string, string> => {
   if (typeof raw !== 'string' || raw.trim() === '') return {};
   try {
@@ -440,7 +606,6 @@ const parseCycleMap = (raw: unknown): Record<string, string> => {
   }
 };
 
-/** Raised for every rejected one-time registration token, so callers can map it to a 401. */
 export class RegistrationTokenError extends Error {}
 
 export class TaskQueue {
@@ -460,206 +625,46 @@ export class TaskQueue {
     } catch (err) {
       try {
         this.rawDb.exec('ROLLBACK');
-      } catch {
-        // Rollback best-effort
-      }
+      } catch {}
       throw err;
     }
   }
 
   private initSchema(): void {
-    this.rawDb.exec(`
-      CREATE TABLE IF NOT EXISTS swarm_tasks (
-${renderColumns(SWARM_TASK_COLUMNS)}
-      );
-
-      CREATE INDEX IF NOT EXISTS idx_swarm_tasks_queue
-        ON swarm_tasks (status, created_at ASC);
-
-      CREATE TABLE IF NOT EXISTS backlog_tasks (
-${renderColumns(BACKLOG_TASK_COLUMNS)}
-      );
-
-      CREATE TABLE IF NOT EXISTS routine_tasks (
-${renderColumns(ROUTINE_TASK_COLUMNS)}
-      );
-
-      CREATE TABLE IF NOT EXISTS swarm_runners (
-${renderColumns(SWARM_RUNNER_COLUMNS)}
-      );
-
-      CREATE TABLE IF NOT EXISTS swarm_runner_registrations (
-${renderColumns(RUNNER_REGISTRATION_COLUMNS)}
-      );
-
-      CREATE TABLE IF NOT EXISTS runtime_state (
-${renderColumns(RUNTIME_STATE_COLUMNS)}
-      );
-    `);
-
-    this.migrateSchema();
+    this.rawDb.exec(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (\n${renderColumns(SCHEMA_MIGRATIONS_COLUMNS)}\n      )`
+    );
+    this.applyMigrations();
   }
 
-  // Additively upgrades an existing database, except the two legacy renames that copy then drop.
-  private migrateSchema(): void {
-    // 1. Migrate legacy swarm_workers table to swarm_runners if present
-    try {
-      const hasOldWorkers = this.rawDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='swarm_workers'")
-        .get();
-      if (hasOldWorkers) {
-        this.rawDb.exec(`
-          INSERT OR IGNORE INTO swarm_runners (runner_id, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)
-          SELECT worker_id, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at FROM swarm_workers;
-          DROP TABLE swarm_workers;
-        `);
+  private applyMigrations(): void {
+    const applied = new Set(
+      (
+        this.rawDb.prepare('SELECT version FROM schema_migrations').all() as Array<{
+          version?: number;
+        }>
+      ).map((row) => Number(row.version))
+    );
+    const record = this.rawDb.prepare(
+      'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
+    );
+    for (const migration of MIGRATIONS) {
+      if (applied.has(migration.version)) continue;
+      this.rawDb.exec('BEGIN IMMEDIATE');
+      try {
+        migration.up(this.rawDb);
+        record.run(migration.version, migration.name, new Date().toISOString());
+        this.rawDb.exec('COMMIT');
+        logger.info('Applied schema migration %d (%s)', migration.version, migration.name);
+      } catch (err) {
+        try {
+          this.rawDb.exec('ROLLBACK');
+        } catch {}
+        throw err;
       }
-    } catch (err) {
-      logger.warn('Legacy swarm_workers migration failed: %s', err);
-    }
-
-    // worker_id only exists in pre-runner databases, so the statement is invalid elsewhere.
-    try {
-      const hasWorkerColumn = (
-        this.rawDb.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name?: string }>
-      ).some((column) => column.name === 'worker_id');
-      if (hasWorkerColumn) {
-        this.rawDb.exec(
-          'UPDATE swarm_tasks SET runner_id = worker_id WHERE runner_id IS NULL AND worker_id IS NOT NULL'
-        );
-      }
-    } catch (err) {
-      logger.warn('Legacy worker_id backfill failed: %s', err);
-    }
-
-    // 2. Migrate legacy standing_tasks to routine_tasks if present
-    try {
-      const hasStanding = this.rawDb
-        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='standing_tasks'")
-        .get();
-      if (hasStanding) {
-        const oldRows = this.rawDb.prepare('SELECT * FROM standing_tasks').all() as any[];
-        for (let i = 0; i < oldRows.length; i++) {
-          const row = oldRows[i];
-          const modelsJson = JSON.stringify([row.model || 'gemini-3.8-flash']);
-          this.rawDb
-            .prepare(
-              `INSERT OR IGNORE INTO routine_tasks (
-                id, task_number, title, prompt, repository_id, models_json, effort,
-                verify_command, auto_create_pr, enabled, sort_order,
-                trigger_before_reset_hours, min_headroom_percent,
-                last_triggered_reset_time, last_task_id, created_at, updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-            )
-            .run(
-              row.id,
-              i + 1,
-              row.title,
-              row.prompt,
-              row.repository_id,
-              modelsJson,
-              row.effort || 'high',
-              row.verify_command ?? null,
-              row.auto_create_pr !== undefined ? row.auto_create_pr : 1,
-              row.enabled !== undefined ? row.enabled : 1,
-              row.sort_order || 0,
-              row.trigger_before_reset_hours || DEFAULT_QUOTA_BURN_MAX_HOURS,
-              10,
-              row.last_triggered_reset_time ?? null,
-              row.last_task_id ?? null,
-              row.created_at || new Date().toISOString(),
-              row.updated_at || new Date().toISOString()
-            );
-        }
-        this.rawDb.exec('DROP TABLE standing_tasks');
-      }
-    } catch (err) {
-      logger.warn('Legacy standing_tasks migration failed: %s', err);
-    }
-
-    const versionRow = this.rawDb.prepare('PRAGMA user_version').get() as
-      { user_version?: number } | undefined;
-    const currentVersion = Number(versionRow?.user_version ?? 0);
-
-    if (currentVersion > SCHEMA_VERSION) {
-      logger.warn(
-        'Database schema version %d is ahead of the known version %d; skipping migration',
-        currentVersion,
-        SCHEMA_VERSION
-      );
-      return;
-    }
-
-    for (const table of SCHEMA_TABLES) {
-      migrateColumns(this.rawDb, table.name, table.columns);
-    }
-
-    // 3. Backfill sequential task_number on swarm_tasks if 0 or null
-    try {
-      this.rawDb.exec(`
-        UPDATE swarm_tasks
-        SET task_number = (
-          SELECT count(*) FROM swarm_tasks t2 WHERE t2.rowid <= swarm_tasks.rowid
-        )
-        WHERE task_number IS NULL OR task_number = 0;
-      `);
-    } catch (err) {
-      logger.warn('task_number backfill failed: %s', err);
-    }
-
-    // 4. Backfill human-readable title on swarm_tasks if empty
-    try {
-      const untitled = this.rawDb
-        .prepare("SELECT id, prompt FROM swarm_tasks WHERE title IS NULL OR title = ''")
-        .all() as any[];
-      for (const r of untitled) {
-        const firstLine = (
-          String(r.prompt || '')
-            .trim()
-            .split('\n')[0] ?? ''
-        )
-          .trim()
-          .slice(0, 100);
-        this.rawDb
-          .prepare('UPDATE swarm_tasks SET title = ? WHERE id = ?')
-          .run(firstLine || 'Task', r.id);
-      }
-    } catch (err) {
-      logger.warn('title backfill failed: %s', err);
-    }
-
-    // 5. Backfill tier and origin information from legacy standing task runs
-    try {
-      const standingRuns = this.rawDb
-        .prepare(
-          "SELECT id, requested_by, standing_task_id FROM swarm_tasks WHERE tier = 'immediate' AND (requested_by LIKE 'standing-task:%' OR standing_task_id IS NOT NULL)"
-        )
-        .all() as any[];
-      for (const r of standingRuns) {
-        const originId =
-          r.standing_task_id ||
-          (r.requested_by ? String(r.requested_by).replace(/^standing-task:/, '') : undefined);
-        if (originId) {
-          const routine = this.rawDb
-            .prepare('SELECT task_number, title FROM routine_tasks WHERE id = ?')
-            .get(originId) as any;
-          this.rawDb
-            .prepare(
-              "UPDATE swarm_tasks SET tier = 'routine', origin_id = ?, origin_number = ?, origin_title = ? WHERE id = ?"
-            )
-            .run(originId, routine?.task_number ?? null, routine?.title ?? null, r.id);
-        }
-      }
-    } catch (err) {
-      logger.warn('tier/origin backfill failed: %s', err);
-    }
-
-    if (currentVersion < SCHEMA_VERSION) {
-      this.rawDb.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     }
   }
 
-  // Runtime counters that outlive a restart, kept out of `settings` so they never look like overrides.
   public getRuntimeValue(key: string): string | undefined {
     const row = this.rawDb.prepare('SELECT value FROM runtime_state WHERE key = ?').get(key) as
       { value?: string } | undefined;
@@ -683,7 +688,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const registrationToken = `agyr_reg_${randomBytes(24).toString('hex')}`;
     const tokenHash = hashRunnerToken(registrationToken);
     const now = new Date();
-    const ttlMs = Math.max(60_000, input.ttlMs ?? 60 * 60 * 1000); // 1 hour default
+    const ttlMs = Math.max(60_000, input.ttlMs ?? 60 * 60 * 1000);
     const expiresAt = new Date(now.getTime() + ttlMs).toISOString();
     const createdAt = now.toISOString();
     const labels = Array.from(
@@ -723,7 +728,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     };
   }
 
-  // Deletes consumed or expired registration rows beyond the most-recent `keepCount` entries.
   public pruneRegistrationTokens(keepCount = REGISTRATION_TOKEN_RETENTION): void {
     try {
       const now = new Date().toISOString();
@@ -739,12 +743,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              )`
         )
         .run(now, now, keepCount);
-    } catch {
-      // Best-effort pruning
-    }
+    } catch {}
   }
 
-  // Exchanges a valid, unexpired one-time registration token for a persistent runner identity
   public exchangeRegistrationToken(
     input: ExchangeRegistrationTokenInput,
     nowMs = Date.now()
@@ -849,7 +850,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     });
   }
 
-  // Authenticates a runner request using its unique `agyr_run_...` token
   public authenticateRunner(
     providedToken: string | undefined,
     fallbackSharedSecret?: string
@@ -857,7 +857,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const cleanToken = providedToken?.trim() || '';
     const cleanShared = fallbackSharedSecret?.trim() || '';
 
-    // Require a valid runner token (hash match) or valid configured fallback shared secret
     if (cleanToken) {
       const tokenHash = hashRunnerToken(cleanToken);
       const row = this.rawDb
@@ -899,7 +898,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return this.getRunner(runnerId);
   }
 
-  // Revokes a runner, deleting its record and credentials from `swarm_runners`.
   public revokeRunner(runnerId: string): boolean {
     return this.inTransaction(() => {
       const existing = this.getRunner(runnerId);
@@ -930,78 +928,77 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const repoName = input.repositoryName.trim();
     const repoPath = (input.repositoryPath || `/repos/${repoId}`).trim();
     const defaultBranch = (input.defaultBranch || 'main').trim();
-    // Bounded, not truncated for real input: GitHub's own issue body limit is 65536.
     const prompt = input.prompt.slice(0, 20000);
     const requestedBy = (input.requestedBy || 'web-ui').trim();
-    const prPolicy = input.prPolicy ?? null;
+    const prPolicy = input.prPolicy ?? 'inherit';
     const scheduleMode: ScheduleMode = input.scheduleMode ?? 'immediate';
     const requiredLabels = Array.from(
       new Set((input.requiredLabels ?? []).map((l) => l.trim().toLowerCase()).filter(Boolean))
     );
-    const model = (input.model ?? 'gemini-3.8-flash').trim();
-    // The selected model leads the chain so a capacity retry never re-tries it first.
-    const candidateModels = Array.from(
-      new Set([model, ...(input.candidateModels ?? []).map((m) => m.trim())].filter(Boolean))
-    );
-
+    const cascade = coerceCascade(input.cascade);
+    const primaryHop = cascade[0]!;
+    const model = primaryHop.model;
     const poolFamily = resolvePoolFamilyForModel(model);
-    const effort: ReasoningEffort = input.effort ?? 'high';
+    const effort: ReasoningEffort = primaryHop.effort;
     const allowOverage = Boolean(input.allowOverage);
     const pushBranch = input.pushBranch !== false;
     const autoCreatePr = input.autoCreatePr !== false;
 
-    const maxNumberRow = this.rawDb
-      .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
-      .get() as { max_num?: number } | undefined;
-    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
     const firstLinePrompt = (prompt.split('\n')[0] ?? '').trim().slice(0, 100);
     const title = (input.title || firstLinePrompt || 'Task').trim();
     const tier: TaskTier = input.tier ?? 'immediate';
-    const originId = input.originId ?? input.standingTaskId ?? null;
+    const originId = input.originId ?? null;
     const originNumber = input.originNumber ?? null;
     const originTitle = input.originTitle ?? null;
 
-    this.rawDb
-      .prepare(
-        `INSERT INTO swarm_tasks (
+    // Two concurrent enqueues must never pick the same number, so the max read and the insert share
+    // one write transaction.
+    this.inTransaction(() => {
+      const maxNumberRow = this.rawDb
+        .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
+        .get() as { max_num?: number } | undefined;
+      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+      this.rawDb
+        .prepare(
+          `INSERT INTO swarm_tasks (
           id, task_number, title, tier, origin_id, origin_number, origin_title,
           created_at, updated_at, repository_id, repository_name, repository_path,
           clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
           required_labels_json, model, candidate_models_json, pool_family, effort, allow_overage,
-          push_branch, auto_create_pr, expires_at, standing_task_id, verify_command, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
-      )
-      .run(
-        id,
-        taskNumber,
-        title,
-        tier,
-        originId,
-        originNumber,
-        originTitle,
-        now,
-        now,
-        repoId,
-        repoName,
-        repoPath,
-        input.cloneUrl ?? null,
-        defaultBranch,
-        prompt,
-        requestedBy,
-        prPolicy,
-        scheduleMode,
-        JSON.stringify(requiredLabels),
-        model,
-        JSON.stringify(candidateModels),
-        poolFamily,
-        effort,
-        allowOverage ? 1 : 0,
-        pushBranch ? 1 : 0,
-        autoCreatePr ? 1 : 0,
-        input.expiresAt ?? null,
-        input.standingTaskId ?? null,
-        input.verifyCommand ?? null
-      );
+          push_branch, auto_create_pr, expires_at, verify_command, status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+        )
+        .run(
+          id,
+          taskNumber,
+          title,
+          tier,
+          originId,
+          originNumber,
+          originTitle,
+          now,
+          now,
+          repoId,
+          repoName,
+          repoPath,
+          input.cloneUrl ?? null,
+          defaultBranch,
+          prompt,
+          requestedBy,
+          prPolicy,
+          scheduleMode,
+          JSON.stringify(requiredLabels),
+          model,
+          JSON.stringify(cascade),
+          poolFamily,
+          effort,
+          allowOverage ? 1 : 0,
+          pushBranch ? 1 : 0,
+          autoCreatePr ? 1 : 0,
+          input.expiresAt ?? null,
+          input.verifyCommand ?? null
+        );
+    });
 
     this.pruneOldTasks();
     return this.getTask(id)!;
@@ -1019,8 +1016,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
                ORDER BY updated_at DESC
                LIMIT ?
              )
-             -- The terminal row is the reconciler's only proof its backlog origin already ran;
-             -- deleting it re-dispatches finished work.
+             -- The terminal row is the reconciler's proof its backlog origin ran; dropping it re-dispatches work.
              AND NOT (
                tier = 'backlog'
                AND origin_id IS NOT NULL
@@ -1031,14 +1027,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              )`
         )
         .run(keepTerminalCount);
-    } catch {
-      // Best-effort pruning
-    }
+    } catch {}
   }
 
-  // Without this the list grows a row every time a container is recreated, since a runner
-  // re-registers on boot. Age-gated rather than immediate so the offline transition stays visible
-  // for a while after the reaper makes it. Live runners are never touched.
   public pruneOldRunners(maxOfflineAgeMs = 10 * 60 * 1000): void {
     try {
       const cutoff = new Date(Date.now() - maxOfflineAgeMs).toISOString();
@@ -1047,9 +1038,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           "DELETE FROM swarm_runners WHERE status = 'offline' AND token_hash IS NULL AND last_seen_at < ?"
         )
         .run(cutoff);
-    } catch {
-      // Best-effort pruning
-    }
+    } catch {}
   }
 
   public getTask(id: string): SwarmTask | undefined {
@@ -1058,8 +1047,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return row ? this.mapRowToTask(row) : undefined;
   }
 
-  // The cycle's run is the newest task the routine produced; a manual trigger counts too.
-  // poolFamily scopes the lookup to one pool's cycle, which is what a per-pool rearm decision needs.
   public getLatestTaskForOrigin(originId: string, poolFamily?: string): SwarmTask | undefined {
     const row = poolFamily
       ? (this.rawDb
@@ -1081,7 +1068,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return row ? this.mapRowToTask(row) : undefined;
   }
 
-  // A routine holds at most one in-flight task, whether the evaluator or a manual trigger made it.
   public hasActiveTaskForOrigin(originId: string): boolean {
     const row = this.rawDb
       .prepare(
@@ -1093,18 +1079,13 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return row?.active === 1;
   }
 
-  public listTasks(
-    options: {
-      status?: TaskStatus;
-      scheduleMode?: ScheduleMode;
-      limit?: number;
-    } = {}
-  ): SwarmTask[] {
-    const requestedLimit = options.limit ?? 50;
-    const limit = Math.min(
-      Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
-      500
-    );
+  // `q` is a LIKE term: `%%` would match every row and a stray `_` would silently widen a wildcard,
+  // so the three metacharacters are escaped.
+  private static escapeLikeTerm(term: string): string {
+    return term.replace(/[\\%_]/g, (char) => `\\${char}`);
+  }
+
+  private buildTaskFilter(options: TaskListFilters): { whereClause: string; params: any[] } {
     const conditions: string[] = [];
     const params: any[] = [];
 
@@ -1116,24 +1097,56 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       conditions.push('schedule_mode = ?');
       params.push(options.scheduleMode);
     }
+    if (options.taskNumber !== undefined && Number.isFinite(options.taskNumber)) {
+      conditions.push('task_number = ?');
+      params.push(Math.trunc(options.taskNumber));
+    }
 
-    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    params.push(limit);
+    const term = options.q?.trim();
+    if (term) {
+      const pattern = `%${TaskQueue.escapeLikeTerm(term)}%`;
+      conditions.push(
+        "(title LIKE ? ESCAPE '\\' OR repository_name LIKE ? ESCAPE '\\' OR origin_title LIKE ? ESCAPE '\\')"
+      );
+      params.push(pattern, pattern, pattern);
+    }
+
+    return {
+      whereClause: conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '',
+      params,
+    };
+  }
+
+  public listTasks(options: TaskListOptions = {}): SwarmTask[] {
+    const requestedLimit = options.limit ?? 50;
+    const limit = Math.min(
+      Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
+      500
+    );
+    const requestedOffset = options.offset ?? 0;
+    const offset = Math.max(0, Number.isFinite(requestedOffset) ? Math.floor(requestedOffset) : 0);
+    const { whereClause, params } = this.buildTaskFilter(options);
 
     const rows = this.rawDb
       .prepare(
-        `SELECT * FROM swarm_tasks ${whereClause} ORDER BY created_at DESC, rowid DESC LIMIT ?`
+        `SELECT ${TASK_LIST_COLUMNS} FROM swarm_tasks ${whereClause} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`
       )
-      .all(...params) as Array<Record<string, any>>;
+      .all(...params, limit, offset) as Array<Record<string, any>>;
     return rows.map((r) => this.mapRowToTask(r));
   }
 
-  // Atomically claims the next eligible queued task for a runner.
+  public countTasks(options: TaskListFilters = {}): number {
+    const { whereClause, params } = this.buildTaskFilter(options);
+    const row = this.rawDb
+      .prepare(`SELECT COUNT(*) AS c FROM swarm_tasks ${whereClause}`)
+      .get(...params) as { c?: number } | undefined;
+    return Number(row?.c ?? 0);
+  }
+
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
       const existingRunner = this.getRunner(options.runnerId);
-      // A registered runner's scope is its registration; the poll payload may only narrow
-      // an unregistered (shared-secret) runner's view, and must never widen a registration.
+      // A registered runner's scope is its registration; the poll payload may only narrow it, never widen it.
       const effectiveLabels =
         existingRunner?.labels ??
         (options.labels && options.labels.length > 0 ? options.labels : []);
@@ -1171,7 +1184,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       for (const row of candidates) {
         const task = this.mapRowToTask(row);
 
-        // Check pre-reset expiration: if expiresAt is set and has passed, abort task immediately
         if (task.expiresAt) {
           const expEpoch = Date.parse(task.expiresAt);
           if (!Number.isNaN(expEpoch) && nowEpoch >= expEpoch) {
@@ -1189,7 +1201,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           }
         }
 
-        // Check required labels (if task specifies labels, runner must have all of them)
         if (task.requiredLabels.length > 0) {
           const hasAllLabels = task.requiredLabels.every((reqLabel) =>
             runnerLabelSet.has(reqLabel.toLowerCase())
@@ -1199,7 +1210,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           }
         }
 
-        // Check repository capability filter if runner specified a subset
         if (
           repoFilter &&
           !repoFilter.has(task.repositoryId.toLowerCase()) &&
@@ -1208,8 +1218,8 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           continue;
         }
 
-        // Check live quota eligibility
         let updatedModel = task.model;
+        let updatedEffort = task.effort;
         if (options.eligibilityCheck) {
           const check = options.eligibilityCheck(task);
           if (!check.allowed) {
@@ -1217,8 +1227,15 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           }
           if (check.resolvedModel) {
             updatedModel = check.resolvedModel;
+            const hop = task.cascade.find((candidate) => candidate.model === updatedModel);
+            updatedEffort =
+              hop?.effort ?? resolveReasoningEffortForModel(updatedModel, task.effort);
           }
         }
+        const claimCascade: CascadeHop[] = [
+          { model: updatedModel, effort: updatedEffort },
+          ...task.cascade.filter((candidate) => candidate.model !== updatedModel),
+        ];
 
         const updateResult = this.rawDb
           .prepare(
@@ -1226,7 +1243,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              SET status = 'claimed',
                  runner_id = ?,
                  model = ?,
+                 candidate_models_json = ?,
                  pool_family = ?,
+                 effort = ?,
                  claimed_at = ?,
                  heartbeat_at = ?,
                  updated_at = ?
@@ -1235,7 +1254,9 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           .run(
             options.runnerId,
             updatedModel,
+            JSON.stringify(claimCascade),
             resolvePoolFamilyForModel(updatedModel),
+            updatedEffort,
             now,
             now,
             now,
@@ -1279,20 +1300,16 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
 
     const refused = { task: existing, applied: false };
 
-    // Guard against status updates on already terminal tasks
     const existingTerminal = isTerminalTaskStatus(existing.status);
     if (existingTerminal) {
       return refused;
     }
 
-    // Active states are only ever entered through claimNext.
     const patchIsActive = patch.status === 'claimed' || patch.status === 'executing';
     if (patchIsActive && existing.status === 'queued') {
       return refused;
     }
 
-    // Ownership: a runner patch must match the row's current owner; an unowned row may only be
-    // patched while it is still queued.
     if (patch.runnerId) {
       if (existing.runnerId !== undefined) {
         if (existing.runnerId !== patch.runnerId) return refused;
@@ -1304,8 +1321,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
     const completedAt = isTerminal ? now : (existing.completedAt ?? null);
-    // An unparsable claimed_at yields NaN, which SQLite rejects as a NOT NULL violation; the
-    // derived duration therefore falls back to the stored value instead of throwing.
     const elapsedMs = existing.claimedAt
       ? Date.now() - new Date(existing.claimedAt).getTime()
       : Number.NaN;
@@ -1318,8 +1333,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
     const prUrl = patch.prUrl ?? existing.prUrl ?? null;
-    const output =
-      patch.output !== undefined ? patch.output.slice(0, 16000) : (existing.output ?? null);
+    const output = patch.output !== undefined ? capOutput(patch.output) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
     const runnerId = patch.runnerId ?? existing.runnerId ?? null;
     const numTurns = patch.numTurns !== undefined ? patch.numTurns : (existing.numTurns ?? null);
@@ -1390,8 +1404,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
-  // A live lease beat: refreshes heartbeat_at and streams the runner's tail into output. The task
-  // stays in its active status, so nothing here can advance a run.
   public heartbeatTask(
     taskId: string,
     runnerId: string,
@@ -1408,7 +1420,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       return { task: existing, applied: false };
     }
 
-    // A beat that lands after its own lease window is worthless: the reaper owns that row now.
     const lastBeatMs = Date.parse(existing.heartbeatAt ?? existing.claimedAt ?? existing.updatedAt);
     if (
       leaseDurationMs !== undefined &&
@@ -1420,7 +1431,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     }
 
     const now = new Date().toISOString();
-    const tail = outputTail && outputTail.length > 0 ? outputTail.slice(-16384) : undefined;
+    const tail = outputTail && outputTail.length > 0 ? tailWindow(outputTail, 16384) : undefined;
     const updateResult = this.rawDb
       .prepare(
         `UPDATE swarm_tasks
@@ -1439,7 +1450,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
-  // Fails tasks whose runner lease heartbeat has expired and marks stale runners offline.
   public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {
     const activeRows = this.rawDb
       .prepare("SELECT * FROM swarm_tasks WHERE status IN ('claimed', 'executing')")
@@ -1452,7 +1462,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       const beatEpoch = new Date(lastBeat).getTime();
       if (!Number.isNaN(beatEpoch) && nowMs - beatEpoch > leaseTimeoutMs) {
         const claimedEpoch = task.claimedAt ? new Date(task.claimedAt).getTime() : NaN;
-        // Report real elapsed work time; the lease age is only a fallback when claimedAt is unknown.
         const durationMs = Number.isNaN(claimedEpoch) ? nowMs - beatEpoch : nowMs - claimedEpoch;
         const updated = this.updateTaskStatus(
           task.id,
@@ -1468,7 +1477,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       }
     }
 
-    // Mark runners that haven't sent a heartbeat within threshold as offline
     const runnerOfflineThresholdMs = Math.min(leaseTimeoutMs, 2 * 60 * 1000);
     const runnerRows = this.rawDb
       .prepare("SELECT * FROM swarm_runners WHERE status != 'offline'")
@@ -1527,7 +1535,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         : info.activeTaskId !== undefined
           ? info.activeTaskId
           : (existing?.active_task_id ?? null);
-    // Preserving last_seen_at keeps the offline sweep honest when the reaper updates runner state.
     const lastSeenAt = options.touchLastSeen === false ? (existing?.last_seen_at ?? now) : now;
 
     this.rawDb
@@ -1601,13 +1608,17 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       requiredLabels = JSON.parse(String(row.required_labels_json || '[]'));
     } catch {}
 
-    // A row written before the chain column existed still needs one usable candidate.
-    let candidateModels: string[] = [];
+    let storedCascade: unknown = [];
     try {
-      const parsed = JSON.parse(String(row.candidate_models_json || '[]'));
-      if (Array.isArray(parsed)) candidateModels = parsed.map(String).filter(Boolean);
+      storedCascade = JSON.parse(String(row.candidate_models_json || '[]'));
     } catch {}
-    if (candidateModels.length === 0) candidateModels = [String(row.model)];
+
+    const primaryModel = String(row.model);
+    const primaryEffort = resolveReasoningEffortForModel(primaryModel, row.effort);
+    const cascade: CascadeHop[] = [
+      { model: primaryModel, effort: primaryEffort },
+      ...normalizeCascade(storedCascade, primaryModel).filter((hop) => hop.model !== primaryModel),
+    ];
 
     const firstLinePrompt = (
       String(row.prompt || '')
@@ -1616,7 +1627,8 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     )
       .trim()
       .slice(0, 100);
-    const title = row.title ? String(row.title) : firstLinePrompt || 'Task';
+    const storedTitle = typeof row.title === 'string' ? row.title.trim() : '';
+    const title = storedTitle !== '' ? storedTitle : firstLinePrompt || 'Task';
 
     return {
       id: String(row.id),
@@ -1638,19 +1650,19 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       defaultBranch: String(row.default_branch || 'main'),
       prompt: String(row.prompt),
       requestedBy: String(row.requested_by || 'web-ui'),
-      prPolicy: (row.pr_policy as PrPolicy) || undefined,
+      prPolicy:
+        row.pr_policy && row.pr_policy !== 'inherit' ? (row.pr_policy as PrPolicy) : undefined,
       scheduleMode: (row.schedule_mode as ScheduleMode) || 'immediate',
       requiredLabels,
       model: String(row.model),
-      candidateModels,
+      cascade,
       poolFamily: (row.pool_family as QuotaFamily) || 'gemini-argon',
-      effort: (row.effort as ReasoningEffort) || 'high',
+      effort: primaryEffort,
       allowOverage: row.allow_overage === 1,
       pushBranch: row.push_branch === 1,
       autoCreatePr: row.auto_create_pr !== 0,
       prUrl: row.pr_url ? String(row.pr_url) : undefined,
       expiresAt: row.expires_at ? String(row.expires_at) : undefined,
-      standingTaskId: row.standing_task_id ? String(row.standing_task_id) : undefined,
       verifyCommand: row.verify_command ? String(row.verify_command) : undefined,
       status: (row.status as TaskStatus) || 'queued',
       runnerId: row.runner_id ? String(row.runner_id) : undefined,
@@ -1673,8 +1685,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           : undefined,
     };
   }
-
-  // --- Backlog Tasks CRUD Methods ---
 
   public listBacklogTasks(status?: BacklogStatus): BacklogTaskRecord[] {
     let query = 'SELECT * FROM backlog_tasks';
@@ -1706,7 +1716,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     return row ? this.mapRowToBacklogTask(row) : undefined;
   }
 
-  // Dispatched rows, for the reconciler that settles the ones no runner ever reported.
   public listDispatchedBacklogTasks(): BacklogTaskRecord[] {
     const rows = this.rawDb
       .prepare(
@@ -1722,8 +1731,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     title: string;
     prompt: string;
     repositoryId: string;
-    models?: string[];
-    effort?: ReasoningEffort;
+    cascade?: readonly CascadeHop[];
     verifyCommand?: string;
     autoCreatePr?: boolean;
     priorityOrder?: number;
@@ -1737,8 +1745,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       .prepare('SELECT MAX(task_number) as max_num FROM backlog_tasks')
       .get() as { max_num?: number } | undefined;
     const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-    const models = coerceModelList(input.models, ['gemini-3.8-flash']);
-    const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
+    const cascade = coerceCascade(input.cascade);
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const priorityOrder = coerceNumber(input.priorityOrder, 0);
     const maxAttempts = coerceNumber(input.maxAttempts, 2);
@@ -1746,11 +1753,11 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     this.rawDb
       .prepare(
         `INSERT INTO backlog_tasks (
-          id, task_number, title, prompt, repository_id, models_json, effort,
+          id, task_number, title, prompt, repository_id, models_json,
           verify_command, auto_create_pr, priority_order, status,
           attempt_count, max_attempts, github_issue_number, github_issue_url,
           created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1758,8 +1765,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         input.title.trim(),
         input.prompt.trim(),
         input.repositoryId.trim(),
-        JSON.stringify(models),
-        effort,
+        JSON.stringify(cascade),
         input.verifyCommand ?? null,
         autoCreatePr,
         priorityOrder,
@@ -1779,8 +1785,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       title: string;
       prompt: string;
       repositoryId: string;
-      models: string[];
-      effort: ReasoningEffort;
+      cascade: CascadeHop[];
       verifyCommand: string | null;
       autoCreatePr: boolean;
       priorityOrder: number;
@@ -1800,10 +1805,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const title = coerceTrimmedString(patch.title, existing.title);
     const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
     const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
-    const modelsJson = JSON.stringify(
-      patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
+    const cascade = coerceCascade(
+      patch.cascade !== undefined ? patch.cascade : existing.cascade,
+      existing.cascade[0]?.model
     );
-    const effort = coerceEffort(patch.effort ?? existing.effort, existing.effort);
     const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
     const autoCreatePr =
       typeof patch.autoCreatePr === 'boolean'
@@ -1835,7 +1840,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              prompt = ?,
              repository_id = ?,
              models_json = ?,
-             effort = ?,
              verify_command = ?,
              auto_create_pr = ?,
              priority_order = ?,
@@ -1853,8 +1857,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         title,
         prompt,
         repositoryId,
-        modelsJson,
-        effort,
+        JSON.stringify(cascade),
         verifyCommand,
         autoCreatePr,
         priorityOrder,
@@ -1880,13 +1883,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
   }
 
   private mapRowToBacklogTask(r: Record<string, any>): BacklogTaskRecord {
-    let models: string[] = [];
+    let storedCascade: unknown = [];
     try {
-      models = JSON.parse(String(r.models_json || '[]'));
+      storedCascade = JSON.parse(String(r.models_json || '[]'));
     } catch {}
-    if (models.length === 0) {
-      models = ['gemini-3.8-flash'];
-    }
 
     return {
       id: String(r.id),
@@ -1894,8 +1894,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       title: String(r.title),
       prompt: String(r.prompt),
       repositoryId: String(r.repository_id),
-      models,
-      effort: (r.effort as ReasoningEffort) || 'high',
+      cascade: coerceCascade(storedCascade),
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
       priorityOrder: Number(r.priority_order ?? 0),
@@ -1915,8 +1914,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       updatedAt: String(r.updated_at),
     };
   }
-
-  // --- Routine Tasks CRUD Methods ---
 
   public listRoutineTasks(): RoutineTaskRecord[] {
     const rows = this.rawDb
@@ -1939,8 +1936,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     title: string;
     prompt: string;
     repositoryId: string;
-    models?: string[];
-    effort?: ReasoningEffort;
+    cascade?: readonly CascadeHop[];
     verifyCommand?: string;
     autoCreatePr?: boolean;
     prPolicy?: PrPolicy | null;
@@ -1955,13 +1951,12 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       .prepare('SELECT MAX(task_number) as max_num FROM routine_tasks')
       .get() as { max_num?: number } | undefined;
     const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-    const models = coerceModelList(input.models, ['gemini-3.8-flash']);
-    const effort: ReasoningEffort = coerceEffort(input.effort, 'high');
+    const cascade = coerceCascade(input.cascade);
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const prPolicy =
       input.prPolicy === 'docs_only' || input.prPolicy === 'all' || input.prPolicy === 'none'
         ? input.prPolicy
-        : null;
+        : 'inherit';
     const enabled = input.enabled !== false ? 1 : 0;
     const sortOrder = coerceNumber(input.sortOrder, 0);
     const triggerHours = coerceNumber(input.triggerBeforeResetHours, DEFAULT_QUOTA_BURN_MAX_HOURS);
@@ -1970,10 +1965,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     this.rawDb
       .prepare(
         `INSERT INTO routine_tasks (
-          id, task_number, title, prompt, repository_id, models_json, effort,
+          id, task_number, title, prompt, repository_id, models_json,
           verify_command, auto_create_pr, pr_policy, enabled, sort_order,
           trigger_before_reset_hours, min_headroom_percent, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1981,8 +1976,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         input.title.trim(),
         input.prompt.trim(),
         input.repositoryId.trim(),
-        JSON.stringify(models),
-        effort,
+        JSON.stringify(cascade),
         input.verifyCommand ?? null,
         autoCreatePr,
         prPolicy,
@@ -2003,8 +1997,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       title: string;
       prompt: string;
       repositoryId: string;
-      models: string[];
-      effort: ReasoningEffort;
+      cascade: CascadeHop[];
       verifyCommand: string | null;
       autoCreatePr: boolean;
       prPolicy: PrPolicy | null;
@@ -2024,10 +2017,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
     const title = coerceTrimmedString(patch.title, existing.title);
     const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
     const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
-    const modelsJson = JSON.stringify(
-      patch.models !== undefined ? coerceModelList(patch.models, existing.models) : existing.models
+    const cascade = coerceCascade(
+      patch.cascade !== undefined ? patch.cascade : existing.cascade,
+      existing.cascade[0]?.model
     );
-    const effort = coerceEffort(patch.effort ?? existing.effort, existing.effort);
     const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
     const autoCreatePr =
       typeof patch.autoCreatePr === 'boolean'
@@ -2039,10 +2032,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
           : 0;
     const prPolicy =
       patch.prPolicy === null
-        ? null
+        ? 'inherit'
         : patch.prPolicy === 'docs_only' || patch.prPolicy === 'all' || patch.prPolicy === 'none'
           ? patch.prPolicy
-          : (existing.prPolicy ?? null);
+          : (existing.prPolicy ?? 'inherit');
     const enabled =
       typeof patch.enabled === 'boolean' ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
     const sortOrder = coerceNumber(patch.sortOrder, existing.sortOrder);
@@ -2067,7 +2060,6 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
              prompt = ?,
              repository_id = ?,
              models_json = ?,
-             effort = ?,
              verify_command = ?,
              auto_create_pr = ?,
              pr_policy = ?,
@@ -2085,8 +2077,7 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
         title,
         prompt,
         repositoryId,
-        modelsJson,
-        effort,
+        JSON.stringify(cascade),
         verifyCommand,
         autoCreatePr,
         prPolicy,
@@ -2112,13 +2103,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
   }
 
   private mapRowToRoutineTask(r: Record<string, any>): RoutineTaskRecord {
-    let models: string[] = [];
+    let storedCascade: unknown = [];
     try {
-      models = JSON.parse(String(r.models_json || '[]'));
+      storedCascade = JSON.parse(String(r.models_json || '[]'));
     } catch {}
-    if (models.length === 0) {
-      models = ['gemini-3.8-flash'];
-    }
 
     return {
       id: String(r.id),
@@ -2126,11 +2114,10 @@ ${renderColumns(RUNTIME_STATE_COLUMNS)}
       title: String(r.title),
       prompt: String(r.prompt),
       repositoryId: String(r.repository_id),
-      models,
-      effort: (r.effort as ReasoningEffort) || 'high',
+      cascade: coerceCascade(storedCascade),
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
-      prPolicy: (r.pr_policy as PrPolicy) || undefined,
+      prPolicy: r.pr_policy && r.pr_policy !== 'inherit' ? (r.pr_policy as PrPolicy) : undefined,
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),
       triggerBeforeResetHours: Number(r.trigger_before_reset_hours ?? DEFAULT_QUOTA_BURN_MAX_HOURS),

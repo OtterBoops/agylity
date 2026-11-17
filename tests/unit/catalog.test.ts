@@ -136,15 +136,15 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(byId.get('gpt-oss-120b')?.defaultEffort, 'medium');
     });
 
-    it('keeps gemini-3.8-flash as the gemini-flash pool default despite Hydrogen existing', () => {
+    it('names gemini-4-hydrogen the gemini-flash pool default', () => {
       const flashDefaults = grouped.models.filter(
         (m) => m.family === 'gemini-flash' && m.defaultForFamily
       );
       assert.deepEqual(
         flashDefaults.map((m) => m.id),
-        ['gemini-3.8-flash']
+        ['gemini-4-hydrogen']
       );
-      assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-flash'], 'gemini-3.8-flash');
+      assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-flash'], 'gemini-4-hydrogen');
     });
 
     it('marks exactly one default per family', () => {
@@ -369,16 +369,16 @@ describe('GET /api/models: dynamic catalog annotation', () => {
     });
   });
 
-  it('keeps gemini-3.8-flash as the advertised gemini-flash default', async () => {
+  it('advertises gemini-4-hydrogen as the gemini-flash default', async () => {
     await withServer(async ({ baseUrl }) => {
       const body: any = await ky.get(`${baseUrl}/api/models`).json();
-      assert.equal(body.defaultModel, 'gemini-3.8-flash');
+      assert.equal(body.defaultModel, 'gemini-4-hydrogen');
       const flashDefaults = body.models.filter(
         (m: any) => m.family === 'gemini-flash' && m.defaultForFamily
       );
       assert.deepEqual(
         flashDefaults.map((m: any) => m.id),
-        ['gemini-3.8-flash']
+        ['gemini-4-hydrogen']
       );
     });
   });

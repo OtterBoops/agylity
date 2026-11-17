@@ -22,6 +22,10 @@ description: >-
   - In SQLite schema update patches and mappers, optional external numeric identifiers (such as `github_issue_number`) must strictly distinguish `undefined` (retain existing), `null` (explicitly unlinked), and positive integers (`> 0`).
   - Never use naive default coercion `coerceNumber(val, existing ?? 0)` on nullable foreign keys or external IDs, as storing `0` creates false-positive issue references (`#0`) in UI badges and search queries.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
+- **Single-Source Model Catalog Invariant:**
+  - `src/shared/models.ts` is the only place the agy model catalog, effort list (`ALL_EFFORTS`) and dispatch default exist. It must stay import-free and erasable-syntax-only, because the frontend bundles it directly.
+  - `src/coordinator/models.ts` re-exports it for backend callers and keeps the zod schemas; `frontend/src/config/fields.ts` derives `MODEL_OPTIONS` and the pre-load effort fallback from it. Never re-type a model or effort table in the UI.
+  - The file sits outside the Vite root, so `frontend/vite.config.ts` must keep `server.fs.allow` pointing at the repo root or the dev server 403s the module.
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
 - **Web UI & Control-Plane Security & Lock Invariant:**

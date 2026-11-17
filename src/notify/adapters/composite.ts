@@ -78,13 +78,11 @@ export class CompositeNotifier implements Notifier {
     await this.syncResolvedOwner();
     const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyQuotaAlert(alert)));
     const channelResults: Record<string, DeliveryChannelResult> = {};
-    // No configured channels means nothing to deliver and nothing that can fail.
     let delivered = this.notifiers.length === 0;
     results.forEach((res, i) => {
       const channelName = this.notifiers[i]?.channelName ?? `channel-${i}`;
       if (res.status === 'fulfilled') {
         const outcome = res.value as DeliveryOutcome | undefined;
-        // A legacy adapter that resolves without a result is treated as delivered.
         const ok = !outcome || outcome.delivered !== false;
         channelResults[channelName] = { success: ok };
         if (ok) delivered = true;
@@ -139,7 +137,6 @@ export class CompositeNotifier implements Notifier {
         )
       );
 
-      // Shutdown & remove notifiers no longer present
       const toKeep: Notifier[] = [];
       for (const n of this.notifiers) {
         if (!targetChannelNames.includes(n.channelName)) {
@@ -157,7 +154,6 @@ export class CompositeNotifier implements Notifier {
       this.notifiers.length = 0;
       this.notifiers.push(...toKeep);
 
-      // Instantiate any new channels that aren't currently active
       const currentNames = this.notifiers.map((n) => n.channelName);
       for (const ch of targetChannelNames) {
         if (!currentNames.includes(ch)) {

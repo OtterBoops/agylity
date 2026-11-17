@@ -34,25 +34,20 @@ export interface WebhookPayload {
   status?: string;
 }
 
-// Sanitizes a webhook URL by masking sensitive path tokens, user credentials,
 export const sanitizeWebhookUrl = (rawUrl: string): string => {
   if (!rawUrl || typeof rawUrl !== 'string') return '';
   try {
     const u = new URL(rawUrl);
 
-    // 1. Mask basic auth user/password credentials if present
     if (u.username) u.username = '***';
     if (u.password) u.password = '***';
 
-    // 2. Clear hash fragment if present to prevent secret leakage
     if (u.hash) u.hash = '';
 
-    // 3. Mask all query parameter values
     for (const key of Array.from(u.searchParams.keys())) {
       u.searchParams.set(key, '***');
     }
 
-    // 4. Mask sensitive path segments
     const cleanSegments = u.pathname.split('/').filter(Boolean);
 
     if (
@@ -60,7 +55,6 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
       cleanSegments[0]?.toLowerCase() === 'api' &&
       cleanSegments[1]?.toLowerCase() === 'webhooks'
     ) {
-      // Discord: /api/webhooks/<id>/<token> -> /api/webhooks/<id>/***
       const id = cleanSegments[2];
       u.pathname = `/api/webhooks/${id}/***`;
     } else if (
@@ -68,7 +62,6 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
       cleanSegments[0]?.toLowerCase() === 'services' &&
       (u.hostname.toLowerCase().includes('slack.com') || cleanSegments[1]?.startsWith('T'))
     ) {
-      // Slack: /services/<team>/<bot>/<token> -> /services/${cleanSegments[1]}/${cleanSegments[2]}/***
       u.pathname = `/services/${cleanSegments[1]}/${cleanSegments[2]}/***`;
     } else if (
       u.hostname.toLowerCase().includes('discord.com') ||
@@ -76,8 +69,6 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
     ) {
       u.pathname = `/${cleanSegments[0] || 'api'}/***`;
     } else if (cleanSegments.length >= 1) {
-      // Generic webhook paths: mask the terminal token segment regardless of count or length,
-      // so a single-segment secret such as /secret123 is not returned verbatim.
       const base = cleanSegments.slice(0, cleanSegments.length - 1).join('/');
       u.pathname = base ? `/${base}/***` : '/***';
     }
@@ -88,7 +79,7 @@ export const sanitizeWebhookUrl = (rawUrl: string): string => {
   }
 };
 
-// Extracts the raw path/query values that sanitizeWebhookUrl masks, so the same secret can be
+// The raw path/query values sanitizeWebhookUrl masks, so error text can be scrubbed of them too.
 function extractMaskedTokens(rawUrl: string): string[] {
   try {
     const raw = new URL(rawUrl);
@@ -109,14 +100,12 @@ function extractMaskedTokens(rawUrl: string): string[] {
   }
 }
 
-// Strips raw webhook URLs and secrets from error strings before logging or API delivery.
 export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   if (!message || typeof message !== 'string') return '';
   let result = message;
   if (rawUrl && typeof rawUrl === 'string' && rawUrl.length > 0) {
     const sanitized = sanitizeWebhookUrl(rawUrl);
     result = result.split(rawUrl).join(sanitized);
-    // Response bodies and error text can quote a secret with no URL around it.
     for (const token of extractMaskedTokens(rawUrl)) {
       result = result.split(token).join('***');
     }
@@ -143,7 +132,7 @@ export function isDiscordWebhook(url?: string): boolean {
   }
 }
 
-/** A Slack mention token in a task title or prompt must not ping the channel, so `<` is escaped. */
+// A Slack mention token (`<@id>`) must not ping the channel, so `<` is escaped.
 const escapeMentions = (text: string): string => text.replace(/<(?=[!@])/g, '&lt;');
 
 export class WebhookNotifier implements Notifier {
@@ -240,8 +229,6 @@ export class WebhookNotifier implements Notifier {
     const isTerminal = isTerminalStep(step);
     const isInitial = step === 'polling' || step === 'waking';
 
-    // Only broadcast initial dispatch and final completion to webhooks
-    // Suppress noisy intermediate runner progress heartbeats
     if (!isInitial && !isTerminal) {
       return;
     }
@@ -265,9 +252,7 @@ export class WebhookNotifier implements Notifier {
 
     try {
       await this.postWebhook(payload);
-    } catch {
-      // Error already logged by postWebhook
-    }
+    } catch {}
   }
 
   async notifyInfo(notice: InfoNotice): Promise<void> {
@@ -290,9 +275,7 @@ export class WebhookNotifier implements Notifier {
 
     try {
       await this.postWebhook(payload);
-    } catch {
-      // Error already logged by postWebhook
-    }
+    } catch {}
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
@@ -379,7 +362,6 @@ export class WebhookNotifier implements Notifier {
 
   public async postWebhook(payload: WebhookPayload): Promise<{ status: number }> {
     const url = this.getWebhookUrl();
-    // Callers treat a resolved postWebhook as delivered, so a missing URL must throw.
     if (!url) throw new Error('No webhook URL is configured for this channel');
 
     const outgoingPayload: any = { ...payload };
@@ -394,8 +376,7 @@ export class WebhookNotifier implements Notifier {
           users: [ownerId],
         };
       } else {
-        // Prevent double-posting: Discord renders both content and embeds if content is populated.
-        // Strip duplicate content so only the clean embed box appears.
+        // Discord renders both content and embeds, so strip content to avoid a double post.
         delete outgoingPayload.content;
       }
     }

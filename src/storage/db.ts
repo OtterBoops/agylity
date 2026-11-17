@@ -25,8 +25,7 @@ export interface DatabaseConnectionOptions {
 
 export type DatabaseOptions = string | DatabaseConnectionOptions;
 
-// A marked payload was JSON, so an object secret comes back as an object; everything else is a
-// legacy bare-string secret and must stay a string.
+// A marked payload was JSON; anything else is a legacy bare-string secret and stays a string.
 const decodeSecretPayload = (plaintext: string): unknown => {
   if (!plaintext.startsWith(SECRET_JSON_MARKER)) return plaintext;
   try {
@@ -63,7 +62,6 @@ export class AppDatabase {
           : ':memory:';
     this.masterKey = resolveMasterKey(keyPath);
 
-    // Directory auto-creation guard: if path !== ':memory:' mkdirSync(dirname(path), { recursive: true })
     if (this.dbPath !== ':memory:') {
       const parentDir = dirname(this.dbPath);
       if (parentDir && parentDir !== '.' && !existsSync(parentDir)) {
@@ -80,7 +78,6 @@ export class AppDatabase {
     this.initPragmas(busyTimeoutMs);
     this.runMigrations();
 
-    // Prepare cached SQL statements for fast CRUD operations
     this.selectKeyStmt = this.db.prepare('SELECT value FROM settings WHERE key = ?');
     this.selectRecordStmt = this.db.prepare(
       'SELECT key, value, updated_at FROM settings WHERE key = ?'
@@ -95,7 +92,7 @@ export class AppDatabase {
   }
 
   private initPragmas(busyTimeoutMs = 5000): void {
-    // Enable WAL mode for high concurrency
+    // WAL lets the dashboard read while a writer holds the database.
     this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
@@ -111,7 +108,6 @@ export class AppDatabase {
       );
     `);
 
-    // CREATE TABLE IF NOT EXISTS never upgrades an existing table, so diff the columns too.
     migrateColumns(this.db, 'settings', SETTINGS_COLUMNS);
   }
 
@@ -122,7 +118,6 @@ export class AppDatabase {
   public get<T = unknown>(key: string): T | undefined {
     const row = this.selectKeyStmt.get(key) as { value: string } | undefined;
     if (!row) return undefined;
-    // Decrypt outside the parse guard so SecretDecryptionError propagates instead of being swallowed.
     let parsed: unknown;
     try {
       parsed = JSON.parse(row.value);
@@ -147,8 +142,6 @@ export class AppDatabase {
   public set(key: string, value: unknown): void {
     let finalValue = value;
     if (isSecretKey(key) && value !== undefined && value !== null) {
-      // A string secret keeps its legacy shape; anything else is JSON-serialised behind a marker
-      // so an object such as webhook headers is encrypted too and still reads back as an object.
       const payload =
         typeof value === 'string' ? value : `${SECRET_JSON_MARKER}${JSON.stringify(value)}`;
       if (payload.trim() !== '') {

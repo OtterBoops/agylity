@@ -19,8 +19,6 @@ interface DiscordChannelFormProps {
   onOwnerUserIdChange: (val: string) => void;
   pingOwner: boolean;
   onPingOwnerChange: (val: boolean) => void;
-  onSendTest: () => void;
-  isTesting: boolean;
   diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
@@ -39,8 +37,6 @@ export const DiscordChannelForm = ({
   onOwnerUserIdChange,
   pingOwner,
   onPingOwnerChange,
-  onSendTest,
-  isTesting,
   diagnostics,
 }: DiscordChannelFormProps) => {
   const [showToken, setShowToken] = useState(false);
@@ -48,21 +44,6 @@ export const DiscordChannelForm = ({
 
   return (
     <div class="flex flex-col gap-5">
-      <div class="flex items-center justify-between border-b border-pine-highlight pb-3">
-        <div class="flex items-center gap-2">
-          <span class="text-xs font-semibold text-pine-subtle">Discord Bot Configuration</span>
-          <span class="text-xs text-pine-subtle">• Slash commands &amp; rich alert embeds</span>
-        </div>
-        <button
-          type="button"
-          onClick={onSendTest}
-          disabled={isTesting}
-          class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {isTesting ? 'Testing...' : 'Test Discord Ping'}
-        </button>
-      </div>
-
       {diagnostics && (
         <div
           class={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
@@ -79,18 +60,20 @@ export const DiscordChannelForm = ({
         </div>
       )}
 
-      {/* Step 1: Bot Credentials & App Identity */}
-      <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
-        <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
+      <div class="flex flex-col gap-4">
+        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
             Step 1: Bot Credentials &amp; Identity
           </h4>
-          <span class="text-xs text-pine-subtle">Discord Developer Portal</span>
+          <span class="hidden text-xs text-pine-subtle sm:inline">Discord Developer Portal</span>
         </div>
 
         <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <div class="flex flex-col gap-1.5">
-            <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+            <label
+              class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+              for="discord-bot-token"
+            >
               <span class="flex items-center gap-1.5">
                 Bot Application Token
                 <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
@@ -111,6 +94,7 @@ export const DiscordChannelForm = ({
             </label>
             <div class="flex gap-2">
               <input
+                id="discord-bot-token"
                 type={showToken ? 'text' : 'password'}
                 name="agylity_discord_bot_token"
                 autoComplete="new-password"
@@ -135,10 +119,11 @@ export const DiscordChannelForm = ({
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label class="text-xs font-medium text-pine-subtle">
+            <label class="text-xs font-medium text-pine-subtle" for="discord-client-id">
               Discord Client / Application ID
             </label>
             <input
+              id="discord-client-id"
               type="text"
               name="agylity_discord_client_id"
               autoComplete="off"
@@ -169,7 +154,6 @@ export const DiscordChannelForm = ({
         </div>
       </div>
 
-      {/* Step 2: Notification Target & Guild Routing */}
       <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
         <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
@@ -180,8 +164,11 @@ export const DiscordChannelForm = ({
 
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div class="flex flex-col gap-1.5">
-            <label class="text-xs font-medium text-pine-subtle">Notification Channel ID</label>
+            <label class="text-xs font-medium text-pine-subtle" for="discord-channel-id">
+              Notification Channel ID
+            </label>
             <input
+              id="discord-channel-id"
               type="text"
               name="agylity_discord_channel_id"
               autoComplete="off"
@@ -199,8 +186,11 @@ export const DiscordChannelForm = ({
           </div>
 
           <div class="flex flex-col gap-1.5">
-            <label class="text-xs font-medium text-pine-subtle">Discord Guild ID (Optional)</label>
+            <label class="text-xs font-medium text-pine-subtle" for="discord-guild-id">
+              Discord Guild ID (Optional)
+            </label>
             <input
+              id="discord-guild-id"
               type="text"
               name="agylity_discord_guild_id"
               autoComplete="off"
@@ -218,13 +208,17 @@ export const DiscordChannelForm = ({
           </div>
 
           <div class="flex flex-col gap-1.5 md:col-span-2">
-            <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+            <label
+              class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+              for="discord-owner-id"
+            >
               <span>Owner Discord User ID (Single-User Binding)</span>
               <span class="font-mono text-xs text-pine-foam">
                 {ownerUserId.trim() ? 'Explicitly Bound' : 'Session Auto-Pinned (TOFU)'}
               </span>
             </label>
             <input
+              id="discord-owner-id"
               type="text"
               name="agylity_discord_owner_user_id"
               autoComplete="off"
@@ -266,7 +260,6 @@ export const DiscordChannelForm = ({
         </div>
       </div>
 
-      {/* Live Embed Simulator */}
       <DiscordEmbedSimulator
         previewTier={embedPreviewTier}
         onTierChange={setEmbedPreviewTier}

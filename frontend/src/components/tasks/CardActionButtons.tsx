@@ -2,20 +2,17 @@ import { faPencil, faPlay, faTimes, faTrash } from '@fortawesome/free-solid-svg-
 import { Icon } from '../Icon';
 
 interface CardActionButtonsProps {
-  /** Accessible names for the icon-only actions, e.g. the routine's title. */
   entityLabel: string;
   busy: boolean;
-  /** Delete is destructive and irreversible here, so the bin needs a second press. */
   confirmingDelete: boolean;
   onTrigger?: () => void;
-  /** Undefined hides the edit affordance (a settled work item is read-only). */
   onEdit?: () => void;
   onAskDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
 }
 
-/** Trigger / edit / two-step delete, so both schedule cards share one action cluster. */
+/** Each press stops at the button: the card root underneath opens the editor on click. */
 export const CardActionButtons = ({
   entityLabel,
   busy,
@@ -30,9 +27,12 @@ export const CardActionButtons = ({
     {onTrigger && (
       <button
         type="button"
-        onClick={onTrigger}
+        onClick={(event) => {
+          event.stopPropagation();
+          onTrigger();
+        }}
         disabled={busy}
-        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-iris/30 bg-pine-iris/10 text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base disabled:opacity-50"
+        class="inline-flex size-11 cursor-pointer items-center justify-center rounded-sm border border-pine-foam/30 bg-pine-foam/10 text-pine-foam transition-colors hover:bg-pine-foam hover:text-pine-base disabled:opacity-50 sm:size-7"
         title="Trigger immediate execution with preference chain"
         aria-label={`Trigger ${entityLabel}`}
       >
@@ -42,9 +42,12 @@ export const CardActionButtons = ({
     {onEdit && (
       <button
         type="button"
-        onClick={onEdit}
+        onClick={(event) => {
+          event.stopPropagation();
+          onEdit();
+        }}
         disabled={busy}
-        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight bg-pine-overlay/50 text-pine-subtle transition-colors hover:border-pine-foam/40 hover:text-pine-foam disabled:opacity-50"
+        class="inline-flex size-11 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight bg-pine-overlay text-pine-subtle transition-colors hover:bg-pine-highlight hover:text-pine-text disabled:opacity-50 sm:size-7"
         title="Edit"
         aria-label={`Edit ${entityLabel}`}
       >
@@ -55,16 +58,22 @@ export const CardActionButtons = ({
       <>
         <button
           type="button"
-          onClick={onConfirmDelete}
+          onClick={(event) => {
+            event.stopPropagation();
+            onConfirmDelete();
+          }}
           disabled={busy}
-          class="cursor-pointer rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 py-1 text-xs font-bold whitespace-nowrap text-pine-love"
+          class="inline-flex min-h-11 cursor-pointer items-center rounded-sm border border-pine-love/50 bg-pine-love/15 px-2 text-xs font-bold whitespace-nowrap text-pine-love sm:min-h-7"
         >
           Delete?
         </button>
         <button
           type="button"
-          onClick={onCancelDelete}
-          class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight text-pine-muted hover:text-pine-text"
+          onClick={(event) => {
+            event.stopPropagation();
+            onCancelDelete();
+          }}
+          class="inline-flex size-11 cursor-pointer items-center justify-center rounded-sm border border-pine-highlight text-pine-muted hover:text-pine-text sm:size-7"
           aria-label="Cancel delete"
         >
           <Icon icon={faTimes} class="size-3.5" />
@@ -73,9 +82,12 @@ export const CardActionButtons = ({
     ) : (
       <button
         type="button"
-        onClick={onAskDelete}
+        onClick={(event) => {
+          event.stopPropagation();
+          onAskDelete();
+        }}
         disabled={busy}
-        class="inline-flex size-7 cursor-pointer items-center justify-center rounded-sm border border-pine-love/30 bg-pine-love/10 text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base disabled:opacity-50"
+        class="inline-flex size-11 cursor-pointer items-center justify-center rounded-sm border border-pine-love/30 bg-pine-love/10 text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base disabled:opacity-50 sm:size-7"
         title="Delete"
         aria-label={`Delete ${entityLabel}`}
       >

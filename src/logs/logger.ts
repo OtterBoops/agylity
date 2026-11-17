@@ -63,7 +63,6 @@ export class DefaultLogger implements Logger {
     return 'info';
   }
 
-  /** Root of the parent chain, so a level can be applied to every namespace at once. */
   public getRoot(): DefaultLogger {
     return this.parent ? this.parent.getRoot() : this;
   }
@@ -156,17 +155,12 @@ export class DefaultLogger implements Logger {
       for (const sink of sinks) {
         try {
           sink(record);
-        } catch {
-          // A misbehaving sink must never interrupt the application
-        }
+        } catch {}
       }
-    } catch {
-      // Logging formatting must never crash execution
-    }
+    } catch {}
   }
 }
 
-// Standard console sink writing to stdout / stderr via console methods.
 export const createConsoleSink = (): LogSink => {
   return (record: LogRecord) => {
     switch (record.level) {
@@ -186,7 +180,6 @@ export const createConsoleSink = (): LogSink => {
   };
 };
 
-// Factory for creating custom or scoped loggers.
 export const createLogger = (optionsOrNamespace?: LoggerOptions | string): Logger => {
   if (typeof optionsOrNamespace === 'string') {
     return new DefaultLogger({ namespace: optionsOrNamespace });
@@ -194,5 +187,4 @@ export const createLogger = (optionsOrNamespace?: LoggerOptions | string): Logge
   return new DefaultLogger(optionsOrNamespace);
 };
 
-// Root universal logger instance.
 export const logger: Logger = createLogger();

@@ -2,7 +2,6 @@ import type { TaskStatus } from '../types';
 
 type Tone = 'good' | 'bad' | 'busy' | 'neutral';
 
-/** One badge palette, so the same tone never renders differently across views. */
 export const toneBadgeClass = (tone: Tone): string =>
   tone === 'good'
     ? 'border-pine-pine/40 bg-pine-pine/15 text-pine-foam'

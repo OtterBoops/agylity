@@ -8,11 +8,8 @@ import {
   faBell,
   faChartPie,
   faCheckToSlot,
-  faCodeBranch,
   faGear,
   faList,
-  faNetworkWired,
-  faSliders,
   faXmark,
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
@@ -95,43 +92,49 @@ export const Sidebar = ({
   const monitorItems: NavItem[] = [
     { href: '/overview', label: 'Overview', icon: faChartPie },
     ...(coordinatorEnabled ? [{ href: '/tasks', label: 'Tasks', icon: faCheckToSlot }] : []),
+    { href: '/alerts', label: 'Alerts', icon: faBell },
+    { href: '/logs', label: 'Logs', icon: faList },
   ];
 
-  const configurationItems: NavItem[] = [
-    { href: '/settings/general', label: 'General', icon: faGear },
-    {
-      href: '/settings/coordinator',
-      label: 'Coordinator',
-      icon: faNetworkWired,
-      badge: coordinatorEnabled ? 'Active' : undefined,
-    },
-    ...(coordinatorEnabled
-      ? [{ href: '/settings/repositories', label: 'Repositories', icon: faCodeBranch }]
-      : []),
-    { href: '/settings/notifications', label: 'Notifications', icon: faBell },
-    { href: '/settings/advanced', label: 'Advanced', icon: faSliders },
-  ];
-
-  const systemItems: NavItem[] = [{ href: '/logs', label: 'Logs', icon: faList }];
+  const settingsItems: NavItem[] = [{ href: '/settings', label: 'Settings', icon: faGear }];
 
   const [timeFormat] = useTimeFormat();
 
+  const [isWide, setIsWide] = useState(() =>
+    typeof window === 'undefined' ? true : window.matchMedia('(min-width: 1280px)').matches
+  );
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1280px)');
+    const sync = () => setIsWide(query.matches);
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, []);
+
   const { label: probeStatus, color: probeColor } = describeProbe(lastProbeSource);
 
+  // The rail is forced below xl, so the footer keys off rendered width, not the preference.
+  const railActive = isCollapsed || !isWide;
+  const probeAtLabel = lastProbeAt
+    ? formatTime(lastProbeAt, { includeSeconds: false, timeFormat })
+    : null;
+  const railTitle = `${probeStatus} · ${probeAtLabel ? `last probe ${probeAtLabel}` : 'no probe yet'} · v${APP_VERSION}${
+    updateInfo.hasUpdate ? ` · update v${updateInfo.latestVersion} available` : ''
+  }`;
+
   const renderNavSection = (
-    title: string,
+    title: string | null,
     items: NavItem[],
     collapsed = false,
     onLinkClick?: () => void
   ) => (
     <div class="flex flex-col gap-1">
-      {!collapsed ? (
+      {!collapsed && title ? (
         <div class="flex items-center gap-2 px-2 py-0.5">
           <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">{title}</span>
           <span class="h-px flex-1 bg-pine-highlight/30" />
         </div>
       ) : (
-        <div class="my-1 h-px w-full bg-pine-highlight/30" title={title} />
+        <div class="my-1 h-px w-full bg-pine-highlight/30" title={title ?? undefined} />
       )}
       <div class="flex flex-col gap-0.5">
         {items.map((item) => (
@@ -170,10 +173,9 @@ export const Sidebar = ({
 
   return (
     <>
-      {/* Mobile Sticky Header Bar */}
       <div class="sticky top-0 z-40 flex h-14 w-full items-center justify-between border-b border-pine-highlight bg-pine-surface px-4 md:hidden">
         <Link href="/overview" class="flex items-center gap-2.5">
-          <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay shadow-xs">
+          <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay">
             <svg viewBox="0 0 24 24" fill="none" class="size-4.5 text-pine-iris" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -204,21 +206,25 @@ export const Sidebar = ({
         </button>
       </div>
 
-      {/* Mobile Collapsible Navigation Dropdown */}
       {mobileOpen && (
         <div class="border-b border-pine-highlight bg-pine-surface p-4 md:hidden">
-          <nav class="flex flex-col gap-4">
+          <nav class="flex flex-col gap-3">
             {renderNavSection('Monitor', monitorItems, false, () => setMobileOpen(false))}
-            {renderNavSection('Configuration', configurationItems, false, () =>
-              setMobileOpen(false)
-            )}
-            {renderNavSection('System', systemItems, false, () => setMobileOpen(false))}
+            {renderNavSection(null, settingsItems, false, () => setMobileOpen(false))}
           </nav>
 
-          {/* Mobile Telemetry & Version Footer */}
           <div
+            role="button"
+            tabIndex={0}
+            aria-label="Connection telemetry"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                setInspectorOpen(true);
+              }
+            }}
             onClick={() => setInspectorOpen(true)}
-            class="mt-4 flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-base/40 p-3 text-xs transition-colors hover:border-pine-iris/50"
+            class="mt-4 flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs transition-colors hover:border-pine-iris/50"
           >
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-2">
@@ -232,7 +238,7 @@ export const Sidebar = ({
               </div>
               {lastProbeAt && (
                 <span class="font-mono text-xs text-pine-subtle" title={lastProbeAt}>
-                  {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
+                  {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
                 </span>
               )}
             </div>
@@ -269,17 +275,15 @@ export const Sidebar = ({
         </div>
       )}
 
-      {/* Desktop Collapsible Sidebar */}
       <aside
         class={`hidden md:flex md:h-full md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 ${
-          isCollapsed ? 'md:w-16' : 'md:w-60 2xl:w-64'
+          isCollapsed ? 'md:w-16' : 'md:w-16 xl:w-60 2xl:w-64'
         }`}
       >
-        <div class={isCollapsed ? 'px-2 py-4' : 'px-3 py-4 md:px-3.5 md:py-4'}>
-          {/* Brand Header & Pin/Collapse Button */}
+        <div class={railActive ? 'px-2 py-4' : 'px-3 py-4 md:px-3.5 md:py-4'}>
           <div
             class={`mb-6 flex items-center transition-all ${
-              isCollapsed ? 'flex-col justify-center gap-2 px-0' : 'justify-between px-1'
+              railActive ? 'flex-col justify-center gap-2 px-0' : 'justify-between px-1'
             }`}
           >
             <Link
@@ -287,7 +291,7 @@ export const Sidebar = ({
               class="flex cursor-pointer items-center gap-2.5"
               title="Agylity Dashboard"
             >
-              <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay shadow-xs">
+              <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay">
                 <svg
                   viewBox="0 0 24 24"
                   fill="none"
@@ -302,7 +306,7 @@ export const Sidebar = ({
                   />
                 </svg>
               </div>
-              {!isCollapsed && (
+              {!railActive && (
                 <span class="text-xl leading-none font-bold tracking-tight text-pine-text">
                   Agylity
                 </span>
@@ -320,19 +324,26 @@ export const Sidebar = ({
             </button>
           </div>
 
-          <nav class="flex flex-col gap-4">
-            {renderNavSection('Monitor', monitorItems, isCollapsed)}
-            {renderNavSection('Configuration', configurationItems, isCollapsed)}
-            {renderNavSection('System', systemItems, isCollapsed)}
+          <nav class="flex flex-col gap-3">
+            {renderNavSection('Monitor', monitorItems, railActive)}
+            {renderNavSection(null, settingsItems, railActive)}
           </nav>
         </div>
 
-        {/* Desktop Homepage-style Telemetry & Version Footer */}
-        <div class={isCollapsed ? 'p-2' : 'p-3 pt-0'}>
-          {!isCollapsed ? (
+        <div class={railActive ? 'p-2' : 'p-3 pt-0'}>
+          {!railActive ? (
             <div
+              role="button"
+              tabIndex={0}
+              aria-label="Connection telemetry"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setInspectorOpen(true);
+                }
+              }}
               onClick={() => setInspectorOpen(true)}
-              class="flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-base/40 p-3 shadow-xs transition-colors hover:border-pine-iris/60"
+              class="flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 transition-colors hover:border-pine-iris/60"
               title="Click to view detailed system telemetry"
             >
               <div class="flex items-center justify-between text-xs">
@@ -347,7 +358,7 @@ export const Sidebar = ({
                 </div>
                 {lastProbeAt && (
                   <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
-                    {formatTime(lastProbeAt, { includeSeconds: true, timeFormat })}
+                    {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
                   </span>
                 )}
               </div>
@@ -387,9 +398,18 @@ export const Sidebar = ({
             </div>
           ) : (
             <div
+              role="button"
+              tabIndex={0}
+              aria-label={`Connection status: ${railTitle}. Activate to inspect telemetry.`}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setInspectorOpen(true);
+                }
+              }}
               onClick={() => setInspectorOpen(true)}
-              class="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-pine-highlight bg-pine-base/40 p-2 text-center shadow-xs transition-colors hover:border-pine-iris/60"
-              title={`${probeStatus} - Click to inspect telemetry (v${APP_VERSION})`}
+              class="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-pine-highlight bg-pine-surface px-0 py-2 text-center transition-colors hover:border-pine-iris/60"
+              title={railTitle}
             >
               <span class="relative flex size-2.5 shrink-0">
                 <span
@@ -397,7 +417,9 @@ export const Sidebar = ({
                 />
                 <span class={`relative inline-flex size-2.5 rounded-full ${probeColor}`} />
               </span>
-              <span class="font-mono text-xs text-pine-subtle">v{APP_VERSION}</span>
+              <span class="max-w-full truncate font-mono text-xs leading-none text-pine-subtle">
+                v{APP_VERSION}
+              </span>
             </div>
           )}
         </div>

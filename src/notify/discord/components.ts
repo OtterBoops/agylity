@@ -88,7 +88,6 @@ export const createDispatchModal = (
       options.defaultModel || 'gemini-4-argon'
     );
 
-    // Offer only the models the target pool can reach, and pre-select the pool's default.
     const scoped = CANONICAL_AGY_MODELS.filter(
       (m) => !options.poolFamily || m.family === options.poolFamily
     );
@@ -106,7 +105,6 @@ export const createDispatchModal = (
         }))
       );
 
-    // Every effort is listed; the runner clamps to what the chosen model supports.
     const effortSelect = new StringSelectMenuBuilder()
       .setCustomId('task_effort')
       .setPlaceholder('Select reasoning effort')

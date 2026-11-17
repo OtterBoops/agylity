@@ -30,14 +30,12 @@ export class DiscordNotifier implements Notifier {
   public client: Client | null = null;
   public initialized = false;
   public activeInteractions = new Map<string, any>();
-  // Bounds retention of dispatched interactions so cancelled or reaped tasks cannot leak entries.
   public maxActiveInteractions = 200;
   public interactionRetentionMs = 30 * 60 * 1000;
   private config: ResolvedConfig;
   private options: DiscordNotifierOptions;
   private activeSubmissions = new Set<string>();
   private pinnedOwnerUserId?: string;
-  // A retried initialize() must not attach a second interactionCreate handler to the same client.
   private interactionListenerBound = false;
 
   constructor(config: Partial<ResolvedConfig> = {}, options: DiscordNotifierOptions = {}) {
@@ -52,12 +50,10 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
-  // Returns the currently bound Discord owner user ID (explicitly configured or TOFU-pinned).
   public getBoundOwnerUserId(): string | undefined {
     return this.config.discordOwnerUserId?.trim() || this.pinnedOwnerUserId;
   }
 
-  // Owner binding is single-user: a configured owner id, else the first interactor pins the session.
   private verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string } {
     const userId = typeof interaction?.user?.id === 'string' ? interaction.user.id.trim() : '';
     const configuredOwner = this.config.discordOwnerUserId?.trim();
@@ -104,7 +100,7 @@ export class DiscordNotifier implements Notifier {
     return { allowed: true };
   }
 
-  // Bundles the live interaction context for the extracted handlers; the retention caps are getters
+  // Retention caps stay getters so a later config change still applies to these deps.
   private interactionDeps(): DiscordInteractionDeps {
     const self = this;
     return {
@@ -155,10 +151,8 @@ export class DiscordNotifier implements Notifier {
         this.initialized = true;
       } catch (err: any) {
         logger.child('notify:discord').error('Client login failed: %s', err.message);
-        // Do not mark initialized if login threw
       }
     } else {
-      // Mock or unauthenticated client mode
       this.initialized = true;
     }
   }
@@ -203,7 +197,6 @@ export class DiscordNotifier implements Notifier {
     return routeInteraction(this.interactionDeps(), interaction);
   }
 
-  // Automatically discovers and binds the Discord server owner ID if discordOwnerUserId is unset.
   public async autoDiscoverOwnerUserId(): Promise<string | undefined> {
     if (this.config.discordOwnerUserId?.trim()) {
       return this.config.discordOwnerUserId.trim();
@@ -249,9 +242,7 @@ export class DiscordNotifier implements Notifier {
         if (this.options.onOwnerDiscovered) {
           try {
             await this.options.onOwnerDiscovered(guild.ownerId);
-          } catch {
-            // Safe catch on callback
-          }
+          } catch {}
         }
         return guild.ownerId;
       }
@@ -360,9 +351,7 @@ export class DiscordNotifier implements Notifier {
         // A blank relay is rejected by Discord as an empty message, so it falls back to the step.
         const msg = (status.message?.trim() || `Step: ${step}`).slice(0, 2000);
         await interaction.editReply({ content: msg });
-      } catch {
-        // Safe catch on interaction update
-      }
+      } catch {}
       const st = normalizeStep(status);
       if (isTerminalStep(st)) {
         if (taskKey) this.activeInteractions.delete(taskKey);
@@ -382,20 +371,15 @@ export class DiscordNotifier implements Notifier {
       const isTerminal = isTerminalStep(st);
       const isInitial = st === 'polling' || st === 'waking';
 
-      // Only notify on initial dispatch and final completion
-      // Drop noisy intermediate runner progress heartbeats (checking out branch, launching agy)
       if (!isInitial && !isTerminal) {
         return;
       }
 
       const embed = renderDispatchEmbed(status, this.config.baseUrl);
       await (channel as any).send({ embeds: [embed] });
-    } catch {
-      // Safe catch
-    }
+    } catch {}
   }
 
-  // Silent by construction: no `content` component and no allowed_mentions, so no owner ping.
   async notifyInfo(notice: InfoNotice): Promise<void> {
     if (!this.client || !this.initialized) return;
 
@@ -445,7 +429,6 @@ export class DiscordNotifier implements Notifier {
         };
       }
 
-      // A channel that cannot accept messages must not be reported as a delivered ping.
       if (!('send' in channel) || typeof (channel as any).send !== 'function') {
         return {
           success: false,
@@ -512,16 +495,12 @@ export class DiscordNotifier implements Notifier {
       if (typeof this.client.removeAllListeners === 'function') {
         try {
           this.client.removeAllListeners();
-        } catch {
-          // Safe catch
-        }
+        } catch {}
       }
       if (typeof this.client.destroy === 'function') {
         try {
           await this.client.destroy();
-        } catch {
-          // Safe catch on destroy
-        }
+        } catch {}
       }
       this.client = null;
     }

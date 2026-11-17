@@ -1,14 +1,25 @@
-import { promises as fs } from 'node:fs';
+import { readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import type { DatabaseSync } from 'node:sqlite';
+import { AppDatabase } from '../storage/db.js';
 import type { BurnSample } from './models.js';
+import type { DeliveryChannelResult } from '../notify/types.js';
+import {
+  SentryStore,
+  SAMPLE_HISTORY_LIMIT,
+  ensureSentryStateSchema,
+  headroomPercentOf,
+  normalizeMilestoneKey,
+  type AlertEventPage,
+  type ListAlertEventsOptions,
+  type RecordAlertEventInput,
+} from './store.js';
 
-// Persistent State Schema
+export { SAMPLE_HISTORY_LIMIT, normalizeMilestoneKey, headroomPercentOf };
+export type { AlertEventPage, ListAlertEventsOptions, RecordAlertEventInput };
 
-/** Newest sample last; the cap bounds both the state file and the projection window. */
-const SAMPLE_HISTORY_LIMIT = 24;
 const SAMPLE_MIN_INTERVAL_MS = 10 * 60_000;
-/** Drain below this fraction is probe jitter, not usage. */
 const SAMPLE_MIN_DELTA = 0.01;
 
 export const PoolSampleSchema = z.object({
@@ -22,7 +33,6 @@ export const PoolStateSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
   firedMilestones: z.array(z.string()),
   lastAlertSentAt: z.string().nullable().optional(),
-  /** Absent in files written before burn-rate sampling existed. */
   samples: z.array(PoolSampleSchema).optional(),
 });
 
@@ -46,19 +56,13 @@ export const EarlyResetNoticeSchema = z.object({
 
 export type EarlyResetNotice = z.infer<typeof EarlyResetNoticeSchema>;
 
-/** Per-pool outcome of a quota observation, so callers can react without diffing state twice. */
 export interface PoolQuotaUpdate {
-  /** The reset deadline advanced: a new cycle with cleared milestones. */
   cycleRolled: boolean;
-  /** Set only when this observation was a premature reset. */
   earlyReset: EarlyResetPool | null;
 }
 
-// A pool nobody drew from floats its resetTime forward every poll, so only a pool with prior
-// usage can have reset early.
 const EARLY_RESET_UNUSED_FRACTION = 0.99;
 const EARLY_RESET_MIN_GAIN = 0.05;
-/** Inside this window the cycle is ending anyway, so a refill is expected rather than early. */
 const EARLY_RESET_GUARD_MS = 5 * 60_000;
 
 const detectEarlyReset = (
@@ -83,7 +87,6 @@ const detectEarlyReset = (
   };
 };
 
-/** A sample is only recorded when it carries information the last one did not. */
 const appendSample = (
   samples: BurnSample[] | undefined,
   remainingFraction: number,
@@ -105,7 +108,6 @@ const appendSample = (
   return [...history, sample].slice(-SAMPLE_HISTORY_LIMIT);
 };
 
-/** Probe sources, so the schema and its callers cannot disagree. */
 export const PROBE_SOURCES = [
   'connect_rpc',
   'cli',
@@ -123,16 +125,10 @@ export const SentryStateSchema = z.object({
   authRequired: z.boolean().optional(),
   authErrorMessage: z.string().optional(),
   pools: z.record(z.string(), PoolStateSchema),
-  /** Only the newest premature reset survives; a probe never retires it. */
   earlyResetNotice: EarlyResetNoticeSchema.nullable().optional(),
 });
 
 export type SentryState = z.infer<typeof SentryStateSchema>;
-
-export const normalizeMilestoneKey = (milestone: number | string): string => {
-  const s = String(milestone).trim().toLowerCase();
-  return s.endsWith('h') ? s : `${s}h`;
-};
 
 export const createInitialState = (): SentryState => ({
   version: 1,
@@ -141,16 +137,45 @@ export const createInitialState = (): SentryState => ({
   pools: {},
 });
 
-// Sentry State Manager Class
+export interface SentryStateManagerOptions {
+  db: AppDatabase | DatabaseSync;
+  legacyStatePath?: string;
+}
+
+export type SentryStateManagerSource = SentryStateManagerOptions | string;
+
+const isAppDatabase = (value: unknown): value is AppDatabase =>
+  typeof (value as AppDatabase)?.getRawDb === 'function';
+
+const deriveDatabasePath = (statePath: string): string =>
+  statePath.toLowerCase().endsWith('.json') ? `${statePath.slice(0, -5)}.db` : `${statePath}.db`;
 
 export class SentryStateManager {
-  private readonly stateFilePath: string;
+  private readonly store: SentryStore;
+  private readonly ownsDatabase?: AppDatabase;
+  private readonly legacyStatePath?: string;
   private state: SentryState;
-  private saveChain: Promise<void> = Promise.resolve();
 
-  constructor(stateFilePath: string = 'data/state.json') {
-    this.stateFilePath = path.resolve(stateFilePath);
-    this.state = createInitialState();
+  constructor(source: SentryStateManagerSource = 'data/state.json') {
+    if (typeof source === 'string') {
+      const databasePath = deriveDatabasePath(path.resolve(source));
+      this.ownsDatabase = new AppDatabase(databasePath);
+      ensureSentryStateSchema(this.ownsDatabase.getRawDb());
+      this.store = new SentryStore(this.ownsDatabase.getRawDb());
+      this.legacyStatePath = path.resolve(source);
+    } else {
+      const raw = isAppDatabase(source.db) ? source.db.getRawDb() : source.db;
+      ensureSentryStateSchema(raw);
+      this.store = new SentryStore(raw);
+      this.legacyStatePath = source.legacyStatePath
+        ? path.resolve(source.legacyStatePath)
+        : undefined;
+    }
+    this.state = this.hydrate();
+  }
+
+  public close(): void {
+    this.ownsDatabase?.close();
   }
 
   getState(): SentryState {
@@ -159,85 +184,82 @@ export class SentryStateManager {
 
   setState(newState: SentryState): void {
     this.state = JSON.parse(JSON.stringify(newState));
-  }
-
-  // Loads state from disk; a corrupt file is quarantined rather than trusted.
-  async load(): Promise<SentryState> {
-    try {
-      const raw = await fs.readFile(this.stateFilePath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      const validated = SentryStateSchema.parse(parsed);
-      this.state = validated;
-      return this.getState();
-    } catch (err: unknown) {
-      const error = err as NodeJS.ErrnoException;
-      if (error && error.code === 'ENOENT') {
-        this.state = createInitialState();
-        return this.getState();
-      }
-
-      // Only contents that cannot be parsed or validated are quarantined. A read-side failure
-      // (lock, permissions) leaves the file for the next load instead of destroying valid state.
-      const contentInvalid = err instanceof SyntaxError || err instanceof z.ZodError;
-      if (!contentInvalid) {
-        return this.getState();
-      }
-
-      const quarantinePath = `${this.stateFilePath}.corrupt.${Date.now()}`;
-      try {
-        await fs.rename(this.stateFilePath, quarantinePath);
-      } catch {
-        // Quarantine rename best-effort
-      }
-
-      this.state = createInitialState();
-      return this.getState();
-    }
-  }
-
-  // Atomically saves state to disk using a unique temporary file and fs.rename.
-  async save(): Promise<void> {
-    // The probe loop and the web dismissal both save this manager; serialising them keeps a slower
-    // write from renaming its older serialisation over a newer one.
-    const run = this.saveChain.then(() => this.writeState());
-    this.saveChain = run.then(
-      () => undefined,
-      () => undefined
+    this.store.replaceAll(
+      {
+        lastProbeAt: this.state.lastProbeAt,
+        lastProbeSource: this.state.lastProbeSource,
+        authRequired: this.state.authRequired,
+        authErrorMessage: this.state.authErrorMessage,
+      },
+      this.state.pools,
+      this.state.earlyResetNotice ?? null
     );
-    return run;
   }
 
-  private async writeState(): Promise<void> {
-    const dir = path.dirname(this.stateFilePath);
-    await fs.mkdir(dir, { recursive: true });
-
-    const nonce = Math.random().toString(36).slice(2);
-    const tempFile = `${this.stateFilePath}.tmp.${process.pid}.${Date.now()}.${nonce}`;
-    // Serialise inside the queued write so the newest state is what lands on disk.
-    const serialized = JSON.stringify(this.state, null, 2);
-
-    await fs.writeFile(tempFile, serialized, 'utf-8');
-
-    // On Windows, target file locking may briefly trigger EPERM / EBUSY
-    let renamed = false;
-    let attempts = 0;
-    while (!renamed && attempts < 5) {
-      try {
-        await fs.rename(tempFile, this.stateFilePath);
-        renamed = true;
-      } catch (err: unknown) {
-        attempts++;
-        if (attempts >= 5) {
-          try {
-            await fs.unlink(tempFile);
-          } catch {
-            // ignore cleanup error
-          }
-          throw err;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 25));
+  private hydrate(): SentryState {
+    if (this.store.isEmpty() && this.legacyStatePath) {
+      const imported = this.importLegacyState();
+      if (imported) {
+        this.store.replaceAll(
+          {
+            lastProbeAt: imported.lastProbeAt,
+            lastProbeSource: imported.lastProbeSource,
+            authRequired: imported.authRequired,
+            authErrorMessage: imported.authErrorMessage,
+          },
+          imported.pools,
+          imported.earlyResetNotice ?? null
+        );
+        return imported;
       }
     }
+
+    const initial = createInitialState();
+    const probe = this.store.readProbe();
+    const state: SentryState = {
+      version: 1,
+      lastProbeAt: probe.lastProbeAt ?? initial.lastProbeAt,
+      lastProbeSource: probe.lastProbeSource
+        ? (probe.lastProbeSource as ProbeSource)
+        : 'unreachable',
+      pools: this.store.readPools(),
+    };
+    if (probe.authRequired !== undefined) state.authRequired = probe.authRequired;
+    if (probe.authErrorMessage !== undefined) state.authErrorMessage = probe.authErrorMessage;
+    const notice = this.store.readEarlyResetNotice();
+    if (notice) state.earlyResetNotice = notice;
+    return state;
+  }
+
+  private importLegacyState(): SentryState | null {
+    const legacyPath = this.legacyStatePath;
+    if (!legacyPath) return null;
+
+    let raw: string;
+    try {
+      raw = readFileSync(legacyPath, 'utf-8');
+    } catch {
+      return null;
+    }
+
+    try {
+      return SentryStateSchema.parse(JSON.parse(raw));
+    } catch (err: unknown) {
+      const contentInvalid = err instanceof SyntaxError || err instanceof z.ZodError;
+      if (!contentInvalid) return null;
+      try {
+        renameSync(legacyPath, `${legacyPath}.corrupt.${Date.now()}`);
+      } catch {}
+      return null;
+    }
+  }
+
+  async load(): Promise<SentryState> {
+    return this.getState();
+  }
+
+  async save(): Promise<void> {
+    // A flush step here would only hide a write that failed earlier.
   }
 
   updateProbe(
@@ -256,6 +278,12 @@ export class SentryStateManager {
       this.state.authRequired = false;
       this.state.authErrorMessage = undefined;
     }
+    this.store.writeProbe({
+      lastProbeAt: this.state.lastProbeAt,
+      lastProbeSource: this.state.lastProbeSource,
+      authRequired: this.state.authRequired,
+      authErrorMessage: this.state.authErrorMessage,
+    });
   }
 
   updatePoolQuota(
@@ -273,12 +301,12 @@ export class SentryStateManager {
         lastAlertSentAt: null,
         samples: appendSample(undefined, remainingFraction, resetTime, nowMs),
       };
+      this.store.writePool(poolId, this.state.pools[poolId]);
       return { cycleRolled: true, earlyReset: null };
     }
 
     const nextResetMs = Date.parse(resetTime);
     const priorResetMs = Date.parse(existing.resetTime);
-    // An unreadable deadline is not adopted, so a notice must record the deadline still in force.
     const effectiveResetTime = Number.isFinite(nextResetMs) ? resetTime : existing.resetTime;
     const earlyReset = detectEarlyReset(
       poolId,
@@ -288,46 +316,44 @@ export class SentryStateManager {
       nowMs
     );
 
-    // A new cycle needs two readable deadlines that differ in instant. A re-rendered deadline, or a
-    // probe that lost the deadline, must not clear the dedupe or every fired milestone re-sends.
     if (
       Number.isFinite(nextResetMs) &&
       Number.isFinite(priorResetMs) &&
       nextResetMs !== priorResetMs
     ) {
-      // Upstream reset time changed: cycle rollover
       existing.resetTime = resetTime;
       existing.remainingFraction = remainingFraction;
       existing.firedMilestones = [];
       existing.lastAlertSentAt = null;
       existing.samples = appendSample(undefined, remainingFraction, resetTime, nowMs);
+      this.store.writePool(poolId, existing);
       return { cycleRolled: true, earlyReset };
     }
 
-    // Adopt a readable deadline; keep the known one when this probe could not parse its own.
     if (Number.isFinite(nextResetMs)) {
       existing.resetTime = resetTime;
     }
 
     if (earlyReset) {
-      // A premature refill restarted the balance, so earlier samples describe a dead cycle.
       existing.remainingFraction = remainingFraction;
       existing.samples = appendSample(undefined, remainingFraction, effectiveResetTime, nowMs);
+      this.store.writePool(poolId, existing);
       return { cycleRolled: false, earlyReset };
     }
 
     existing.remainingFraction = remainingFraction;
     existing.samples = appendSample(existing.samples, remainingFraction, effectiveResetTime, nowMs);
+    this.store.writePool(poolId, existing);
     return { cycleRolled: false, earlyReset };
   }
 
-  /** Overwrites any previous notice: only the latest premature reset is actionable. */
   recordEarlyResetNotice(
     pools: EarlyResetPool[],
     detectedAt: string = new Date().toISOString()
   ): EarlyResetNotice {
     const notice: EarlyResetNotice = { detectedAt, pools };
     this.state.earlyResetNotice = notice;
+    this.store.writeEarlyResetNotice(notice);
     return JSON.parse(JSON.stringify(notice));
   }
 
@@ -335,10 +361,10 @@ export class SentryStateManager {
     return this.state.earlyResetNotice ?? null;
   }
 
-  /** Cleared only by an explicit dismissal; the next premature reset replaces it. */
   dismissEarlyResetNotice(): boolean {
     if (!this.state.earlyResetNotice) return false;
     this.state.earlyResetNotice = null;
+    this.store.writeEarlyResetNotice(null);
     return true;
   }
 
@@ -355,22 +381,14 @@ export class SentryStateManager {
     milestone: number | string,
     alertTime: string = new Date().toISOString()
   ): void {
-    let pool = this.state.pools[poolId];
-    if (!pool) {
-      pool = {
-        resetTime: new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
-        remainingFraction: 1,
-        firedMilestones: [],
-        lastAlertSentAt: null,
-      };
-      this.state.pools[poolId] = pool;
-    }
-
+    const pool = this.ensurePool(poolId);
     const key = normalizeMilestoneKey(milestone);
     if (!pool.firedMilestones.includes(key)) {
       pool.firedMilestones.push(key);
     }
     pool.lastAlertSentAt = alertTime;
+    this.store.insertMilestone(poolId, pool.resetTime, key, alertTime);
+    this.store.setLastAlertSentAt(poolId, alertTime);
   }
 
   recordSupersededMilestones(poolId: string, milestones: (number | string)[]): void {
@@ -380,11 +398,75 @@ export class SentryStateManager {
       const key = normalizeMilestoneKey(m);
       if (!pool.firedMilestones.includes(key)) {
         pool.firedMilestones.push(key);
+        this.store.insertMilestone(poolId, pool.resetTime, key);
       }
     }
   }
 
+  recordDeliveredAlert(input: {
+    poolId: string;
+    resetTime: string;
+    milestoneHours: number;
+    headroomPercent?: number | null;
+    channels?: Record<string, DeliveryChannelResult>;
+    firedAt?: string;
+  }): void {
+    const pool = this.ensurePool(input.poolId, input.resetTime);
+    const firedAt = input.firedAt ?? new Date().toISOString();
+    const key = normalizeMilestoneKey(input.milestoneHours);
+
+    this.store.recordDeliveredAlert({
+      poolId: input.poolId,
+      resetTime: input.resetTime,
+      kind: 'milestone',
+      milestoneHours: input.milestoneHours,
+      headroomPercent: input.headroomPercent ?? null,
+      channels: input.channels ?? {},
+      firedAt,
+    });
+
+    if (!pool.firedMilestones.includes(key)) pool.firedMilestones.push(key);
+    pool.lastAlertSentAt = firedAt;
+  }
+
+  recordCycleAlert(input: {
+    poolId: string;
+    resetTime: string;
+    kind: 'early_reset';
+    headroomPercent?: number | null;
+    channels?: Record<string, DeliveryChannelResult>;
+    firedAt?: string;
+  }): void {
+    this.store.recordAlertEvent({
+      poolId: input.poolId,
+      resetTime: input.resetTime,
+      kind: input.kind,
+      milestoneHours: null,
+      headroomPercent: input.headroomPercent ?? null,
+      channels: input.channels ?? {},
+      firedAt: input.firedAt,
+    });
+  }
+
+  listAlertEvents(options: ListAlertEventsOptions = {}): AlertEventPage {
+    return this.store.listAlertEvents(options);
+  }
+
   getPoolState(poolId: string): PoolState | undefined {
     return this.state.pools[poolId];
+  }
+
+  private ensurePool(poolId: string, resetTime?: string): PoolState {
+    const existing = this.state.pools[poolId];
+    if (existing) return existing;
+    const pool: PoolState = {
+      resetTime: resetTime ?? new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
+      remainingFraction: 1,
+      firedMilestones: [],
+      lastAlertSentAt: null,
+    };
+    this.state.pools[poolId] = pool;
+    this.store.ensurePoolRow(poolId, pool.resetTime, pool.remainingFraction);
+    return pool;
   }
 }

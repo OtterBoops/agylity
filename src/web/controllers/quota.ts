@@ -6,7 +6,6 @@ import type { QuotaFamily, QuotaSnapshot } from '../../sentry/models.js';
 import { computeBurnProjection, snapshotsFromSentryState } from '../../sentry/models.js';
 import type { SentryStateManager } from '../../sentry/state.js';
 
-/** Live catalog labels per pool, so the Overview cards track `/api/models` rather than a stale list. */
 const withCatalogModels = (
   snapshots: QuotaSnapshot[],
   options: WebServerOptions
@@ -28,7 +27,6 @@ const withCatalogModels = (
   });
 };
 
-/** A live probe reports one observation, so a projection can only come from the stored history. */
 const withStoredProjections = (
   snapshots: QuotaSnapshot[],
   sentryState: SentryStateManager
@@ -56,7 +54,7 @@ export const handleGetQuota = async (
   try {
     let snapshots: QuotaSnapshot[] = [];
     if (options.quotaClient) {
-      // ?refresh=1 forces a probe; without it a manual refresh can be served the 30s cache.
+      // ?refresh=1 forces a probe; otherwise a manual refresh can be served the 30s cache.
       const force = new URL(req.url ?? '/', 'http://localhost').searchParams.get('refresh') === '1';
       const probed = await options.quotaClient.fetchQuota(force);
       snapshots = options.sentryState ? withStoredProjections(probed, options.sentryState) : probed;
@@ -68,7 +66,6 @@ export const handleGetQuota = async (
     });
   } catch (err: any) {
     const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
-    // The message stays in the log: it can carry absolute paths and SQL detail.
     logger.child('web').error('Quota fetch failed: %s', err?.stack ?? err);
     return sendJson(res, statusCode, {
       error: err?.code === 'AUTH_REQUIRED' ? 'Authentication Required' : 'Failed to fetch quota',
@@ -93,7 +90,6 @@ export const handleGetAlerts = (
   return sendJson(res, 200, alertData, { 'Cache-Control': 'no-store' });
 };
 
-/** Dismissal is the only way an early-reset notice clears; the next premature reset replaces it. */
 export const handleDismissAlerts = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,

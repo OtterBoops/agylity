@@ -6,8 +6,7 @@ import { logger } from '../logs/logger.js';
 
 export const ENCRYPTION_PREFIX = 'enc:v1:';
 
-// A value carrying ENCRYPTION_PREFIX that cannot be decrypted must never be
-// silently treated as an absent secret; callers treat this as fatal.
+// An undecryptable enc:v1: value is fatal to callers, never a silently absent secret.
 export class SecretDecryptionError extends Error {
   constructor(message: string) {
     super(message);
@@ -15,7 +14,6 @@ export class SecretDecryptionError extends Error {
   }
 }
 
-// Both spellings of every canonical secret, derived from the single map in schema.ts.
 export const SECRET_KEYS = new Set<string>([
   ...CANONICAL_SECRET_CONFIG_KEYS,
   ...Object.values(SECRET_CONFIG_KEY_ENV_NAMES),
@@ -23,7 +21,6 @@ export const SECRET_KEYS = new Set<string>([
 
 export const isSecretKey = (key: string): boolean => {
   if (SECRET_KEYS.has(key)) return true;
-  // Suffix heuristics catch secrets absent from the canonical map, e.g. a custom *_TOKEN in webhookCustomHeaders.
   const lower = key.toLowerCase();
   return (
     lower.endsWith('token') ||
@@ -39,7 +36,6 @@ export const isSecretKey = (key: string): boolean => {
 let processMemoryKey: Buffer | null = null;
 
 export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
-  // 1. Explicit environment variable
   const envKey = process.env.AGYLITY_SECRET_KEY || process.env.ENCRYPTION_KEY;
   if (envKey && envKey.trim()) {
     const trimmed = envKey.trim();
@@ -49,8 +45,8 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
     return createHash('sha256').update(trimmed, 'utf8').digest();
   }
 
-  // 2. Persistent keyfile: a configured path must never fall back to a per-process
-  // key, or every secret encrypted with the real keyfile becomes undecryptable.
+  // A configured keyfile path must never fall back to a per-process key, or every secret
+  // encrypted with the real keyfile becomes undecryptable.
   if (keyFilePath && keyFilePath !== ':memory:') {
     if (existsSync(keyFilePath)) {
       let raw: string;
@@ -89,7 +85,6 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
     return generatedKey;
   }
 
-  // 3. Process-level memory key fallback (no keyfile path configured)
   if (!processMemoryKey) {
     processMemoryKey = randomBytes(32);
   }
@@ -141,12 +136,10 @@ export const decryptSecret = (ciphertext: string, customKey?: Buffer): string =>
   }
 };
 
-/** Marks a decrypted payload that carries a JSON value rather than a bare string. */
 export const SECRET_JSON_MARKER = '\u0000json:';
 
 export const SECRET_MASK = '••••••••';
 
-/** The write path treats a masked value as "keep the stored secret". */
 export const isSecretMask = (value: unknown): boolean =>
   value === SECRET_MASK || value === '********';
 

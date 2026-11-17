@@ -63,7 +63,6 @@ export const CliModelsResponseSchema = z.object({
 
 export type CliModelsResponse = z.infer<typeof CliModelsResponseSchema>;
 
-// Extracts a JSON object from CLI stdout, handling leading status banners
 export const extractCliJsonPayload = (stdout: string): unknown => {
   const trimmed = stdout.trim();
   try {
@@ -104,8 +103,6 @@ export const RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetCascad
 export const QUOTA_SUMMARY_RPC_PATH =
   '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary';
 export const USER_STATUS_RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetUserStatus';
-
-// Connect-RPC Client Implementation
 
 const isConnectionRefused = (err: unknown): boolean => {
   if (!err) return false;
@@ -149,9 +146,9 @@ export const buildCliAuthErrorMessage = (): string => {
 };
 
 export class ConnectRpcQuotaClient implements IQuotaClient {
-  private static readonly CREDITS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-  private static readonly AUTH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes circuit breaker
-  private static readonly PROBE_FAILURE_COOLDOWN_MS = 10 * 1000; // 10 seconds for transient errors
+  private static readonly CREDITS_TTL_MS = 5 * 60 * 1000;
+  private static readonly AUTH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
+  private static readonly PROBE_FAILURE_COOLDOWN_MS = 10 * 1000;
   private endpointUrl?: string;
   private host: string;
   private port: number;
@@ -212,7 +209,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.execFileFn = options.execFileFn ?? (defaultExecFileAsync as any);
   }
 
-  // Fetches rolling model quota snapshots from the Antigravity Language Server.
   async fetchQuota(force = false): Promise<QuotaSnapshot[]> {
     if (force) {
       this.authBlockedUntil = 0;
@@ -221,12 +217,10 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       this.lastProbeError = undefined;
     }
 
-    // 0a. Circuit breaker: if CLI is unauthenticated, pause retries to prevent infinite spam loops
     if (!force && Date.now() < this.authBlockedUntil && this.lastAuthErrorMessage) {
       throw new LanguageServerError(this.lastAuthErrorMessage, 'AUTH_REQUIRED');
     }
 
-    // 0b. Cooldown: if a previous probe failed within the last 10s, don't thrash processes on rapid web polls
     if (
       !force &&
       this.lastProbeError &&
@@ -235,7 +229,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       throw this.lastProbeError;
     }
 
-    // Return cached snapshots if called within minimum refresh cooldown window
     if (
       !force &&
       this.minRefreshIntervalMs > 0 &&
@@ -246,7 +239,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       return this.lastKnownSnapshots;
     }
 
-    // Fast path: if already latched to healthy CLI fallback and RPC probe cooldown is active, query CLI directly
     const shouldProbeRpc =
       force ||
       this.activeProvider === 'rpc' ||
@@ -267,7 +259,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           return cliSnapshots;
         }
       } catch (cliErr: unknown) {
-        // CLI failed: reset provider to force immediate RPC re-probe
         this.activeProvider = 'unknown';
         this.nextRpcProbeAt = 0;
         this.lastFailedAt = Date.now();
@@ -291,7 +282,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
     let rpcError: Error | null = null;
 
-    // 0. Proactively discover live process credentials if endpointUrl is not explicitly fixed
     if (
       this.enableProcessDiscovery &&
       !this.endpointUrl &&
@@ -300,12 +290,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       try {
         const discovered = await discoverLocalLanguageServer(this.execFileFn as any);
         this.applyDiscoveredCredentials(discovered);
-      } catch {
-        // Discovery is best-effort
-      }
+      } catch {}
     }
 
-    // 1. Attempt Connect-RPC over configured endpoint / dual ports
     try {
       const snapshots = await this.tryConnectRpc();
       if (snapshots && snapshots.length > 0) {
@@ -323,7 +310,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       rpcError = err instanceof Error ? err : new Error(String(err));
     }
 
-    // 2. If RPC failed and process discovery is enabled, discover live language_server credentials
     if (this.enableProcessDiscovery) {
       try {
         const discovered = await discoverLocalLanguageServer(this.execFileFn as any);
@@ -341,12 +327,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
             return snapshots;
           }
         }
-      } catch {
-        // Discovery retry failed
-      }
+      } catch {}
     }
 
-    // 3. Query Antigravity CLI if enabled
     if (this.enableCliFallback) {
       this.logger.info('Querying Antigravity CLI (/usage & models) via %s...', this.agyBinPath);
       try {
@@ -396,7 +379,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
     }
 
-    // 4. If CLI fallback disabled or failed, throw typed error
     this.lastFailedAt = Date.now();
     this.lastProbeError = new LanguageServerError(
       `Language Server Connect-RPC failed: ${rpcError?.message ?? 'Endpoint unreachable'}`,
@@ -446,7 +428,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     if (config.antigravityCsrfToken !== undefined) {
       this.csrfToken = config.antigravityCsrfToken;
     }
-    // Invalidate cached snapshots and reset active provider so next fetch immediately uses updated endpoint
     this.lastFetchedAt = 0;
     this.activeProvider = 'unknown';
     this.nextRpcProbeAt = 0;
@@ -460,13 +441,11 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     );
   }
 
-  // Returns cached AI credits immediately without blocking quota queries.
   public async getRemainingCredits(force = false): Promise<number | null> {
     void this.triggerCreditsRefreshInBackground(force);
     return this.cachedRemainingCredits;
   }
 
-  // Background /credits probe; callers read the cached value.
   public async triggerCreditsRefreshInBackground(force = false): Promise<number | null> {
     const now = Date.now();
     if (!force && now < this.authBlockedUntil) {
@@ -519,7 +498,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return this.cachedRemainingCredits;
   }
 
-  // Signature is rounded to whole percent, so sub-1% jitter between polls logs at debug.
   private logQuotaStatus(snapshots: QuotaSnapshot[]): void {
     const summary = snapshots
       .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
@@ -538,7 +516,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.logger.info('Quota status: %s', summary);
   }
 
-  // Tries to query Language Server Connect-RPC endpoint across configured ports.
   private async tryConnectRpc(): Promise<QuotaSnapshot[]> {
     const targetBases: string[] = [];
 
@@ -558,7 +535,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     const kyInstance = this.fetchFn ? ky.create({ fetch: this.fetchFn }) : ky;
     const unreachableBases = new Set<string>();
 
-    // 1. First attempt RetrieveUserQuotaSummary (exposes both weekly & 5h limits)
     for (const base of targetBases) {
       try {
         const summaryUrl = `${base}${QUOTA_SUMMARY_RPC_PATH}`;
@@ -596,11 +572,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           base,
           err instanceof Error ? err.message : String(err)
         );
-        // Fall through to GetCascadeModelConfigData
       }
     }
 
-    // 2. Secondary fallback: GetCascadeModelConfigData (skip bases where connection was refused)
     const reachableBases = targetBases.filter((b) => !unreachableBases.has(b));
     let lastError: Error | null = null;
     for (const base of reachableBases) {
@@ -641,7 +615,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     throw lastError || new LanguageServerError('Failed to connect to Language Server RPC');
   }
 
-  // Returns undefined (not false) when no signal, so "unknown" stays distinct from "disabled".
+  // Returns undefined (not false) when no signal is available, so "unknown" stays distinct from "disabled".
   private async probeOverageEnabled(
     kyInstance: typeof ky,
     base: string
@@ -673,11 +647,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return undefined;
   }
 
-  // Executes agy CLI models subcommand as fallback.
   async fallbackToCli(): Promise<QuotaSnapshot[]> {
     this.lastFallbackSynthetic = false;
 
-    // 1. First attempt authoritative agy -p "/usage" (100% parity with Language Server RetrieveUserQuotaSummary)
     try {
       const { stdout: usageStdout } = await this.execFileFn(
         this.agyBinPath,
@@ -687,7 +659,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
       const usageJson = extractCliJsonPayload(usageStdout) as any;
       if (usageJson?.command?.name === 'usage' && usageJson?.command?.data?.groups) {
-        // Query /credits for exact G1 AI credit balance
         const remainingCredits = await this.getRemainingCredits();
 
         const groups = usageJson.command.data.groups.map((g: any) => ({
@@ -731,7 +702,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       );
     }
 
-    // Models-only fallback: no reset times or fractions are available, so telemetry is degraded.
     this.lastFallbackSynthetic = true;
 
     const { stdout } = await this.execFileFn(
@@ -756,7 +726,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       throw new LanguageServerError('CLI returned empty models list', 'CLI_EMPTY_MODELS');
     }
 
-    // 1. If we have recent snapshots from previous RPC or provider, update hoursUntilReset
     const cached = this.cachedSnapshotProvider?.() ?? this.lastKnownSnapshots;
     if (cached && cached.length > 0) {
       const now = Date.now();
@@ -774,8 +743,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         let hoursUntilReset = calculateHoursUntilReset(s.resetTime, now);
         let resetTime = s.resetTime;
         if (hoursUntilReset <= 0) {
-          // No real reset window in degraded mode: roll a fresh synthetic one forward so an
-          // elapsed snapshot cannot freeze the pool and silence every later milestone.
           resetTime = new Date(now + 24 * 3600 * 1000).toISOString();
           hoursUntilReset = 24;
           regeneratedReset = true;
@@ -804,7 +771,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       return snapshots;
     }
 
-    // 2. Synthesize baseline snapshots for detected model families
     const poolsMap = new Map<
       QuotaFamily,
       { family: QuotaFamily; displayName: string; models: string[] }
@@ -828,8 +794,6 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
     }
 
-    // Reporting invented pools would authorise dispatch at 100% headroom while the real
-    // quota is unknown, so return nothing and let eligibility fail closed.
     this.logger.warn(
       'Quota telemetry is degraded (CLI models-only fallback): %d detected pool(s) reported as unknown, dispatch stays locked',
       poolsMap.size
@@ -839,5 +803,4 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
   }
 }
 
-// Alias class matching QuotaClient contract for direct instantiation
 export const QuotaClient = ConnectRpcQuotaClient;

@@ -13,9 +13,10 @@ import { SENTRY_GENERAL_FIELDS } from '../../config/fields';
 interface GeneralViewProps {
   config: ConfigData;
   onChanged: () => void;
+  searchQuery?: string;
 }
 
-export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
+export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps) => {
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const [isTogglingCoordinator, setIsTogglingCoordinator] = useState(false);
   const [coordinatorError, setCoordinatorError] = useState<string | null>(null);
@@ -35,7 +36,6 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
       await updateConfig({ coordinatorEnabled: !isCoordinatorEnabled });
       onChanged();
     } catch (err: any) {
-      // The switch reads the server value, so a failed write snaps back — say why.
       setCoordinatorError(err?.message || 'Failed to update the Task Coordinator state');
     } finally {
       setIsTogglingCoordinator(false);
@@ -73,7 +73,7 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
       <form
         onSubmit={handleSave}
         autoComplete="off"
-        class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm"
+        class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6"
       >
         <div class="flex items-start gap-3">
           <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-iris">
@@ -113,7 +113,7 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
             <button
               type="submit"
               disabled={isSaving || !isDirty}
-              class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold whitespace-nowrap text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+              class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold whitespace-nowrap text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {isSaving ? 'Saving...' : 'Save'}
             </button>
@@ -128,7 +128,7 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
 
       <GeneralSettingsCard />
 
-      <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+      <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
         <div class="flex items-center justify-between gap-4">
           <div class="flex min-w-0 flex-1 items-start gap-3">
             <div class="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-iris">
@@ -181,6 +181,7 @@ export const GeneralView = ({ config, onChanged }: GeneralViewProps) => {
         fields={SENTRY_GENERAL_FIELDS}
         config={config}
         onSaved={onChanged}
+        searchQuery={searchQuery}
       />
     </SettingsLayout>
   );

@@ -19,7 +19,6 @@ interface RepoEditorProps {
 const inputClass =
   'bg-pine-overlay border border-pine-highlight text-pine-text placeholder-pine-subtle rounded-lg px-3 py-2 text-sm outline-none focus:border-pine-iris transition-colors';
 
-// A derived default path only repeats the repo id, so only a custom checkout path is worth showing.
 const hasCustomPath = (repo: Repo): boolean =>
   repo.path !== '' && repo.path !== `/repos/${repo.id}`;
 
@@ -120,7 +119,6 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
     });
   };
 
-  // Cancel drops the draft only, so an abandoned edit never reaches the config endpoint.
   const cancelEditRepo = () => {
     setEditingId(null);
     setDraft(null);
@@ -137,7 +135,6 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
     setIsSaving(true);
     setToast(null);
 
-    // The id keys the stored entry, so an edit replaces its row in place instead of adding one.
     const entry: Repo = {
       ...draft,
       name: draft.name.trim(),
@@ -160,7 +157,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
   };
 
   return (
-    <div class="mb-8 flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+    <div class="mb-8 flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6">
       <form onSubmit={handleAddRepo} class="flex flex-col gap-2 sm:flex-row">
         <input
           id="repo-input"
@@ -174,7 +171,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         <button
           type="submit"
           disabled={isSaving || !newRepoInput.trim()}
-          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:opacity-50"
+          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:opacity-50"
         >
           {isSaving ? 'Adding...' : 'Add Repository'}
         </button>
@@ -232,7 +229,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
                   <button
                     type="submit"
                     disabled={isSaving}
-                    class="cursor-pointer rounded-lg bg-pine-iris px-3 py-1.5 text-xs font-semibold text-pine-base shadow-xs transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:opacity-50"
+                    class="cursor-pointer rounded-lg bg-pine-iris px-3 py-1.5 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:opacity-50"
                   >
                     {isSaving ? 'Saving...' : 'Save'}
                   </button>

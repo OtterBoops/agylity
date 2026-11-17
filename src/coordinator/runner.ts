@@ -15,7 +15,7 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask, TaskStatusPatch } from './queue.js';
-import { resolveReasoningEffortForModel } from './models.js';
+import { normalizeCascade, resolveReasoningEffortForModel, type CascadeHop } from './models.js';
 import type { PrPolicy } from '../config/schema.js';
 
 const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'all']);
@@ -36,18 +36,14 @@ export interface TaskExecutorOptions {
   logger?: Logger;
   prPolicy?: PrPolicy;
   onStatusUpdate?: (patch: TaskStatusPatch & { message?: string }) => Promise<void> | void;
-  /** Ordered fallbacks walked when an attempt fails with upstream capacity exhaustion. */
-  candidateModels?: string[];
-  /** Root of the bare repo mirrors; defaults to `<os.tmpdir()>/agylity-repo-mirrors`. */
+  /** Upstream capacity exhaustion fails over along this chain, which must carry the whole viable chain. */
+  cascade?: CascadeHop[];
   mirrorCacheDir?: string;
-  /** Set false to always take the plain clone path. */
   useMirrorCache?: boolean;
 }
 
 export interface TaskExecuteOptions {
-  /** Live cancellation; an aborted run fails without committing or pushing. */
   signal?: AbortSignal;
-  /** Receives the rolling output tail (capped at 16 KB) as the child streams. */
   onOutput?: (tail: string) => void;
 }
 
@@ -59,7 +55,6 @@ export type SpawnFn = (
 
 export interface TaskExecutionResult {
   success: boolean;
-  /** Ran cleanly but produced no file changes; a success, not a failure. */
   noChanges?: boolean;
   branchName: string;
   prUrl?: string;
@@ -81,8 +76,7 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
-// A tokenless runner clones anonymously, runs the whole task, then fails the push -- burning a full
-// agent run for nothing. Fail at boot instead. Opt out only for non-GitHub remotes.
+// A tokenless runner only fails at push, after burning a full agent run -- fail at boot instead.
 export const assertRunnerGitCredentials = (
   repositories: string[] | undefined,
   env: NodeJS.ProcessEnv = process.env
@@ -122,7 +116,6 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
       .replace(/[^a-zA-Z0-9]/g, '')
       .slice(0, 8) || 'cont';
 
-  // Whole words only: a raw slice can end on a hyphen or cut a word in half.
   const words = prompt
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -137,7 +130,6 @@ export const buildContinuationBranchName = (taskId: string, prompt: string): str
     slug = candidate;
   }
 
-  // Fallback covers a prompt whose first word already exceeds the budget.
   return `agy/${shortId}-${slug || 'work'}`;
 };
 
@@ -196,7 +188,7 @@ export interface TaskExecutionTelemetry {
   outputTokens?: number;
 }
 
-// Gracefully parses NDJSON and JSON telemetry lines from `agy` stdout.
+// Tolerates non-JSON lines: `agy` interleaves human-readable output with the NDJSON telemetry.
 export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
   if (!stdout || !stdout.trim()) return {};
   const telemetry: TaskExecutionTelemetry = {};
@@ -234,9 +226,7 @@ export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
       if (parsed.total_tokens !== undefined && telemetry.totalTokens === undefined) {
         telemetry.totalTokens = Number(parsed.total_tokens);
       }
-    } catch {
-      // Ignore unparseable non-JSON lines
-    }
+    } catch {}
   }
 
   if (telemetry.totalTokens === undefined && telemetry.inputTokens !== undefined) {
@@ -245,10 +235,6 @@ export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
 
   return telemetry;
 };
-
-// ---------------------------------------------------------------------------
-// Streaming subprocess runner, process-tree kill, capacity fallback helpers
-// ---------------------------------------------------------------------------
 
 const STREAM_TAIL_BYTES = 16384;
 const STREAM_EMIT_INTERVAL_MS = 1000;
@@ -266,7 +252,6 @@ const commandError = (
   detail: { stdout?: string; stderr?: string; code?: number | null; signal?: string | null } = {}
 ): Error => Object.assign(new Error(message), detail);
 
-// Upstream quota refusal: the model that ran out is swapped for the next candidate.
 export const isCapacityExhaustedOutput = (text: string | undefined): boolean => {
   if (!text) return false;
   const normalized = text.toLowerCase().replace(/[_-]+/g, ' ');
@@ -288,7 +273,6 @@ export interface CapacityContinuationContext {
   originalPrompt: string;
 }
 
-// Handoff prompt: the next model inherits the partial work instead of restarting it.
 export const buildCapacityContinuationPrompt = (ctx: CapacityContinuationContext): string =>
   [
     '[CONTINUATION CONTEXT]',
@@ -312,7 +296,6 @@ const hasTelemetryValues = (telemetry: TaskExecutionTelemetry): boolean =>
   telemetry.totalTokens !== undefined ||
   telemetry.thinkingTokens !== undefined;
 
-// Adds every attempt's counters; a field stays undefined when no attempt reported it.
 export const sumAgyTelemetry = (attempts: TaskExecutionTelemetry[]): TaskExecutionTelemetry => {
   const sumOf = (key: 'numTurns' | 'totalTokens' | 'thinkingTokens'): number | undefined => {
     const values = attempts
@@ -327,8 +310,7 @@ export const sumAgyTelemetry = (attempts: TaskExecutionTelemetry[]): TaskExecuti
   };
 };
 
-// `detached` made the child a group leader, so the whole group dies with it, including
-// `sh -c` grandchildren that would otherwise be reparented to PID 1.
+// The child is a group leader, so its whole process group dies with it, `sh -c` grandchildren too.
 export const defaultKillProcessTree = async (pid: number): Promise<void> => {
   if (process.platform === 'win32') {
     await new Promise<void>((resolve) => {
@@ -357,9 +339,7 @@ export const defaultKillProcessTree = async (pid: number): Promise<void> => {
   const signalGroup = (sig: NodeJS.Signals): void => {
     try {
       process.kill(-pid, sig);
-    } catch {
-      // Group already gone.
-    }
+    } catch {}
   };
 
   if (!groupAlive()) return;
@@ -372,8 +352,6 @@ export const defaultKillProcessTree = async (pid: number): Promise<void> => {
   signalGroup('SIGKILL');
 };
 
-// Adapts an injectable execFile transport onto the spawn-shaped streaming path so callers
-// that only provide `execFileFn` keep their exact argv/order semantics.
 export const spawnFromExecFileFn =
   (execFileFn: ExecFileAsyncFn): SpawnFn =>
   (file, args, options) => {
@@ -411,7 +389,6 @@ export const spawnFromExecFileFn =
     return child;
   };
 
-// Executes a single SwarmTask using Git branch isolation and the official `agy` CLI binary.
 export class TaskExecutor {
   private readonly agyBinPath: string;
   private readonly timeoutMs: number;
@@ -421,7 +398,7 @@ export class TaskExecutor {
   private readonly dirExistsFn: (dirPath: string) => boolean;
   private readonly log: Logger;
   private readonly prPolicy: PrPolicy;
-  private readonly candidateModels?: string[];
+  private readonly cascade?: CascadeHop[];
   private readonly mirrorCacheDir: string;
   private readonly useMirrorCache: boolean;
   private readonly onStatusUpdate?: (
@@ -430,25 +407,21 @@ export class TaskExecutor {
 
   constructor(options: TaskExecutorOptions = {}) {
     this.agyBinPath = options.agyBinPath || 'agy';
-    this.timeoutMs = options.timeoutMs ?? 30 * 60 * 1000; // 30 minutes default
+    this.timeoutMs = options.timeoutMs ?? 30 * 60 * 1000;
     this.execFileFn = options.execFileFn ?? defaultExecFileAsync;
-    // An execFile-only transport still streams through the spawn-shaped path, preserving argv order.
     this.spawnFn =
       options.spawnFn ?? (options.execFileFn ? spawnFromExecFileFn(options.execFileFn) : nodeSpawn);
     this.killProcessTreeFn = options.killProcessTreeFn ?? defaultKillProcessTree;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
     this.prPolicy =
-      normalizePrPolicy(options.prPolicy) ??
-      normalizePrPolicy(process.env.PR_POLICY) ??
-      'docs_only';
-    this.candidateModels = options.candidateModels;
+      normalizePrPolicy(options.prPolicy) ?? normalizePrPolicy(process.env.PR_POLICY) ?? 'all';
+    this.cascade = options.cascade;
     this.mirrorCacheDir = options.mirrorCacheDir ?? path.join(os.tmpdir(), 'agylity-repo-mirrors');
     this.useMirrorCache = options.useMirrorCache !== false;
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
-  // Kills the whole child process group; a failed kill must never surface as a task error.
   private async killTree(child: ChildProcess): Promise<void> {
     const pid = child.pid;
     if (!pid) return;
@@ -459,8 +432,6 @@ export class TaskExecutor {
     }
   }
 
-  // Spawns one command with the execFile argv/env semantics, streaming a rolling output tail and
-  // honouring timeout + abort by killing the entire process group.
   private async runStreamedCommand(
     file: string,
     args: readonly string[],
@@ -527,7 +498,6 @@ export class TaskExecutor {
         signal?.removeEventListener('abort', onAbort);
       };
 
-      // Settles only after the process group is gone, so no grandchild outlives the run.
       const settle = (error: Error | null): void => {
         if (settled) return;
         settled = true;
@@ -549,7 +519,6 @@ export class TaskExecutor {
         tail = (tail + text).slice(-STREAM_TAIL_BYTES);
         pendingEmit += text.length;
         const now = Date.now();
-        // Heartbeats are useless per chunk: throttle to ~1/second or ~4KB of new output.
         if (
           options.onOutput &&
           (pendingEmit >= STREAM_EMIT_BYTES || now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS)
@@ -615,15 +584,12 @@ export class TaskExecutor {
     });
   }
 
-  // Mirror path is keyed by the clone URL so every task on one repo reuses one bare copy.
   private resolveMirrorPath(rawCloneUrl: string): string | null {
     if (!this.useMirrorCache) return null;
     const digest = createHash('sha256').update(rawCloneUrl).digest('hex');
     return path.join(this.mirrorCacheDir, `${digest}.git`);
   }
 
-  // Clones through a local bare mirror so the object transfer is mostly local, then detaches the
-  // workspace with --dissociate so the task clone survives the mirror being pruned.
   private async cloneRepository(rawCloneUrl: string, targetPath: string): Promise<void> {
     const authArgs = buildGitAuthArgs(rawCloneUrl);
     const mirrorPath = this.resolveMirrorPath(rawCloneUrl);
@@ -661,7 +627,6 @@ export class TaskExecutor {
     });
   }
 
-  // A stale mirror is still usable: the fetch is best effort, the clone is not.
   private async syncMirror(
     rawCloneUrl: string,
     mirrorPath: string,
@@ -690,13 +655,11 @@ export class TaskExecutor {
         }
       );
     } catch (bareErr) {
-      // A half-written mirror would poison every later task on this repo.
       await this.removeCloneTarget(mirrorPath);
       throw bareErr;
     }
   }
 
-  // A half-written reference clone would make the plain-clone fallback fail on a non-empty dir.
   private async removeCloneTarget(targetPath: string): Promise<void> {
     try {
       await fsPromises.rm(targetPath, {
@@ -714,7 +677,6 @@ export class TaskExecutor {
     }
   }
 
-  // Partial work is a handoff, never something to reset: uncommitted files or commits ahead of base.
   private async inspectPartialWork(
     cwd: string,
     baseBranch: string
@@ -730,9 +692,7 @@ export class TaskExecutor {
       });
       // Trailing whitespace only: the porcelain leading column is meaningful to the next model.
       statusShort = stdout.replace(/\s+$/, '');
-    } catch {
-      // Fall through to the commit-count probe.
-    }
+    } catch {}
 
     try {
       const { stdout } = await this.execFileFn(
@@ -741,9 +701,7 @@ export class TaskExecutor {
         { cwd, timeout: 10000 }
       );
       aheadOfBase = parseInt(stdout.trim(), 10) || 0;
-    } catch {
-      // Best effort.
-    }
+    } catch {}
 
     const dirty = statusShort !== '' || aheadOfBase > 0;
     if (dirty) {
@@ -753,29 +711,27 @@ export class TaskExecutor {
           timeout: 15000,
         });
         diffStat = stdout.trim();
-      } catch {
-        // Best effort.
-      }
+      } catch {}
     }
 
     return { dirty, statusShort, diffStat };
   }
 
-  // Walks the candidate chain from the failed model onward; each candidate is tried at most once.
-  private pickNextCandidateModel(
+  private pickNextCandidateHop(
     task: SwarmTask,
     failedModel: string,
     attempted: Set<string>
-  ): string | undefined {
-    const chain = (
-      task.candidateModels?.length ? task.candidateModels : (this.candidateModels ?? [])
-    ).filter(Boolean);
-    const failedIndex = chain.indexOf(failedModel);
+  ): CascadeHop | undefined {
+    const chain = normalizeCascade(
+      task.cascade?.length ? task.cascade : (this.cascade ?? []),
+      failedModel
+    );
+    const failedIndex = chain.findIndex((hop) => hop.model === failedModel);
     const ordered =
       failedIndex === -1
         ? chain
         : [...chain.slice(failedIndex + 1), ...chain.slice(0, failedIndex)];
-    return ordered.find((model) => model !== failedModel && !attempted.has(model));
+    return ordered.find((hop) => hop.model !== failedModel && !attempted.has(hop.model));
   }
 
   public async execute(
@@ -849,8 +805,7 @@ export class TaskExecutor {
         message: `Checking out isolated branch ${branchName} (from ${baseBranch}) and launching agy (${task.model})`,
       });
 
-      // 1a. Switch back to the repository's default base branch and fast-forward if possible
-      // so sequential tasks on the same runner never stack onto previous task branches.
+      // Fast-forward the base branch first so sequential tasks never stack onto previous task branches.
       try {
         // `/repos/<id>` can be a real working copy, so uncommitted state is stashed, never deleted.
         const { stdout: dirtyOut } = await this.execFileFn('git', ['status', '--porcelain'], {
@@ -875,9 +830,7 @@ export class TaskExecutor {
             cwd,
             timeout: 30000,
           });
-        } catch {
-          // Non-fatal: local repo may not have an upstream remote configured
-        }
+        } catch {}
       } catch (baseCheckoutErr: any) {
         this.log.debug(
           'Base branch checkout (%s) skipped before creating %s: %s',
@@ -887,26 +840,29 @@ export class TaskExecutor {
         );
       }
 
-      // 1b. Checkout isolated continuation branch from base HEAD
       await this.execFileFn('git', ['checkout', '-B', branchName], {
         cwd,
         timeout: 30000,
       });
 
-      // 2. Dispatch prompt via official `agy` CLI binary with explicit model & effort
-      const safeEffort = resolveReasoningEffortForModel(task.model, task.effort);
+      const primaryHop: CascadeHop = {
+        model: task.model,
+        effort: resolveReasoningEffortForModel(task.model, task.effort),
+      };
+      const safeEffort = primaryHop.effort;
       const tierLabel = task.tier || 'immediate';
       const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${safeEffort} reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
       const effectivePrompt = `${task.prompt}${attributionSuffix}`;
 
       const attemptTelemetry: TaskExecutionTelemetry[] = [];
-      const attemptedModels = new Set<string>([task.model]);
-      let attemptModel = task.model;
+      const attemptedModels = new Set<string>([primaryHop.model]);
+      let attemptHop: CascadeHop = primaryHop;
       let attemptPrompt = effectivePrompt;
       let agyFailure: any = null;
 
       for (;;) {
-        const attemptEffort = resolveReasoningEffortForModel(attemptModel, task.effort);
+        const attemptModel = attemptHop.model;
+        const attemptEffort = resolveReasoningEffortForModel(attemptHop.model, attemptHop.effort);
         // Unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
         const agyArgs: string[] = [
           '-p',
@@ -957,37 +913,38 @@ export class TaskExecutor {
           const failureText = [attemptOutput, agyErr?.message ?? ''].filter(Boolean).join('\n');
           if (options.signal?.aborted || !isCapacityExhaustedOutput(failureText)) break;
 
-          const nextModel = this.pickNextCandidateModel(task, attemptModel, attemptedModels);
-          if (!nextModel) {
+          const nextHop = this.pickNextCandidateHop(task, attemptHop.model, attemptedModels);
+          if (!nextHop) {
             this.log.warn(
-              'Model %s exhausted capacity and no untried candidate model remains for task %s',
-              attemptModel,
+              'Model %s exhausted capacity and no untried hop remains for task %s',
+              attemptHop.model,
               task.id
             );
             break;
           }
 
-          attemptedModels.add(nextModel);
-          // The tree is re-probed per attempt: an earlier candidate may have left work behind.
+          attemptedModels.add(nextHop.model);
           const partial = await this.inspectPartialWork(cwd, baseBranch);
           this.log.warn(
-            'Model %s hit capacity exhaustion; falling back to %s (%s) for task %s',
-            attemptModel,
-            nextModel,
+            'Model %s (effort=%s) hit capacity exhaustion; falling back to %s (effort=%s, %s) for task %s',
+            attemptHop.model,
+            attemptEffort,
+            nextHop.model,
+            nextHop.effort,
             partial.dirty ? 'continuation handoff' : 'clean retry',
             task.id
           );
 
           attemptPrompt = partial.dirty
             ? `${buildCapacityContinuationPrompt({
-                failedModel: attemptModel,
+                failedModel: attemptHop.model,
                 statusShort: partial.statusShort,
                 diffStat: partial.diffStat,
                 tail: attemptOutput,
                 originalPrompt: task.prompt,
               })}${attributionSuffix}`
             : effectivePrompt;
-          attemptModel = nextModel;
+          attemptHop = nextHop;
         }
       }
 
@@ -997,7 +954,7 @@ export class TaskExecutor {
 
       const combinedOutput = capturedOutput;
 
-      // 3. Optional verification command; a coarse test-runner allowlist, not a sandbox.
+      // A coarse test-runner allowlist, not a sandbox.
       if (task.verifyCommand && task.verifyCommand.trim() !== '') {
         const trimmed = task.verifyCommand.trim();
         if (/[;&|`$><\r\n]/.test(trimmed)) {
@@ -1012,7 +969,6 @@ export class TaskExecutor {
             `Verification command '${cmd}' is not in approved test runner allowlist (${Array.from(ALLOWED_TEST_RUNNERS).join(', ')})`
           );
         }
-        // Interpreters are excluded above; block inline-code flags as defence in depth.
         if (cmdArgs.some((arg) => arg === '-e' || arg === '--eval' || arg === '-c')) {
           throw new Error('Verification command must not use an inline-code flag (-e/--eval/-c)');
         }
@@ -1032,7 +988,6 @@ export class TaskExecutor {
         }
       }
 
-      // 4. Commit changes to continuation branch if working tree is dirty
       let commitsProduced = false;
       try {
         const { stdout: statusOut } = await this.execFileFn('git', ['status', '--porcelain'], {
@@ -1068,7 +1023,6 @@ export class TaskExecutor {
         );
       }
 
-      // Check if any commits exist relative to base branch
       if (!commitsProduced) {
         try {
           const { stdout: revCount } = await this.execFileFn(
@@ -1079,12 +1033,9 @@ export class TaskExecutor {
           if (parseInt(revCount.trim(), 10) > 0) {
             commitsProduced = true;
           }
-        } catch {
-          // Best effort check
-        }
+        } catch {}
       }
 
-      // Zero-diff branch cleanup: if no commits were produced, delete untouched branch
       if (!commitsProduced) {
         try {
           await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
@@ -1094,9 +1045,7 @@ export class TaskExecutor {
             task.id,
             branchName
           );
-        } catch {
-          // Cleanup best-effort
-        }
+        } catch {}
         return {
           success: true,
           noChanges: true,
@@ -1111,11 +1060,9 @@ export class TaskExecutor {
 
       let prUrl: string | undefined;
 
-      // Policy Guard: an agent-tier run is held to the PR policy; an immediate run is the human
-      // asking for the change, so it pushes whatever it produced.
       const agentRun = task.tier !== 'immediate';
       const effectivePrPolicy: PrPolicy =
-        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'docs_only';
+        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'all';
 
       if (agentRun) {
         if (effectivePrPolicy === 'none') {
@@ -1127,9 +1074,7 @@ export class TaskExecutor {
           try {
             await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
             await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
-          } catch {
-            // Cleanup best-effort
-          }
+          } catch {}
           return {
             success: true,
             noChanges: true,
@@ -1173,9 +1118,7 @@ export class TaskExecutor {
             try {
               await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
               await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
-            } catch {
-              // Cleanup best-effort
-            }
+            } catch {}
             return {
               success: true,
               noChanges: true,
@@ -1190,7 +1133,6 @@ export class TaskExecutor {
         }
       }
 
-      // 5. Push continuation branch to origin if pushBranch is enabled
       if (task.pushBranch) {
         try {
           const gitPushArgs = [
@@ -1231,7 +1173,6 @@ export class TaskExecutor {
           };
         }
 
-        // Automatic PR Creation via native gh CLI if autoCreatePr is enabled
         if (task.autoCreatePr) {
           try {
             const effort = task.effort || safeEffort;
@@ -1302,7 +1243,6 @@ export class TaskExecutor {
           capturedOutput = capturedOutput ? `${capturedOutput}\n\n${extra}` : extra;
         }
       }
-      // An attempt that failed before reporting telemetry still contributes what stdout carried.
       const failureTelemetry = hasTelemetryValues(telemetry)
         ? telemetry
         : parseAgyTelemetry(capturedTelemetryRaw || err?.stdout);
@@ -1339,7 +1279,6 @@ export interface RemoteSwarmRunnerOptions {
   logger?: Logger;
 }
 
-// Outbound long-polling swarm runner client (`agylity-runner`) that exchanges
 export class RemoteSwarmRunner {
   private readonly options: RemoteSwarmRunnerOptions;
   private readonly executor: TaskExecutor;
@@ -1359,8 +1298,7 @@ export class RemoteSwarmRunner {
 
   constructor(options: RemoteSwarmRunnerOptions) {
     this.options = options;
-    // Identity must survive a container recreation: os.hostname() is the container id, which changes
-    // on every recreate and leaves a dead row behind in the coordinator's runner list.
+    // os.hostname() is the container id, so identity must persist across container recreation.
     this.runnerName = options.runnerName?.trim() || `runner-${os.hostname()}`;
     this.runnerId = options.runnerId?.trim() || this.runnerName;
     this.labels = options.labels ?? [];
@@ -1493,7 +1431,6 @@ export class RemoteSwarmRunner {
     }
   }
 
-  // Exchanges a one-time `registrationToken` (`agyr_reg_...`) for a persistent `runnerToken` (`agyr_run_...`)
   public async registerIfNeeded(): Promise<SwarmRunnerRecord | null> {
     if (this.runnerToken) {
       return null;
@@ -1593,7 +1530,6 @@ export class RemoteSwarmRunner {
     const task = res?.task ?? null;
     if (!task) return null;
 
-    // One controller per claimed task: a refused lease (409) or stop() cancels the live run.
     const taskAbort = new AbortController();
     this.taskAbortController = taskAbort;
     let outputTail = '';
@@ -1605,7 +1541,6 @@ export class RemoteSwarmRunner {
     });
     if (!acceptedClaim) taskAbort.abort();
 
-    // Frequent enough that the inspector streams, infrequent enough to stay a rounding error.
     const heartbeatTimer = setInterval(() => {
       void this.reportHeartbeat(baseUrl, headers, task.id, outputTail).then((leaseOk) => {
         if (!leaseOk) taskAbort.abort();
@@ -1628,7 +1563,6 @@ export class RemoteSwarmRunner {
       if (this.taskAbortController === taskAbort) this.taskAbortController = null;
     }
 
-    // A refused claim aborted the run on purpose; the coordinator already owns the task state.
     if (!acceptedClaim && taskAbort.signal.aborted) {
       return task;
     }
@@ -1649,7 +1583,6 @@ export class RemoteSwarmRunner {
     return task;
   }
 
-  // Starts the continuous outbound long-poll loop until `stop()` is called.
   public async start(): Promise<void> {
     if (this.isRunning) return;
     assertRunnerGitCredentials(this.options.repositories);
@@ -1659,7 +1592,6 @@ export class RemoteSwarmRunner {
     try {
       await this.registerIfNeeded();
     } catch (err: any) {
-      // A transient coordinator outage at boot must not be fatal; the poll loop retries.
       this.log.warn(
         'Initial runner registration failed for %s; retrying in the poll loop: %s',
         this.runnerId,
@@ -1708,7 +1640,6 @@ export class RemoteSwarmRunner {
     });
   }
 
-  // Lease beat carrying the live output tail; leaseOk === false means the coordinator owns the run.
   private async reportHeartbeat(
     baseUrl: string,
     headers: Record<string, string>,
@@ -1738,8 +1669,6 @@ export class RemoteSwarmRunner {
     }
   }
 
-  // Returns false only when the coordinator refuses the patch (409 / leaseOk:false): the task is
-  // already terminal, so the run in flight is pointless. Network noise still just logs a warning.
   private async reportStatus(
     baseUrl: string,
     headers: Record<string, string>,

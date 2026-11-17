@@ -1,4 +1,5 @@
 import type http from 'node:http';
+import { createHash } from 'node:crypto';
 import {
   sendJson,
   methodNotAllowed,
@@ -19,15 +20,85 @@ import {
   annotateModelsWithQuota,
   CANONICAL_AGY_MODELS,
   isTerminalTaskStatus,
-  ReasoningEffortSchema,
+  normalizeCascade,
+  resolveConcreteModelId,
   ScheduleModeSchema,
   TaskStatusSchema,
+  type CascadeHop,
   type ReasoningEffort,
   type ScheduleMode,
   type TaskStatus,
 } from '../../coordinator/models.js';
 
 const coordinatorCache = new WeakMap<WebServerOptions, Coordinator>();
+
+const knownModelIds = (options: WebServerOptions): readonly string[] => [
+  ...CANONICAL_AGY_MODELS.map((m) => m.id),
+  ...(options.modelCatalog?.getModels() ?? []).map((m) => m.id),
+];
+
+export interface CascadeRequestOptions {
+  fallbackModel?: string;
+  fallbackEffort?: ReasoningEffort;
+  knownModels?: readonly string[];
+}
+
+export const parseCascadeRequest = (
+  raw: unknown,
+  options: CascadeRequestOptions = {}
+): { ok: true; cascade: CascadeHop[] } | { ok: false; error: string } => {
+  const fallbackModel = options.fallbackModel?.trim() || 'gemini-4-hydrogen';
+
+  if (raw === undefined || raw === null) {
+    const seeded = options.fallbackEffort
+      ? [{ model: fallbackModel, effort: options.fallbackEffort }]
+      : [{ model: fallbackModel }];
+    return { ok: true, cascade: normalizeCascade(seeded, fallbackModel) };
+  }
+
+  if (!Array.isArray(raw)) {
+    return { ok: false, error: 'cascade must be an array of { model, effort } hops' };
+  }
+  if (raw.length === 0) {
+    return { ok: false, error: 'cascade must contain at least one hop' };
+  }
+
+  const known = new Set<string>([
+    ...CANONICAL_AGY_MODELS.map((m) => m.id),
+    ...(options.knownModels ?? []),
+  ]);
+
+  for (let index = 0; index < raw.length; index += 1) {
+    const hop: unknown = raw[index];
+    if (hop === null || typeof hop !== 'object' || Array.isArray(hop)) {
+      return {
+        ok: false,
+        error: `cascade[${index}] must be an object with a model and an effort`,
+      };
+    }
+    const model = (hop as { model?: unknown }).model;
+    if (typeof model !== 'string' || model.trim() === '') {
+      return { ok: false, error: `cascade[${index}].model must be a non-empty string` };
+    }
+    const concrete = resolveConcreteModelId(model, fallbackModel);
+    if (!known.has(concrete)) {
+      return { ok: false, error: `cascade[${index}].model '${model}' is not a known model` };
+    }
+    const effort = (hop as { effort?: unknown }).effort;
+    if (effort !== undefined && effort !== null && typeof effort !== 'string') {
+      return { ok: false, error: `cascade[${index}].effort must be a string` };
+    }
+  }
+
+  return { ok: true, cascade: normalizeCascade(raw, fallbackModel) };
+};
+
+export const configuredCascade = (options: CascadeRequestOptions = {}): CascadeHop[] => {
+  const parsed = parseCascadeRequest(undefined, options);
+  return parsed.ok ? parsed.cascade : [];
+};
+
+const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
 export const resolveCoordinator = (options: WebServerOptions): Coordinator => {
   if (options.coordinator) {
@@ -78,8 +149,6 @@ export const handleGetModels = async (
     }
   }
 
-  // Non-blocking: the provider serves its cache and revalidates in the background, so an
-  // offline or unauthenticated CLI never stalls this route.
   const catalog = options.modelCatalog?.getModels() ?? CANONICAL_AGY_MODELS;
   const models = annotateModelsWithQuota(
     pools,
@@ -131,12 +200,15 @@ export const handlePostDispatch = async (
     ? scheduleModeParse.data
     : 'immediate';
 
-  const effortParse = ReasoningEffortSchema.safeParse(payload.effort ?? 'high');
-  const effort: ReasoningEffort | undefined = payload.effort
-    ? effortParse.success
-      ? effortParse.data
-      : undefined
-    : undefined;
+  const resolved = options.configStore.resolveConfig();
+  const cascadeParse = parseCascadeRequest(payload.cascade, {
+    fallbackModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
+    fallbackEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
+    knownModels: knownModelIds(options),
+  });
+  if (!cascadeParse.ok) {
+    return sendJson(res, 400, { error: cascadeParse.error });
+  }
 
   const requiredLabels = toStringArray(payload.requiredLabels);
 
@@ -159,9 +231,7 @@ export const handlePostDispatch = async (
         : undefined,
     scheduleMode,
     requiredLabels,
-    model: toStringOrUndefined(payload.model),
-    models: toStringArray(payload.models),
-    effort,
+    cascade: cascadeParse.cascade,
     allowOverage: payload.allowOverage === true,
     pushBranch: typeof payload.pushBranch === 'boolean' ? payload.pushBranch : true,
     autoCreatePr: typeof payload.autoCreatePr === 'boolean' ? payload.autoCreatePr : true,
@@ -186,16 +256,47 @@ export const handleGetTasks = (
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
   const coordinator = resolveCoordinator(options);
-  const limit = Number(url.searchParams.get('limit') ?? 50);
-  const statusParam = url.searchParams.get('status') ?? undefined;
-  const parsedStatus = statusParam ? TaskStatusSchema.safeParse(statusParam) : undefined;
 
-  const tasks = coordinator.queue.listTasks({
-    status: parsedStatus?.success ? parsedStatus.data : undefined,
-    limit: Number.isFinite(limit) ? limit : 50,
-  });
+  const requestedLimit = Number(url.searchParams.get('limit') ?? 50);
+  const limit = Math.min(
+    Math.max(1, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 50),
+    500
+  );
+  const requestedOffset = Number(url.searchParams.get('offset') ?? 0);
+  const offset = Math.max(0, Number.isFinite(requestedOffset) ? Math.floor(requestedOffset) : 0);
 
-  return sendJson(res, 200, tasks, { 'Cache-Control': 'no-store' });
+  const statusParam = url.searchParams.get('status')?.trim();
+  let status: TaskStatus | undefined;
+  if (statusParam) {
+    const parsedStatus = TaskStatusSchema.safeParse(statusParam);
+    if (!parsedStatus.success) {
+      return sendJson(res, 400, { error: `Unknown task status: ${statusParam}` }, NO_STORE);
+    }
+    status = parsedStatus.data;
+  }
+
+  const taskNumberParam = url.searchParams.get('taskNumber')?.trim();
+  let taskNumber: number | undefined;
+  if (taskNumberParam) {
+    const parsed = Number(taskNumberParam);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      return sendJson(
+        res,
+        400,
+        { error: `taskNumber must be a positive integer: ${taskNumberParam}` },
+        NO_STORE
+      );
+    }
+    taskNumber = parsed;
+  }
+
+  const q = url.searchParams.get('q')?.trim() || undefined;
+  const filters = { status, q, taskNumber };
+
+  const tasks = coordinator.queue.listTasks({ ...filters, limit, offset });
+  const total = coordinator.queue.countTasks(filters);
+
+  return sendJson(res, 200, { tasks, total, offset, limit }, NO_STORE);
 };
 
 export const handlePollTasks = async (
@@ -221,12 +322,11 @@ export const handlePollTasks = async (
   if (!parsed.ok) return;
   const payload: any = parsed.body;
 
-  // If authenticated via a per-runner token, bind identity strictly to the registered runner record
+  // A per-runner token binds identity to the registered record, never to the poll payload.
   const runnerId =
     auth.runner?.runnerId ?? toTrimmedStringOrUndefined(payload?.runnerId) ?? 'runner-default';
   const runnerName =
     auth.runner?.name ?? toTrimmedStringOrUndefined(payload?.runnerName) ?? runnerId;
-  // A registered runner's scope comes from its registration, never from the poll payload.
   const labels = auth.runner ? auth.runner.labels : (toStringArray(payload?.labels) ?? []);
   const repositories = auth.runner
     ? auth.runner.repositories
@@ -237,8 +337,7 @@ export const handlePollTasks = async (
 
   const abortController = new AbortController();
   const onClose = () => abortController.abort();
-  // The request's own 'close' has already fired once the body is read, so only the response
-  // still reports a client that hangs up mid-poll; without it a task is claimed for a gone runner.
+  // The request's 'close' has already fired after the body read; only the response reports a mid-poll hangup.
   res.once('close', onClose);
 
   try {
@@ -277,10 +376,15 @@ export const handleGetTaskById = (
   const coordinator = resolveCoordinator(options);
   const task = coordinator.queue.getTask(taskId);
   if (!task) return sendJson(res, 404, { error: `Task ${taskId} not found` });
-  return sendJson(res, 200, task, { 'Cache-Control': 'no-store' });
+  const fingerprint = createHash('sha1')
+    .update(
+      `${task.status}\u0000${task.updatedAt}\u0000${task.output ?? ''}\u0000${task.error ?? ''}`
+    )
+    .digest('hex')
+    .slice(0, 16);
+  return sendJson(res, 200, { ...task, fingerprint }, { 'Cache-Control': 'no-store' });
 };
 
-// Runner lease beat: refreshes heartbeat_at and pushes the run's live output tail into the row.
 export const handleRunnerHeartbeat = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -310,7 +414,6 @@ export const handleRunnerHeartbeat = async (
   );
 
   if (!result) return sendJson(res, 404, { error: `Task ${taskId} not found` });
-  // A refused lease is how a runner learns to abort: the task was cancelled or its lease lapsed.
   return sendJson(res, result.applied ? 200 : 409, {
     leaseOk: result.applied,
     status: result.task.status,
@@ -374,7 +477,6 @@ export const handleTaskStatus = async (
     });
   }
 
-  // Relay runner status update into coordinator logs
   if (payload.message && typeof payload.message === 'string') {
     logger.child('runner').info('[%s] %s', taskId, payload.message);
   }
@@ -537,7 +639,6 @@ export const handleRegisterRunner = async (
     if (err instanceof RegistrationTokenError) {
       return sendJson(res, 401, { error: err.message });
     }
-    // Anything else is an internal fault, not an auth failure, and its detail stays in the log.
     logger.child('web').error('Runner registration failed: %s', err?.stack ?? err);
     return sendJson(res, 500, { error: 'Runner registration failed' });
   }

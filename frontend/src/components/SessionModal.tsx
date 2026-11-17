@@ -6,7 +6,6 @@ import {
   faRightFromBracket,
   faCheck,
   faRotate,
-  faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
 import { getAuthToken, setAuthToken, verifyAuthToken } from '../api';
 import { Icon } from './Icon';
@@ -91,7 +90,7 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
       ref={dialogRef}
       onClose={onClose}
       onCancel={onClose}
-      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 shadow-2xl transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose();
       }}
@@ -125,16 +124,6 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
             Your browser is currently authenticated with a Bearer token.
           </p>
         </div>
-
-        {errorMessage && (
-          <div
-            role="alert"
-            class="flex items-start gap-2.5 rounded-xl border border-pine-love/30 bg-pine-love/10 p-3 text-xs text-pine-love"
-          >
-            <Icon icon={faTriangleExclamation} class="mt-0.5 size-3.5 shrink-0" />
-            <span>{errorMessage}</span>
-          </div>
-        )}
 
         {successMessage && (
           <div
@@ -172,6 +161,16 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
               </span>
             </div>
           </div>
+
+          {errorMessage && (
+            <p
+              role="alert"
+              aria-live="assertive"
+              class="rounded-lg border border-pine-love/40 bg-pine-love/10 px-3 py-2 text-xs text-pine-love"
+            >
+              {errorMessage}
+            </p>
+          )}
 
           <div class="flex items-center justify-between gap-3 pt-2">
             <button

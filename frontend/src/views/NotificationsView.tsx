@@ -58,8 +58,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const resolved = config.resolved || {};
 
   const serverChannels = useMemo(() => getInitialChannels(resolved), [resolved]);
-  // A refetch replaces `resolved`, so the sync effect below tracks the joined content: an
-  // unchanged server config must not wipe credentials the user has typed but not saved.
   const serverChannelsKey = serverChannels.join(',');
   const serverDiscordChannelId = useMemo(
     () => String(resolved.discordNotificationChannelId || ''),
@@ -92,10 +90,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     config.secretsMeta?.webhookSecret?.isSet ?? Boolean(resolved.webhookSecret)
   );
 
-  // Enabled channels set (multi-channel toggle state)
   const [enabledChannels, setEnabledChannels] = useState<ChannelId[]>(serverChannels);
 
-  // Expanded panel state per channel
   const [expandedChannels, setExpandedChannels] = useState<Record<ChannelId, boolean>>(() => {
     const initial: Record<ChannelId, boolean> = {
       discord: false,
@@ -112,7 +108,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     return initial;
   });
 
-  // Persistent credential fields
   const [discordToken, setDiscordToken] = useState('');
   const [discordChannelId, setDiscordChannelId] = useState(serverDiscordChannelId);
   const [discordClientId, setDiscordClientId] = useState(serverDiscordClientId);
@@ -133,7 +128,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     timestamp: string;
   } | null>(null);
 
-  // Synchronize when server config updates
   useEffect(() => {
     setEnabledChannels(serverChannels);
     setDiscordChannelId(serverDiscordChannelId);
@@ -439,7 +433,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
   return (
     <SettingsLayout>
-      {/* Page Header */}
       <div class="flex flex-wrap items-center justify-between gap-4">
         <div class="flex items-center gap-3">
           <h2 class="text-xl font-semibold text-pine-text">Notification Destinations</h2>
@@ -459,7 +452,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       </div>
 
       <form onSubmit={handleSave} autoComplete="off" class="flex flex-col gap-4">
-        {/* Invisible dummy inputs preventing browser autofill heuristics from attaching to credentials */}
         <input
           type="text"
           style={{ display: 'none' }}
@@ -475,10 +467,16 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           autoComplete="off"
         />
 
-        {/* Vertically Stacked Notification Channel Cards with Independent Toggles */}
         {CHANNELS.map((ch) => {
           const isEnabled = enabledChannels.includes(ch.id);
           const isExpanded = expandedChannels[ch.id];
+
+          const testLabel =
+            ch.id === 'discord'
+              ? 'Test Ping'
+              : ch.id === 'webhook'
+                ? 'Test Webhook'
+                : 'Test Console';
 
           return (
             <NotificationChannelCard
@@ -488,6 +486,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
               isExpanded={isExpanded}
               onToggleExpand={() => handleToggleExpand(ch.id)}
               onToggleChannel={() => handleToggleChannel(ch.id)}
+              testLabel={testLabel}
+              onSendTest={() => handleSendTest(ch.id)}
+              isTesting={testingChannel === ch.id}
             >
               {ch.id === 'discord' && (
                 <DiscordChannelForm
@@ -520,8 +521,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                   }}
                   pingOwner={discordPingOwner}
                   onPingOwnerChange={setDiscordPingOwner}
-                  onSendTest={() => handleSendTest('discord')}
-                  isTesting={testingChannel === 'discord'}
                   diagnostics={testDiagnostics?.channel === 'discord' ? testDiagnostics : null}
                 />
               )}
@@ -542,23 +541,15 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                   }}
                   isSecretSet={isWebhookSecretSet}
                   onClearSecret={handleClearWebhookSecret}
-                  onSendTest={() => handleSendTest('webhook')}
-                  isTesting={testingChannel === 'webhook'}
                   diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
                 />
               )}
 
-              {ch.id === 'console' && (
-                <ConsoleChannelForm
-                  onSendTest={() => handleSendTest('console')}
-                  isTesting={testingChannel === 'console'}
-                />
-              )}
+              {ch.id === 'console' && <ConsoleChannelForm />}
             </NotificationChannelCard>
           );
         })}
 
-        {/* Bottom Action Bar */}
         <NotificationActionBar isDirty={isDirty} isSaving={isSaving} onReset={handleReset} />
 
         {toast && <StatusBanner status={toast} />}

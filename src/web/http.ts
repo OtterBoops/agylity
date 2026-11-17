@@ -1,6 +1,6 @@
 import type http from 'node:http';
 
-export const MAX_BODY_BYTES = 64 * 1024; // 64 KB (65,536 bytes)
+export const MAX_BODY_BYTES = 64 * 1024;
 
 export class PayloadTooLargeError extends Error {
   readonly statusCode = 413;
@@ -31,7 +31,6 @@ export const sendJson = (
   res.end(JSON.stringify(data));
 };
 
-/** Path segments arrive percent-encoded; a malformed escape must be a 400, not a crash. */
 export const safeDecodeSegment = (value: string): string | null => {
   try {
     return decodeURIComponent(value);
@@ -118,7 +117,6 @@ export const sendPayloadTooLarge = (
     safeEnd(false);
   };
 
-  // Safety timeout: abort uncooperative or infinite streams after 3000ms
   timer = setTimeout(() => {
     safeEnd(true);
   }, 3000);
@@ -217,8 +215,6 @@ export const readBody = async (
   });
 };
 
-// Empty-body policy: 'reject' (default) -> 400; 'allow' -> resolve to emptyBodyValue;
-// 'malformed' -> no special case, so the empty string fails JSON.parse and 400s as malformed.
 export type EmptyBodyPolicy = 'reject' | 'allow' | 'malformed';
 
 export interface ReadJsonBodyOptions {
@@ -238,7 +234,6 @@ const rejectMalformedJson = (res: http.ServerResponse): ReadJsonBodyResult => {
   return { ok: false };
 };
 
-// Reads and parses a JSON request body, writing the 400 response itself on failure.
 export const readJsonBody = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -260,25 +255,21 @@ export const readJsonBody = async (
   }
 };
 
-/** String field or undefined; non-string inputs are treated as absent. */
 export const toStringOrUndefined = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined;
 
-/** Trimmed, non-empty string or undefined; blank/absent/non-string inputs are absent. */
 export const toTrimmedStringOrUndefined = (value: unknown): string | undefined => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed === '' ? undefined : trimmed;
 };
 
-/** Array of trimmed, non-empty strings, or undefined when the field is not an array. */
-/** A dispatch refused by the safety floor or missing telemetry is a 4xx, not a 200 body. */
+/** A safety-floor or missing-telemetry refusal is a 4xx, not a 200 body. */
 export const isSafetyBlockCode = (code?: string): boolean =>
   code === 'OVERAGE_PROTECTION_TRIGGERED' || code === 'TELEMETRY_UNAVAILABLE';
 
 export const toStringArray = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : undefined;
 
-/** Finite number or undefined; absent/NaN/Infinity/non-number inputs are absent. */
 export const toFiniteNumberOrUndefined = (value: unknown): number | undefined =>
   typeof value === 'number' && Number.isFinite(value) ? value : undefined;

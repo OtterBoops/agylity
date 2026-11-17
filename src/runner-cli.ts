@@ -80,7 +80,6 @@ export const parseRunnerCliArgs = (
     ''
   ).trim();
 
-  // Auto-detect whether --token / REGISTRATION_TOKEN is a one-time agyr_reg_ token or persistent agyr_run_ token
   const registrationToken = rawToken.startsWith('agyr_reg_')
     ? rawToken
     : !rawRunnerToken && rawToken && !rawToken.startsWith('agyr_run_')
@@ -105,8 +104,8 @@ export const parseRunnerCliArgs = (
   ).trim();
 
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
-  // A blank value is not a value: compose emits '' for an unset host var, and Number('') is 0 --
-  // that disables long-polling, and with a 0 idle interval the poll loop never sleeps at all.
+  // A blank value is not a value: compose emits '' for an unset var, and Number('') is 0, which
+  // disables long-polling and leaves the poll loop never sleeping.
   const readIntervalMs = (raw: string | undefined, fallback: number): number => {
     if (raw === undefined || raw.trim() === '') return fallback;
     const parsed = Number(raw);
@@ -135,7 +134,6 @@ export const parseRunnerCliArgs = (
 };
 
 export const runRunnerCli = async (): Promise<void> => {
-  // Never swap agy out from under a running task; the entrypoint refreshes it before this runs.
   process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
 
   const log = logger.child('runner-cli');

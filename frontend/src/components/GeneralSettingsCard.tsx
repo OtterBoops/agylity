@@ -13,7 +13,7 @@ export const GeneralSettingsCard = () => {
   }, []);
 
   return (
-    <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+    <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
       <div class="mb-4 flex items-center gap-3">
         <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-iris">
           <Icon icon={faGear} class="size-4.5" />
@@ -49,7 +49,7 @@ export const GeneralSettingsCard = () => {
           <div
             role="group"
             aria-label="Clock time format"
-            class="flex items-center rounded-lg border border-pine-highlight bg-pine-overlay p-1 shadow-xs"
+            class="flex items-center rounded-lg border border-pine-highlight bg-pine-overlay p-1"
           >
             <button
               type="button"
@@ -57,7 +57,7 @@ export const GeneralSettingsCard = () => {
               onClick={() => setTimeFormat('12h')}
               class={`cursor-pointer rounded-md px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden ${
                 timeFormat === '12h'
-                  ? 'bg-pine-iris text-pine-base shadow-xs'
+                  ? 'bg-pine-iris text-pine-base'
                   : 'text-pine-subtle hover:text-pine-text'
               }`}
             >
@@ -69,7 +69,7 @@ export const GeneralSettingsCard = () => {
               onClick={() => setTimeFormat('24h')}
               class={`cursor-pointer rounded-md px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden ${
                 timeFormat === '24h'
-                  ? 'bg-pine-iris text-pine-base shadow-xs'
+                  ? 'bg-pine-iris text-pine-base'
                   : 'text-pine-subtle hover:text-pine-text'
               }`}
             >

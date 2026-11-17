@@ -21,10 +21,9 @@ export const TopBar = ({
   onOpenAuthModal,
 }: TopBarProps) => {
   return (
-    // Title and actions keep their content width (shrink-0) so neither can be squeezed out of the
-    // bar; the search is the only region that gives way, and only down to its icon.
+    // Equal shares (min-w-0 flex-1) keep the title truncating instead of shifting the search bar.
     <div class="flex h-10 items-center gap-3">
-      <div class="flex shrink-0 items-center">
+      <div class="flex min-w-0 items-center sm:flex-1">
         <h1 class="truncate text-lg font-semibold tracking-tight text-pine-text sm:text-xl">
           {title}
         </h1>
@@ -48,7 +47,7 @@ export const TopBar = ({
         )}
       </div>
 
-      <div class="flex shrink-0 items-center justify-end gap-2">
+      <div class="flex shrink-0 items-center justify-end gap-2 sm:min-w-0 sm:flex-1">
         {typeof remainingCredits === 'number' && (
           <div
             class="inline-flex h-9 items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface px-2.5 text-xs font-semibold text-pine-text"

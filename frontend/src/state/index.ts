@@ -11,7 +11,13 @@ export {
   refreshConfig,
   saveConfigOverrides,
   removeConfigOverride,
+  setDraft,
+  clearDraft,
+  clearAllDrafts,
+  dirtyKeys,
+  saveDrafts,
   type ConfigState,
+  type ConfigWriteResult,
 } from './configStore';
 export {
   loadModelCatalog,

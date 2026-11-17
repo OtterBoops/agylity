@@ -16,7 +16,6 @@ export interface WebServerOptions {
   logBuffer?: LogBuffer;
   notifier?: Notifier;
   coordinator?: Coordinator;
-  /** Live `agy models` catalog; absent means the bundled canonical catalog is served. */
   modelCatalog?: ModelCatalogProvider;
   logger?: Logger;
 }
@@ -29,4 +28,6 @@ export const MIME_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.json': 'application/json; charset=utf-8',
   '.ico': 'image/x-icon',
+  '.woff2': 'font/woff2',
+  '.woff': 'font/woff',
 };

@@ -16,7 +16,7 @@ export const RepositoriesView = ({ config, onChanged }: RepositoriesViewProps) =
   return (
     <SettingsLayout>
       {!isCoordinatorEnabled ? (
-        <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+        <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
           <div class="mb-1 flex flex-wrap items-center gap-2">
             <Icon icon={faCodeBranch} class="size-5 text-pine-subtle" />
             <h2 class="text-lg font-semibold text-pine-text">Repositories</h2>

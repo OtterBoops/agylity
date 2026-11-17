@@ -601,4 +601,209 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       }
     });
   });
+
+  /* ==================================================================== */
+  /* 6. Delivered-Alert Ledger                                            */
+  /* ==================================================================== */
+  describe('Delivered-alert ledger', () => {
+    const poolingSnapshot = (resetTime: string): QuotaSnapshot[] => [
+      {
+        poolId: 'claude',
+        family: 'claude' as const,
+        displayName: 'Claude Pool',
+        remainingFraction: 0.6,
+        resetTime,
+        hoursUntilReset: 10,
+        models: ['claude-3-5-sonnet'],
+      },
+    ];
+
+    class ToggleNotifier extends ConsoleNotifier {
+      public delivered = true;
+      public calls = 0;
+      override async notifyQuotaAlert(_alert: QuotaAlert): Promise<DeliveryOutcome> {
+        this.calls++;
+        return this.delivered
+          ? { delivered: true, results: { console: { success: true } } }
+          : { delivered: false, results: { console: { success: false, error: 'channel down' } } };
+      }
+    }
+
+    it('records a delivered milestone in both alert_events and pool_milestones', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_ledger_ok_');
+      const dbPath = path.join(dir, 'test.db');
+      const notifier = new ToggleNotifier();
+      const resetTime = new Date(Date.now() + 10 * 3600 * 1000).toISOString();
+
+      const daemon = await createDaemon({
+        dbPath,
+        quotaClient: {
+          async fetchQuota() {
+            return poolingSnapshot(resetTime);
+          },
+        },
+        notifier,
+        autoCheckOnStart: false,
+        config: {
+          quotaMilestoneHours: [48, 24, 12],
+          quotaAlertThresholdPercent: 25,
+          webUiEnabled: false,
+        },
+      });
+
+      try {
+        const alerts = await daemon.checkQuota();
+        assert.equal(alerts.length, 1);
+        assert.equal(daemon.sentryState.isMilestoneFired('claude', 12), true);
+
+        const events = daemon.sentryState.listAlertEvents().events;
+        assert.equal(events.length, 1);
+        assert.equal(events[0]?.kind, 'milestone');
+        assert.equal(events[0]?.milestoneHours, 12);
+        assert.equal(events[0]?.resetTime, resetTime);
+        assert.equal(events[0]?.headroomPercent, 60);
+        assert.deepEqual(events[0]?.channels, { console: { success: true } });
+
+        // The dedupe row is written by the same transaction as the event; the two superseded
+        // windows are recorded like fired ones, exactly as the legacy state file did.
+        const milestoneRows = daemon.database
+          .getRawDb()
+          .prepare('SELECT * FROM pool_milestones WHERE pool_id = ? ORDER BY milestone_hours ASC')
+          .all('claude') as Array<Record<string, any>>;
+        assert.deepEqual(
+          milestoneRows.map((row) => Number(row.milestone_hours)),
+          [12, 24, 48]
+        );
+        assert.equal(String(milestoneRows[0]?.reset_time), resetTime);
+      } finally {
+        await daemon.shutdown();
+        cleanup();
+      }
+    });
+
+    it('writes neither row for a failed delivery and re-fires it on the next probe', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_ledger_fail_');
+      const dbPath = path.join(dir, 'test.db');
+      const notifier = new ToggleNotifier();
+      notifier.delivered = false;
+      const resetTime = new Date(Date.now() + 10 * 3600 * 1000).toISOString();
+
+      const daemon = await createDaemon({
+        dbPath,
+        quotaClient: {
+          async fetchQuota() {
+            return poolingSnapshot(resetTime);
+          },
+        },
+        notifier,
+        autoCheckOnStart: false,
+        config: {
+          quotaMilestoneHours: [48, 24, 12],
+          quotaAlertThresholdPercent: 25,
+          webUiEnabled: false,
+        },
+      });
+
+      try {
+        const first = await daemon.checkQuota();
+        assert.equal(first.length, 1);
+        // Nothing recorded, so the milestone is still armed for the retry.
+        assert.equal(daemon.sentryState.isMilestoneFired('claude', 12), false);
+        assert.equal(daemon.sentryState.listAlertEvents().events.length, 0);
+        assert.equal(
+          (
+            daemon.database
+              .getRawDb()
+              .prepare('SELECT COUNT(*) AS c FROM pool_milestones')
+              .get() as { c?: number }
+          ).c,
+          0
+        );
+
+        notifier.delivered = true;
+        const second = await daemon.checkQuota();
+        assert.equal(second.length, 1, 'the undelivered milestone must fire again');
+        assert.equal(second[0]?.milestoneHours, 12);
+        assert.equal(daemon.sentryState.isMilestoneFired('claude', 12), true);
+        assert.equal(daemon.sentryState.listAlertEvents().events.length, 1);
+
+        // A third probe is a no-op: the delivered milestone is now deduplicated.
+        const third = await daemon.checkQuota();
+        assert.equal(third.length, 0);
+        assert.equal(notifier.calls, 2);
+      } finally {
+        await daemon.shutdown();
+        cleanup();
+      }
+    });
+
+    it('records one early_reset event per pool, keyed on the previous deadline', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_ledger_early_');
+      const dbPath = path.join(dir, 'test.db');
+      const now = Date.now();
+      const resetTime = new Date(now + 100 * 3600 * 1000).toISOString();
+
+      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date(now).toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          claude: {
+            resetTime,
+            remainingFraction: 0.25,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      const daemon = await createDaemon({
+        dbPath,
+        sentryState,
+        quotaClient: {
+          async fetchQuota() {
+            return [
+              {
+                poolId: 'claude',
+                family: 'claude' as const,
+                displayName: 'Claude Pool',
+                remainingFraction: 0.98,
+                resetTime,
+                hoursUntilReset: 100,
+                models: ['claude-3-5-sonnet'],
+              },
+            ];
+          },
+        },
+        notifier: new ToggleNotifier(),
+        autoCheckOnStart: false,
+        config: {
+          quotaMilestoneHours: [48, 24, 12],
+          quotaAlertThresholdPercent: 25,
+          webUiEnabled: false,
+        },
+      });
+
+      try {
+        await daemon.checkQuota();
+        const events = daemon.sentryState.listAlertEvents().events;
+        assert.equal(events.length, 1);
+        assert.equal(events[0]?.kind, 'early_reset');
+        assert.equal(events[0]?.milestoneHours, null);
+        assert.equal(events[0]?.resetTime, resetTime);
+
+        // A second observation of the same premature reset is the same event, and dismissing the
+        // notice must not delete the history row.
+        await daemon.checkQuota();
+        assert.equal(daemon.sentryState.listAlertEvents().events.length, 1);
+        daemon.sentryState.dismissEarlyResetNotice();
+        assert.equal(daemon.sentryState.listAlertEvents().events.length, 1);
+      } finally {
+        await daemon.shutdown();
+        sentryState.close();
+        cleanup();
+      }
+    });
+  });
 });

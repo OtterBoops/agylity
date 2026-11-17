@@ -1,5 +1,9 @@
 import type * as preact from 'preact';
 
+import type { QuotaFamily, ReasoningEffort } from '../../src/shared/models.ts';
+
+export type { QuotaFamily, ReasoningEffort };
+
 declare module 'preact' {
   namespace JSX {
     interface IntrinsicAttributes {
@@ -29,10 +33,6 @@ export interface QuotaBucket {
   disabled?: boolean;
 }
 
-/**
- * Forecast from the observed burn rate; `hoursUntilFloor` is null when the projection never
- * reaches the safety floor before the window resets.
- */
 export interface QuotaBurnProjection {
   burnRatePerHour: number;
   projectedRemainingAtResetPercent: number;
@@ -109,12 +109,15 @@ export interface LogEntry {
   message: string;
 }
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export interface CascadeHop {
+  model: string;
+  effort: ReasoningEffort;
+}
 
 export interface ModelCatalogEntry {
   id: string;
   label: string;
-  family: 'claude' | 'gemini-argon' | 'gemini-flash';
+  family: QuotaFamily;
   defaultEffort: ReasoningEffort;
   supportedEfforts: ReasoningEffort[];
   effectiveHeadroomPercent: number | null;
@@ -153,7 +156,6 @@ export interface RunnerRegistrationTokenResult {
   createdAt: string;
 }
 
-/** `running` is the heartbeat state a runner reports while output is still streaming. */
 export type TaskStatus =
   | 'queued'
   | 'claimed'
@@ -166,7 +168,8 @@ export type TaskStatus =
 
 export type PrPolicy = 'docs_only' | 'all' | 'none';
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
-export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
+export type BacklogStatus =
+  'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled' | 'paused';
 
 export interface SwarmTask {
   id: string;
@@ -190,6 +193,7 @@ export interface SwarmTask {
   requiredLabels: string[];
   model: string;
   effort: ReasoningEffort;
+  cascade?: CascadeHop[];
   verifyCommand?: string;
   status: TaskStatus;
   runnerId?: string;
@@ -214,8 +218,7 @@ export interface BacklogTaskRecord {
   title: string;
   prompt: string;
   repositoryId: string;
-  models: string[];
-  effort: ReasoningEffort;
+  cascade: CascadeHop[];
   verifyCommand?: string;
   autoCreatePr: boolean;
   priorityOrder: number;
@@ -230,10 +233,6 @@ export interface BacklogTaskRecord {
   updatedAt: string;
 }
 
-/**
- * Server-computed reason a routine will or will not dispatch this cycle. The label and detail
- * are authoritative copy — the UI never re-derives them from quota state.
- */
 export type RoutineEligibilityState =
   | 'disabled'
   | 'running'
@@ -257,8 +256,7 @@ export interface RoutineTaskRecord {
   title: string;
   prompt: string;
   repositoryId: string;
-  models: string[];
-  effort: ReasoningEffort;
+  cascade: CascadeHop[];
   verifyCommand?: string;
   autoCreatePr: boolean;
   prPolicy?: PrPolicy;
@@ -270,7 +268,6 @@ export interface RoutineTaskRecord {
   lastTaskId?: string;
   createdAt: string;
   updatedAt: string;
-  /** Absent only while a cached, pre-upgrade payload is still being served. */
   eligibility?: RoutineEligibility;
 }
 
@@ -280,4 +277,53 @@ export interface RepositoryConfig {
   path: string;
   cloneUrl?: string;
   defaultBranch?: string;
+}
+
+export interface DispatchPoolView {
+  poolId: string;
+  displayName: string;
+  weeklyPercent: number | null;
+  shortTermPercent: number | null;
+  effectivePercent: number;
+  limitingWindow: 'weekly' | 'short_term';
+  hoursUntilReset: number | null;
+  resetTime: string | null;
+}
+
+export interface DispatchEligibility {
+  evaluatedAt: string;
+  accepts: boolean;
+  willRunNow: boolean;
+  code: string | null;
+  reason: string | null;
+  model: string;
+  family: string | null;
+  pool: DispatchPoolView | null;
+  floorPercent: number;
+  allowOverage: boolean;
+  autonomy: { quenched: boolean; remainingMs: number };
+  runners: { online: number };
+  telemetry: {
+    probeSource: string;
+    lastProbeAt: string | null;
+    authRequired: boolean;
+    authErrorMessage: string | null;
+  };
+  warnings: string[];
+}
+
+export interface AlertEvent {
+  id: number;
+  firedAt: string;
+  poolId: string;
+  kind: 'milestone' | 'early_reset' | string;
+  milestoneHours: number | null;
+  headroomPercent: number | null;
+  resetTime: string | null;
+  channels: Record<string, { success: boolean; error?: string }>;
+}
+
+export interface AlertEventPage {
+  events: AlertEvent[];
+  nextBefore: string | null;
 }

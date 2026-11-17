@@ -5,23 +5,18 @@ import {
   methodNotAllowed,
   readJsonBody,
   toStringOrUndefined,
-  toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { resolveCoordinator } from './dispatch.js';
+import { configuredCascade, parseCascadeRequest, resolveCoordinator } from './dispatch.js';
 import { defaultExecFileAsync } from '../../sentry/discovery.js';
-import {
-  BacklogStatusSchema,
-  ReasoningEffortSchema,
-  type ReasoningEffort,
-} from '../../coordinator/models.js';
+import { BacklogStatusSchema, type BacklogStatus } from '../../coordinator/models.js';
+import type { BacklogTaskRecord } from '../../coordinator/queue.js';
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
-// A present text field must survive a trim: a blank one is a client bug, not a request to clear it.
 const validateTextFieldPatch = (body: any): string | undefined => {
   if (!body || typeof body !== 'object') return undefined;
   for (const field of TEXT_FIELDS) {
@@ -67,16 +62,20 @@ export const handleBacklogTasks = async (
       });
     }
 
-    const effortParse = ReasoningEffortSchema.safeParse(payload.effort ?? 'high');
-    const effort: ReasoningEffort = effortParse.success ? effortParse.data : 'high';
-    const models = toStringArray(payload.models) ?? ['gemini-3.8-flash'];
+    const resolved = options.configStore.resolveConfig();
+    const cascadeParse = parseCascadeRequest(payload.cascade, {
+      fallbackModel: resolved.defaultDispatchModel,
+      fallbackEffort: resolved.defaultDispatchEffort,
+    });
+    if (!cascadeParse.ok) {
+      return sendJson(res, 400, { error: cascadeParse.error });
+    }
 
     const created = coordinator.queue.createBacklogTask({
       title,
       prompt,
       repositoryId,
-      models: models.length > 0 ? models : ['gemini-3.8-flash'],
-      effort,
+      cascade: cascadeParse.cascade,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
       autoCreatePr: payload.autoCreatePr !== false,
       priorityOrder: toFiniteNumberOrUndefined(payload.priorityOrder) ?? 0,
@@ -121,8 +120,7 @@ export const handleBacklogTaskById = async (
       originId: task.id,
       originNumber: task.taskNumber,
       originTitle: task.title,
-      models: task.models,
-      effort: task.effort,
+      cascade: task.cascade,
       autoCreatePr: task.autoCreatePr,
       prPolicy: resolved.prPolicy,
       verifyCommand: task.verifyCommand,
@@ -140,7 +138,6 @@ export const handleBacklogTaskById = async (
       return sendJson(res, 200, dispatchRes);
     }
 
-    // A refusal must not read as a queued task; keep the reason on the row for the dashboard.
     coordinator.queue.updateBacklogTask(task.id, {
       lastError: dispatchRes.error || 'Dispatch refused',
     });
@@ -164,6 +161,16 @@ export const handleBacklogTaskById = async (
     const textError = validateTextFieldPatch(patch);
     if (textError) return sendJson(res, 400, { error: textError });
 
+    if ('cascade' in patch) {
+      const resolved = options.configStore.resolveConfig();
+      const cascadeParse = parseCascadeRequest(patch.cascade, {
+        fallbackModel: resolved.defaultDispatchModel,
+        fallbackEffort: resolved.defaultDispatchEffort,
+      });
+      if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
+      patch.cascade = cascadeParse.cascade;
+    }
+
     const updated = coordinator.queue.updateBacklogTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
     return sendJson(res, 200, updated);
@@ -176,6 +183,67 @@ export const handleBacklogTaskById = async (
   }
 
   return methodNotAllowed(res);
+};
+
+const BULK_BACKLOG_MAX_IDS = 200;
+
+const BULK_PAUSE_FROM: readonly BacklogStatus[] = ['pending', 'dispatched'];
+
+export const handleBulkBacklogTasks = async (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  method: string
+): Promise<void> => {
+  if (method !== 'PATCH') return methodNotAllowed(res);
+
+  const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
+  if (!parsed.ok) return;
+  const payload: any = parsed.body;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return sendJson(res, 400, { error: 'Request body must be a JSON object' });
+  }
+
+  const action = payload.action;
+  if (action !== 'pause' && action !== 'resume') {
+    return sendJson(res, 400, { error: "action must be 'pause' or 'resume'" });
+  }
+
+  const rawIds = payload.ids;
+  if (!Array.isArray(rawIds) || rawIds.length === 0) {
+    return sendJson(res, 400, { error: 'ids must be a non-empty array of backlog task ids' });
+  }
+  if (rawIds.length > BULK_BACKLOG_MAX_IDS) {
+    return sendJson(res, 400, {
+      error: `ids accepts at most ${BULK_BACKLOG_MAX_IDS} entries per request`,
+    });
+  }
+  if (rawIds.some((id: unknown) => typeof id !== 'string' || id.trim() === '')) {
+    return sendJson(res, 400, { error: 'ids must contain only non-empty strings' });
+  }
+
+  const coordinator = resolveCoordinator(options);
+  const targetStatus: BacklogStatus = action === 'pause' ? 'paused' : 'pending';
+  const eligibleFrom: readonly BacklogStatus[] = action === 'pause' ? BULK_PAUSE_FROM : ['paused'];
+
+  const items: BacklogTaskRecord[] = [];
+  const skipped: string[] = [];
+
+  for (const id of new Set<string>(rawIds.map((raw: string) => raw.trim()))) {
+    const row = coordinator.queue.getBacklogTask(id);
+    if (!row || !eligibleFrom.includes(row.status)) {
+      skipped.push(id);
+      continue;
+    }
+    const updated = coordinator.queue.updateBacklogTask(id, { status: targetStatus });
+    if (!updated) {
+      skipped.push(id);
+      continue;
+    }
+    items.push(updated);
+  }
+
+  return sendJson(res, 200, { updated: items.length, items, skipped });
 };
 
 export const handleSyncGithubBacklog = async (
@@ -224,12 +292,16 @@ export const handleSyncGithubBacklog = async (
         const key = `${repo.id}#${issue.number}`;
         if (existingKeys.has(key)) continue;
 
+        const cascade = configuredCascade({
+          fallbackModel: config.defaultDispatchModel || 'gemini-4-hydrogen',
+          fallbackEffort: config.defaultDispatchEffort || 'high',
+        });
+
         coordinator.queue.createBacklogTask({
           title: `[GH #${issue.number}] ${issue.title.trim()}`,
           prompt: (issue.body || issue.title).trim(),
           repositoryId: repo.id,
-          models: [config.defaultDispatchModel || 'gemini-3.8-flash'],
-          effort: config.defaultDispatchEffort || 'high',
+          cascade,
           autoCreatePr: true,
           githubIssueNumber: issue.number,
           githubIssueUrl: issue.html_url || issue.url,
@@ -240,9 +312,6 @@ export const handleSyncGithubBacklog = async (
         importedCount++;
       }
 
-      // A fetched repo proves which of its issues are still open, so a row whose issue is gone
-      // must not stay queued. Dispatched rows are left alone: their task is in flight.
-      // A listing cut off by the page cap proves nothing about the rows it never returned.
       if (!listing.truncated) {
         const openNumbers = new Set(issues.map((issue) => issue.number));
         for (const row of existingBacklog) {
@@ -285,7 +354,6 @@ interface GithubIssue {
 
 interface GithubIssueListing {
   issues: GithubIssue[];
-  /** A page cap was hit, so the listing cannot prove which issues are closed. */
   truncated: boolean;
 }
 

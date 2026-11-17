@@ -1,18 +1,26 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { faXmark } from '@fortawesome/free-solid-svg-icons';
-import type { EarlyResetNotice, QuotaSnapshot, SentryAlertState } from '../types';
+import type {
+  EarlyResetNotice,
+  QuotaSnapshot,
+  SentryAlertState,
+  SwarmRunnerRecord,
+} from '../types';
 import { QuotaGrid } from '../components/QuotaGrid';
 import { Icon } from '../components/Icon';
-import { dismissEarlyReset } from '../api';
-import { ActivityView } from './ActivityView';
+import { VerdictBar } from '../components/VerdictBar';
+import { SwarmRunnersStrip } from '../components/SwarmRunnersStrip';
+import { dismissEarlyReset, getRunners } from '../api';
 
 interface OverviewViewProps {
   quota: QuotaSnapshot[];
+  quotaUpdatedAt?: number | null;
   alerts: SentryAlertState | null;
   minHeadroomPercent?: number;
   error?: string | null;
   onRetry?: () => void;
   onAlertsChanged?: () => void;
+  coordinatorEnabled?: boolean;
 }
 
 const formatPercent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
@@ -46,17 +54,13 @@ const EarlyResetBanner = ({
       await dismissEarlyReset();
       onDismissed?.();
     } catch {
-      // The notice stays on screen; the next poll re-reads the server state.
     } finally {
       setDismissing(false);
     }
   };
 
   return (
-    <div
-      role="status"
-      class="mb-6 rounded-xl border border-pine-iris/40 bg-pine-iris/10 px-4 py-3 shadow-xs"
-    >
+    <div role="status" class="rounded-xl border border-pine-iris/40 bg-pine-iris/10 px-4 py-3">
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0">
           <div class="flex flex-wrap items-center gap-2">
@@ -101,22 +105,65 @@ const EarlyResetBanner = ({
 
 export const OverviewView = ({
   quota,
+  quotaUpdatedAt = null,
   alerts,
   minHeadroomPercent = 10,
   error = null,
   onRetry,
   onAlertsChanged,
-}: OverviewViewProps) => (
-  <div>
-    {alerts?.earlyResetNotice && alerts.earlyResetNotice.pools.length > 0 && (
-      <EarlyResetBanner notice={alerts.earlyResetNotice} onDismissed={onAlertsChanged} />
-    )}
-    <QuotaGrid
-      quota={quota}
-      minHeadroomPercent={minHeadroomPercent}
-      error={error}
-      onRetry={onRetry}
-    />
-    <ActivityView alerts={alerts} />
-  </div>
-);
+  coordinatorEnabled = false,
+}: OverviewViewProps) => {
+  const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
+  const [runnersError, setRunnersError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!coordinatorEnabled) return;
+    let cancelled = false;
+    const load = () => {
+      getRunners()
+        .then((next) => {
+          if (cancelled) return;
+          setRunners(next);
+          setRunnersError(null);
+        })
+        .catch((err: any) => {
+          if (!cancelled) setRunnersError(err?.message || 'runner poll failed');
+        });
+    };
+    load();
+    const timer = setInterval(() => {
+      if (!document.hidden) load();
+    }, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [coordinatorEnabled]);
+
+  return (
+    <div class="flex flex-col gap-4">
+      <VerdictBar syncKey={quotaUpdatedAt} />
+      {alerts?.earlyResetNotice && alerts.earlyResetNotice.pools.length > 0 && (
+        <EarlyResetBanner notice={alerts.earlyResetNotice} onDismissed={onAlertsChanged} />
+      )}
+      <QuotaGrid
+        quota={quota}
+        minHeadroomPercent={minHeadroomPercent}
+        error={error}
+        onRetry={onRetry}
+      />
+      <SwarmRunnersStrip
+        runners={runners}
+        coordinatorEnabled={coordinatorEnabled}
+        runnersError={runnersError}
+      />
+      <a
+        href="/alerts"
+        class="flex items-center justify-between gap-3 rounded-xl border border-pine-highlight bg-pine-surface px-3 py-2 text-xs text-pine-subtle transition-colors hover:border-pine-iris/50 hover:text-pine-text"
+      >
+        <span>Alert history and sentry state</span>
+        <span class="text-pine-iris">View alerts -&gt;</span>
+      </a>
+    </div>
+  );
+};

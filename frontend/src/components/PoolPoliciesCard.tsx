@@ -19,9 +19,9 @@ interface PoolDef {
 const POOLS: PoolDef[] = [
   {
     key: 'gemini-flash',
-    name: 'Gemini Flash',
+    name: 'Gemini Hydrogen',
     description:
-      'High-speed standard Gemini models (Gemini 3.8 Flash, 4 Hydrogen) with shared 5-hour limit.',
+      'High-speed standard Gemini models (Gemini 4 Hydrogen, 3.8 Flash) with shared 5-hour limit.',
   },
   {
     key: 'gemini-argon',
@@ -82,7 +82,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
   };
 
   return (
-    <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+    <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
       <div class="mb-5">
         <div class="mb-1 flex items-center gap-2">
           <Icon icon={faSliders} class="size-5 text-pine-iris" />
@@ -123,7 +123,6 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
               </div>
 
               <div class="flex flex-wrap items-center gap-6">
-                {/* Alerts Toggle */}
                 <div class="flex items-center gap-2.5">
                   <span class="text-xs font-medium text-pine-subtle">Alerts</span>
                   <ToggleSwitch
@@ -135,7 +134,6 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
                   />
                 </div>
 
-                {/* Dispatch Toggle */}
                 <div class="flex items-center gap-2.5">
                   <span class="text-xs font-medium text-pine-subtle">Swarm Dispatch</span>
                   <ToggleSwitch

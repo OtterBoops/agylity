@@ -32,7 +32,7 @@ describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Answer a question without touching files',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
 
         const executor = new TaskExecutor({
@@ -189,7 +189,7 @@ const enqueueTask = (
     repositoryName: 'agylity',
     repositoryPath: dir,
     prompt: 'Implement the queue worker',
-    model: 'gemini-4-argon',
+    cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
     ...input,
   });
   return { task, db };
@@ -366,8 +366,10 @@ describe('Runner: capacity fallback with continuation context', () => {
   it('re-runs a clean tree with the next candidate model and the original prompt', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_clean_');
     const { task, db } = enqueueTask(dir, {
-      model: 'gemini-4-argon',
-      candidateModels: ['gemini-3.8-flash'],
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
     });
 
     try {
@@ -392,7 +394,7 @@ describe('Runner: capacity fallback with continuation context', () => {
       assert.equal(result.success, true);
       assert.equal(calls.length, 2);
       assert.equal(modelOf(calls[0]), 'gemini-4-argon');
-      assert.equal(modelOf(calls[1]), 'gemini-3.8-flash');
+      assert.equal(modelOf(calls[1]), 'gemini-4-hydrogen');
       // Clean tree: a fresh attempt on the original prompt, not a handoff.
       assert.ok(promptOf(calls[1]).includes(task.prompt));
       assert.equal(promptOf(calls[1]).includes('[CONTINUATION CONTEXT]'), false);
@@ -405,8 +407,10 @@ describe('Runner: capacity fallback with continuation context', () => {
   it('hands dirty partial work over with git status, diff stat and a 2000-char tail', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_dirty_');
     const { task, db } = enqueueTask(dir, {
-      model: 'gemini-4-argon',
-      candidateModels: ['gemini-3.8-flash'],
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
     });
 
     try {
@@ -446,7 +450,7 @@ describe('Runner: capacity fallback with continuation context', () => {
 
       assert.equal(result.success, true);
       assert.equal(calls.length, 2);
-      assert.equal(modelOf(calls[1]), 'gemini-3.8-flash');
+      assert.equal(modelOf(calls[1]), 'gemini-4-hydrogen');
       assert.ok(prompt.startsWith('[CONTINUATION CONTEXT]'));
       assert.ok(prompt.includes('A previous attempt with model gemini-4-argon'));
       assert.ok(prompt.includes('Current git status:'));
@@ -471,8 +475,10 @@ describe('Runner: capacity fallback with continuation context', () => {
   it('sums telemetry across every attempt that ran', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_telemetry_');
     const { task, db } = enqueueTask(dir, {
-      model: 'gemini-4-argon',
-      candidateModels: ['gemini-3.8-flash'],
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
     });
 
     try {
@@ -512,8 +518,10 @@ describe('Runner: capacity fallback with continuation context', () => {
   it('stops at the first non-capacity error without burning the remaining candidates', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_stop_');
     const { task, db } = enqueueTask(dir, {
-      model: 'gemini-4-argon',
-      candidateModels: ['gemini-3.8-flash'],
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
     });
 
     try {

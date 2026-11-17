@@ -37,7 +37,6 @@ export const createWebServer = (options: WebServerOptions): http.Server => {
   return server;
 };
 
-/** Only a literal loopback bind is reachable from this machine alone. */
 const isLoopbackHost = (host: string): boolean => {
   const h = host.trim().toLowerCase();
   return h === '127.0.0.1' || h === '::1' || h === 'localhost';
@@ -46,8 +45,7 @@ const isLoopbackHost = (host: string): boolean => {
 export const startWebServer = async (
   options: WebServerOptions
 ): Promise<{ server: http.Server; port: number; host: string }> => {
-  // A SecretDecryptionError from resolveConfig propagates: a secret that cannot be decrypted
-  // must never be treated as an absent one.
+  // A SecretDecryptionError propagates: a secret that cannot be decrypted must never read as absent.
   const resolved = options.configStore.resolveConfig();
   const host = options.host ?? resolved.webUiHost ?? '0.0.0.0';
   const port = options.port ?? resolved.webUiPort ?? BUILTIN_DEFAULTS.webUiPort;
@@ -99,7 +97,6 @@ export const startWebServer = async (
   });
 };
 
-// Performs graceful teardown of the web server, closing active connections and releasing the port.
 export const closeWebServer = async (server: http.Server): Promise<void> => {
   return new Promise((resolve, reject) => {
     const sockets = (server as any).__activeSockets as Set<net.Socket> | undefined;
@@ -113,17 +110,13 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
     if (typeof server.closeAllConnections === 'function') {
       try {
         server.closeAllConnections();
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
 
     if (typeof server.closeIdleConnections === 'function') {
       try {
         server.closeIdleConnections();
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
 
     server.close((err) => {

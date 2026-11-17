@@ -1,4 +1,4 @@
-import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
+import { faCodeBranch, faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { BacklogStatus, BacklogTaskRecord } from '../../types';
 import { toneBadgeClass } from '../../utils/status';
 import { Icon } from '../Icon';
@@ -21,13 +21,12 @@ interface BacklogCardProps {
   busy: boolean;
   confirmingDelete: boolean;
   onDispatch: () => void;
-  onEdit: () => void;
+  onEdit?: () => void;
   onAskDelete: () => void;
   onConfirmDelete: () => void;
   onCancelDelete: () => void;
 }
 
-/** One queued work item: what it is, where it points, and the actions that fit its status. */
 export const BacklogCard = ({
   item,
   repositoryLabel,
@@ -41,12 +40,24 @@ export const BacklogCard = ({
   onCancelDelete,
 }: BacklogCardProps) => {
   const dispatchable = item.status === 'pending' || item.status === 'failed';
-  const editable = item.status !== 'completed';
+
+  // The card body opens the editor; a control inside it keeps its own press and its own key.
+  const handleCardKeyDown = (event: KeyboardEvent) => {
+    if (!onEdit) return;
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    onEdit();
+  };
 
   return (
     <article
       id={`task-row-${item.id}`}
-      class={`flex flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 shadow-sm transition-colors hover:border-pine-iris/50 ${
+      role="button"
+      tabIndex={0}
+      onClick={onEdit}
+      onKeyDown={handleCardKeyDown}
+      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden ${
         highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
       }`}
     >
@@ -55,7 +66,10 @@ export const BacklogCard = ({
           <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
             #{item.taskNumber}
           </span>
-          <span class="truncate font-mono text-xs text-pine-subtle">{repositoryLabel}</span>
+          <span class="flex min-w-0 items-center gap-1 font-mono text-xs text-pine-subtle">
+            <Icon icon={faCodeBranch} class="size-3 shrink-0 text-pine-muted" />
+            <span class="min-w-0 truncate">{repositoryLabel}</span>
+          </span>
         </div>
         <span
           class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${backlogStatusBadgeClass(item.status)}`}
@@ -75,9 +89,7 @@ export const BacklogCard = ({
       )}
 
       <p class="font-mono text-xs wrap-break-word text-pine-subtle">
-        <span class="text-pine-iris">{modelChainLabel(item.models)}</span>
-        {' · '}
-        {item.effort}
+        <span class="text-pine-iris">{modelChainLabel(item.cascade)}</span>
         {' · '}P{item.priorityOrder}
         {' · '}
         <span
@@ -94,6 +106,7 @@ export const BacklogCard = ({
             href={item.githubIssueUrl}
             target="_blank"
             rel="noreferrer"
+            onClick={(event) => event.stopPropagation()}
             class="inline-flex min-w-0 items-center gap-1 font-mono text-xs text-pine-iris hover:underline"
           >
             <span class="truncate">#{item.githubIssueNumber}</span>
@@ -106,7 +119,10 @@ export const BacklogCard = ({
           {dispatchable && (
             <button
               type="button"
-              onClick={onDispatch}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDispatch();
+              }}
               disabled={busy}
               class="cursor-pointer rounded-sm border border-pine-iris/30 bg-pine-iris/10 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base disabled:opacity-50"
               title="Dispatch immediately to swarm queue"
@@ -118,7 +134,6 @@ export const BacklogCard = ({
             entityLabel={item.title}
             busy={busy}
             confirmingDelete={confirmingDelete}
-            onEdit={editable ? onEdit : undefined}
             onAskDelete={onAskDelete}
             onConfirmDelete={onConfirmDelete}
             onCancelDelete={onCancelDelete}

@@ -1,15 +1,15 @@
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { faPlus, faSync } from '@fortawesome/free-solid-svg-icons';
+import { faCloudArrowDown, faPlus } from '@fortawesome/free-solid-svg-icons';
 import type {
   BacklogTaskRecord,
-  ReasoningEffort,
   RepositoryConfig,
   RoutineTaskRecord,
   SwarmRunnerRecord,
   SwarmTask,
 } from '../types';
 import {
+  bulkUpdateBacklog,
   cancelTask,
   deleteBacklogTask,
   deleteRoutine,
@@ -23,52 +23,33 @@ import {
   triggerRoutine,
   updateRoutine,
 } from '../api';
+import { BulkActionBar } from './BulkActionBar';
 import { Icon } from './Icon';
 import { configStore, useStore } from '../state';
 import { ACTIVE_TASK_STATUSES, type NotifyTone } from './tasks/badges';
 import { ActiveRunCard } from './tasks/ActiveRunsBanner';
 import { BacklogCard } from './tasks/BacklogCard';
-import { BacklogFormModal } from './tasks/BacklogFormModal';
-import { ExecutionInspectorModal } from './tasks/ExecutionInspectorModal';
+import { ExecutionInspectorContent } from './tasks/ExecutionInspectorModal';
 import { ExecutionTable } from './tasks/ExecutionTable';
+import { MobileTaskCard } from './tasks/MobileTaskCard';
+import { STATUS_BUCKETS, statusMatchesBucket, type StatusBucketId } from './tasks/statusLabels';
+import { SlideOverDrawer } from './SlideOverDrawer';
 import { RoutineCard } from './tasks/RoutineCard';
-import { RoutineFormModal } from './tasks/RoutineFormModal';
 import { runnerCoversRepo } from './tasks/runners';
 import { TaskOriginLabel, type TaskOriginLists } from './tasks/TaskOrigin';
 
 interface TasksViewProps {
   onRefresh?: () => void;
-  onOpenDispatch?: () => void;
+  onOpenComposer?: (initial?: { backlog?: any; routine?: any }) => void;
 }
 
-type TaskTab = 'schedules' | 'executions';
-
-const TAB_LABELS: Record<TaskTab, string> = {
-  schedules: 'Schedules & Queue',
-  executions: 'Execution History',
-};
-
-// Execution history is opt-in: only an explicit tab, or an id that addresses one run, opens it.
-const normalizeTab = (raw: string | null, focusedId: string | null): TaskTab =>
-  raw === 'executions' || (!raw && focusedId) ? 'executions' : 'schedules';
-
-const STATUS_FILTERS = [
-  'all',
-  'queued',
-  'claimed',
-  'running',
-  'executing',
-  'completed',
-  'no_changes',
-  'failed',
-  'aborted',
-] as const;
-
-type StatusFilter = (typeof STATUS_FILTERS)[number];
+/** Abort is destructive and one keypress away from the arrow keys, so it needs a second press. */
+const ABORT_CONFIRM_WINDOW_MS = 3000;
 
 const CARD_GRID = 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3';
 
-/** Section heading + its actions; the two schedule sections differ only in those. */
+const GITHUB_SYNC_UNCONFIGURED_HINT = 'No repository has GitHub issue sync configured.';
+
 const SectionHeader = ({
   id,
   title,
@@ -80,7 +61,7 @@ const SectionHeader = ({
   count: number;
   children?: ComponentChildren;
 }) => (
-  <div class="flex flex-wrap items-center justify-between gap-2">
+  <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
     <h2 id={id} class="font-mono text-xs font-bold tracking-wider text-pine-subtle uppercase">
       {title}
       <span class="ml-1 text-pine-muted">({count})</span>
@@ -95,57 +76,33 @@ const EmptyCard = ({ children }: { children: ComponentChildren }) => (
   </div>
 );
 
-export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) => {
-  const [activeTab, setActiveTab] = useState<TaskTab>(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      return normalizeTab(params.get('tab'), params.get('id'));
-    } catch {
-      return 'schedules';
-    }
-  });
-
-  const setTab = (tab: TaskTab, id?: string) => {
-    setActiveTab(tab);
-    try {
-      const url = new URL(window.location.href);
-      url.searchParams.set('tab', tab);
-      if (id) {
-        url.searchParams.set('id', id);
-        handledSearchId.current = null;
-      } else {
-        url.searchParams.delete('id');
-      }
-      window.history.replaceState({}, '', url.toString());
-    } catch {}
-  };
-
-  // --- Execution history state ---
+export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) => {
   const [tasks, setTasks] = useState<SwarmTask[]>([]);
   const [executionsInitialLoaded, setExecutionsInitialLoaded] = useState(false);
-  const [filter, setFilter] = useState<StatusFilter>('all');
+  const [bucket, setBucket] = useState<StatusBucketId>('all');
+  const [query, setQuery] = useState('');
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [pendingAbortId, setPendingAbortId] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<SwarmTask | null>(null);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [totalTasks, setTotalTasks] = useState(0);
 
-  // --- Schedules & queue state ---
   const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
   const [routinesLoading, setRoutinesLoading] = useState(false);
   const [routinesInitialLoaded, setRoutinesInitialLoaded] = useState(false);
   const [routineActionId, setRoutineActionId] = useState<string | null>(null);
-  const [routineForm, setRoutineForm] = useState<{ routine: RoutineTaskRecord | null } | null>(
-    null
-  );
 
   const [backlogTasks, setBacklogTasks] = useState<BacklogTaskRecord[]>([]);
   const [backlogLoading, setBacklogLoading] = useState(false);
   const [backlogInitialLoaded, setBacklogInitialLoaded] = useState(false);
   const [backlogActionId, setBacklogActionId] = useState<string | null>(null);
-  const [backlogForm, setBacklogForm] = useState<{ item: BacklogTaskRecord | null } | null>(null);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
-  // Deleting a work item loses a hand-written prompt, so the bin needs a second press.
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [syncingGithub, setSyncingGithub] = useState(false);
 
@@ -154,14 +111,14 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     message: string;
   } | null>(null);
   const notificationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Tracks in-flight routine toggle requests so 4s polls never flicker the switch back.
+  const pendingRoutineToggles = useRef<Map<string, boolean>>(new Map());
 
   const config = useStore(configStore).config;
   const repos: RepositoryConfig[] = config.resolved?.repositories || [];
-  // No invented fallback: with no repository configured the forms stay unsubmittable.
-  const defaultRepoId = repos[0]?.id || '';
-  const defaultModel = config.resolved?.defaultDispatchModel || 'gemini-3.8-flash';
-  const defaultEffort = (config.resolved?.defaultDispatchEffort as ReasoningEffort) || 'high';
-  const defaultMinHeadroom = Number(config.resolved?.minDispatchHeadroomPercent ?? 10);
+  const githubSyncConfigured = repos.length > 0;
   const routinesEnabled = config.resolved?.routinesEnabled !== false;
 
   const showNotification = useCallback((type: NotifyTone, message: string) => {
@@ -170,18 +127,32 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     notificationTimer.current = setTimeout(() => setNotification(null), 4000);
   }, []);
 
+  const markLoading = useCallback((taskId: string) => {
+    setActionLoading((prev) => new Set(prev).add(taskId));
+  }, []);
+
+  const clearLoading = useCallback((taskId: string) => {
+    setActionLoading((prev) => {
+      const next = new Set(prev);
+      next.delete(taskId);
+      return next;
+    });
+  }, []);
+
   useEffect(
     () => () => {
       if (notificationTimer.current) clearTimeout(notificationTimer.current);
+      if (abortConfirmTimer.current) clearTimeout(abortConfirmTimer.current);
+      if (highlightTimer.current) clearTimeout(highlightTimer.current);
     },
     []
   );
 
-  // --- Data loaders ---
   const loadExecutions = useCallback(() => {
-    getTasks(100)
+    getTasks({ limit: 100 })
       .then((res) => {
-        setTasks(res);
+        setTasks(res.tasks);
+        setTotalTasks(res.total);
         setLoadError(null);
         setExecutionsInitialLoaded(true);
       })
@@ -207,7 +178,13 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
   const loadRoutines = useCallback(async () => {
     setRoutinesLoading(true);
     try {
-      setRoutines(await getRoutines());
+      const next = await getRoutines();
+      const pending = pendingRoutineToggles.current;
+      setRoutines(
+        pending.size === 0
+          ? next
+          : next.map((r) => (pending.has(r.id) ? { ...r, enabled: pending.get(r.id)! } : r))
+      );
       setLoadError(null);
     } catch (err: any) {
       setLoadError(err?.message || String(err));
@@ -221,36 +198,38 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     setRunners(await getRunners());
   }, []);
 
-  // The tab lives in a ref so switching tabs does not tear down the poll and refetch everything.
-  const activeTabRef = useRef<TaskTab>(activeTab);
-  activeTabRef.current = activeTab;
-
   useEffect(() => {
-    loadExecutions();
-    // Loaded once for the tab counters; the badge must not claim 0 while items exist.
-    void loadBacklog();
-    void loadRoutines();
-    void loadRunners();
-    const timer = setInterval(() => {
+    const refreshAll = () => {
+      // A background tab has nobody reading it: skip the tick rather than refetch four endpoints.
+      if (document.hidden) return;
       loadExecutions();
-      if (activeTabRef.current === 'schedules') {
-        void loadBacklog();
-        void loadRoutines();
-      }
-      // Runner liveness decides the queued-run notices, so it polls on both tabs.
-      void loadRunners();
-    }, 4000);
-
-    return () => clearInterval(timer);
-  }, [loadExecutions, loadBacklog, loadRoutines, loadRunners]);
-
-  // Each list loads on first paint of its tab, and on every switch back to it.
-  useEffect(() => {
-    if (activeTab === 'schedules') {
       void loadBacklog();
       void loadRoutines();
+      void loadRunners();
+    };
+    refreshAll();
+    const timer = setInterval(refreshAll, 4000);
+    document.addEventListener('visibilitychange', refreshAll);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshAll);
+    };
+  }, [loadExecutions, loadBacklog, loadRoutines, loadRunners]);
+
+  const handledTabScroll = useRef(false);
+  useEffect(() => {
+    if (handledTabScroll.current) return;
+    handledTabScroll.current = true;
+    let tab: string | null = null;
+    try {
+      tab = new URLSearchParams(window.location.search).get('tab');
+    } catch {
+      tab = null;
     }
-  }, [activeTab, loadBacklog, loadRoutines]);
+    if (!tab) return;
+    document.getElementById('executions-heading')?.scrollIntoView({ block: 'start' });
+  }, []);
 
   // ?id= is applied once per targeted id. Left in the URL it is re-matched on every poll,
   // which re-opens the inspector or re-scrolls cards the user moved away from.
@@ -276,7 +255,6 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       } catch {}
     };
 
-    // A task id opens the inspector; a routine or backlog id scrolls its card into view.
     const task = executionsInitialLoaded
       ? tasks.find((t) => t.id === searchId || t.originId === searchId)
       : undefined;
@@ -286,6 +264,9 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       return;
     }
 
+    // Executions are the authority for a task id; a card lookup before they land would strip the
+    // id and report a live run as deleted.
+    if (!executionsInitialLoaded) return;
     if (!routinesInitialLoaded || !backlogInitialLoaded) return;
     handledSearchId.current = searchId;
     const card = document.getElementById(`task-row-${searchId}`);
@@ -294,7 +275,6 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
       showNotification('error', 'The requested task or schedule was deleted or not found.');
       return;
     }
-    setActiveTab('schedules');
     card.scrollIntoView({ block: 'center' });
     setHighlightedId(searchId);
     const timer = setTimeout(() => setHighlightedId(null), 2500);
@@ -320,6 +300,15 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     } catch {}
   };
 
+  const focusCard = (originId: string) => {
+    const card = document.getElementById(`task-row-${originId}`);
+    if (!card) return;
+    card.scrollIntoView({ block: 'center' });
+    setHighlightedId(originId);
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightedId(null), 2500);
+  };
+
   // The poll replaces every task object; without re-pinning, an open inspector freezes at open.
   useEffect(() => {
     if (!selectedTask) return;
@@ -327,9 +316,8 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     if (fresh && fresh.updatedAt !== selectedTask.updatedAt) setSelectedTask(fresh);
   }, [tasks, selectedTask]);
 
-  // --- Handlers: executions ---
   const handleCancelTask = async (taskId: string) => {
-    setActionLoading(true);
+    markLoading(taskId);
     try {
       await cancelTask(taskId);
       loadExecutions();
@@ -340,12 +328,108 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     } catch (err: any) {
       showNotification('error', `Cancel failed: ${err?.message || String(err)}`);
     } finally {
-      setActionLoading(false);
+      clearLoading(taskId);
     }
   };
 
+  const requestAbort = (taskId: string) => {
+    const task = tasks.find((candidate) => candidate.id === taskId);
+    if (!task || !ACTIVE_TASK_STATUSES.has(task.status)) return;
+    if (abortConfirmTimer.current) clearTimeout(abortConfirmTimer.current);
+    if (pendingAbortId === taskId) {
+      setPendingAbortId(null);
+      void handleCancelTask(taskId);
+      return;
+    }
+    setPendingAbortId(taskId);
+    abortConfirmTimer.current = setTimeout(() => setPendingAbortId(null), ABORT_CONFIRM_WINDOW_MS);
+  };
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleAllVisible = () => {
+    const ids = tasks
+      .filter((task) => visibleTasks.some((visible) => visible.id === task.id))
+      .map((task) => task.id);
+    setSelectedIds((prev) => (ids.every((id) => prev.has(id)) ? new Set() : new Set(ids)));
+  };
+
+  const handleRetryFailed = async () => {
+    const targets = tasks.filter(
+      (task) => selectedIds.has(task.id) && (task.status === 'failed' || task.status === 'aborted')
+    );
+    if (targets.length === 0) return;
+    setBulkBusy(true);
+    let ok = 0;
+    let refused = 0;
+    let gone = 0;
+    const queue = [...targets];
+    const worker = async () => {
+      for (;;) {
+        const next = queue.shift();
+        if (!next) return;
+        try {
+          await retryTask(next.id);
+          ok += 1;
+        } catch (err: any) {
+          const status = err?.response?.status;
+          if (status === 404) gone += 1;
+          else refused += 1;
+        }
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+    setBulkNote(`${ok} retried · ${refused} refused · ${gone} gone`);
+    setBulkBusy(false);
+    setSelectedIds(new Set());
+    await loadExecutions();
+    onRefresh?.();
+  };
+
+  // Stop must pause the backlog origins before aborting live runs, or the evaluator re-queues
+  // every aborted item on its next probe.
+  const handleStopAndPause = async () => {
+    const live = tasks.filter(
+      (task) =>
+        selectedIds.has(task.id) &&
+        ['queued', 'claimed', 'running', 'executing'].includes(task.status)
+    );
+    if (live.length === 0) return;
+    setBulkBusy(true);
+    const originIds = Array.from(
+      new Set(live.map((task) => task.originId).filter((id): id is string => Boolean(id)))
+    );
+    let paused = 0;
+    if (originIds.length > 0) {
+      try {
+        const res = await bulkUpdateBacklog(originIds, 'pause');
+        paused = res.updated;
+      } catch {}
+    }
+    let aborted = 0;
+    for (const task of live) {
+      try {
+        await cancelTask(task.id);
+        aborted += 1;
+      } catch {}
+    }
+    setBulkNote(`${aborted} aborted · ${paused} backlog paused`);
+    setBulkBusy(false);
+    setSelectedIds(new Set());
+    await loadExecutions();
+    await loadBacklog();
+    onRefresh?.();
+  };
+
   const handleRetryTask = async (taskId: string) => {
-    setActionLoading(true);
+    markLoading(taskId);
     try {
       await retryTask(taskId);
       loadExecutions();
@@ -355,11 +439,10 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     } catch (err: any) {
       showNotification('error', `Retry failed: ${err?.message || String(err)}`);
     } finally {
-      setActionLoading(false);
+      clearLoading(taskId);
     }
   };
 
-  // --- Handlers: backlog ---
   const handleSyncGithub = async () => {
     setSyncingGithub(true);
     try {
@@ -419,21 +502,22 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     }
   };
 
-  const handleBacklogSaved = async (message: string) => {
-    await loadBacklog();
-    showNotification('success', message);
-  };
-
-  // --- Handlers: routines ---
   const handleToggleRoutineItem = async (routine: RoutineTaskRecord) => {
-    setRoutineActionId(routine.id);
+    const nextEnabled = !routine.enabled;
+    pendingRoutineToggles.current.set(routine.id, nextEnabled);
+    setRoutines((prev) =>
+      prev.map((r) => (r.id === routine.id ? { ...r, enabled: nextEnabled } : r))
+    );
     try {
-      await updateRoutine(routine.id, { enabled: !routine.enabled });
-      await loadRoutines();
+      const updated = await updateRoutine(routine.id, { enabled: nextEnabled });
+      pendingRoutineToggles.current.delete(routine.id);
+      setRoutines((prev) => prev.map((r) => (r.id === routine.id ? updated : r)));
     } catch (err: any) {
+      pendingRoutineToggles.current.delete(routine.id);
+      setRoutines((prev) =>
+        prev.map((r) => (r.id === routine.id ? { ...r, enabled: routine.enabled } : r))
+      );
       showNotification('error', `Failed to toggle routine: ${err?.message || String(err)}`);
-    } finally {
-      setRoutineActionId(null);
     }
   };
 
@@ -475,43 +559,48 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
     }
   };
 
-  const handleRoutineSaved = async (message: string) => {
-    await loadRoutines();
-    showNotification('success', message);
-  };
-
   const originLists: TaskOriginLists = {
     backlog: backlogInitialLoaded ? backlogTasks : null,
     routines: routinesInitialLoaded ? routines : null,
   };
 
   const renderOriginLink = (t: SwarmTask) => (
-    <TaskOriginLabel
-      task={t}
-      lists={originLists}
-      onOpen={(originId) => setTab('schedules', originId)}
-    />
+    <TaskOriginLabel task={t} lists={originLists} onOpen={focusCard} />
   );
 
   const repoLabel = (repositoryId: string): string =>
     repos.find((repo) => repo.id === repositoryId)?.name || repositoryId;
 
-  // lastTaskId is the server's pointer; the tier scan covers cards written before it existed.
   const latestRoutineRun = (routine: RoutineTaskRecord): SwarmTask | undefined =>
     (routine.lastTaskId ? tasks.find((t) => t.id === routine.lastTaskId) : undefined) ??
     tasks.find((t) => t.originId === routine.id && t.tier === 'routine');
 
-  const visibleTasks = tasks.filter((t) => filter === 'all' || t.status === filter);
+  const bucketLabel = STATUS_BUCKETS.find((entry) => entry.id === bucket)?.label ?? 'All';
+  const search = query.trim().toLowerCase();
+  const visibleTasks = tasks.filter((task) => {
+    if (!statusMatchesBucket(task.status, bucket)) return false;
+    if (!search) return true;
+    const haystack = [task.title, task.prompt, task.repositoryName, task.model];
+    if (String(task.taskNumber ?? '').includes(search)) return true;
+    return haystack.some((field) => (field ?? '').toLowerCase().includes(search));
+  });
+  const activeFilterLabel = search ? `${bucketLabel} \u00b7 "${query.trim()}"` : bucketLabel;
+  const executionRange =
+    visibleTasks.length === 0
+      ? `0 of ${totalTasks}`
+      : `1\u2013${visibleTasks.length} of ${totalTasks}`;
+  const clearFilters = () => {
+    setBucket('all');
+    setQuery('');
+  };
+
   const activeRuns = tasks.filter((t) => ACTIVE_TASK_STATUSES.has(t.status));
-  const scheduleCount = routines.length + backlogTasks.length;
-  const tabCount = (tab: TaskTab): number => (tab === 'schedules' ? scheduleCount : tasks.length);
 
   return (
     <div class="flex flex-col gap-5 2xl:gap-7">
-      {/* Toast Notification */}
       {notification && (
         <div
-          class={`fixed right-5 bottom-5 z-50 flex items-center gap-2 rounded-lg px-4 py-3 text-xs font-medium shadow-lg backdrop-blur-md sm:text-sm ${
+          class={`fixed right-5 bottom-5 z-50 flex items-center gap-2 rounded-lg px-4 py-3 text-xs font-medium backdrop-blur-md sm:text-sm ${
             notification.type === 'success'
               ? 'border border-pine-foam/30 bg-pine-surface/95 text-pine-foam'
               : 'border border-pine-love/30 bg-pine-surface/95 text-pine-love'
@@ -521,109 +610,131 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
         </div>
       )}
 
-      {/* Tabs row */}
-      <div class="flex flex-wrap items-center gap-3 border-b border-pine-highlight pb-4">
-        <div
-          role="tablist"
-          aria-label="Task management tabs"
-          class="flex rounded-lg border border-pine-highlight bg-pine-overlay/40 p-1"
+      <div class="flex flex-wrap items-center gap-2 border-b border-pine-highlight pb-4">
+        <button
+          type="button"
+          onClick={handleSyncGithub}
+          disabled={!githubSyncConfigured || syncingGithub}
+          class="flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay px-3.5 text-xs font-semibold text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-9 sm:text-sm"
+          title={
+            githubSyncConfigured
+              ? 'Pull open GitHub issues labelled for the backlog'
+              : GITHUB_SYNC_UNCONFIGURED_HINT
+          }
         >
-          {(Object.keys(TAB_LABELS) as TaskTab[]).map((tab) => (
-            <button
-              key={tab}
-              type="button"
-              role="tab"
-              aria-selected={activeTab === tab}
-              onClick={() => setTab(tab)}
-              class={`cursor-pointer rounded-md px-3 py-1.5 text-xs font-bold whitespace-nowrap uppercase transition-all sm:px-4 sm:text-sm ${
-                activeTab === tab
-                  ? 'bg-pine-iris text-pine-base shadow-xs'
-                  : 'text-pine-subtle hover:text-pine-text'
-              }`}
-            >
-              {TAB_LABELS[tab]} ({tabCount(tab)})
-            </button>
-          ))}
-        </div>
-
-        {onOpenDispatch && (
-          <button
-            type="button"
-            onClick={onOpenDispatch}
-            class="ml-auto flex cursor-pointer items-center gap-1.5 rounded-lg bg-pine-iris px-3.5 py-1.5 text-xs font-semibold text-pine-base shadow-xs transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:text-sm"
-            title="Create a run, backlog item or routine"
-          >
-            <Icon icon={faPlus} class="size-3.5" />
-            <span>New Task</span>
-          </button>
+          <Icon
+            icon={faCloudArrowDown}
+            class={`size-3.5 ${syncingGithub ? 'animate-pulse' : ''}`}
+          />
+          <span>{syncingGithub ? 'Pulling...' : 'Pull Issues'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onOpenComposer?.({})}
+          class="flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg bg-pine-iris px-3.5 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:min-h-9 sm:text-sm"
+          title="Create a run, backlog item or routine"
+        >
+          <Icon icon={faPlus} class="size-3.5" />
+          <span>New Task</span>
+        </button>
+        {!githubSyncConfigured && (
+          <span class="order-first w-full text-xs text-pine-subtle sm:w-auto">
+            {GITHUB_SYNC_UNCONFIGURED_HINT}
+          </span>
         )}
       </div>
 
-      {/* --- TAB 1: SCHEDULES & QUEUE --- */}
-      {activeTab === 'schedules' && (
-        <div class="flex flex-col gap-6">
-          <section aria-labelledby="active-runs-heading" class="flex flex-col gap-3">
-            <SectionHeader id="active-runs-heading" title="Active Runs" count={activeRuns.length} />
+      <div class="flex flex-col">
+        <section aria-labelledby="active-runs-heading" class="mt-6 flex flex-col first:mt-0">
+          <SectionHeader id="active-runs-heading" title="Active Runs" count={activeRuns.length} />
 
-            {activeRuns.length === 0 ? (
-              <EmptyCard>
-                No tasks queued or executing. Use the &apos;New Task&apos; button above to start a
-                run.
-              </EmptyCard>
-            ) : (
-              <div class={CARD_GRID}>
-                {activeRuns.map((run) => (
-                  <ActiveRunCard
-                    key={run.id}
-                    run={run}
-                    busy={actionLoading}
-                    noRunnerOnline={!runnerCoversRepo(runners, run.repositoryId)}
-                    onOpen={setSelectedTask}
-                    onAbort={handleCancelTask}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+          {activeRuns.length === 0 ? (
+            <EmptyCard>
+              No tasks queued or executing. Use the &apos;New Task&apos; button above to start a
+              run.
+            </EmptyCard>
+          ) : (
+            <div class={CARD_GRID}>
+              {activeRuns.map((run) => (
+                <ActiveRunCard
+                  key={run.id}
+                  run={run}
+                  busy={actionLoading.has(run.id)}
+                  noRunnerOnline={!runnerCoversRepo(runners, run.repositoryId)}
+                  onOpen={setSelectedTask}
+                  onAbort={handleCancelTask}
+                />
+              ))}
+            </div>
+          )}
+        </section>
 
-          <section aria-labelledby="backlog-heading" class="flex flex-col gap-3">
-            <SectionHeader id="backlog-heading" title="Backlog Queue" count={backlogTasks.length}>
-              <button
-                type="button"
-                onClick={handleSyncGithub}
-                disabled={syncingGithub}
-                class="flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-semibold text-pine-text transition-colors hover:bg-pine-highlight disabled:opacity-50 sm:text-sm"
-                title="Sync open GitHub issues tagged with backlog label"
-              >
-                <Icon icon={faSync} class={`size-3.5 ${syncingGithub ? 'animate-spin' : ''}`} />
-                <span>{syncingGithub ? 'Syncing...' : 'Sync GitHub'}</span>
-              </button>
-            </SectionHeader>
+        <section aria-labelledby="backlog-heading" class="mt-6 flex flex-col first:mt-0">
+          <SectionHeader id="backlog-heading" title="Backlog" count={backlogTasks.length} />
 
-            {backlogLoading && backlogTasks.length === 0 ? (
-              <EmptyCard>Loading backlog tasks...</EmptyCard>
-            ) : backlogTasks.length === 0 ? (
+          {backlogLoading && backlogTasks.length === 0 ? (
+            <EmptyCard>Loading backlog tasks...</EmptyCard>
+          ) : backlogTasks.length === 0 ? (
+            <EmptyCard>
+              {loadError
+                ? `Could not load backlog: ${loadError}`
+                : "No backlog work items queued. Create one with 'New Task' or pull them with 'Pull Issues'."}
+            </EmptyCard>
+          ) : (
+            <div class={CARD_GRID}>
+              {backlogTasks.map((item) => (
+                <BacklogCard
+                  key={item.id}
+                  item={item}
+                  repositoryLabel={repoLabel(item.repositoryId)}
+                  highlighted={highlightedId === item.id}
+                  busy={backlogActionId === item.id}
+                  confirmingDelete={pendingDelete === item.id}
+                  onDispatch={() => handleDispatchBacklog(item)}
+                  onEdit={() => onOpenComposer?.({ backlog: item })}
+                  onAskDelete={() => setPendingDelete(item.id)}
+                  onConfirmDelete={() => {
+                    setPendingDelete(null);
+                    void handleDeleteBacklog(item.id);
+                  }}
+                  onCancelDelete={() => setPendingDelete(null)}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {routinesEnabled && (
+          <section aria-labelledby="routines-heading" class="mt-6 flex flex-col first:mt-0">
+            <SectionHeader id="routines-heading" title="Routines" count={routines.length} />
+
+            {routinesLoading && routines.length === 0 ? (
+              <EmptyCard>Loading routine templates...</EmptyCard>
+            ) : routines.length === 0 ? (
               <EmptyCard>
                 {loadError
-                  ? `Could not load backlog: ${loadError}`
-                  : "No backlog work items queued. Create one with 'New Task' or click 'Sync GitHub'."}
+                  ? `Could not load routines: ${loadError}`
+                  : "No routines configured. Create one with 'New Task' to burn quota before weekly resets."}
               </EmptyCard>
             ) : (
               <div class={CARD_GRID}>
-                {backlogTasks.map((item) => (
-                  <BacklogCard
-                    key={item.id}
-                    item={item}
-                    repositoryLabel={repoLabel(item.repositoryId)}
-                    highlighted={highlightedId === item.id}
-                    busy={backlogActionId === item.id}
-                    confirmingDelete={pendingDelete === item.id}
-                    onDispatch={() => handleDispatchBacklog(item)}
-                    onEdit={() => setBacklogForm({ item })}
-                    onAskDelete={() => setPendingDelete(item.id)}
+                {routines.map((routine) => (
+                  <RoutineCard
+                    key={routine.id}
+                    routine={routine}
+                    repositoryLabel={repoLabel(routine.repositoryId)}
+                    lastTask={latestRoutineRun(routine)}
+                    highlighted={highlightedId === routine.id}
+                    busy={routineActionId === routine.id}
+                    confirmingDelete={pendingDelete === routine.id}
+                    onOpenTask={setSelectedTask}
+                    onToggle={() => handleToggleRoutineItem(routine)}
+                    onTrigger={() => handleTriggerRoutineNow(routine)}
+                    onEdit={() => onOpenComposer?.({ routine })}
+                    onAskDelete={() => setPendingDelete(routine.id)}
                     onConfirmDelete={() => {
                       setPendingDelete(null);
-                      void handleDeleteBacklog(item.id);
+                      void handleDeleteRoutine(routine.id);
                     }}
                     onCancelDelete={() => setPendingDelete(null)}
                   />
@@ -631,130 +742,145 @@ export const TasksView = ({ onRefresh, onOpenDispatch }: TasksViewProps = {}) =>
               </div>
             )}
           </section>
+        )}
 
-          {routinesEnabled && (
-            <section aria-labelledby="routines-heading" class="flex flex-col gap-3">
-              <SectionHeader
-                id="routines-heading"
-                title="Maintenance Routines"
-                count={routines.length}
+        <section aria-labelledby="executions-heading" class="mt-6 flex flex-col first:mt-0">
+          <SectionHeader
+            id="executions-heading"
+            title="Execution History"
+            count={totalTasks || tasks.length}
+          />
+
+          <div class="flex flex-col gap-4">
+            <div class="flex flex-wrap items-center gap-2">
+              <div
+                role="group"
+                aria-label="Filter executions by status"
+                class="flex max-w-full flex-wrap gap-1 rounded-lg border border-pine-highlight bg-pine-surface p-1"
+              >
+                {STATUS_BUCKETS.map((entry) => (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    aria-pressed={bucket === entry.id}
+                    onClick={() => setBucket(entry.id)}
+                    class={`cursor-pointer rounded-md px-3 py-1 text-xs font-semibold whitespace-nowrap uppercase transition-colors ${
+                      bucket === entry.id
+                        ? 'bg-pine-iris text-pine-base'
+                        : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
+                    }`}
+                  >
+                    {entry.label}
+                  </button>
+                ))}
+              </div>
+
+              <input
+                id="task-filter-input"
+                type="search"
+                value={query}
+                onInput={(event) => setQuery(event.currentTarget.value)}
+                placeholder="Filter by title, repo, model or #"
+                aria-label="Filter executions"
+                class="h-9 min-w-0 flex-1 rounded-lg border border-pine-highlight bg-pine-surface px-3 text-xs text-pine-text placeholder:text-pine-muted focus-visible:border-pine-iris focus-visible:ring-1 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:max-w-xs"
               />
 
-              {routinesLoading && routines.length === 0 ? (
-                <EmptyCard>Loading routine templates...</EmptyCard>
-              ) : routines.length === 0 ? (
-                <EmptyCard>
-                  {loadError
-                    ? `Could not load routines: ${loadError}`
-                    : "No routines configured. Create one with 'New Task' to burn quota before weekly resets."}
-                </EmptyCard>
-              ) : (
-                <div class={CARD_GRID}>
-                  {routines.map((routine) => (
-                    <RoutineCard
-                      key={routine.id}
-                      routine={routine}
-                      repositoryLabel={repoLabel(routine.repositoryId)}
-                      lastTask={latestRoutineRun(routine)}
-                      highlighted={highlightedId === routine.id}
-                      busy={routineActionId === routine.id}
-                      confirmingDelete={pendingDelete === routine.id}
-                      onOpenTask={setSelectedTask}
-                      onToggle={() => handleToggleRoutineItem(routine)}
-                      onTrigger={() => handleTriggerRoutineNow(routine)}
-                      onEdit={() => setRoutineForm({ routine })}
-                      onAskDelete={() => setPendingDelete(routine.id)}
-                      onConfirmDelete={() => {
-                        setPendingDelete(null);
-                        void handleDeleteRoutine(routine.id);
-                      }}
-                      onCancelDelete={() => setPendingDelete(null)}
-                    />
-                  ))}
+              <span class="ml-auto font-mono text-xs text-pine-subtle tabular-nums">
+                {executionRange}
+              </span>
+            </div>
+
+            <div class="hidden lg:block">
+              <BulkActionBar
+                selectedCount={selectedIds.size}
+                busy={bulkBusy}
+                note={bulkNote}
+                onStopAndPause={handleStopAndPause}
+                onRetryFailed={handleRetryFailed}
+                onClear={() => {
+                  setBulkNote(null);
+                  setSelectedIds(new Set());
+                }}
+              />
+
+              <ExecutionTable
+                tasks={visibleTasks}
+                loadError={loadError}
+                activeTaskId={activeTaskId}
+                onActiveTaskId={setActiveTaskId}
+                onOpen={setSelectedTask}
+                onAbort={requestAbort}
+                activeFilterLabel={activeFilterLabel}
+                onClearFilters={clearFilters}
+                pendingAbortId={pendingAbortId}
+                selectable
+                selectedIds={selectedIds}
+                onToggleSelected={toggleSelected}
+                onToggleAll={toggleAllVisible}
+                allSelected={
+                  visibleTasks.length > 0 && visibleTasks.every((task) => selectedIds.has(task.id))
+                }
+              />
+            </div>
+
+            <div class="flex flex-col gap-2 lg:hidden">
+              {visibleTasks.map((task) => (
+                <MobileTaskCard
+                  key={task.id}
+                  task={task}
+                  busy={actionLoading.has(task.id)}
+                  abortArmed={pendingAbortId === task.id}
+                  onOpen={setSelectedTask}
+                  onAbort={requestAbort}
+                  onRetry={handleRetryTask}
+                  selectable
+                  selectedIds={selectedIds}
+                  onToggleSelected={toggleSelected}
+                />
+              ))}
+
+              {visibleTasks.length === 0 && (
+                <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 text-center text-xs text-pine-subtle">
+                  <p>
+                    {loadError
+                      ? `Could not load executions: ${loadError}`
+                      : `No executions match ${activeFilterLabel}.`}
+                  </p>
+                  {!loadError && (
+                    <button
+                      type="button"
+                      onClick={clearFilters}
+                      class="mt-2 min-h-11 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 text-xs font-semibold text-pine-text hover:bg-pine-highlight"
+                    >
+                      Clear filters
+                    </button>
+                  )}
                 </div>
               )}
-            </section>
-          )}
-        </div>
-      )}
-
-      {/* --- TAB 2: EXECUTION HISTORY --- */}
-      {activeTab === 'executions' && (
-        <div class="flex flex-col gap-4">
-          <div
-            role="group"
-            aria-label="Filter executions by status"
-            class="flex max-w-full flex-wrap gap-1.5 rounded-lg border border-pine-highlight bg-pine-surface p-1"
-          >
-            {STATUS_FILTERS.map((statusFilter) => (
-              <button
-                key={statusFilter}
-                type="button"
-                aria-pressed={filter === statusFilter}
-                onClick={() => setFilter(statusFilter)}
-                class={`cursor-pointer rounded-md px-3 py-1 text-xs font-semibold whitespace-nowrap uppercase transition-colors ${
-                  filter === statusFilter
-                    ? 'bg-pine-iris text-pine-base shadow-xs'
-                    : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
-                }`}
-              >
-                {statusFilter}
-              </button>
-            ))}
+            </div>
           </div>
+        </section>
+      </div>
 
-          <ExecutionTable
-            tasks={visibleTasks}
-            loadError={loadError}
-            actionLoading={actionLoading}
-            onOpen={setSelectedTask}
+      {selectedTask && (
+        <SlideOverDrawer
+          token={selectedTask.id}
+          label="Execution"
+          ariaLabel={
+            selectedTask.title || `Task #${selectedTask.taskNumber ?? 0} execution details`
+          }
+          width="inspector"
+          onClosed={closeInspector}
+        >
+          <ExecutionInspectorContent
+            task={selectedTask}
             onAbort={handleCancelTask}
             onRetry={handleRetryTask}
+            actionLoading={actionLoading.has(selectedTask.id)}
+            noRunnerOnline={!runnerCoversRepo(runners, selectedTask.repositoryId)}
             renderOrigin={renderOriginLink}
           />
-        </div>
-      )}
-
-      {/* --- MODAL: EXECUTION DETAIL INSPECTOR (mounted only while a task is selected) --- */}
-      {selectedTask && (
-        <ExecutionInspectorModal
-          task={selectedTask}
-          onClose={closeInspector}
-          onAbort={handleCancelTask}
-          onRetry={handleRetryTask}
-          actionLoading={actionLoading}
-          noRunnerOnline={!runnerCoversRepo(runners, selectedTask.repositoryId)}
-          renderOrigin={renderOriginLink}
-        />
-      )}
-
-      {/* --- MODAL: CREATE / EDIT ROUTINE --- */}
-      {routineForm && (
-        <RoutineFormModal
-          routine={routineForm.routine}
-          repositories={repos}
-          defaultRepoId={defaultRepoId}
-          defaultModel={defaultModel}
-          defaultEffort={defaultEffort}
-          defaultMinHeadroom={defaultMinHeadroom}
-          onClose={() => setRoutineForm(null)}
-          onSaved={handleRoutineSaved}
-          notify={showNotification}
-        />
-      )}
-
-      {/* --- MODAL: CREATE / EDIT BACKLOG WORK ITEM --- */}
-      {backlogForm && (
-        <BacklogFormModal
-          item={backlogForm.item}
-          repositories={repos}
-          defaultRepoId={defaultRepoId}
-          defaultModel={defaultModel}
-          defaultEffort={defaultEffort}
-          onClose={() => setBacklogForm(null)}
-          onSaved={handleBacklogSaved}
-          notify={showNotification}
-        />
+        </SlideOverDrawer>
       )}
     </div>
   );

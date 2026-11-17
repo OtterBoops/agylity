@@ -5,7 +5,6 @@ import { CompositeNotifier } from './adapters/composite.js';
 
 export { CompositeNotifier } from './adapters/composite.js';
 
-/** Channels resolve from the plural form first; blanks, 'none' and duplicates are dropped. */
 const resolveChannels = (config: ResolvedConfig): string[] => {
   const raw =
     Array.isArray(config.notificationChannels) && config.notificationChannels.length > 0
@@ -19,7 +18,6 @@ const resolveChannels = (config: ResolvedConfig): string[] => {
   );
 };
 
-/** One instantiation table, so a new adapter is registered in a single place. */
 const instantiateChannels = async (
   channels: string[],
   config: ResolvedConfig,
@@ -55,7 +53,6 @@ const instantiateChannels = async (
   return notifiers;
 };
 
-// Inactive channels must never import discord.js into memory; only 'discord' may.
 export const createNotifier = async (
   channelOrConfig: string | ResolvedConfig,
   configOrOptions?: ResolvedConfig | NotifierOptions,
@@ -108,7 +105,6 @@ export const createDaemonNotifier = async (
   config: ResolvedConfig,
   options?: NotifierOptions
 ): Promise<CompositeNotifier> => {
-  // A daemon must survive a channel typo, so an unknown channel is skipped rather than fatal.
   const notifiers = await instantiateChannels(resolveChannels(config), config, options, 'skip');
   return new CompositeNotifier(notifiers, options, config);
 };

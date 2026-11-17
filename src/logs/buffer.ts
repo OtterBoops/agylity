@@ -21,17 +21,14 @@ export interface LogEntry {
 const PATTERNS: RegExp[] = [
   // Discord bot tokens: <id>.<ts>.<hmac>
   /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6,7}\.[A-Za-z\d_-]{27,}/g,
-  // key=value / key: value pairs for sensitive names
   /((?:token|secret|password|csrf[_-]?token|x-codeium-csrf-token)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
 ];
 
-// Masks known secret values and common token shapes before text is retained or served.
 export const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
   let out = text;
   for (const s of secrets) {
     if (!s) continue;
     out = out.split(s).join('[redacted]');
-    // A secret inside a URL appears percent-encoded, so match that form too.
     const encoded = encodeURIComponent(s);
     if (encoded !== s) out = out.split(encoded).join('[redacted]');
   }
@@ -40,7 +37,7 @@ export const redact = (text: string, secrets: Iterable<string | undefined> = [])
   return out;
 };
 
-// Bounded in-memory ring buffer of log lines. Lost on restart by design.
+// Bounded in-memory ring buffer; entries are lost on restart by design.
 export class LogBuffer {
   private entries: LogEntry[] = [];
   private nextId = 1;
@@ -64,12 +61,10 @@ export class LogBuffer {
     return entry;
   }
 
-  /** Redacts arbitrary text (e.g. console output) using this buffer's secret set. */
   redactText(text: string): string {
     return redact(text, this.secretsProvider());
   }
 
-  /** Entries with id greater than `sinceId`, optionally filtered to a minimum level. */
   since(sinceId = 0, minLevel: LogLevel = 'debug', limit = 500): LogEntry[] {
     if (limit <= 0) return [];
     return this.entries
@@ -90,7 +85,6 @@ export class LogBuffer {
   }
 }
 
-// Tees console.log/info/warn/error/debug into the buffer while still printing normally.
 export const installConsoleTee = (buffer: LogBuffer): (() => void) => {
   const methods: Array<[keyof Console, LogLevel]> = [
     ['log', 'info'],
@@ -108,15 +102,11 @@ export const installConsoleTee = (buffer: LogBuffer): (() => void) => {
       let output: unknown[] = args;
       try {
         const msg = format(...args);
-        // Suppress Node runtime experimental feature warnings from polluting UI log buffer as errors
         if (!msg.includes('ExperimentalWarning: SQLite is an experimental feature')) {
           buffer.push(level, msg);
         }
-        // Print the redacted form so stdout matches the buffered copy.
         output = [buffer.redactText(msg)];
-      } catch {
-        // never let logging break the process
-      }
+      } catch {}
       original(...output);
     };
   }

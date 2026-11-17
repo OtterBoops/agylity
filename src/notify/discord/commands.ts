@@ -4,14 +4,12 @@ import type { ResolvedConfig } from '../../config/schema.js';
 import { ALL_EFFORTS } from '../../coordinator/models.js';
 import { logger } from '../../logs/logger.js';
 
-// Task prompt validation schema enforcing 1-4000 character boundaries.
 export const TaskPromptSchema = z
   .string()
   .trim()
   .min(1, 'Prompt is required')
   .max(4000, 'Prompt exceeds 4000 character limit');
 
-/** Slash command payloads registered against the Discord application (guild-scoped when configured). */
 export const buildSlashCommandDefinitions = (): unknown[] => [
   new SlashCommandBuilder()
     .setName('quota')
@@ -42,13 +40,11 @@ export const buildSlashCommandDefinitions = (): unknown[] => [
         .setName('effort')
         .setDescription('Reasoning effort')
         .setRequired(false)
-        // Derived from the shared effort list so a new effort is offered here too.
         .addChoices(...ALL_EFFORTS.map((effort) => ({ name: effort, value: effort })))
     )
     .toJSON(),
 ];
 
-/** Registers the /quota and /dispatch application commands; no-op without token + client ID. */
 export const registerSlashCommands = async (config: ResolvedConfig): Promise<void> => {
   if (!config.discordToken || !config.discordClientId) return;
   try {

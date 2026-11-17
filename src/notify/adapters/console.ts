@@ -13,7 +13,6 @@ import { FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
 
 const BOX_MIN_WIDTH = 70;
 
-// Border spans the inner width, so rows must pad to it and not past it.
 const printAsciiBox = (lines: string[]): void => {
   const width = Math.max(BOX_MIN_WIDTH, ...lines.map((line) => line.length + 2));
   const border = '─'.repeat(width);

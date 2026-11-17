@@ -25,7 +25,6 @@ const normalizeKey = (key: string): keyof AppConfig | string => {
   return ENV_TO_CONFIG_KEY[key] ?? key;
 };
 
-// A legacy row may live under the env spelling (e.g. WEB_UI_PORT) while reads use the config key.
 const envSpellingOf = (key: keyof AppConfig | string): string | undefined =>
   CONFIG_KEY_ENV_NAMES[key as keyof AppConfig];
 
@@ -70,7 +69,7 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
         overrides[key] ?? this.envConfig[key] ?? this.defaults[key];
     }
 
-    // Synchronize notificationChannels and notificationChannel
+    // The plural wins over the singular, and either one populates both: the daemon reads one, the UI the other.
     if (overrides.notificationChannels !== undefined) {
       resolved.notificationChannels = overrides.notificationChannels;
       resolved.notificationChannel = resolved.notificationChannels[0] ?? 'none';
@@ -97,7 +96,6 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public getSources(): Record<string, 'override' | 'env' | 'default'> {
     const overrides = this.getAllOverrides();
     const sources: Record<string, 'override' | 'env' | 'default'> = {};
-    // Both channel keys are derived from the same pair, so they share one origin.
     const channelSource = (): 'override' | 'env' | 'default' => {
       if (
         overrides.notificationChannels !== undefined ||
@@ -130,13 +128,10 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public get<T = unknown>(key: string): T | undefined {
     const normKey = normalizeKey(key) as keyof AppConfig;
 
-    // resolveConfig() derives these from each other, so reading either raw would disagree with
-    // the resolved config whenever only one spelling is set.
     if (normKey === 'notificationChannel' || normKey === 'notificationChannels') {
       return this.resolveConfig()[normKey] as unknown as T;
     }
 
-    // Level 1: SQLite (canonical key first, then the env spelling a legacy row may use)
     const envSpelling = envSpellingOf(normKey);
     const sqliteVal =
       this.database.get(normKey as string) ??
@@ -146,13 +141,11 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
       return sqliteVal as T;
     }
 
-    // Level 2: Environment Variables
     const envVal = this.envConfig[normKey];
     if (envVal !== undefined && envVal !== null) {
       return envVal as unknown as T;
     }
 
-    // Level 3: Built-in Defaults
     if (normKey in this.defaults) {
       return this.defaults[normKey] as unknown as T;
     }
@@ -164,7 +157,6 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     const normKey = normalizeKey(key as string);
     const prev = this.get(normKey as string);
     this.database.set(normKey as string, value);
-    // Drop a legacy row under the env spelling so it cannot shadow or duplicate this override.
     const envSpelling = envSpellingOf(normKey);
     if (envSpelling && envSpelling !== normKey) {
       this.database.delete(envSpelling);
@@ -188,7 +180,6 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
     const normKey = normalizeKey(key as string);
     const prev = this.get(normKey as string);
     this.database.delete(normKey as string);
-    // Both stored spellings must go, or the override reappears on the next read.
     const envSpelling = envSpellingOf(normKey);
     if (envSpelling && envSpelling !== normKey) {
       this.database.delete(envSpelling);

@@ -1,6 +1,5 @@
 import { z } from 'zod';
-
-// Connect-RPC Language Server Schemas
+import type { QuotaFamily } from '../shared/models.js';
 
 export const QuotaInfoSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
@@ -40,9 +39,7 @@ export const LanguageServerResponseSchema = z.object({
   defaultOverrideModelConfig: z.record(z.string(), z.unknown()).optional(),
 });
 
-// Quota & Sentry Types
-
-export type QuotaFamily = 'claude' | 'gemini-argon' | 'gemini-flash';
+export type { QuotaFamily };
 
 export const QuotaBucketSchema = z.object({
   bucketId: z.string(),
@@ -61,19 +58,15 @@ export const QuotaSnapshotSchema = z.object({
   poolId: z.string(),
   family: z.enum(['claude', 'gemini-argon', 'gemini-flash']),
   displayName: z.string(),
-  // Primary evaluation target (weekly quota)
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
   hoursUntilReset: z.number().min(0),
   models: z.array(z.string()),
-  // AI overcharge / flex credit protection
   overageEnabled: z.boolean().optional(),
   remainingCredits: z.number().nullable().optional(),
-  // Dual quota buckets
   weekly: QuotaBucketSchema.optional(),
   shortTerm: QuotaBucketSchema.optional(),
   buckets: z.array(QuotaBucketSchema).optional(),
-  // Optional: absent until a pool has enough samples to project a burn rate
   burnProjection: z
     .object({
       burnRatePerHour: z.number(),
@@ -84,8 +77,6 @@ export const QuotaSnapshotSchema = z.object({
 });
 
 export type QuotaSnapshot = z.infer<typeof QuotaSnapshotSchema>;
-
-// RetrieveUserQuotaSummary RPC Schemas
 
 export const RawQuotaBucketSchema = z.object({
   bucketId: z.string(),
@@ -121,8 +112,6 @@ export type RetrieveUserQuotaSummaryResponse = z.infer<
   typeof RetrieveUserQuotaSummaryResponseSchema
 >;
 
-// GetUserStatus RPC Schemas (authoritative source of plan / overage signals)
-
 export const UserPlanInfoSchema = z.object({
   teamsTier: z.string().optional(),
   planName: z.string().optional(),
@@ -146,7 +135,6 @@ export const GetUserStatusResponseSchema = z.object({
 
 export type GetUserStatusResponse = z.infer<typeof GetUserStatusResponseSchema>;
 
-// Derives whether paid overage is enabled from GetUserStatus planInfo.
 export const deriveOverageEnabled = (
   status: GetUserStatusResponse | null | undefined
 ): boolean | undefined => {
@@ -172,8 +160,6 @@ export interface QuotaClient {
   updateConfig?(config: Partial<Record<string, unknown>>): void;
 }
 
-// Helpers & Aggregation
-
 export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date.now()): number => {
   const resetEpoch = new Date(resetTime).getTime();
   if (Number.isNaN(resetEpoch)) return 0;
@@ -183,9 +169,6 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
 };
 
-// Burn-rate Projection
-
-/** One quota observation inside a single reset cycle. */
 export interface BurnSample {
   at: string;
   remainingFraction: number;
@@ -198,7 +181,6 @@ export interface QuotaBurnProjection {
   hoursUntilFloor: number | null;
 }
 
-/** The floor a pool should not be projected through. */
 export const BURN_FLOOR_PERCENT = 10;
 
 /** Two observations closer than this cannot separate signal from probe jitter. */
@@ -213,7 +195,7 @@ export const computeBurnProjection = (input: {
   floorPercent?: number;
 }): QuotaBurnProjection | undefined => {
   const nowMs = input.nowMs ?? Date.now();
-  // Samples from an earlier cycle describe a different pool balance, so they are excluded.
+  // Samples from an earlier cycle describe a different pool balance and are excluded.
   const cycle = (input.samples ?? []).filter((s) => s.resetTime === input.resetTime);
   if (cycle.length < 2) return undefined;
 
@@ -246,17 +228,13 @@ export const computeBurnProjection = (input: {
   };
 };
 
-/** Canonical pool ordering, shared by every aggregator. */
 export const FAMILY_ORDER: Record<QuotaFamily, number> = {
   'gemini-flash': 0,
   'gemini-argon': 1,
   claude: 2,
 };
 
-/**
- * Accepted pool shorthands, in one place so every resolver agrees on them. A prototype-free table
- * keeps an arbitrary state-file key such as `constructor` from resolving to an inherited member.
- */
+// Prototype-free table: an arbitrary state-file key such as `constructor` must not resolve to an inherited member.
 export const FAMILY_ALIASES: Record<string, QuotaFamily> = Object.assign(Object.create(null), {
   'gemini-argon': 'gemini-argon',
   argon: 'gemini-argon',
@@ -267,21 +245,18 @@ export const FAMILY_ALIASES: Record<string, QuotaFamily> = Object.assign(Object.
   '3p': 'claude',
 } as Record<string, QuotaFamily>);
 
-/** User-facing pool names, so no resolver carries its own copy. */
 export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
-  'gemini-flash': 'Gemini Flash',
+  'gemini-flash': 'Gemini Hydrogen',
   'gemini-argon': 'Gemini Argon',
   claude: 'Claude and GPT models',
 };
 
-/** Fallback member models per pool, used when the API supplies none. */
 export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
-  'gemini-flash': ['Gemini 3.8 Flash', 'Gemini 4 Hydrogen'],
+  'gemini-flash': ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash'],
   'gemini-argon': ['Gemini 4 Argon'],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
 };
 
-/** Credits and overage travel together; each aggregator supplies its own overage fallback. */
 const resolveCredits = (
   extraCredits: { remainingCredits?: number | null; overageEnabled?: boolean } | undefined,
   overageFallback: boolean | undefined
@@ -290,7 +265,6 @@ const resolveCredits = (
   overageEnabled: extraCredits?.overageEnabled ?? overageFallback,
 });
 
-/** Single place that knows the QuotaSnapshot shape; every aggregator funnels through it. */
 export const toSnapshot = (input: {
   family: QuotaFamily;
   remainingFraction: number;
@@ -338,14 +312,12 @@ export const resolveModelFamily = (config: {
     return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
-  // Hydrogen ships in the Gemini Flash pool. Matched before the flash branch so a
-  // 'gemini-4-hydrogen-*' codename resolves without a pool of its own.
+  // Hydrogen ships in the flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
   if (mid.includes('hydrogen') || lbl.includes('hydrogen')) {
     return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
   }
 
-  // No bare 'pro' branch: 'gemini-pro-orchestrator-g1-pro' is NOT a Flash model, so a
-  // substring match there would charge the wrong pool's headroom.
+  // No bare 'pro' branch: `gemini-pro-orchestrator-g1-pro` is not a Flash model, so a substring match would charge the wrong pool.
   if (mid.includes('flash') || lbl.includes('flash')) {
     return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
   }
@@ -366,8 +338,6 @@ export const resolveModelFamily = (config: {
   return null;
 };
 
-// Determines canonical family and defaults from a RetrieveUserQuotaSummary group name.
-/** Stable per-group pool suffix: a pool id is a state key, so it must not drift between polls. */
 const poolIdSlug = (name: string): string => {
   const slug = name
     .toLowerCase()
@@ -408,17 +378,15 @@ export const resolveGroupFamily = (
   return null;
 };
 
-// Aggregates RetrieveUserQuotaSummary Connect-RPC response into canonical QuotaSnapshot pools.
 export const aggregateUserQuotaSummary = (
   summary: RetrieveUserQuotaSummaryResponse,
   nowMs: number = Date.now(),
   extraCredits?: { remainingCredits?: number | null; overageEnabled?: boolean }
 ): QuotaSnapshot[] => {
   const result: QuotaSnapshot[] = [];
-  // A family can arrive as several groups; each needs its own pool id or the stored deadline
-  // flip-flops between them on every poll.
+  // A family arriving as several quota groups needs one pool id per group, or the stored reset deadline flip-flops between them.
   const usedPoolIds = new Set<string>();
-  // Overage stays undefined when no signal is available so "unknown" is not reported as disabled.
+  // Overage stays undefined when no signal is available, so "unknown" is not reported as "disabled".
   const { remainingCredits, overageEnabled } = resolveCredits(
     extraCredits,
     summary.response.overageInfo?.enabled ?? summary.response.overage_info?.enabled
@@ -428,7 +396,6 @@ export const aggregateUserQuotaSummary = (
     const resolved = resolveGroupFamily(group.displayName);
     if (!resolved) continue;
 
-    // Locate raw weekly bucket first to serve as resetTime fallback for disabled shortTerm buckets
     const rawWeekly =
       (group.buckets || []).find(
         (b) =>
@@ -455,7 +422,6 @@ export const aggregateUserQuotaSummary = (
       };
     });
 
-    // Weekly bucket is the primary evaluation target
     const weeklyBucket =
       bucketsWithHours.find(
         (b) =>
@@ -472,8 +438,6 @@ export const aggregateUserQuotaSummary = (
         b.displayName.toLowerCase().includes('five hour')
     );
 
-    // Google's group description carries a stale generic 'Gemini Flash, Gemini Pro' line, so the
-    // canonical per-family list is used and the live catalog supplies labels at the API layer.
     const groupModels = resolved.defaultModels;
 
     if (weeklyBucket) {
@@ -494,7 +458,6 @@ export const aggregateUserQuotaSummary = (
           family: resolved.family,
           poolId,
           displayName: poolId === basePoolId ? undefined : group.displayName,
-          // The weekly limit is the primary eval target
           remainingFraction: weeklyBucket.remainingFraction,
           resetTime: weeklyBucket.resetTime || '',
           hoursUntilReset: weeklyBucket.hoursUntilReset ?? 0,
@@ -512,8 +475,6 @@ export const aggregateUserQuotaSummary = (
   return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
 };
 
-// Attribute an unattributable codename to a pool by exact quota telemetry match. Ambiguous
-// telemetry (several pools reporting the same window) yields null rather than a guess.
 const inferFamilyFromQuotaInfo = (
   quotaInfo: { remainingFraction: number; resetTime: string },
   pools: Iterable<{ family: QuotaFamily; remainingFraction: number; resetTime: string }>
@@ -530,7 +491,6 @@ const inferFamilyFromQuotaInfo = (
   return matches.length === 1 ? matches[0]! : null;
 };
 
-// Aggregates raw language server model configs into canonical QuotaSnapshot pools.
 export const aggregateQuotaPools = (
   configs: LanguageServerModelConfig[],
   nowMs: number = Date.now(),
@@ -571,7 +531,6 @@ export const aggregateQuotaPools = (
     } else {
       const existing = poolMap.get(family)!;
       existing.models.add(modelLabel);
-      // If resetTime is earlier or remainingFraction is strictly known, maintain consistent info
       if (
         config.quotaInfo.resetTime &&
         (!existing.resetTime || config.quotaInfo.resetTime < existing.resetTime)
@@ -579,8 +538,6 @@ export const aggregateQuotaPools = (
         existing.resetTime = config.quotaInfo.resetTime;
       }
       if (typeof config.quotaInfo.remainingFraction === 'number') {
-        // In the language server all models in the same pool report equal remainingFraction.
-        // We use Math.min to be conservative if any drift occurs.
         existing.remainingFraction = Math.min(
           existing.remainingFraction,
           config.quotaInfo.remainingFraction
@@ -591,8 +548,6 @@ export const aggregateQuotaPools = (
 
   const { remainingCredits, overageEnabled } = resolveCredits(extraCredits, false);
 
-  // A codename the family resolver does not know still carries quotaInfo, so attribute it to the
-  // pool whose telemetry it matches exactly rather than dropping it from that pool's model list.
   for (const orphan of orphans) {
     const inferred = inferFamilyFromQuotaInfo(orphan.quotaInfo!, poolMap.values());
     if (!inferred) continue;
@@ -647,9 +602,7 @@ export const snapshotsFromSentryState = (
   const snapshots: QuotaSnapshot[] = [];
   for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
     const rawId = poolId.toLowerCase().trim();
-    // A qualified id such as `gemini-flash:gemini-pro` carries its family as the prefix.
     const family = FAMILY_ALIASES[rawId] ?? FAMILY_ALIASES[rawId.split(':')[0] ?? ''];
-    // An unknown pool id must not be reported as another pool's headroom.
     if (!family) continue;
 
     const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
@@ -673,7 +626,6 @@ export const snapshotsFromSentryState = (
       buckets: [weeklyBucket],
     });
 
-    // A pool without enough current-cycle samples has no projection at all.
     const burnProjection = computeBurnProjection({
       samples: pool.samples,
       resetTime: pool.resetTime,

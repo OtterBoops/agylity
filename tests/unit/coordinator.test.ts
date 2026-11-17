@@ -44,8 +44,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(resolveConcreteModelId('auto', 'gemini-4-argon'), 'gemini-4-argon');
       assert.equal(resolveConcreteModelId('claude-opus-5-5', 'gemini-4-argon'), 'claude-opus-5-5');
       assert.equal(resolveConcreteModelId('claude', 'gemini-4-argon'), 'claude-sonnet-5-5');
-      assert.equal(resolveConcreteModelId('gemini-flash', 'gemini-4-argon'), 'gemini-3.8-flash');
-      // Hydrogen is in the bundled fallback but must not displace the flash pool default.
+      assert.equal(resolveConcreteModelId('gemini-flash', 'gemini-4-argon'), 'gemini-4-hydrogen');
+      // Hydrogen is now the flash pool default; its xhigh suffix still collapses to the base id.
       assert.equal(
         resolveConcreteModelId('gemini-4-hydrogen-xhigh', 'gemini-4-argon'),
         'gemini-4-hydrogen'
@@ -55,7 +55,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
     it('resolves a shorthand configured default to a concrete model instead of passing it through', () => {
       // The configured default is user input too: `agy --model claude` is not a model id.
-      assert.equal(resolveConcreteModelId(undefined, 'gemini-flash'), 'gemini-3.8-flash');
+      assert.equal(resolveConcreteModelId(undefined, 'gemini-flash'), 'gemini-4-hydrogen');
       assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
       assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
       assert.equal(resolveConcreteModelId('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen');
@@ -207,13 +207,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           prompt: 'First task',
           scheduleMode: 'immediate',
-          model: 'gemini-3.8-flash-high',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
         });
         const t2 = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Second task',
           scheduleMode: 'immediate',
-          model: 'gemini-4-argon-high',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
 
         // Worker claims first task
@@ -259,7 +259,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             repositoryName: 'agylity',
             prompt,
             scheduleMode: 'immediate',
-            model: 'gemini-4-argon-high',
+            cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           });
         }
 
@@ -269,6 +269,119 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // NaN must not reach SQL either: it falls back to the default page size.
         const fallback = queue.listTasks({ limit: Number.NaN });
         assert.equal(fallback.length, 3);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('searches title, repository and origin title only, and treats % as a literal', () => {
+      const { dir, cleanup } = makeTempDir('orch_list_search_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const migrated = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Quarterly migration',
+          prompt: 'move the schema',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.enqueue({
+          repositoryName: 'Nebula',
+          title: 'Chart cleanup',
+          // The only occurrence of "quarterly" for this row is inside the prompt.
+          prompt: 'quarterly prompt-only term',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        const percentRow = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Latency 99% fixup',
+          prompt: 'investigate p99',
+          originTitle: 'Issue about zebras',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+
+        // Title match. The second row carries the term in its prompt and must not surface.
+        const byTitle = queue.listTasks({ q: 'quarterly' });
+        assert.deepEqual(
+          byTitle.map((t) => t.title),
+          ['Quarterly migration']
+        );
+        assert.equal(queue.countTasks({ q: 'quarterly' }), 1);
+
+        // Repository name, matched case-insensitively.
+        assert.deepEqual(
+          queue.listTasks({ q: 'NEBULA' }).map((t) => t.title),
+          ['Chart cleanup']
+        );
+
+        // Origin title is searchable; the prompt is not.
+        assert.deepEqual(
+          queue.listTasks({ q: 'zebras' }).map((t) => t.id),
+          [percentRow.id]
+        );
+        assert.equal(queue.listTasks({ q: 'zebras' }).length, 1);
+        assert.equal(queue.listTasks({ q: 'prompt-only' }).length, 0);
+
+        // An unescaped `%` would match every row; the literal must match only the row containing it.
+        const percent = queue.listTasks({ q: '%' });
+        assert.deepEqual(
+          percent.map((t) => t.title),
+          ['Latency 99% fixup']
+        );
+        assert.equal(queue.countTasks({ q: '%' }), 1);
+        // `_` is the other LIKE wildcard and must be escaped the same way.
+        assert.equal(queue.listTasks({ q: '_' }).length, 0);
+
+        // taskNumber is an exact row match, not a pattern.
+        assert.deepEqual(
+          queue.listTasks({ taskNumber: migrated.taskNumber }).map((t) => t.id),
+          [migrated.id]
+        );
+        assert.equal(queue.countTasks({ taskNumber: migrated.taskNumber }), 1);
+        // A non-finite number is ignored rather than coerced to a task_number of 0.
+        assert.equal(queue.listTasks({ taskNumber: Number.NaN }).length, 3);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('pages with offset while countTasks keeps the full match count', () => {
+      const { dir, cleanup } = makeTempDir('orch_list_offset_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        for (const title of ['Alpha', 'Bravo', 'Charlie', 'Delta']) {
+          queue.enqueue({
+            repositoryName: 'agylity',
+            title: `Searchable ${title}`,
+            prompt: `body ${title}`,
+            cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+          });
+        }
+
+        const full = queue.listTasks({ q: 'Searchable' });
+        assert.equal(full.length, 4);
+        assert.equal(queue.countTasks({ q: 'Searchable' }), 4);
+
+        const page = queue.listTasks({ q: 'Searchable', limit: 2, offset: 1 });
+        assert.deepEqual(
+          page.map((t) => t.id),
+          full.slice(1, 3).map((t) => t.id)
+        );
+        // The total describes the match set, not the page.
+        assert.equal(queue.countTasks({ q: 'Searchable' }), 4);
+
+        // A negative offset is clamped to 0 rather than rejected by SQLite.
+        assert.deepEqual(
+          queue.listTasks({ q: 'Searchable', limit: 2, offset: -5 }).map((t) => t.id),
+          full.slice(0, 2).map((t) => t.id)
+        );
+        // An offset past the end is an empty page, not an error.
+        assert.equal(queue.listTasks({ q: 'Searchable', offset: 99 }).length, 0);
       } finally {
         db.close();
         cleanup();
@@ -297,7 +410,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           prompt: 'Linked run',
           scheduleMode: 'immediate',
-          model: 'gemini-3.8-flash-high',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
           tier: 'backlog',
           originId: origin.id,
         });
@@ -305,7 +418,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           prompt: 'Loose run',
           scheduleMode: 'immediate',
-          model: 'gemini-3.8-flash-high',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
         });
 
         queue.updateTaskStatus(linked.id, { status: 'completed', durationMs: 10 });
@@ -334,8 +447,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Implement swarm poller unit tests',
-          model: 'gemini-4-argon-high',
-          effort: 'high',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           pushBranch: true,
         });
 
@@ -381,14 +493,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(invocations[5]?.file, 'agy');
         assert.deepEqual(invocations[5]?.args, [
           '-p',
-          'Implement swarm poller unit tests\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon-high` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
+          'Implement swarm poller unit tests\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
           '--mode',
           'auto',
           '--dangerously-skip-permissions',
           '--settings',
           '{"enableTerminalSandbox":false}',
           '--model',
-          'gemini-4-argon-high',
+          'gemini-4-argon',
           '--effort',
           'high',
         ]);
@@ -416,7 +528,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Attempt main mutation',
-          model: 'gemini-4-argon-high',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         task.branchName = 'main';
 
@@ -448,7 +560,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Test command injection',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           verifyCommand: 'npm test; rm -rf /',
         });
         const res1 = await executor.execute(task1);
@@ -460,7 +572,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Test unauthorized binary',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           verifyCommand: 'bash -c whoami',
         });
         const res2 = await executor.execute(task2);
@@ -486,7 +598,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryPath: repoPath,
           cloneUrl: 'https://github.com/OtterBoops/agylity.git',
           prompt: 'Test remote clone',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
 
         const invocations: Array<{ file: string; args: readonly string[] }> = [];
@@ -543,7 +655,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Review the current discord bot modals',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           pushBranch: true,
         });
 
@@ -592,7 +704,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       });
 
       // Provide live quota telemetry so the queued task passes the safety-floor eligibility check
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -619,7 +731,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         // 1. GET /api/models returns annotated model catalog
         const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
-        assert.equal(modelsRes.defaultModel, 'gemini-3.8-flash');
+        assert.equal(modelsRes.defaultModel, 'gemini-4-hydrogen');
         assert.equal(modelsRes.models.length, 6);
         const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
         assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
@@ -643,7 +755,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             json: {
               repositoryId: 'agylity',
               prompt: 'Refactor Connect-RPC discovery',
-              model: 'gemini-3.8-flash-high',
+              cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
               workerMode: 'headless',
             },
           })
@@ -651,7 +763,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         assert.equal(dispRes.success, true);
         assert.equal(dispRes.status, 'queued');
-        assert.equal(dispRes.model, 'gemini-3.8-flash');
+        assert.equal(dispRes.model, 'gemini-4-hydrogen');
         assert.ok(dispRes.taskId);
 
         // 4. RemoteSwarmRunner polls, claims, executes via mock executor, and reports completion
@@ -677,11 +789,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const claimedTask = await worker.pollOnce();
         assert.ok(claimedTask);
         assert.equal(claimedTask?.id, dispRes.taskId);
-        assert.equal(claimedTask?.model, 'gemini-3.8-flash');
+        assert.equal(claimedTask?.model, 'gemini-4-hydrogen');
         assert.equal(executedTasks.length, 1);
 
         // 5. Verify task is marked completed in GET /api/tasks
-        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
         assert.equal(tasks[0]?.status, 'completed');
         assert.ok(tasks[0]?.branchName?.startsWith('agy/'));
 
@@ -713,7 +825,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       });
 
       // Provide live quota telemetry so dispatched tasks pass the safety-floor eligibility check
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -1327,7 +1439,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     it('applies the default model pool policy (not gemini-argon) when model is omitted', () => {
       const { dir, cleanup } = makeTempDir('coord_policy_default_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        defaultDispatchModel: 'gemini-3.8-flash',
+        defaultDispatchModel: 'gemini-4-hydrogen',
         poolPolicies: {
           claude: { alertsEnabled: true, dispatchEnabled: true },
           'gemini-argon': { alertsEnabled: true, dispatchEnabled: false },
@@ -1343,7 +1455,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
           hoursUntilReset: 1,
-          models: ['gemini-3.8-flash'],
+          models: ['gemini-4-hydrogen'],
         },
       ]);
 
@@ -1438,7 +1550,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         quotaCheckIntervalSeconds: 60,
       });
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
 
       try {
         sentryState.setState({
@@ -1477,7 +1589,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
           hoursUntilReset: 1,
-          models: ['gemini-3.8-flash'],
+          models: ['gemini-4-hydrogen'],
         },
       ]);
 
@@ -1517,7 +1629,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Needs linux',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           requiredLabels: ['linux'],
         });
 
@@ -1541,7 +1653,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Ownership guard',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
 
         const claimed = queue.claimNext({ runnerId: 'runner-1' });
@@ -1576,7 +1688,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Review the current discord bot modals',
-          model: 'claude-sonnet-5-5',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-1' });
 
@@ -1614,7 +1726,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Corrupt claim stamp',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-1' });
 
@@ -1640,7 +1752,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const timed = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Valid claim stamp',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-2' });
         db.getRawDb()
@@ -1672,7 +1784,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Foreign runner guard',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         const claimed = queue.claimNext({ runnerId: 'runner-owner' });
         assert.equal(claimed?.status, 'claimed');
@@ -1690,7 +1802,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const queued = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Queued takeover guard',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         const takeover = queue.updateTaskStatus(queued.id, {
           status: 'executing',
@@ -1722,7 +1834,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Reap duration',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-dead' });
 
@@ -1745,7 +1857,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const fallback = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Reap fallback',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-dead-2' });
         db.getRawDb()
@@ -1770,7 +1882,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const task = queue.enqueue({
           repositoryName: 'agylity',
           prompt: 'Reap offline',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-dead' });
         assert.equal(queue.getRunner('runner-dead')?.status, 'busy');
@@ -1821,32 +1933,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('migrates a legacy swarm_tasks schema additively and can enqueue afterwards', () => {
-      const { dir, cleanup } = makeTempDir('orch_migrate_');
-      const db = new AppDatabase(path.join(dir, 'legacy.db'));
-
+    it('creates the v1 schema once and applies no migration on a second boot', () => {
+      const { dir, cleanup } = makeTempDir('queue_schema_v1_');
+      const dbPath = path.join(dir, 'test.db');
+      const db = new AppDatabase(dbPath);
       try {
+        new TaskQueue(db);
         const raw = db.getRawDb();
-        raw.exec(`
-          CREATE TABLE swarm_tasks (
-            id TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-            repository_id TEXT NOT NULL,
-            repository_name TEXT NOT NULL,
-            repository_path TEXT NOT NULL,
-            prompt TEXT NOT NULL,
-            model TEXT NOT NULL,
-            pool_family TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'queued',
-            duration_ms INTEGER NOT NULL DEFAULT 0
-          );
-        `);
-        // A vestigial column from an older schema must survive the migration.
-        raw.exec('ALTER TABLE swarm_tasks ADD COLUMN dispatch_id TEXT');
-
-        const queue = new TaskQueue(db);
-
         const columns = new Set(
           (raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name: string }>).map(
             (column) => column.name
@@ -1857,22 +1950,65 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           'auto_create_pr',
           'pr_url',
           'expires_at',
-          'standing_task_id',
           'num_turns',
           'total_tokens',
           'thinking_tokens',
         ]) {
-          assert.ok(columns.has(expected), `migrated swarm_tasks should have ${expected}`);
+          assert.ok(columns.has(expected), `v1 swarm_tasks should have ${expected}`);
         }
-        assert.ok(columns.has('dispatch_id'), 'legacy column must not be dropped');
+        // The legacy surface is gone, not merely unused.
+        for (const dead of [
+          'standing_task_id',
+          'worker_id',
+          'actor',
+          'bot_pr_policy',
+          'dispatch_id',
+        ]) {
+          assert.equal(columns.has(dead), false, `v1 swarm_tasks must not carry ${dead}`);
+        }
+        assert.equal(
+          (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
+          3
+        );
+        assert.equal(
+          (raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number }).v,
+          3
+        );
+        // v2 carries the sentry ledger, so a delivery and its dedupe row can share one commit.
+        for (const sentryTable of [
+          'pool_state',
+          'pool_milestones',
+          'pool_samples',
+          'probe_state',
+          'early_reset_notice',
+          'alert_events',
+        ]) {
+          assert.ok(
+            (
+              raw
+                .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+                .get(sentryTable) as { name?: string } | undefined
+            )?.name,
+            `v2 should create ${sentryTable}`
+          );
+        }
 
-        const task = queue.enqueue({
+        // Booting the same database again must be a no-op, not a re-run.
+        const second = new TaskQueue(db);
+        assert.equal(
+          (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
+          3
+        );
+
+        const task = second.enqueue({
           repositoryName: 'agylity',
           prompt: 'Post-migration enqueue',
-          model: 'gemini-4-argon',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         assert.equal(task.status, 'queued');
-        assert.equal(task.scheduleMode, 'immediate');
+        assert.equal(task.taskNumber, 1);
+        // The list projection must not drag the transcript.
+        assert.equal(second.listTasks({ limit: 5 })[0]?.output, undefined);
       } finally {
         db.close();
         cleanup();
@@ -2075,14 +2211,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Bug Hunter',
           prompt: 'Audit repo and submit issue',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
-          effort: 'high',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
 
         assert.ok(created.id.startsWith('routine-'));
         assert.equal(created.title, 'Claude Bug Hunter');
-        assert.deepEqual(created.models, ['claude-sonnet-5-5']);
+        assert.deepEqual(created.cascade, [{ model: 'claude-sonnet-5-5', effort: 'high' }]);
         assert.equal(created.triggerBeforeResetHours, 12);
         assert.equal(created.enabled, true);
 
@@ -2119,14 +2254,21 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Implement feature X',
           prompt: 'Full prompt details',
           repositoryId: 'agylity',
-          models: ['gemini-3.8-flash', 'gemini-4-argon'],
+          cascade: [
+            { model: 'gemini-4-hydrogen', effort: 'medium' },
+            { model: 'gemini-4-argon', effort: 'high' },
+          ],
           priorityOrder: 1,
         });
 
         assert.ok(created.id.startsWith('backlog-'));
         assert.equal(created.taskNumber, 1);
         assert.equal(created.title, 'Implement feature X');
-        assert.deepEqual(created.models, ['gemini-3.8-flash', 'gemini-4-argon']);
+        // Order and per-hop effort both survive the round trip.
+        assert.deepEqual(created.cascade, [
+          { model: 'gemini-4-hydrogen', effort: 'medium' },
+          { model: 'gemini-4-argon', effort: 'high' },
+        ]);
         assert.equal(created.status, 'pending');
         assert.equal(created.attemptCount, 0);
 
@@ -2151,6 +2293,91 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(deleted, true);
         assert.equal(queue.getBacklogTask(created.id), undefined);
       } finally {
+        cleanup();
+      }
+    });
+
+    it('keeps a paused backlog row paused through an abort and never re-dispatches it', async () => {
+      const { dir, cleanup } = makeTempDir('orch_backlog_paused_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            {
+              id: 'agylity',
+              name: 'OtterBoops/agylity',
+              path: dir,
+              cloneUrl: 'https://github.com/OtterBoops/agylity',
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const origin = coordinator.queue.createBacklogTask({
+          title: 'Pausable item',
+          prompt: 'Work',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+        });
+        const run = coordinator.queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          prompt: 'Work',
+          tier: 'backlog',
+          originId: origin.id,
+          originNumber: origin.taskNumber,
+          originTitle: origin.title,
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+          scheduleMode: 'immediate',
+        });
+        coordinator.queue.updateBacklogTask(origin.id, {
+          status: 'dispatched',
+          attemptCount: 1,
+          swarmTaskId: run.id,
+        });
+
+        // Stop & Pause: the row is paused first, then the in-flight run is aborted.
+        coordinator.queue.updateBacklogTask(origin.id, { status: 'paused' });
+        await coordinator.cancelTask(run.id);
+
+        // A late abort must not hand the row back to the evaluator as a retryable pending row.
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.status, 'paused');
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.6,
+            resetTime: '2026-11-08T01:30:44Z',
+            hoursUntilReset: 1,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        coordinator.setLastManualDispatchAt(Date.now() - 3 * 3600 * 1000);
+        const whilePaused = await coordinator.triggerEligibleAutonomousTasks(snapshots);
+        assert.equal(whilePaused.length, 0);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.status, 'paused');
+
+        // Resume is the only path back into the queue.
+        coordinator.queue.updateBacklogTask(origin.id, { status: 'pending' });
+        const afterResume = await coordinator.triggerEligibleAutonomousTasks(snapshots);
+        assert.equal(afterResume.length, 1);
+        assert.equal(afterResume[0]?.tier, 'backlog');
+        assert.equal(afterResume[0]?.originId, origin.id);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.status, 'dispatched');
+      } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2183,7 +2410,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Routine 1',
           prompt: 'Work',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
 
@@ -2243,8 +2470,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Pre-Reset Burn',
           prompt: 'Audit code and test',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
-          effort: 'medium',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'medium' }],
           triggerBeforeResetHours: 12,
         });
 
@@ -2284,7 +2510,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(task.tier, 'routine');
         assert.equal(task.originId, rt.id);
         assert.equal(task.model, 'claude-sonnet-5-5');
-        assert.equal(task.scheduleMode, 'immediate');
+        assert.equal(task.scheduleMode, 'pre_reset');
         assert.equal(task.status, 'queued');
 
         // Verify routine task was stamped with lastTriggeredResetTime and lastTaskId
@@ -2327,7 +2553,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Pre-Reset Loop',
           prompt: 'Keep burning quota',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           minHeadroomPercent: 10,
         });
@@ -2415,7 +2641,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Pre-Reset Loop',
           prompt: 'Keep burning quota',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           minHeadroomPercent: 10,
         });
@@ -2484,7 +2710,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Dedup',
           prompt: 'Burn quota once at a time',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
 
@@ -2494,7 +2720,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             family: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
-            resetTime: '2026-11-08T01:30:44Z',
+            // A pre_reset dispatch expires with its window, so the fixture deadline must be live.
+            resetTime: new Date(Date.now() + 10 * 3600_000).toISOString(),
             hoursUntilReset: 10,
             models: ['Claude Sonnet'],
           },
@@ -2557,7 +2784,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Fail Stop',
           prompt: 'Fail once',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         const firstRun = await coordinator.triggerEligibleRoutines(snapshots);
@@ -2578,7 +2805,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Cancel Stop',
           prompt: 'Cancel once',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         const cancelRun = await coordinator.triggerEligibleRoutines(snapshots);
@@ -2621,7 +2848,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Burn',
           prompt: 'Audit code',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           enabled: true,
         });
@@ -2691,14 +2918,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude Burn',
           prompt: 'Burn the claude pool',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         const argonRoutine = coordinator.queue.createRoutineTask({
           title: 'Argon Burn',
           prompt: 'Burn the argon pool',
           repositoryId: 'agylity',
-          models: ['gemini-4-argon'],
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
 
@@ -2734,7 +2961,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'First In Order',
           prompt: 'Burn quota first',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           sortOrder: 0,
         });
@@ -2742,7 +2969,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Second In Order',
           prompt: 'Burn quota second',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           sortOrder: 1,
         });
@@ -2776,7 +3003,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Disabled Routine',
           prompt: 'Never dispatches',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           enabled: false,
         });
         assert.equal(
@@ -2789,7 +3016,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Waiting Routine',
           prompt: 'Waits for the window',
           repositoryId: 'agylity',
-          models: ['gemini-3.8-flash'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           triggerBeforeResetHours: 12,
         });
         assert.equal(
@@ -2802,7 +3029,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Starved Routine',
           prompt: 'No headroom left',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
           minHeadroomPercent: 10,
         });
@@ -2815,7 +3042,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Ready Routine',
           prompt: 'Eligible right now',
           repositoryId: 'agylity',
-          models: ['gemini-4-hydrogen'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           triggerBeforeResetHours: 12,
         });
         assert.equal(
@@ -2834,7 +3061,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Settled Routine',
           prompt: 'Already burned this cycle',
           repositoryId: 'agylity',
-          models: ['gemini-4-argon'],
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         const settledRun = await coordinator.triggerEligibleRoutines([
@@ -2873,7 +3100,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Failing Routine',
           prompt: 'Failed this cycle',
           repositoryId: 'agylity',
-          models: ['gemini-4-argon'],
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         const failedRun = await coordinator.triggerEligibleRoutines([
@@ -2906,7 +3133,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryId: 'agylity',
           repositoryName: 'OtterBoops/agylity',
           prompt: 'Stream the run output',
-          model: 'claude-sonnet-5-5',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
         });
         const claimed = coordinator.queue.claimNext({
           runnerId: 'runner-test',
@@ -2972,8 +3199,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Fix bug in auth',
-          model: 'gemini-4-hydrogen',
-          effort: 'medium',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           prPolicy: 'all',
           pushBranch: true,
           autoCreatePr: true,
@@ -3019,15 +3245,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'User task',
-          model: 'gemini-3.8-flash',
-          effort: 'low',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'low' }],
           pushBranch: false,
           autoCreatePr: false,
         });
         await executor.execute(userTask);
         assert.ok(
           capturedPrompts[1]?.includes(
-            '*Dispatched via Agylity (immediate) with `gemini-3.8-flash` (low reasoning) — please review carefully.*'
+            '*Dispatched via Agylity (immediate) with `gemini-4-hydrogen` (low reasoning) — please review carefully.*'
           )
         );
       } finally {
@@ -3045,7 +3270,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Refactor auth',
-          model: 'claude-sonnet-5-5',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
@@ -3096,7 +3321,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Update docs',
-          model: 'claude-sonnet-5-5',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
@@ -3144,7 +3369,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositoryName: 'agylity',
           repositoryPath: dir,
           prompt: 'Audit only',
-          model: 'claude-sonnet-5-5',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           tier: 'routine',
           pushBranch: true,
           autoCreatePr: true,
@@ -3189,7 +3414,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Hydrogen Triage & Fix',
           prompt: 'Fix issues',
           repositoryId: 'agylity',
-          models: ['gemini-4-hydrogen'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           prPolicy: 'all',
         });
         assert.equal(routine.prPolicy, 'all');
@@ -3220,13 +3445,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         remainingFraction: 0.8,
         resetTime,
         hoursUntilReset: 6,
-        models: ['gemini-3.8-flash'],
+        models: ['gemini-4-hydrogen'],
       },
     ];
 
     const retryConfig = (dir: string) => ({
       coordinatorEnabled: true,
-      defaultDispatchModel: 'gemini-3.8-flash',
+      defaultDispatchModel: 'gemini-4-hydrogen',
       repositories: [
         {
           id: 'agylity',
@@ -3250,7 +3475,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Repoint the backlog origin',
           prompt: 'A retry must carry the origin row to the new task',
           repositoryId: 'agylity',
-          models: ['gemini-3.8-flash'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
         });
 
         const first = await coordinator.dispatch({
@@ -3263,7 +3488,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           originTitle: backlog.title,
           requestedBy: `backlog:${backlog.id}`,
           scheduleMode: 'immediate',
-          model: 'gemini-3.8-flash',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
         });
         assert.equal(first.success, true);
         assert.ok(first.taskId, 'the first attempt must enqueue a swarm task');
@@ -3313,7 +3538,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Nightly retention sweep',
           prompt: 'A retry must repoint the routine at the new task',
           repositoryId: 'agylity',
-          models: ['gemini-3.8-flash'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           triggerBeforeResetHours: 12,
         });
 
@@ -3327,7 +3552,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           originTitle: routine.title,
           requestedBy: `routine:${routine.id}`,
           scheduleMode: 'immediate',
-          model: 'gemini-3.8-flash',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
         });
         assert.equal(first.success, true);
         assert.ok(first.taskId, 'the first run must enqueue a swarm task');
@@ -3404,7 +3629,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       try {
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
-          defaultDispatchModel: 'gemini-3.8-flash',
+          defaultDispatchModel: 'gemini-4-hydrogen',
         });
         const coordinator = new Coordinator({ configStore });
 
@@ -3416,7 +3641,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude pre-reset burn',
           prompt: 'Burn the cycle that just reset early',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         coordinator.queue.updateRoutineTask(stamped.id, {
@@ -3427,7 +3652,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Claude later cycle',
           prompt: 'Stamped for a different cycle',
           repositoryId: 'agylity',
-          models: ['claude-sonnet-5-5'],
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
           triggerBeforeResetHours: 12,
         });
         coordinator.queue.updateRoutineTask(nextCycle.id, { lastTriggeredResetTime: staleCycle });
@@ -3468,7 +3693,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           title: 'Routine title',
           prompt: 'Routine prompt',
           repositoryId: 'agylity',
-          models: ['gemini-3.8-flash'],
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
         });
         const patchedRoutine = queue.updateRoutineTask(routine.id, {
           title: '   ',

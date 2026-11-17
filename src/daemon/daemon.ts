@@ -13,13 +13,12 @@ import {
   snapshotsFromSentryState,
 } from '../sentry/models.js';
 import { createDaemonNotifier } from '../notify/factory.js';
-import { type InfoNotice, type Notifier } from '../notify/types.js';
+import { type DeliveryOutcome, type InfoNotice, type Notifier } from '../notify/types.js';
 import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
 import { Coordinator } from '../coordinator/index.js';
 import { DynamicModelCatalog } from '../coordinator/catalog.js';
 
-/** Dry-run milestone plan returned by the evaluator; state is recorded only after delivery. */
 interface MilestonePlan {
   alerts: QuotaAlert[];
   superseded?: Map<string, number[]> | Record<string, number[]>;
@@ -34,7 +33,6 @@ const formatWindow = (hours: number): string => {
   return `${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h`;
 };
 
-/** One silent notice per probe, naming every pool that refilled early. */
 const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): InfoNotice => {
   const lines = pools.map((pool) => {
     const name = pool.displayName || pool.poolId;
@@ -86,7 +84,6 @@ export class AgylityDaemon {
   public readonly sentryEvaluator: QuotaEvaluator;
   public readonly notifier: Notifier;
   public readonly coordinator: Coordinator;
-  /** Stale-while-revalidate view of `agy --output-format json models`. */
   public readonly modelCatalog: DynamicModelCatalog;
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
@@ -98,9 +95,7 @@ export class AgylityDaemon {
   public isNotifierShutdown = false;
 
   private timer: NodeJS.Timeout | null = null;
-  /** Guards the tick path so a probe slower than the interval cannot overlap the next one. */
   private probeInFlight = false;
-  /** Memoized teardown, so a signal landing during shutdown waits instead of tearing down twice. */
   private shutdownPromise?: Promise<void>;
   private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
@@ -144,13 +139,11 @@ export class AgylityDaemon {
       this.applyLogLevel(initialConfig.logLevel);
     }
 
-    // Reactively update active notifier and quota client when configuration is updated (e.g. via Web UI)
     this.configStore.on('change', async ({ key, resolvedConfig }) => {
       this.logger.info('Configuration update detected, syncing active components...');
       if (resolvedConfig.logLevel) {
         this.applyLogLevel(resolvedConfig.logLevel);
       }
-      // Each component syncs on its own: one rejecting adapter must not leave the rest on stale config.
       await this.syncComponent('notification adapter', () =>
         this.notifier.updateConfig?.(resolvedConfig)
       );
@@ -177,7 +170,6 @@ export class AgylityDaemon {
     });
   }
 
-  /** Applies one config-sync step in isolation so a failing component cannot stall the others. */
   private async syncComponent(name: string, step: () => void | Promise<void>): Promise<void> {
     try {
       await step();
@@ -190,20 +182,24 @@ export class AgylityDaemon {
     }
   }
 
-  // Factory method to construct and wire all daemon subsystems.
   public static async create(options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> {
-    // 1. Initialize configuration store & database
     const dbPath = options.dbPath ?? process.env.DATABASE_PATH ?? 'data/agylity.db';
     const configStore =
       options.configStore ?? new ConfigStore(options.database ?? dbPath, options.config);
 
     const resolved = configStore.resolveConfig();
 
-    // 2. Initialize Sentry State Manager
-    const statePath = options.statePath ?? process.env.QUOTA_STATE_FILE_PATH ?? 'data/state.json';
-    const sentryState = options.sentryState ?? new SentryStateManager(statePath);
+    // Sentry state shares the coordinator's SQLite transaction, so a delivered alert and its
+    // milestone dedupe row commit together; a pre-SQLite state.json imports once, ledger empty.
+    const legacyStatePath =
+      options.statePath ?? process.env.QUOTA_STATE_FILE_PATH ?? 'data/state.json';
+    const sentryState =
+      options.sentryState ??
+      new SentryStateManager({
+        db: configStore.getDatabase(),
+        legacyStatePath,
+      });
 
-    // 3. Initialize Quota Evaluator
     const sentryEvaluator =
       options.sentryEvaluator ??
       new QuotaEvaluator({
@@ -211,7 +207,6 @@ export class AgylityDaemon {
         alertThresholdPercent: resolved.quotaAlertThresholdPercent,
       });
 
-    // 4. Initialize Quota Client (Connect-RPC with CLI fallback)
     const quotaClient =
       options.quotaClient ??
       new ConnectRpcQuotaClient({
@@ -255,8 +250,7 @@ export class AgylityDaemon {
             prompt: req.prompt,
             requestedBy: req.requestedBy,
             requestedByUserId: req.requestedByUserId,
-            model: req.model,
-            effort: req.effort,
+            cascade: req.cascade,
             requiredLabels: req.requiredLabels,
             allowOverage: req.allowOverage,
             pushBranch: req.pushBranch,
@@ -282,10 +276,9 @@ export class AgylityDaemon {
             prompt: req.prompt,
             requestedBy: req.requestedBy,
             requestedByUserId: req.requestedByUserId,
-            effort: req.effort,
+            cascade: req.cascade,
             repositoryName: req.repositoryName,
             repositoryId: req.repositoryId,
-            model: req.model,
           });
           return {
             success: disp.success,
@@ -318,24 +311,19 @@ export class AgylityDaemon {
     );
   }
 
-  // Starts the daemon, initializing notifier, loading state, conditionally starting
   public async start(): Promise<void> {
-    // A daemon whose teardown already began cannot be resurrected, so a later start() is a no-op.
     if (this.isRunning || this.shutdownPromise) {
       return;
     }
 
     const resolved = this.configStore.resolveConfig();
 
-    // 1. Load persistent sentry state
     await this.sentryState.load();
     this.logger.info('Sentry persistent state loaded.');
 
-    // 2. Initialize active notification adapter
     await this.notifier.initialize();
     this.logger.info('Active notification adapter initialized (%s).', this.notifier.channelName);
 
-    // 3. Coordinator Status
     if (!resolved.coordinatorEnabled) {
       this.logger.info(
         'Coordinator is disabled (coordinatorEnabled=false). Operating in pure Quota Sentry mode.'
@@ -344,7 +332,6 @@ export class AgylityDaemon {
       this.logger.info('Coordinator is enabled (coordinatorEnabled=true).');
     }
 
-    // 4. Conditional Web UI bootstrap (Zero-Overhead Invariant)
     if (resolved.webUiEnabled) {
       const { startWebServer } = await import('../web/server.js');
       const { server, port, host } = await startWebServer({
@@ -363,15 +350,12 @@ export class AgylityDaemon {
       this.logger.info('Web UI active on http://%s:%d', host, port);
     }
 
-    // 4. Initial quota check on boot
     if (this.autoCheckOnStart) {
       await this.checkQuota().catch((err) => {
         this.logger.warn('Initial quota evaluation warning: %s', err?.message ?? err);
       });
     }
 
-    // 5. Setup recurring sentry interval
-    // A shutdown racing the boot probe wins: never schedule a timer onto a torn-down daemon.
     if (this.shutdownRequested) {
       return;
     }
@@ -385,7 +369,6 @@ export class AgylityDaemon {
     this.isNotifierShutdown = false;
   }
 
-  // Executes a single quota probe and milestone evaluation cycle.
   public async checkQuota(): Promise<QuotaAlert[]> {
     let reaped = false;
     try {
@@ -393,14 +376,12 @@ export class AgylityDaemon {
       const snapshots = await this.quotaClient.fetchQuota();
       const plan = this.evaluateMilestonePlan(snapshots);
       const alerts = plan.alerts;
-      // Early resets reach the coordinator before onQuotaUpdated replaces its quota view.
       if (plan.earlyResets && plan.earlyResets.length > 0) {
         this.coordinator.onEarlyQuotaReset(plan.earlyResets);
       }
       this.coordinator.onQuotaUpdated(snapshots);
       reaped = true;
 
-      // Informational status when quota is low or pool exhausted (deduplicated per reset cycle)
       for (const s of snapshots) {
         const pct = Math.round(s.remainingFraction * 100);
         if (pct <= 10) {
@@ -431,9 +412,9 @@ export class AgylityDaemon {
           alert.milestoneHours,
           alert.remainingPercentage
         );
-        if (await this.deliverQuotaAlert(alert)) {
-          // Record only after a confirmed delivery so an outage cannot permanently lose the alert.
-          this.recordDeliveredMilestones(plan, alert);
+        const outcome = await this.deliverQuotaAlert(alert);
+        if (outcome.delivered) {
+          this.recordDeliveredMilestones(plan, alert, outcome);
         } else {
           this.logger.warn(
             'Quota alert for %s (%sh milestone) could not be delivered; leaving milestone unrecorded for retry',
@@ -472,34 +453,27 @@ export class AgylityDaemon {
       }
       try {
         await this.sentryState.save();
-      } catch {
-        // State persistence failure logged without throwing
-      }
+      } catch {}
       return [];
     } finally {
       try {
-        // onQuotaUpdated already reaped; a failed probe still needs its own pass.
         if (!reaped) {
           this.coordinator.reapStaleClaims();
         }
       } catch (reapErr: any) {
-        // A reaper failure (e.g. database already closed) must never escape the probe outcome.
         this.logger.warn('Stale claim reaper failed: %s', reapErr?.message ?? reapErr);
       }
     }
   }
 
-  /** Applies a level to the root logger so every namespace inherits it; children may still override. */
   private applyLogLevel(level: LogLevel): void {
     const root = this.logger instanceof DefaultLogger ? this.logger.getRoot() : this.logger;
     root.setLevel(level);
   }
 
-  /** Single scheduling path for the recurring probe so the two call sites cannot drift. */
   private scheduleSentryTimer(intervalSeconds: number): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
-      // A probe that outlasts its interval must not run beside the next tick and re-alert the same milestone.
       if (this.probeInFlight) return;
       this.probeInFlight = true;
       void this.checkQuota()
@@ -512,7 +486,6 @@ export class AgylityDaemon {
     }, intervalSeconds * 1000);
   }
 
-  // Evaluates snapshots via the evaluator's dry-run plan when available, so milestone
   private evaluateMilestonePlan(snapshots: QuotaSnapshot[]): MilestonePlan {
     const evaluator = this.sentryEvaluator as unknown as {
       evaluateWithPlan?: (
@@ -532,11 +505,9 @@ export class AgylityDaemon {
         earlyResets: plan.earlyResets ?? [],
       };
     }
-    // Legacy evaluator records milestones itself and returns only the alerts.
     return { alerts: this.sentryEvaluator.evaluate(snapshots, this.sentryState) };
   }
 
-  // Silent by contract: notifyInfo carries no owner mention, so an early refill cannot ring a phone.
   private async announceEarlyReset(pools: EarlyResetPool[]): Promise<void> {
     const notice = this.sentryState.recordEarlyResetNotice(pools);
     for (const pool of pools) {
@@ -547,34 +518,49 @@ export class AgylityDaemon {
         formatPercent(pool.remainingFraction),
         pool.previousResetTime
       );
+      this.sentryState.recordCycleAlert({
+        poolId: pool.poolId,
+        resetTime: pool.previousResetTime,
+        kind: 'early_reset',
+        headroomPercent: Math.round(pool.remainingFraction * 1000) / 10,
+        firedAt: notice.detectedAt,
+      });
     }
     try {
       await this.notifier.notifyInfo(buildEarlyResetNotice(pools, notice.detectedAt));
     } catch (err: any) {
-      // The notice is already persisted for the dashboard, so a channel failure is not fatal.
       this.logger.warn('Early reset notice delivery failed: %s', err?.message ?? err);
     }
   }
 
-  /** Delivers one alert; returns false when the notifier reports no successful channel. */
-  private async deliverQuotaAlert(alert: QuotaAlert): Promise<boolean> {
+  private async deliverQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
     try {
       const outcome = await this.notifier.notifyQuotaAlert(alert);
-      return outcome?.delivered !== false;
+      return outcome ?? { delivered: true, results: {} };
     } catch (err: any) {
       this.logger.warn(
         'Quota alert delivery failed for %s: %s',
         alert.pool.displayName || alert.pool.poolId,
         err?.message ?? err
       );
-      return false;
+      return { delivered: false, results: {} };
     }
   }
 
-  /** Records the fired and superseded milestones for a delivered alert. */
-  private recordDeliveredMilestones(plan: MilestonePlan, alert: QuotaAlert): void {
+  private recordDeliveredMilestones(
+    plan: MilestonePlan,
+    alert: QuotaAlert,
+    outcome: DeliveryOutcome
+  ): void {
     const poolId = alert.pool.poolId;
-    this.sentryState.recordMilestoneFired(poolId, alert.milestoneHours, alert.triggeredAt);
+    this.sentryState.recordDeliveredAlert({
+      poolId,
+      resetTime: alert.pool.resetTime,
+      milestoneHours: alert.milestoneHours,
+      headroomPercent: alert.remainingPercentage,
+      channels: outcome.results,
+      firedAt: alert.triggeredAt,
+    });
     const superseded = plan.superseded;
     if (!superseded) return;
     const list =
@@ -587,7 +573,6 @@ export class AgylityDaemon {
   }
 
   public shutdown(): Promise<void> {
-    // A second caller (e.g. SIGTERM during an in-flight shutdown) awaits the same teardown.
     this.shutdownPromise ??= this.performShutdown();
     return this.shutdownPromise;
   }
@@ -600,14 +585,13 @@ export class AgylityDaemon {
 
     this.logger.info('Initiating graceful daemon shutdown...');
 
-    // 1. Stop recurring sentry interval timer
+    // Order matters: the timer stops first and the database closes last.
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
     }
     this.isSentryStopped = true;
 
-    // 2. Shut down notification adapter
     if (this.notifier && !this.isNotifierShutdown) {
       try {
         await this.notifier.shutdown();
@@ -618,7 +602,6 @@ export class AgylityDaemon {
       this.isNotifierShutdown = true;
     }
 
-    // 3. Close web server if running
     if (this.webServer) {
       try {
         const { closeWebServer } = await import('../web/server.js');
@@ -630,7 +613,6 @@ export class AgylityDaemon {
       this.webServer = undefined;
     }
 
-    // 4. Close database connection
     if (!this.isDbClosed) {
       try {
         this.configStore.close();
@@ -644,24 +626,20 @@ export class AgylityDaemon {
     this.isRunning = false;
   }
 
-  // Alias for shutdown() adhering to universal lifecycle conventions.
   public async stop(): Promise<void> {
     return this.shutdown();
   }
 }
 
-// Programmatic helper to create an unstarted AgylityDaemon.
 export const createDaemon = async (options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> =>
   AgylityDaemon.create(options);
 
-// Programmatic helper to create and immediately start an AgylityDaemon.
 export const startDaemon = async (options: AgylityDaemonOptions = {}): Promise<AgylityDaemon> => {
   const daemon = await AgylityDaemon.create(options);
   await daemon.start();
   return daemon;
 };
 
-// Programmatic helper to gracefully stop an active AgylityDaemon.
 export const stopDaemon = async (daemon: AgylityDaemon): Promise<void> => {
   await daemon.shutdown();
 };

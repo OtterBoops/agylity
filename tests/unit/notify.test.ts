@@ -1404,7 +1404,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         taskId: 'task-123',
         status: 'polling',
         repositoryName: 'test-repo',
-        model: 'gemini-3.8-flash',
+        model: 'gemini-4-hydrogen',
         prompt: 'Fix memory leak',
         createdAt: new Date(Date.now() - 18200).toISOString(),
       });
@@ -1443,7 +1443,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         repositoryName: 'test-repo',
         branchName: 'antigravity/task-123',
         durationMs: 18200,
-        model: 'gemini-3.8-flash',
+        model: 'gemini-4-hydrogen',
         effort: 'medium',
         createdAt: new Date(Date.now() - 18200).toISOString(),
       });
@@ -1465,7 +1465,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       // Model reports the reasoning effort alongside it.
       const modelField = completedEmbed.data.fields.find((f: any) => f.name === 'Model');
       assert.ok(modelField);
-      assert.equal(modelField.value, 'gemini-3.8-flash · medium');
+      assert.equal(modelField.value, 'gemini-4-hydrogen · medium');
 
       const timelineField = completedEmbed.data.fields.find((f: any) => f.name === 'Timeline');
       assert.ok(timelineField);

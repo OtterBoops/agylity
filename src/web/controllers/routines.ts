@@ -4,14 +4,12 @@ import {
   methodNotAllowed,
   readJsonBody,
   toStringOrUndefined,
-  toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { resolveCoordinator } from './dispatch.js';
-import { ReasoningEffortSchema, type ReasoningEffort } from '../../coordinator/models.js';
+import { parseCascadeRequest, resolveCoordinator } from './dispatch.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 
 const parseOptionalPrPolicy = (
@@ -28,7 +26,6 @@ const parseOptionalPrPolicy = (
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
-// A present text field must survive a trim: a blank one is a client bug, not a request to clear it.
 const validateTextFieldPatch = (body: any): string | undefined => {
   if (!body || typeof body !== 'object') return undefined;
   for (const field of TEXT_FIELDS) {
@@ -102,11 +99,14 @@ export const handleRoutineTasks = async (
       return sendJson(res, 400, { error: limitError });
     }
 
-    const effortParse = ReasoningEffortSchema.safeParse(payload.effort ?? 'high');
-    const effort: ReasoningEffort = effortParse.success ? effortParse.data : 'high';
-    const models =
-      toStringArray(payload.models) ??
-      (payload.model ? [String(payload.model)] : ['gemini-3.8-flash']);
+    const resolved = options.configStore.resolveConfig();
+    const cascadeParse = parseCascadeRequest(payload.cascade, {
+      fallbackModel: resolved.defaultDispatchModel,
+      fallbackEffort: resolved.defaultDispatchEffort,
+    });
+    if (!cascadeParse.ok) {
+      return sendJson(res, 400, { error: cascadeParse.error });
+    }
     const policyParsed = parseOptionalPrPolicy(payload.prPolicy);
     if (!policyParsed.ok) {
       return sendJson(res, 400, { error: policyParsed.error });
@@ -116,8 +116,7 @@ export const handleRoutineTasks = async (
       title,
       prompt,
       repositoryId,
-      models: models.length > 0 ? models : ['gemini-3.8-flash'],
-      effort,
+      cascade: cascadeParse.cascade,
       verifyCommand: toStringOrUndefined(payload.verifyCommand),
       autoCreatePr: payload.autoCreatePr !== false,
       prPolicy: policyParsed.value,
@@ -167,8 +166,7 @@ export const handleRoutineTaskById = async (
       originId: rt.id,
       originNumber: rt.taskNumber,
       originTitle: rt.title,
-      models: rt.models,
-      effort: rt.effort,
+      cascade: rt.cascade,
       autoCreatePr: rt.autoCreatePr,
       prPolicy: rt.prPolicy ?? resolved.prPolicy,
       verifyCommand: rt.verifyCommand,
@@ -219,6 +217,16 @@ export const handleRoutineTaskById = async (
     }
     if (patch && 'prPolicy' in patch) {
       patch.prPolicy = policyParsed.value;
+    }
+
+    if ('cascade' in patch) {
+      const resolved = options.configStore.resolveConfig();
+      const cascadeParse = parseCascadeRequest(patch.cascade, {
+        fallbackModel: resolved.defaultDispatchModel,
+        fallbackEffort: resolved.defaultDispatchEffort,
+      });
+      if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
+      patch.cascade = cascadeParse.cascade;
     }
 
     const updated = coordinator.queue.updateRoutineTask(id, patch);

@@ -23,7 +23,6 @@ async function main() {
   const repoDir = path.join(tmpRoot, 'test-target-repo');
   const dbPath = path.join(tmpRoot, 'coordinator.db');
   const runnerStatePath = path.join(tmpRoot, 'runner-state.json');
-  const coordinatorStatePath = path.join(tmpRoot, 'coordinator-state.json');
 
   let serverInstance: any = null;
   let configStore: ConfigStore | null = null;
@@ -52,7 +51,7 @@ async function main() {
     configStore = new ConfigStore(dbPath, {
       coordinatorEnabled: true,
       webUiEnabled: true,
-      defaultDispatchModel: 'gemini-3.8-flash',
+      defaultDispatchModel: 'gemini-4-hydrogen',
       defaultDispatchEffort: 'medium',
       repositories: [
         {
@@ -65,7 +64,8 @@ async function main() {
     });
 
     // Live telemetry: without it the safety floor fails closed and the claim is refused.
-    const sentryState = new SentryStateManager(coordinatorStatePath);
+    // The ledger shares the coordinator's database, which is closed in the finally block below.
+    const sentryState = new SentryStateManager({ db: configStore.getDatabase() });
     sentryState.setState({
       version: 1,
       lastProbeAt: new Date().toISOString(),
@@ -95,7 +95,7 @@ async function main() {
     console.log(
       `[E2E Test] Models endpoint default: ${modelsRes.defaultModel} (effort: ${modelsRes.defaultEffort})`
     );
-    if (modelsRes.defaultModel !== 'gemini-3.8-flash' || modelsRes.defaultEffort !== 'medium') {
+    if (modelsRes.defaultModel !== 'gemini-4-hydrogen' || modelsRes.defaultEffort !== 'medium') {
       throw new Error(
         `Unexpected default model/effort: ${modelsRes.defaultModel} / ${modelsRes.defaultEffort}`
       );
@@ -199,8 +199,8 @@ async function main() {
         json: {
           repositoryId: 'test-project',
           prompt: samplePrompt,
-          model: 'gemini-3.8-flash',
-          effort: 'medium',
+          // One hop: the hop's own effort is what reaches `agy --effort`.
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
           pushBranch: false, // Local test: keep branch locally without git remote
         },
       })
@@ -290,7 +290,7 @@ async function main() {
     console.log(`[E2E Test] - Binary: ${call.binary}`);
     console.log(`[E2E Test] - Args: ${JSON.stringify(call.args)}`);
     const expectedFooter =
-      '*Dispatched via Agylity (immediate) with `gemini-3.8-flash` (medium reasoning) — please review carefully.*';
+      '*Dispatched via Agylity (immediate) with `gemini-4-hydrogen` (medium reasoning) — please review carefully.*';
     if (
       call.args[0] !== '-p' ||
       !call.args[1]?.startsWith(samplePrompt) ||
@@ -300,11 +300,16 @@ async function main() {
         `Prompt mismatch in CLI call: expected "${samplePrompt}" with flat footer, got "${call.args[1]}"`
       );
     }
-    if (!call.args.includes('--model') || !call.args.includes('gemini-3.8-flash')) {
-      throw new Error('Default model gemini-3.8-flash not passed to agy CLI');
+    const modelIdx = call.args.indexOf('--model');
+    const effortIdx = call.args.indexOf('--effort');
+    // The dispatch body was a cascade, so the hop's model AND the hop's effort must arrive paired.
+    if (modelIdx === -1 || call.args[modelIdx + 1] !== 'gemini-4-hydrogen') {
+      throw new Error(
+        `Expected '--model gemini-4-hydrogen', got ${JSON.stringify(call.args.slice(-4))}`
+      );
     }
-    if (!call.args.includes('--effort') || !call.args.includes('medium')) {
-      throw new Error('Default effort medium not passed to agy CLI');
+    if (effortIdx === -1 || call.args[effortIdx + 1] !== 'medium') {
+      throw new Error(`Expected '--effort medium', got ${JSON.stringify(call.args.slice(-4))}`);
     }
 
     console.log('\n[Success] ALL E2E DISPATCH & WORKER VERIFICATIONS PASSED CLEANLY!\n');

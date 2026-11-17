@@ -2,10 +2,14 @@ import type http from 'node:http';
 import { sendJson, methodNotAllowed, readJsonBody, safeDecodeSegment } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { isSecretKey, isSecretMask, maskSecret, SECRET_MASK } from '../../storage/crypto.js';
-import { validateConfigOverridePatch } from '../../config/schema.js';
+import {
+  BUILTIN_DEFAULTS,
+  ENV_TO_CONFIG_KEY,
+  FORBIDDEN_CONFIG_KEYS,
+  validateConfigOverridePatch,
+} from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
-/** Object-valued secrets (e.g. webhookCustomHeaders) are set when they carry any entry. */
 const isSecretSet = (value: unknown): boolean => {
   if (typeof value === 'string') return value.trim() !== '';
   return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
@@ -15,8 +19,6 @@ export const sanitizeConfigForClient = (config: Record<string, any>): Record<str
   const result: Record<string, any> = { ...config };
   for (const [k, v] of Object.entries(result)) {
     if (!isSecretKey(k)) continue;
-    // Never hand the client the stored value. A blank one would read as "unset", and a blank
-    // write deletes the override, so a configured object secret still renders as the mask.
     result[k] = typeof v === 'string' ? maskSecret(v) : isSecretSet(v) ? SECRET_MASK : '';
   }
   return result;
@@ -66,12 +68,47 @@ export const handleConfigEndpoint = async (
       return sendJson(res, 400, { error: 'Payload must be a JSON object' });
     }
 
+    const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
+
+    const isKeyValueForm =
+      typeof payload.key === 'string' && 'value' in payload && Object.keys(payload).length === 2;
+    const isEnvelope =
+      !isKeyValueForm && (Object.hasOwn(payload, 'set') || Object.hasOwn(payload, 'clear'));
+
     const patchToValidate: Record<string, unknown> = {};
-    if (
-      typeof payload.key === 'string' &&
-      'value' in payload &&
-      Object.keys(payload).length === 2
-    ) {
+    const keysToClear: string[] = [];
+
+    if (isEnvelope) {
+      const unexpected = Object.keys(payload).filter((k) => k !== 'set' && k !== 'clear');
+      if (unexpected.length > 0) {
+        return sendJson(res, 400, {
+          error: `Unexpected fields in config write: ${unexpected.join(', ')}`,
+        });
+      }
+      if (payload.set !== undefined && !isPlainObject(payload.set)) {
+        return sendJson(res, 400, { error: '`set` must be a JSON object' });
+      }
+      if (payload.clear !== undefined && !Array.isArray(payload.clear)) {
+        return sendJson(res, 400, { error: '`clear` must be an array of configuration keys' });
+      }
+      for (const entry of (payload.clear ?? []) as unknown[]) {
+        if (typeof entry !== 'string' || entry.trim() === '') {
+          return sendJson(res, 400, {
+            error: '`clear` entries must be non-empty configuration keys',
+          });
+        }
+        const key = entry.trim();
+        if (FORBIDDEN_CONFIG_KEYS.has(key) || !Object.hasOwn(BUILTIN_DEFAULTS, key)) {
+          const normalized = ENV_TO_CONFIG_KEY[key];
+          if (!normalized || FORBIDDEN_CONFIG_KEYS.has(normalized)) {
+            return sendJson(res, 400, { error: `Unknown configuration key: ${key}` });
+          }
+        }
+        if (!keysToClear.includes(key)) keysToClear.push(key);
+      }
+      Object.assign(patchToValidate, payload.set ?? {});
+    } else if (isKeyValueForm) {
       patchToValidate[payload.key] = payload.value;
     } else {
       Object.assign(patchToValidate, payload);
@@ -94,35 +131,49 @@ export const handleConfigEndpoint = async (
       return sendJson(res, 400, { error: err.message });
     }
 
+    const cleared: string[] = [];
+    const clearedSet = new Set<string>();
+
+    const handleClear = (key: string) => {
+      options.configStore.deleteOverride(key);
+      if (!clearedSet.has(key)) {
+        clearedSet.add(key);
+        cleared.push(key);
+      }
+    };
+
     const handleSet = (key: string, value: unknown) => {
       if (isSecretKey(key)) {
         if (isSecretMask(value)) {
           return; // preserve existing secret, do not overwrite with mask
         }
         if (value === null || value === '') {
-          options.configStore.deleteOverride(key);
+          handleClear(key);
           return;
         }
       }
       options.configStore.setOverride(key, value);
     };
 
+    // Deletes first so an explicit `set` of the same key wins over its `clear`.
+    for (const key of keysToClear) handleClear(key);
+
     for (const [k, v] of Object.entries(patchToValidate)) {
-      // Store the value the schema produced, not the raw one: repositories entries, for one,
-      // only gain their derived id/defaultBranch through validation.
       handleSet(k, Object.hasOwn(validatedPatch, k) ? validatedPatch[k] : v);
     }
 
     const updatedResolved = options.configStore.resolveConfig();
     const updatedOverrides = options.configStore.getAllOverrides();
-    const keys = typeof payload.key === 'string' ? [payload.key] : Object.keys(payload);
-    log.info('Configuration updated via Web API (keys: %s)', keys.join(', '));
+    const keys = typeof payload.key === 'string' ? [payload.key] : Object.keys(patchToValidate);
+    const touched = [...keys, ...cleared];
+    log.info('Configuration updated via Web API (keys: %s)', touched.join(', ') || 'none');
     return sendJson(res, 200, {
       success: true,
       resolved: sanitizeConfigForClient(updatedResolved),
       overrides: sanitizeConfigForClient(updatedOverrides),
       sources: options.configStore.getSources?.() ?? {},
       secretsMeta: getSecretsMeta(updatedResolved),
+      cleared,
     });
   }
 

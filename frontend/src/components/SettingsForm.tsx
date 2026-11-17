@@ -1,7 +1,10 @@
 import { useState } from 'preact/hooks';
-import { normalizeModelId } from '../config/fields';
+import { autocompleteForType, normalizeModelId } from '../config/fields';
 import type { ConfigData, ToastState } from '../types';
-import { updateConfig, deleteConfigOverride } from '../api';
+import { deleteConfigOverride } from '../api';
+import { clearDraft, configStore, dirtyKeys, saveDrafts, setDraft } from '../state/configStore';
+import { useStore } from '../state/store';
+import { ProvenanceBadge } from './settings/ProvenanceBadge';
 import { StatusBanner } from './StatusBanner';
 import { ToggleSwitch } from './ToggleSwitch';
 
@@ -13,6 +16,7 @@ export interface FieldDef {
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;
   colSpan?: 1 | 2;
+  autocomplete?: string;
 }
 
 interface SettingsFormProps {
@@ -21,37 +25,15 @@ interface SettingsFormProps {
   fields: FieldDef[];
   config: ConfigData;
   onSaved: () => void;
-  /** Live catalog options; the static field options are the pre-load fallback. */
   modelOptions?: Array<{ value: string; label: string }>;
+  searchQuery?: string;
 }
 
-/** Field keys whose options come from the live model catalog rather than the static list. */
 const CATALOG_OPTION_KEYS = new Set(['defaultDispatchModel']);
 
 const toDisplay = (value: unknown): string => {
   if (value === undefined || value === null) return '';
   return Array.isArray(value) ? value.join(', ') : String(value);
-};
-
-const parseValue = (field: FieldDef, raw: string): unknown => {
-  if (field.type === 'number') {
-    if (raw === '' || raw === undefined) return undefined;
-    const num = Number(raw);
-    return Number.isFinite(num) ? num : undefined;
-  }
-  if (field.type === 'list') {
-    return raw
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  if (field.type === 'select' && (raw === 'true' || raw === 'false')) {
-    return raw === 'true';
-  }
-  if (field.type === 'boolean') {
-    return raw === 'true';
-  }
-  return raw;
 };
 
 const normalizeValueForField = (
@@ -61,6 +43,21 @@ const normalizeValueForField = (
 ): string =>
   field.key === 'defaultDispatchModel' ? normalizeModelId(rawValue, modelIds) : rawValue;
 
+const autocompleteFor = (field: FieldDef): string =>
+  field.autocomplete ?? autocompleteForType(field.type);
+
+const fieldMatches = (field: FieldDef, query: string): boolean => {
+  const haystack = [field.label, field.key, field.hint, field.placeholder]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((term) => haystack.includes(term));
+};
+
 export const SettingsForm = ({
   title,
   description,
@@ -68,18 +65,26 @@ export const SettingsForm = ({
   config,
   onSaved,
   modelOptions = [],
+  searchQuery,
 }: SettingsFormProps) => {
-  const [draft, setDraft] = useState<Record<string, string>>({});
+  const { drafts, saving } = useStore(configStore);
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
-  const [isSaving, setIsSaving] = useState(false);
   const [toast, setToast] = useState<ToastState | null>(null);
 
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
   const modelIds = modelOptions.map((o) => ({ id: o.value }));
 
+  const formKeys = fields.map((f) => f.key);
+  const formKeySet = new Set(formKeys);
+  // Dirty keys compare against the server config: a filtered-out row still counts.
+  const formDirtyKeys = dirtyKeys(config).filter((key) => formKeySet.has(key));
+
+  const query = (searchQuery ?? '').trim();
+  const visibleFields = query ? fields.filter((f) => fieldMatches(f, query)) : fields;
+
   const valueOf = (field: FieldDef): string => {
-    if (draft[field.key] !== undefined) return draft[field.key];
+    if (drafts[field.key] !== undefined) return drafts[field.key];
     if (field.type === 'password') return '';
     const source = overrides[field.key] ?? resolved[field.key];
     const raw = toDisplay(source);
@@ -98,68 +103,39 @@ export const SettingsForm = ({
     return options;
   };
 
-  const dirtyKeys = fields
-    .map((f) => f.key)
-    .filter((k) => {
-      if (draft[k] === undefined) return false;
-      const field = fields.find((f) => f.key === k);
-      if (field?.type === 'password') {
-        return draft[k].trim() !== '';
-      }
-      const rawCurrent = toDisplay(overrides[k] ?? resolved[k]);
-      const current = field ? normalizeValueForField(field, rawCurrent, modelIds) : rawCurrent;
-      return draft[k] !== current;
-    });
-
   const handleReset = () => {
-    setDraft({});
+    for (const key of formKeys) clearDraft(key);
     setToast(null);
   };
 
   const handleSave = async (e: Event) => {
     e.preventDefault();
-    if (dirtyKeys.length === 0) return;
+    if (formDirtyKeys.length === 0) return;
 
-    setIsSaving(true);
     setToast(null);
-
     try {
-      const updates: Record<string, unknown> = {};
-      for (const key of dirtyKeys) {
-        const field = fields.find((f) => f.key === key);
-        if (!field) continue;
-
-        const raw = draft[key];
-        if (field.type === 'password') {
-          if (raw.trim() !== '') {
-            updates[key] = raw.trim();
-          }
-        } else if (raw === '' && overrides[key] !== undefined) {
-          await deleteConfigOverride(key);
-        } else if (raw !== '') {
-          const val = parseValue(field, raw);
-          if (val !== undefined) {
-            updates[key] = val;
-          }
-        }
-      }
-
-      if (Object.keys(updates).length > 0) {
-        await updateConfig(updates);
-      }
-
+      await saveDrafts(formKeys);
       setToast({
         type: 'success',
-        message: `Saved ${dirtyKeys.length} setting${dirtyKeys.length === 1 ? '' : 's'}!`,
+        message: `Saved ${formDirtyKeys.length} setting${formDirtyKeys.length === 1 ? '' : 's'}!`,
       });
-      setDraft({});
       onSaved();
     } catch (err: any) {
       setToast({ type: 'error', message: err?.message || 'Failed to save settings' });
-    } finally {
-      setIsSaving(false);
     }
   };
+
+  const handleDropOverride = async (key: string) => {
+    try {
+      await deleteConfigOverride(key);
+      clearDraft(key);
+      onSaved();
+    } catch (err: any) {
+      setToast({ type: 'error', message: err?.message || 'Failed to reset' });
+    }
+  };
+
+  if (query && visibleFields.length === 0) return null;
 
   const inputClass =
     'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris';
@@ -168,35 +144,15 @@ export const SettingsForm = ({
     <form
       onSubmit={handleSave}
       autoComplete="off"
-      class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm"
+      class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6"
     >
-      {/* Hidden dummy credentials to trap aggressive browser autofill */}
-      <input
-        id="autofill-trap-username"
-        name="autofill_trap_username"
-        type="text"
-        style={{ display: 'none' }}
-        tabIndex={-1}
-        aria-hidden="true"
-        autoComplete="off"
-      />
-      <input
-        id="autofill-trap-password"
-        name="autofill_trap_password"
-        type="password"
-        style={{ display: 'none' }}
-        tabIndex={-1}
-        aria-hidden="true"
-        autoComplete="off"
-      />
-
       <div>
         <h2 class="text-lg font-semibold text-pine-text">{title}</h2>
         {description && <p class="mt-0.5 text-xs text-pine-subtle">{description}</p>}
       </div>
 
       <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {fields.map((f) => {
+        {visibleFields.map((f) => {
           const isSecret = f.type === 'password';
           const isConfigured = Boolean(config.secretsMeta?.[f.key]?.isSet || resolved[f.key]);
           const placeholder =
@@ -208,39 +164,38 @@ export const SettingsForm = ({
               key={f.key}
               class={`flex flex-col gap-1.5 ${f.colSpan === 2 ? 'md:col-span-2' : ''}`}
             >
-              <label
-                class="flex items-center justify-between text-xs font-medium text-pine-subtle"
-                for={`f-${f.key}`}
-              >
-                <span>{f.label}</span>
-                {Object.prototype.hasOwnProperty.call(overrides, f.key) && (
-                  <span class="flex items-center gap-1.5">
-                    <span class="font-mono text-xs text-pine-gold">override</span>
+              <div class="flex items-center justify-between gap-2 text-xs font-medium text-pine-subtle">
+                {f.type === 'boolean' ? (
+                  <span class="min-w-0 truncate" title={f.label}>
+                    {f.label}
+                  </span>
+                ) : (
+                  <label class="min-w-0 truncate" for={`f-${f.key}`} title={f.label}>
+                    {f.label}
+                  </label>
+                )}
+                <span class="flex shrink-0 items-center gap-1.5">
+                  <ProvenanceBadge
+                    source={config.sources?.[f.key]}
+                    isSecretSet={config.secretsMeta?.[f.key]?.isSet}
+                    secret={isSecret}
+                  />
+                  {Object.prototype.hasOwnProperty.call(overrides, f.key) && !isSecret && (
                     <button
                       type="button"
                       class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love"
-                      onClick={async () => {
-                        try {
-                          await deleteConfigOverride(f.key);
-                          const nextDraft = { ...draft };
-                          delete nextDraft[f.key];
-                          setDraft(nextDraft);
-                          onSaved();
-                        } catch (err: any) {
-                          setToast({ type: 'error', message: err?.message || 'Failed to reset' });
-                        }
-                      }}
+                      onClick={() => handleDropOverride(f.key)}
                     >
                       (reset)
                     </button>
-                  </span>
-                )}
-              </label>
+                  )}
+                </span>
+              </div>
               {f.type === 'boolean' ? (
                 <div class="flex items-center gap-3 rounded-lg border border-pine-highlight px-3 py-2">
                   <ToggleSwitch
                     checked={valueOf(f) === 'true'}
-                    onChange={(next) => setDraft({ ...draft, [f.key]: String(next) })}
+                    onChange={(next) => setDraft(f.key, String(next))}
                     label={f.label}
                   />
                   <span class="text-sm text-pine-text">
@@ -251,11 +206,10 @@ export const SettingsForm = ({
                 <select
                   id={`f-${f.key}`}
                   name={`agylity_cfg_${f.key}`}
+                  autoComplete={autocompleteFor(f)}
                   class={`${inputClass} cursor-pointer`}
                   value={valueOf(f)}
-                  onChange={(e) =>
-                    setDraft({ ...draft, [f.key]: (e.target as HTMLSelectElement).value })
-                  }
+                  onChange={(e) => setDraft(f.key, (e.target as HTMLSelectElement).value)}
                 >
                   {optionsFor(f).map((o) => (
                     <option key={o.value} value={o.value}>
@@ -269,7 +223,7 @@ export const SettingsForm = ({
                     id={`f-${f.key}`}
                     name={`agylity_cfg_${f.key}`}
                     type={showSecrets[f.key] ? 'text' : 'password'}
-                    autoComplete="new-password"
+                    autoComplete={autocompleteFor(f)}
                     data-1p-ignore="true"
                     data-lpignore="true"
                     data-form-type="other"
@@ -279,23 +233,14 @@ export const SettingsForm = ({
                       f.placeholder ?? (isConfigured ? 'Enter new secret to update...' : undefined)
                     }
                     value={valueOf(f)}
-                    onInput={(e) =>
-                      setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })
-                    }
+                    onInput={(e) => setDraft(f.key, (e.target as HTMLInputElement).value)}
                   />
                   <div class="absolute right-2 flex items-center gap-1">
                     {isConfigured && (
                       <button
                         type="button"
                         class="cursor-pointer rounded-sm px-1.5 py-0.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-love focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-                        onClick={async () => {
-                          try {
-                            await deleteConfigOverride(f.key);
-                            onSaved();
-                          } catch (err: any) {
-                            setToast({ type: 'error', message: err?.message || 'Failed to clear' });
-                          }
-                        }}
+                        onClick={() => handleDropOverride(f.key)}
                       >
                         Clear
                       </button>
@@ -317,29 +262,26 @@ export const SettingsForm = ({
                   id={`f-${f.key}`}
                   name={`agylity_cfg_${f.key}`}
                   type={f.type === 'number' ? 'number' : 'text'}
-                  autoComplete="off"
+                  autoComplete={autocompleteFor(f)}
                   data-1p-ignore="true"
                   data-lpignore="true"
                   class={inputClass}
                   placeholder={placeholder}
                   value={valueOf(f)}
-                  onInput={(e) =>
-                    setDraft({ ...draft, [f.key]: (e.target as HTMLInputElement).value })
-                  }
+                  onInput={(e) => setDraft(f.key, (e.target as HTMLInputElement).value)}
                 />
               )}
-              {f.hint && <p class="text-xs text-pine-subtle sm:text-sm">{f.hint}</p>}
+              {f.hint && <p class="text-xs text-pine-subtle">{f.hint}</p>}
             </div>
           );
         })}
       </div>
 
-      {/* Bottom Action Bar */}
       <div class="flex flex-wrap items-center justify-between gap-4 border-t border-pine-highlight pt-4">
         <div>
-          {dirtyKeys.length > 0 ? (
+          {formDirtyKeys.length > 0 ? (
             <span class="text-xs font-medium text-pine-gold">
-              {dirtyKeys.length} unsaved {dirtyKeys.length === 1 ? 'change' : 'changes'}
+              {formDirtyKeys.length} unsaved {formDirtyKeys.length === 1 ? 'change' : 'changes'}
             </span>
           ) : (
             <span class="text-xs text-pine-subtle">
@@ -352,7 +294,7 @@ export const SettingsForm = ({
           <button
             type="button"
             onClick={handleReset}
-            disabled={isSaving || dirtyKeys.length === 0}
+            disabled={saving || formDirtyKeys.length === 0}
             class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text disabled:cursor-not-allowed disabled:opacity-40"
           >
             Reset
@@ -360,10 +302,10 @@ export const SettingsForm = ({
 
           <button
             type="submit"
-            class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base shadow-sm transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={isSaving || dirtyKeys.length === 0}
+            class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={saving || formDirtyKeys.length === 0}
           >
-            {isSaving ? 'Saving...' : 'Save changes'}
+            {saving ? 'Saving...' : 'Save changes'}
           </button>
         </div>
       </div>

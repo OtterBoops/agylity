@@ -20,7 +20,6 @@ export interface EmbedBuildOptions {
   baseUrl?: string;
 }
 
-// Builders append their own leading-slash route, so a trailing slash on the origin would double up.
 const buildDashboardLink = (baseUrl: string | undefined, path: string): string | undefined => {
   const base = baseUrl?.trim().replace(/\/+$/, '');
   return base ? `${base}${path}` : undefined;
@@ -34,8 +33,6 @@ const embedTimestamp = (value?: string): string => {
     : new Date().toISOString();
 };
 
-// One pool rendering shared by the status and alert embeds so the two cannot drift. The field
-// NAME carries the pool and its headline figure, so each pool reads as a single scannable line.
 const renderPoolFieldName = (pool: QuotaSnapshot, includePoolName = true): string => {
   const weekly = pool.weekly ?? pool;
   const label = includePoolName ? `${pool.displayName || pool.poolId || 'Quota Pool'} ` : '';
@@ -193,7 +190,6 @@ export const formatDurationHuman = (durationMs?: number): string => {
     return '0s';
   const sec = durationMs / 1000;
   if (sec < 60) return `${sec.toFixed(1)}s`;
-  // Round before splitting, so 119.6s reads "2m" and never "1m 60s".
   const wholeSec = Math.round(sec);
   const mins = Math.floor(wholeSec / 60);
   const remSec = wholeSec % 60;

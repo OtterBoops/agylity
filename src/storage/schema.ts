@@ -9,7 +9,6 @@ export interface ColumnSpec {
 export const renderColumns = (columns: readonly ColumnSpec[]): string =>
   columns.map((column) => `        ${column.ddl}`).join(',\n');
 
-// ALTER TABLE ADD COLUMN cannot add PRIMARY KEY/UNIQUE columns or NOT NULL columns without a default.
 const isAddableColumn = (ddl: string): boolean => {
   const upper = ddl.toUpperCase();
   if (upper.includes('PRIMARY KEY') || upper.includes('UNIQUE')) return false;
@@ -17,7 +16,7 @@ const isAddableColumn = (ddl: string): boolean => {
   return true;
 };
 
-// Additively upgrades a table to its expected column set. Never drops or rewrites a column; it only
+/** Additively upgrades a table to its expected column set; never drops or rewrites a column. */
 export const migrateColumns = (
   db: DatabaseSync,
   tableName: string,

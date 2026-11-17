@@ -3,7 +3,6 @@ import type http from 'node:http';
 
 const MAPPED_V4_PREFIX = '::ffff:';
 
-/** The hex tail of a mapped address (`c0a8:0101`), as a dotted quad. */
 const hexPairToDotted = (tail: string): string | null => {
   const match = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
   if (!match) return null;
@@ -12,9 +11,8 @@ const hexPairToDotted = (tail: string): string | null => {
   return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
 };
 
-// Normalizes IPv4-mapped IPv6 addresses (e.g. ::ffff:192.168.1.1 -> 192.168.1.1).
-// The suffix is only rewritten when it really is IPv4: slicing blindly turned the equally
-// valid ::ffff:7f00:1 into "7f00:1", which is no address at all.
+// The suffix of a mapped address is only rewritten when it really is IPv4: slicing blindly
+// turned the equally valid ::ffff:7f00:1 into "7f00:1", which is no address at all.
 export const normalizeIp = (ip: string): string => {
   const trimmed = ip.trim();
   if (!trimmed.toLowerCase().startsWith(MAPPED_V4_PREFIX)) {
@@ -44,7 +42,6 @@ const ipv4ToBigInt = (ip: string): bigint | null => {
 };
 
 const ipv6ToBigInt = (ip: string): bigint | null => {
-  // Handle mixed IPv4-in-IPv6 if present
   const lastColon = ip.lastIndexOf(':');
   if (lastColon !== -1 && ip.slice(lastColon + 1).includes('.')) {
     const ipv4Part = ip.slice(lastColon + 1);
@@ -83,7 +80,6 @@ const ipv6ToBigInt = (ip: string): bigint | null => {
   return res;
 };
 
-/** Strict decimal prefix. An empty string, a hex/exponent form or an out-of-range value is invalid. */
 const parsePrefix = (prefixStr: string | null, maxBits: number): number | null => {
   if (prefixStr === null) return maxBits;
   if (!/^\d{1,3}$/.test(prefixStr)) return null;
@@ -196,22 +192,19 @@ export const extractClientIp = (
 
   if (trustedProxies) {
     if (isTrustedProxyPeer(peerIp, trustedProxyRanges)) {
-      // Cloudflare edge connecting IP
       const cfIp = req.headers['cf-connecting-ip'];
       if (typeof cfIp === 'string' && cfIp.trim()) {
         const norm = normalizeIp(cfIp.trim());
         if (net.isIP(norm) !== 0) return norm;
       }
 
-      // Direct Nginx / Caddy X-Real-IP
       const xRealIp = req.headers['x-real-ip'];
       if (typeof xRealIp === 'string' && xRealIp.trim()) {
         const norm = normalizeIp(xRealIp.trim());
         if (net.isIP(norm) !== 0) return norm;
       }
 
-      // X-Forwarded-For is walked from the RIGHT, skipping trusted hops: a client-supplied
-      // prefix must never be able to name its own address.
+      // X-Forwarded-For is walked from the RIGHT, skipping trusted hops: a client prefix cannot name itself.
       const xForwardedFor = req.headers['x-forwarded-for'];
       if (typeof xForwardedFor === 'string' && xForwardedFor.trim()) {
         const hops = xForwardedFor

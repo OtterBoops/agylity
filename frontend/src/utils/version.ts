@@ -32,9 +32,7 @@ export const fetchLatestRelease = (): Promise<{ latest: string; url: string } | 
           return { latest: parsed.tag, url: parsed.url };
         }
       }
-    } catch {
-      // ignore cache parse issues
-    }
+    } catch {}
 
     try {
       const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
@@ -58,14 +56,10 @@ export const fetchLatestRelease = (): Promise<{ latest: string; url: string } | 
               timestamp: Date.now(),
             })
           );
-        } catch {
-          // quota exceeded or disabled
-        }
+        } catch {}
         return { latest: tag, url };
       }
-    } catch {
-      // network failure or offline
-    }
+    } catch {}
 
     return null;
   })().finally(() => {

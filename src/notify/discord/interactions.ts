@@ -3,15 +3,14 @@ import type { DispatchRequest, DispatchResult, QuotaSnapshot } from '../types.js
 import { logger } from '../../logs/logger.js';
 import {
   CANONICAL_AGY_MODELS,
-  ReasoningEffortSchema,
   resolveConcreteModelId,
+  resolveReasoningEffortForModel,
 } from '../../coordinator/models.js';
 import type { DiscordNotifierOptions } from './types.js';
 import { TaskPromptSchema } from './commands.js';
 import { renderQuotaEmbed } from './embeds.js';
 import { createRepoSelectMenu, createDispatchModal } from './components.js';
 
-// Live context handed to the interaction handlers: the notifier's config, callbacks and shared
 export interface DiscordInteractionDeps {
   config: ResolvedConfig;
   options: DiscordNotifierOptions;
@@ -31,7 +30,6 @@ const readStringSelect = (interaction: any, customId: string): string => {
   }
 };
 
-// Retains a dispatched interaction for status relaying: evicts the oldest entry past the cap and
 const retainInteraction = (deps: DiscordInteractionDeps, key: string, interaction: any): void => {
   deps.activeInteractions.set(key, interaction);
   while (deps.activeInteractions.size > deps.maxActiveInteractions) {
@@ -42,7 +40,6 @@ const retainInteraction = (deps: DiscordInteractionDeps, key: string, interactio
   setTimeout(() => deps.activeInteractions.delete(key), deps.interactionRetentionMs).unref?.();
 };
 
-// Main interaction dispatcher handling commands, selects, and modals.
 export const routeInteraction = async (
   deps: DiscordInteractionDeps,
   interaction: any
@@ -82,8 +79,6 @@ export const routeInteraction = async (
   }
 };
 
-// Autocomplete is served live from the current config, so the offered choices never go stale
-// the way baked-in command choices do (those need a re-register to change).
 const handleAutocomplete = async (
   deps: DiscordInteractionDeps,
   interaction: any
@@ -105,9 +100,7 @@ const handleAutocomplete = async (
 
   try {
     await interaction.respond(filtered);
-  } catch {
-    // An autocomplete response is best-effort and must never surface an error.
-  }
+  } catch {}
 };
 
 const handleDispatchCommand = async (
@@ -129,9 +122,7 @@ const handleDispatchCommand = async (
   if (canDefer) {
     try {
       await interaction.deferReply({ ephemeral: true });
-    } catch {
-      // Safe catch on defer
-    }
+    } catch {}
   }
 
   const repositoryId = interaction.options?.getString?.('repository') ?? '';
@@ -169,8 +160,9 @@ const handleDispatchCommand = async (
       prompt: prompt.trim(),
       requestedBy,
       requestedByUserId,
-      model,
-      effort,
+      cascade: model
+        ? [{ model, effort: resolveReasoningEffortForModel(model, effort) }]
+        : undefined,
     });
 
     if (result.taskId) {
@@ -239,9 +231,7 @@ const handleQuotaCommand = async (
   if (canDefer) {
     try {
       await interaction.deferReply();
-    } catch {
-      // Safe catch on interaction defer
-    }
+    } catch {}
   }
 
   let snapshots: QuotaSnapshot[] = [];
@@ -278,9 +268,7 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
           content: ownerCheck.reason,
           ephemeral: true,
         });
-      } catch {
-        // Safe catch on interaction reply
-      }
+      } catch {}
     }
     return;
   }
@@ -294,9 +282,7 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
             '[Notice] No repositories are currently configured. Please configure repositories in settings.',
           ephemeral: true,
         });
-      } catch {
-        // Safe catch on interaction reply
-      }
+      } catch {}
     }
     return;
   }
@@ -322,7 +308,6 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
 };
 
 const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any): Promise<void> => {
-  // 3s Discord timeout guard: defer immediately before async tasks
   try {
     await interaction.deferReply({ ephemeral: false });
   } catch (err: any) {
@@ -339,7 +324,6 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     return;
   }
 
-  // Deduplication / Debounce guard for rapid duplicate clicks
   const userId = interaction.user?.id ?? 'user';
   const submissionKey = `${userId}_${interaction.customId}`;
   if (deps.activeSubmissions.has(submissionKey)) {
@@ -385,7 +369,6 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     }
     const prompt = parseResult.data;
 
-    // Register interaction for asynchronous status update relay
     if (repoId) deps.activeInteractions.set(repoId, interaction);
     if (repoName) deps.activeInteractions.set(repoName, interaction);
 
@@ -400,14 +383,10 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
       };
 
       if (selectedModel) {
-        dispatchPayload.model = resolveConcreteModelId(
-          selectedModel,
-          deps.config.defaultDispatchModel
-        );
-      }
-      const effortParse = ReasoningEffortSchema.safeParse(selectedEffort);
-      if (effortParse.success) {
-        dispatchPayload.effort = effortParse.data;
+        const concrete = resolveConcreteModelId(selectedModel, deps.config.defaultDispatchModel);
+        dispatchPayload.cascade = [
+          { model: concrete, effort: resolveReasoningEffortForModel(concrete, selectedEffort) },
+        ];
       }
       if (alertPoolFamily) {
         dispatchPayload.poolFamily = alertPoolFamily;
@@ -456,9 +435,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
       await interaction.editReply({
         content: msg,
       });
-    } catch {
-      // Safe catch on secondary errors
-    }
+    } catch {}
   } finally {
     deps.activeSubmissions.delete(submissionKey);
     const isQueuedTask =

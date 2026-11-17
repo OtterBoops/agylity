@@ -6,7 +6,6 @@ export interface ModelCatalogState {
   models: ModelCatalogEntry[];
   defaultModel: string | null;
   defaultEffort: string | null;
-  /** Models the server could not attribute to a quota pool; they are deliberately unselectable. */
   unattributedModels: string[];
   loaded: boolean;
 }
@@ -37,17 +36,12 @@ const publish = (next: ModelCatalogState): ModelCatalogState => {
 
 export const getModelCatalog = (): ModelCatalogState => state;
 
-/**
- * One shared fetch for every view that offers model choice, so the dashboard shows whatever
- * models the CLI reports without a per-component request.
- */
 export const loadModelCatalog = async (force = false): Promise<ModelCatalogState> => {
   if (!force && state.loaded) return state;
   if (inFlight) return inFlight;
 
   inFlight = getModels()
     .then((res) => {
-      // An empty list means the endpoint failed; keep the last good catalog rather than blanking.
       if (!res.models || res.models.length === 0) {
         return publish({ ...state, loaded: true });
       }
@@ -83,7 +77,6 @@ export const useModelCatalog = (): ModelCatalogState => {
   return snapshot;
 };
 
-/** Catalog entries as select options, ordered as the CLI reports them. */
 export const toModelOptions = (
   models: ModelCatalogEntry[]
 ): Array<{ value: string; label: string }> => models.map((m) => ({ value: m.id, label: m.label }));

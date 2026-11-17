@@ -17,9 +17,8 @@ type ExecFileFailure = Error & {
   stderr?: string;
 };
 
-// execFile only kills the direct child on timeout/abort, so `agy`'s own children keep running
-// against the checkout. Spawning detached (POSIX) or via taskkill /T (Windows) takes the whole
-// tree down, and the promise contract stays execFile's: { stdout, stderr } or an error carrying both.
+// execFile kills only the direct child on timeout, so `agy`'s own children keep running against the
+// checkout; spawning detached (POSIX) or taskkill /T (Windows) takes the whole tree down.
 export const defaultExecFileAsync: ExecFileAsyncFn = (
   file: string,
   args: readonly string[],
@@ -39,7 +38,6 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
       env: {
         ...process.env,
         ...callerEnv,
-        // Windows only: agy's update check flashes a console window there.
         ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
       },
     });
@@ -53,7 +51,6 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
     const killTree = (): void => {
       if (!child.pid) return;
       if (process.platform === 'win32') {
-        // /T walks the child tree; /F is required for a process that ignores a polite signal.
         const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
           windowsHide: true,
           stdio: 'ignore',
@@ -152,7 +149,6 @@ export interface DiscoveredLanguageServer {
 
 const CSRF_TOKEN_RE = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i;
 
-// Extracts listening loopback ports owned by an exact PID from `netstat -ano` output.
 export const parseWindowsNetstatPorts = (netstatOut: string, pid: string): number[] => {
   const ports: number[] = [];
   for (const line of netstatOut.split('\n')) {
@@ -176,7 +172,7 @@ export const discoverWindowsLanguageServer = async (
   let commandLine = '';
   const rawPorts: number[] = [];
 
-  // 1. Silent WMI query via GUI subsystem (wscript.exe) to strictly prevent console window allocation in Windows 11
+  // The WMI query runs through the GUI subsystem (wscript.exe) to prevent a console window allocation on Windows 11.
   try {
     const { stdout: tasklistOut } = await execFileFn(
       'tasklist',
@@ -187,18 +183,14 @@ export const discoverWindowsLanguageServer = async (
     if (pidMatch && pidMatch[1]) {
       const pid = pidMatch[1];
 
-      // Netstat to find listening loopback ports for the PID
       try {
         const { stdout: netstatOut } = await execFileFn('netstat', ['-ano', '-p', 'tcp'], {
           windowsHide: true,
           timeout: 3000,
         });
         rawPorts.push(...parseWindowsNetstatPorts(netstatOut, pid));
-      } catch {
-        // Netstat lookup is best effort
-      }
+      } catch {}
 
-      // Query CommandLine via wscript.exe (GUI subsystem executable: zero console window)
       const tmpVbs = path.join(
         os.tmpdir(),
         `agylity_wmi_${Date.now()}_${Math.random().toString(36).slice(2)}.vbs`
@@ -235,11 +227,8 @@ export const discoverWindowsLanguageServer = async (
         } catch {}
       }
     }
-  } catch {
-    // Fallback if tasklist/wscript is unavailable
-  }
+  } catch {}
 
-  // Probe for the CSRF token whenever it is still missing, even if ports were already found
   if (!CSRF_TOKEN_RE.test(commandLine)) {
     const psScript = `
     $proc = Get-Process -Name 'language_server' -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -266,9 +255,7 @@ export const discoverWindowsLanguageServer = async (
             .filter((n) => !Number.isNaN(n) && n > 0)
         );
       }
-    } catch {
-      // Best-effort
-    }
+    } catch {}
   }
 
   const csrfMatch = CSRF_TOKEN_RE.exec(commandLine);
@@ -340,9 +327,7 @@ export const discoverUnixLanguageServer = async (
           const p = /:(\d+)\s+\(LISTEN\)/.exec(line);
           if (p && p[1]) rawPorts.push(Number(p[1]));
         }
-      } catch {
-        // Socket lookup is best-effort
-      }
+      } catch {}
     }
   }
 
@@ -365,7 +350,6 @@ export const discoverLocalLanguageServer = async (
     }
     return await discoverUnixLanguageServer(execFileFn);
   } catch {
-    // Process discovery is best-effort
     return null;
   }
 };

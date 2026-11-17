@@ -35,8 +35,7 @@ export interface DispatchRequest {
   prompt: string;
   requestedBy: string;
   requestedByUserId?: string;
-  model?: string;
-  effort?: 'low' | 'medium' | 'high' | 'xhigh';
+  cascade?: { model: string; effort: 'low' | 'medium' | 'high' | 'xhigh' }[];
   runnerMode?: 'headless' | 'visible' | 'any';
   poolFamily?: string;
   requiredLabels?: string[];
@@ -56,21 +55,14 @@ export interface DispatchResult {
   code?: string;
 }
 
-/** Per-channel outcome of a single notification delivery attempt. */
 export interface DeliveryChannelResult {
   success: boolean;
   error?: string;
 }
 
-/**
- * A silent operational notice. It is delivered through the configured channels but never
- * carries an owner mention, so an informational event cannot ring anyone's phone.
- */
 export interface InfoNotice {
-  /** Short headline, rendered after the [Notice] tag. */
   title: string;
   message: string;
-  /** Dashboard route the embed links to when it differs from the default /tasks view. */
   path?: string;
   poolFamily?: string;
   poolName?: string;
@@ -80,7 +72,6 @@ export interface InfoNotice {
   timestamp?: string;
 }
 
-// Outcome of notifyQuotaAlert; `delivered` is true if any channel succeeded, or if none are configured.
 export interface DeliveryOutcome {
   delivered: boolean;
   results: Record<string, DeliveryChannelResult>;
@@ -104,7 +95,9 @@ export interface Notifier {
 
 export interface NotifierOptions {
   onDispatchRequested?: (req: DispatchRequest) => Promise<DispatchResult>;
-  onContinueRequested?: (req: any) => Promise<DispatchResult>;
+  onContinueRequested?: (
+    req: DispatchRequest & { taskId?: string; branchName?: string }
+  ) => Promise<DispatchResult>;
   onQuotaRequested?: () => Promise<QuotaSnapshot[]>;
   onOwnerDiscovered?: (ownerUserId: string) => void | Promise<void>;
 }

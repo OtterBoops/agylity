@@ -8,30 +8,38 @@ import {
   type QuotaSnapshot,
 } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import {
+  ALL_EFFORTS,
+  CANONICAL_AGY_MODELS,
+  type AgyModelCatalogEntry,
+  type ReasoningEffort,
+} from '../shared/models.js';
+
+export { ALL_EFFORTS, CANONICAL_AGY_MODELS };
+export type { AgyModelCatalogEntry, ReasoningEffort };
 
 export type ScheduleMode = 'immediate' | 'pre_reset';
 export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
 
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 
-export type BacklogStatus = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled';
+export type BacklogStatus =
+  'pending' | 'dispatched' | 'paused' | 'completed' | 'failed' | 'canceled';
 export const BacklogStatusSchema = z
-  .enum(['pending', 'dispatched', 'completed', 'failed', 'canceled'])
+  .enum(['pending', 'dispatched', 'paused', 'completed', 'failed', 'canceled'])
   .default('pending');
 
-export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).default('high');
 
 export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'aborted'] as const;
 
-/** Terminal task statuses, so no status list can drift from the set. */
+/** `TERMINAL_TASK_STATUSES` is the single source so no status list can drift. */
 export const isTerminalTaskStatus = (status: string): boolean =>
   (TERMINAL_TASK_STATUSES as readonly string[]).includes(status);
 
-/** Only an achieved run re-arms a routine inside its reset cycle; anything else ends the cycle. */
+/** A cycle only re-arms after its previous run succeeded; anything else ends the cycle. */
 export const ROUTINE_CYCLE_REARM_STATUSES = ['completed'] as const;
 
-/** Why a routine is or is not dispatching right now, computed server-side so the UI cannot drift. */
 export type RoutineEligibilityState =
   | 'disabled'
   | 'running'
@@ -61,16 +69,6 @@ export const TaskStatusSchema = z.enum([
   'aborted',
 ]);
 
-export interface AgyModelCatalogEntry {
-  id: string;
-  label: string;
-  family: QuotaFamily;
-  defaultEffort: ReasoningEffort;
-  supportedEfforts?: readonly ReasoningEffort[];
-  /** Exactly one catalog entry per family is that pool's default dispatch target. */
-  defaultForFamily?: boolean;
-}
-
 export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   effectiveHeadroomPercent: number | null;
   weeklyRemainingPercent: number | null;
@@ -80,61 +78,8 @@ export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   belowSafetyFloor: boolean;
 }
 
-// Authoritative catalog of official Antigravity CLI (`agy --output-format json models`) models.
-export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
-  {
-    id: 'gemini-3.8-flash',
-    label: 'Gemini 3.8 Flash',
-    family: 'gemini-flash',
-    defaultEffort: 'medium',
-    supportedEfforts: ['low', 'medium', 'high'],
-    defaultForFamily: true,
-  },
-  {
-    id: 'gemini-4-hydrogen',
-    label: 'Gemini 4 Hydrogen',
-    family: 'gemini-flash',
-    defaultEffort: 'medium',
-    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
-  },
-  {
-    id: 'gemini-4-argon',
-    label: 'Gemini 4 Argon',
-    family: 'gemini-argon',
-    defaultEffort: 'high',
-    supportedEfforts: ['low', 'medium', 'high'],
-    defaultForFamily: true,
-  },
-  {
-    id: 'claude-sonnet-5-5',
-    label: 'Claude Sonnet 5.5',
-    family: 'claude',
-    defaultEffort: 'high',
-    supportedEfforts: ['low', 'medium', 'high'],
-    defaultForFamily: true,
-  },
-  {
-    id: 'claude-opus-5-5',
-    label: 'Claude Opus 5.5',
-    family: 'claude',
-    defaultEffort: 'high',
-    supportedEfforts: ['low', 'medium', 'high'],
-  },
-  {
-    id: 'gpt-oss-120b',
-    label: 'GPT-OSS 120B',
-    family: 'claude',
-    defaultEffort: 'medium',
-    supportedEfforts: ['medium'],
-  },
-] as const;
-
-/** Every effort agy accepts, ascending; also the fallback for a model that declares none. */
-export const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
-
 export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
 
-/** Derived from the catalog, so a model's efforts are declared exactly once. */
 export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> =
   Object.fromEntries(CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS]));
 
@@ -144,7 +89,6 @@ const defaultModelFor = (family: QuotaFamily): string => {
   return entry.id;
 };
 
-/** Derived from the catalog's defaultForFamily marker, not a second hand-kept table. */
 export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
   'gemini-argon': defaultModelFor('gemini-argon'),
   'gemini-flash': defaultModelFor('gemini-flash'),
@@ -165,8 +109,6 @@ export const resolveReasoningEffortForModel = (
   return supported.includes(normalized) ? normalized : defaultEffort;
 };
 
-// `null` for an unrecognised id: eligibility must fail closed rather than charge another
-// pool's headroom for a model nobody can attribute.
 export const resolvePoolFamilyForModelOrNull = (modelOrFamily?: string): QuotaFamily | null => {
   if (!modelOrFamily) return null;
   const normalized = modelOrFamily.trim().toLowerCase();
@@ -181,61 +123,38 @@ export const resolvePoolFamilyForModelOrNull = (modelOrFamily?: string): QuotaFa
 export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =>
   resolvePoolFamilyForModelOrNull(modelOrFamily) ?? 'gemini-argon';
 
-// Ids and pool shorthands that all name one canonical model, so no caller invents its own table.
+// Pool shorthands that name one canonical model, so no caller invents its own table.
 const resolveShorthandModelId = (lowercased: string): string | undefined => {
-  if (
-    lowercased === 'gemini-argon' ||
-    lowercased === 'argon' ||
-    lowercased === 'gemini-4-argon' ||
-    lowercased === 'gemini-4-argon-high'
-  ) {
+  // A literal catalog id must not be routed through the family default, or the operator's
+  // chosen model silently retargets when that family's default changes.
+  if (CATALOG_BY_ID.has(lowercased)) return lowercased;
+
+  if (lowercased === 'gemini-argon' || lowercased === 'argon') {
     return DEFAULT_MODEL_BY_FAMILY['gemini-argon'];
   }
-  if (
-    lowercased === 'gemini-flash' ||
-    lowercased === 'flash' ||
-    lowercased === 'gemini-3.8-flash' ||
-    lowercased === 'gemini-3.8-flash-high'
-  ) {
+  if (lowercased === 'gemini-flash' || lowercased === 'flash') {
     return DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
   }
-  if (
-    lowercased === 'claude' ||
-    lowercased === 'sonnet' ||
-    lowercased === '3p' ||
-    lowercased === 'claude-sonnet-5-5' ||
-    lowercased === 'claude-sonnet-5-5-high'
-  ) {
+  if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
     return DEFAULT_MODEL_BY_FAMILY.claude;
   }
-  if (
-    lowercased === 'opus' ||
-    lowercased === 'claude-opus-5-5' ||
-    lowercased === 'claude-opus-5-5-high'
-  ) {
+  if (lowercased === 'opus') {
     return 'claude-opus-5-5';
   }
-  if (
-    lowercased === 'gpt-oss' ||
-    lowercased === 'gpt-oss-120b' ||
-    lowercased === 'gpt-oss-120b-medium'
-  ) {
+  if (lowercased === 'gpt-oss') {
     return 'gpt-oss-120b';
   }
   return undefined;
 };
 
-// Strips a trailing effort suffix so 'gemini-4-hydrogen-xhigh' targets the base model id.
 const stripEffortSuffix = (value: string): string =>
   value.trim().replace(/-(low|medium|high|xhigh)$/i, '');
 
-// Resolves to an explicit `agy --model` identifier; never returns 'auto' or a pool shorthand.
 export const resolveConcreteModelId = (
   requestedModel: string | undefined,
   defaultModel = 'gemini-4-argon'
 ): string => {
   const configured = (defaultModel ?? '').trim();
-  // The configured default is user input too: a shorthand there must not reach `agy --model`.
   const safeDefault =
     configured !== '' && configured.toLowerCase() !== 'auto'
       ? (resolveShorthandModelId(configured.toLowerCase()) ?? stripEffortSuffix(configured))
@@ -247,7 +166,55 @@ export const resolveConcreteModelId = (
   return resolveShorthandModelId(requested.toLowerCase()) ?? stripEffortSuffix(requested);
 };
 
-/** Fraction (0..1) to whole percent, floored. `toPrecision` stops 0.29 * 100 = 28.999… flooring to 28. */
+export interface CascadeHop {
+  model: string;
+  effort: ReasoningEffort;
+}
+
+export const normalizeCascade = (input: unknown, fallbackModel?: string): CascadeHop[] => {
+  const hops: CascadeHop[] = [];
+  const seen = new Set<string>();
+
+  const push = (rawModel: unknown, rawEffort: unknown): void => {
+    const requested = typeof rawModel === 'string' ? rawModel.trim() : '';
+    if (requested === '') return;
+    const model = resolveConcreteModelId(requested);
+    if (seen.has(model)) return;
+    seen.add(model);
+    hops.push({
+      model,
+      effort: resolveReasoningEffortForModel(
+        model,
+        typeof rawEffort === 'string' ? rawEffort : undefined
+      ),
+    });
+  };
+
+  if (Array.isArray(input)) {
+    for (const entry of input) {
+      if (typeof entry === 'string') {
+        push(entry, undefined);
+      } else if (entry && typeof entry === 'object') {
+        const hop = entry as { model?: unknown; effort?: unknown };
+        push(hop.model, hop.effort);
+      }
+    }
+  } else if (typeof input === 'string') {
+    push(input, undefined);
+  }
+
+  if (hops.length > 0) return hops;
+
+  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
+  const resolvedFallback = resolveConcreteModelId(fallback);
+  return [
+    {
+      model: resolvedFallback,
+      effort: resolveReasoningEffortForModel(resolvedFallback, undefined),
+    },
+  ];
+};
+
 const toPercentFloor = (fraction: number): number =>
   Math.floor(Number((fraction * 100).toPrecision(12)));
 
@@ -256,7 +223,6 @@ export const calculateEffectiveHeadroomPercent = (
 ): number | null => {
   const fractions: number[] = [];
   const addBucket = (bucket: QuotaBucket | undefined): void => {
-    // A disabled bucket is not in effect, so it must not drag the pool's headroom down.
     if (!bucket || bucket.disabled === true) return;
     if (typeof bucket.remainingFraction === 'number' && Number.isFinite(bucket.remainingFraction)) {
       fractions.push(bucket.remainingFraction);
@@ -272,7 +238,6 @@ export const calculateEffectiveHeadroomPercent = (
   }
   if (fractions.length === 0) return null;
   const minFraction = Math.max(0, Math.min(1, Math.min(...fractions)));
-  // Floor, not round: 9.5% must not clear a 10% safety floor.
   return toPercentFloor(minFraction);
 };
 
@@ -304,7 +269,6 @@ export interface ModelEligibilityOptions {
 export interface ModelEligibilityResult {
   allowed: boolean;
   resolvedModel: string;
-  /** null when the requested model id maps to no known pool. */
   family: QuotaFamily | null;
   effectiveHeadroomPercent: number;
   hoursUntilReset: number | null;
@@ -357,7 +321,6 @@ export const evaluateModelDispatchEligibility = (
         hoursUntilReset: null,
       };
     }
-    // No telemetry means the safety floor cannot be verified, so fail closed.
     return {
       allowed: false,
       resolvedModel,
@@ -373,11 +336,9 @@ export const evaluateModelDispatchEligibility = (
     (p) =>
       p.family === family ||
       p.poolId === family ||
-      // `...OrNull`, not the display default: an unattributable pool must never answer for argon.
       resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
   );
 
-  // No pool for this family, or a pool whose fractions are unusable, means unknown.
   const effectiveHeadroomPercent = targetPool
     ? calculateEffectiveHeadroomPercent(targetPool)
     : null;
@@ -398,7 +359,6 @@ export const evaluateModelDispatchEligibility = (
       : calculateHoursUntilReset(targetPool.resetTime, nowMs)
     : null;
 
-  // 1. Safety Floor Check (Applies to all schedule modes unless allowOverage is true)
   if (effectiveHeadroomPercent < minHeadroom && !allowOverage) {
     return {
       allowed: false,
@@ -411,7 +371,6 @@ export const evaluateModelDispatchEligibility = (
     };
   }
 
-  // 2. Pre-Reset Opportunistic Quota-Burn Check (<= quotaBurnMaxHours to reset AND >= minHeadroom)
   if (scheduleMode === 'pre_reset' && !allowOverage) {
     const isWindowImminent =
       hoursUntilReset !== null && hoursUntilReset > 0 && hoursUntilReset <= quotaBurnMaxHours;
@@ -444,7 +403,6 @@ export const evaluateModelDispatchEligibility = (
   };
 };
 
-// Annotates the model catalog with live quota headroom and reset windows from active pools.
 export const annotateModelsWithQuota = (
   pools: QuotaSnapshot[] = [],
   minDispatchHeadroomPercent = 10,
@@ -483,7 +441,6 @@ export const annotateModelsWithQuota = (
       shortTermRemainingPercent,
       resetTime: pool.resetTime,
       hoursUntilReset,
-      // Unknown headroom counts as below the floor, matching the dispatch gate.
       belowSafetyFloor:
         effectiveHeadroomPercent === null || effectiveHeadroomPercent < minDispatchHeadroomPercent,
     };
@@ -493,6 +450,8 @@ export const annotateModelsWithQuota = (
 export interface ModelPreferenceEvaluationResult {
   allowed: boolean;
   selectedModel?: string;
+  selectedEffort?: ReasoningEffort;
+  selectedHopIndex?: number;
   family?: QuotaFamily;
   effectiveHeadroomPercent?: number;
   weeklyHeadroomPercent?: number;
@@ -503,13 +462,8 @@ export interface ModelPreferenceEvaluationResult {
   reason?: string;
 }
 
-/**
- * Evaluates an ordered preference list of candidate models against live quota pools.
- * Independently enforces the headroom floor across BOTH the 5-hour rolling bucket (shortTerm)
- * and the weekly pool (weekly) to prevent rate-limit deadlocks when a manual task depletes 5h quota.
- */
 export const evaluateModelPreferenceChain = (options: {
-  models: string[];
+  cascade: CascadeHop[];
   defaultModel?: string;
   pools: QuotaSnapshot[];
   minHeadroomPercent: number;
@@ -517,15 +471,16 @@ export const evaluateModelPreferenceChain = (options: {
   isPoolDispatchEnabled?: (family: QuotaFamily) => boolean;
   nowMs?: number;
 }): ModelPreferenceEvaluationResult => {
-  const candidates =
-    options.models.length > 0
-      ? options.models
-      : [options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-flash']];
+  const hops =
+    options.cascade.length > 0
+      ? options.cascade
+      : normalizeCascade([], options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-flash']);
   const nowMs = options.nowMs ?? Date.now();
   const rejectionReasons: string[] = [];
 
-  for (const rawCandidate of candidates) {
-    const resolvedModel = resolveConcreteModelId(rawCandidate, options.defaultModel);
+  for (const [hopIndex, hop] of hops.entries()) {
+    const resolvedModel = resolveConcreteModelId(hop.model, options.defaultModel);
+    const effort = resolveReasoningEffortForModel(resolvedModel, hop.effort);
     const family = resolvePoolFamilyForModelOrNull(resolvedModel);
     if (family === null) {
       rejectionReasons.push(`${resolvedModel}: unknown model id, no quota pool`);
@@ -541,7 +496,6 @@ export const evaluateModelPreferenceChain = (options: {
       (p) =>
         p.family === family ||
         p.poolId === family ||
-        // `...OrNull`, not the display default: an unattributable pool must never answer for argon.
         resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
     );
     if (!targetPool) {
@@ -571,7 +525,6 @@ export const evaluateModelPreferenceChain = (options: {
       continue;
     }
 
-    // Check active 5-hour rolling bucket explicitly so we log 5h deadlock blocks clearly
     if (
       shortTermHeadroomPercent !== null &&
       shortTermHeadroomPercent < options.minHeadroomPercent
@@ -617,6 +570,8 @@ export const evaluateModelPreferenceChain = (options: {
     return {
       allowed: true,
       selectedModel: resolvedModel,
+      selectedEffort: effort,
+      selectedHopIndex: hopIndex,
       family,
       effectiveHeadroomPercent,
       weeklyHeadroomPercent,

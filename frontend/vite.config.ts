@@ -20,6 +20,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // The shared model catalog lives in ../src, outside this Vite root, so it must be served too.
+    fs: { allow: [path.resolve(import.meta.dirname, '..')] },
     proxy: {
       '/api':
         process.env.VITE_API_TARGET ||

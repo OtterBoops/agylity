@@ -12,7 +12,6 @@ export interface EvaluationPlan {
   alerts: QuotaAlert[];
   pendingMilestones: Map<string, number[]>;
   supersededMilestones: Map<string, number[]>;
-  /** Pools that refilled before their scheduled reset, in snapshot order. */
   earlyResets: EarlyResetPool[];
 }
 
@@ -22,7 +21,6 @@ export class QuotaEvaluator {
 
   constructor(options: QuotaEvaluatorOptions = {}) {
     const rawMilestones = options.milestoneHours ?? DEFAULT_MILESTONE_HOURS;
-    // Filter positive numbers, remove duplicates, sort descending: e.g. [48, 24, 12]
     this.milestoneHours = Array.from(
       new Set(rawMilestones.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))
     ).sort((a, b) => b - a);
@@ -41,7 +39,6 @@ export class QuotaEvaluator {
           options.milestoneHours.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0)
         )
       ).sort((a, b) => b - a);
-      // An empty list would disable every milestone alert, so keep the current one.
       if (next.length > 0) {
         this.milestoneHours = next;
       }
@@ -61,20 +58,17 @@ export class QuotaEvaluator {
   ): { alert: QuotaAlert | null; supersededMilestones: number[] } {
     const remainingPercentage = Math.round(snapshot.remainingFraction * 1000) / 10;
 
-    // The floor is checked against the raw fraction, not the display value: 24.95% rounds to 25.0
-    // and must not clear a 25% floor.
+    // Checked against the raw fraction: 24.95% rounds to 25.0 and must not clear a 25% floor.
     if (snapshot.remainingFraction * 100 < this.alertThresholdPercent) {
       return { alert: null, supersededMilestones: [] };
     }
 
     const deltaHours = calculateHoursUntilReset(snapshot.resetTime, nowMs);
 
-    // If reset deadline has already passed or is 0, skip alert
     if (deltaHours <= 0) {
       return { alert: null, supersededMilestones: [] };
     }
 
-    // Normalize fired milestones to string keys (e.g. "24h" or "24")
     const firedKeys = new Set(
       firedMilestones.map((m) => {
         const s = String(m).trim().toLowerCase();
@@ -82,10 +76,8 @@ export class QuotaEvaluator {
       })
     );
 
-    // Find all applicable milestone windows where deltaHours <= milestone
     const applicableMilestones = this.milestoneHours.filter((m) => deltaHours <= m);
 
-    // Filter to those that have not yet fired
     const unfiredApplicable = applicableMilestones.filter((m) => {
       const key = `${m}h`;
       return !firedKeys.has(key) && !firedKeys.has(String(m));
@@ -95,7 +87,6 @@ export class QuotaEvaluator {
       return { alert: null, supersededMilestones: [] };
     }
 
-    // Several thresholds crossed at once: only the most urgent fires.
     const mostUrgentMilestone = Math.min(...unfiredApplicable);
 
     const supersededMilestones = unfiredApplicable.filter((m) => m > mostUrgentMilestone);
@@ -113,7 +104,6 @@ export class QuotaEvaluator {
     return { alert, supersededMilestones };
   }
 
-  // Evaluates snapshots into a delivery plan and records NO milestone state.
   evaluateWithPlan(
     snapshots: QuotaSnapshot[],
     stateManager?: SentryStateManager,
@@ -128,7 +118,6 @@ export class QuotaEvaluator {
       let firedMilestones: string[] = [];
 
       if (stateManager) {
-        // Detect cycle rollover and update pool quota; milestone recording is deferred to the caller.
         const update = stateManager.updatePoolQuota(
           snapshot.poolId,
           snapshot.remainingFraction,

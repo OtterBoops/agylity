@@ -11,8 +11,10 @@ import type {
   BacklogTaskRecord,
   BacklogStatus,
   RoutineTaskRecord,
-  ReasoningEffort,
   PrPolicy,
+  AlertEventPage,
+  DispatchEligibility,
+  CascadeHop,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -117,12 +119,11 @@ export const api = ky.create({
             if (body && typeof body.error === 'string') {
               error.message = body.error;
             }
+            // AUTH_REQUIRED means the upstream agy credential is missing, so this 401 is not a bad UI token.
             if (body?.code === 'AUTH_REQUIRED') {
               isCliAuth = true;
             }
-          } catch {
-            // keep default error.message
-          }
+          } catch {}
           if (typeof window !== 'undefined' && error.response.status === 401 && !isCliAuth) {
             window.dispatchEvent(new CustomEvent('agylity:unauthorized'));
           }
@@ -156,6 +157,34 @@ export const updateConfig = (
 ): Promise<ConfigData & { success: boolean }> =>
   api.post('config', { json: overrides }).json<ConfigData & { success: boolean }>();
 
+export interface ConfigWriteEnvelope {
+  set?: Record<string, unknown>;
+  clear?: string[];
+}
+
+export const writeConfigEnvelope = async (
+  payload: ConfigWriteEnvelope
+): Promise<ConfigData & { success: boolean; cleared?: string[] }> => {
+  try {
+    return await api
+      .post('config', { json: payload })
+      .json<ConfigData & { success: boolean; cleared?: string[] }>();
+  } catch (err) {
+    if (isHTTPError(err)) {
+      let body: { error?: unknown } | null = null;
+      try {
+        body = (await err.response.clone().json()) as { error?: unknown } | null;
+      } catch {
+        body = null;
+      }
+      if (body && typeof body.error === 'string' && body.error) {
+        throw new Error(body.error);
+      }
+    }
+    throw err;
+  }
+};
+
 export const deleteConfigOverride = (key: string): Promise<{ success: boolean }> =>
   api.delete(`config/${encodeURIComponent(key)}`).json<{ success: boolean }>();
 
@@ -165,12 +194,43 @@ export const cancelTask = (id: string): Promise<{ success: boolean }> =>
 export const retryTask = (id: string): Promise<{ success: boolean }> =>
   api.post(`tasks/${encodeURIComponent(id)}/retry`).json<{ success: boolean }>();
 
-export const getTasks = (limit = 50): Promise<SwarmTask[]> =>
-  api.get(`tasks?limit=${limit}`).json<SwarmTask[]>();
+export interface TaskQuery {
+  q?: string;
+  taskNumber?: number;
+  status?: string;
+  limit?: number;
+  offset?: number;
+}
 
-/** Single-task read, used by the inspector to stream a live run without refetching the list. */
-export const getTask = (id: string): Promise<SwarmTask> =>
-  api.get(`tasks/${encodeURIComponent(id)}`).json<SwarmTask>();
+export interface TaskPage {
+  tasks: SwarmTask[];
+  total: number;
+  offset: number;
+  limit: number;
+}
+
+export const getTasks = (
+  query: TaskQuery | number = {},
+  signal?: AbortSignal
+): Promise<TaskPage> => {
+  const params: TaskQuery = typeof query === 'number' ? { limit: query } : query;
+  const search = new URLSearchParams();
+  if (params.q) search.set('q', params.q);
+  if (params.taskNumber !== undefined) search.set('taskNumber', String(params.taskNumber));
+  if (params.status) search.set('status', params.status);
+  if (params.limit !== undefined) search.set('limit', String(params.limit));
+  if (params.offset !== undefined) search.set('offset', String(params.offset));
+  const suffix = search.toString();
+  return api.get(`tasks${suffix ? `?${suffix}` : ''}`, signal ? { signal } : {}).json<TaskPage>();
+};
+
+export const getTask = async (id: string): Promise<{ task: SwarmTask; fingerprint?: string }> => {
+  const body = await api
+    .get(`tasks/${encodeURIComponent(id)}`)
+    .json<SwarmTask & { fingerprint?: string }>();
+  const { fingerprint, ...task } = body;
+  return { task: task as SwarmTask, fingerprint };
+};
 
 export const triggerDispatch = (payload: {
   repositoryId: string;
@@ -179,11 +239,9 @@ export const triggerDispatch = (payload: {
   cloneUrl?: string;
   prompt: string;
   title?: string;
-  models?: string[];
+  cascade: CascadeHop[];
   requestedBy?: string;
-  model?: string;
   scheduleMode?: 'immediate' | 'pre_reset';
-  effort?: ReasoningEffort;
   prPolicy?: PrPolicy;
   verifyCommand?: string;
   autoCreatePr?: boolean;
@@ -246,8 +304,6 @@ export const testNotification = async (
       .post('notify/test', { json: { ...(channel ? { channel } : {}), ...(overrides ?? {}) } })
       .json<{ success: boolean; message: string; channel?: string }>();
   } catch (err) {
-    // A refused delivery is a 400 carrying the reason in `message`, not `error`; without this the
-    // diagnostics panel only ever shows the client's generic "HTTP 400" text.
     if (isHTTPError(err)) {
       const body = (await err.response
         .clone()
@@ -269,8 +325,6 @@ export const getLogs = (
     .get(`logs?since=${since}&level=${level}`)
     .json<{ enabled: boolean; latestId?: number; entries: LogEntry[] }>();
 
-// --- Routines API ---
-
 export const getRoutines = (): Promise<RoutineTaskRecord[]> =>
   api.get('routines').json<RoutineTaskRecord[]>();
 
@@ -279,7 +333,7 @@ export const createRoutine = (
     title: string;
     prompt: string;
     repositoryId: string;
-    models?: string[];
+    cascade?: CascadeHop[];
   }
 ): Promise<RoutineTaskRecord> => api.post('routines', { json: input }).json<RoutineTaskRecord>();
 
@@ -305,8 +359,6 @@ export const triggerRoutine = (
     .post(`routines/${encodeURIComponent(id)}/trigger`)
     .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
-// --- Backlog API ---
-
 export const getBacklogTasks = (status?: string): Promise<BacklogTaskRecord[]> =>
   api
     .get(`backlog${status ? `?status=${encodeURIComponent(status)}` : ''}`)
@@ -317,17 +369,15 @@ export const createBacklogTask = (
     title: string;
     prompt: string;
     repositoryId: string;
-    models?: string[];
+    cascade: CascadeHop[];
   }
 ): Promise<BacklogTaskRecord> => api.post('backlog', { json: input }).json<BacklogTaskRecord>();
 
-/** The editable surface of a backlog item; `PATCH /api/backlog/:id` accepts exactly these. */
 export interface BacklogTaskPatch {
   title?: string;
   prompt?: string;
   repositoryId?: string;
-  models?: string[];
-  effort?: ReasoningEffort;
+  cascade?: CascadeHop[];
   verifyCommand?: string | null;
   autoCreatePr?: boolean;
   priorityOrder?: number;
@@ -367,3 +417,25 @@ export const syncGithubBacklog = (): Promise<{
     label: string;
     failedRepos?: string[];
   }>();
+
+export const getDispatchEligibility = (params: { model?: string; allowOverage?: boolean } = {}) => {
+  const query = new URLSearchParams();
+  if (params.model) query.set('model', params.model);
+  if (params.allowOverage) query.set('allowOverage', '1');
+  const suffix = query.toString();
+  return api.get(`dispatch/eligibility${suffix ? `?${suffix}` : ''}`).json<DispatchEligibility>();
+};
+
+export const getAlertEvents = (params: { limit?: number; before?: string; pool?: string } = {}) => {
+  const query = new URLSearchParams();
+  query.set('limit', String(params.limit ?? 50));
+  if (params.before) query.set('before', params.before);
+  if (params.pool) query.set('pool', params.pool);
+  return api.get(`alerts/events?${query.toString()}`).json<AlertEventPage>();
+};
+
+export const bulkUpdateBacklog = (
+  ids: string[],
+  action: 'pause' | 'resume'
+): Promise<{ updated: number; items: BacklogTaskRecord[]; skipped: string[] }> =>
+  api.patch('backlog/bulk', { json: { ids, action } }).json();

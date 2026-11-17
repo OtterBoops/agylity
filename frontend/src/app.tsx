@@ -1,21 +1,30 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
 import Router, { type RouterOnChangeArgs } from 'preact-router';
-import { faCheck, faCopy } from '@fortawesome/free-solid-svg-icons';
-import { Icon } from './components/Icon';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
-import { DispatchModal } from './components/DispatchModal';
 import { ControlPlaneGate } from './components/ControlPlaneGate';
 import { SessionModal } from './components/SessionModal';
 import { CommandPalette } from './components/CommandPalette';
 import { TasksView } from './components/TasksView';
+import { AlertsView } from './views/AlertsView';
 import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
-import { NotificationsView } from './views/NotificationsView';
-import { GeneralView } from './views/settings/GeneralView';
-import { CoordinatorView } from './views/settings/CoordinatorView';
-import { RepositoriesView } from './views/settings/RepositoriesView';
-import { AdvancedView } from './views/settings/AdvancedView';
+import { UnifiedSettingsView } from './views/settings/UnifiedSettingsView';
+import { SlideOverDrawer } from './components/SlideOverDrawer';
+import { UnifiedTaskComposer, type ComposerPayload } from './components/tasks/UnifiedTaskComposer';
+import {
+  createBacklogTask,
+  createRoutine,
+  updateBacklogTask,
+  updateRoutine,
+  triggerDispatch,
+} from './api';
+import {
+  loadedSettingsSection,
+  readSettingsSection,
+  settingsSectionLabel,
+  type SettingsSectionId,
+} from './utils/settingsHash';
 import { NotFoundView } from './views/NotFoundView';
 import { checkHealth, getAuthToken } from './api';
 import {
@@ -29,11 +38,31 @@ import {
   loadModelCatalog,
 } from './state';
 
+// Every legacy /settings/* path renders the same page; the hash picks the section.
+const SETTINGS_PATHS = [
+  '/settings',
+  '/settings/general',
+  '/settings/coordinator',
+  '/settings/repositories',
+  '/settings/notifications',
+  '/settings/advanced',
+];
+
+const SECTION_BY_PATH: Record<string, SettingsSectionId> = {
+  '/settings': 'general',
+  '/settings/general': 'general',
+  '/settings/coordinator': 'coordinator',
+  '/settings/repositories': 'repositories',
+  '/settings/notifications': 'notifications',
+  '/settings/advanced': 'advanced',
+};
+
 const TITLES: Record<string, string> = {
   '/': 'Overview',
   '/overview': 'Overview',
   '/tasks': 'Tasks',
   '/logs': 'Logs',
+  '/alerts': 'Alerts',
   '/settings': 'General',
   '/settings/general': 'General',
   '/settings/coordinator': 'Coordinator',
@@ -43,9 +72,12 @@ const TITLES: Record<string, string> = {
 };
 
 export const App = () => {
+  const [section, setSection] = useState<SettingsSectionId | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return readSettingsSection() ?? SECTION_BY_PATH[window.location.pathname] ?? null;
+  });
   const [currentUrl, setCurrentUrl] = useState(() => {
     if (typeof window === 'undefined') return '/';
-    // Canonicalises the bare path so the General sidebar item highlights on direct visits.
     if (window.location.pathname === '/settings') {
       window.history.replaceState(null, '', '/settings/general');
       return '/settings/general';
@@ -53,20 +85,41 @@ export const App = () => {
     return window.location.pathname;
   });
 
+  useEffect(() => {
+    const sync = () => setSection(readSettingsSection());
+    window.addEventListener('hashchange', sync);
+    window.addEventListener('popstate', sync);
+    return () => {
+      window.removeEventListener('hashchange', sync);
+      window.removeEventListener('popstate', sync);
+    };
+  }, []);
+
   const handleRouteChange = (e: RouterOnChangeArgs) => {
-    // Query strings carry tab and selection state, so the title map keys off the bare path only.
-    setCurrentUrl(e.url.split(/[?#]/)[0] || '/');
+    const path = e.url.split(/[?#]/)[0] || '/';
+    setCurrentUrl(path);
+    const fromPath = SECTION_BY_PATH[path];
+    if (!fromPath) return;
+    const hashInUrl = /#([a-z-]+)$/.exec(e.url)?.[1] as SettingsSectionId | undefined;
+    const next = hashInUrl ?? readSettingsSection() ?? loadedSettingsSection() ?? fromPath;
+    setSection(next);
+    window.history.replaceState(null, '', `/settings#${next}`);
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
   };
-  const { quota, alerts, error: quotaError } = useStore(quotaStore);
+  const { quota, alerts, lastUpdated: quotaUpdatedAt, error: quotaError } = useStore(quotaStore);
   const { config } = useStore(configStore);
-  const [authCopied, setAuthCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshCooldown, setRefreshCooldown] = useState(0);
-  const [dispatchModalOpen, setDispatchModalOpen] = useState(false);
+  // One composer for every create/edit entry point: TopBar, Alt+D, the palette and TasksView.
+  const [composer, setComposer] = useState<{ backlog?: any; routine?: any } | null>(null);
+  const [composerBusy, setComposerBusy] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [sessionModalOpen, setSessionModalOpen] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  // The keymap reads the refresh handler through a ref; depending on cooldown re-bound the listener per refresh.
+  const manualRefreshRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     let mounted = true;
@@ -103,7 +156,6 @@ export const App = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // One modal at a time: a second showModal() stacks in the top layer over a live dialog.
       const anyDialogOpen = document.querySelector('dialog[open]') !== null;
 
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
@@ -112,7 +164,6 @@ export const App = () => {
         return;
       }
 
-      // Check if target is an interactive input
       const target = e.target as HTMLElement | null;
       const isInput =
         target &&
@@ -123,26 +174,25 @@ export const App = () => {
 
       if (e.altKey && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        if (!anyDialogOpen) setDispatchModalOpen(true);
+        if (!anyDialogOpen) setComposer({});
         return;
       }
 
-      const dialogOpen = dispatchModalOpen || commandPaletteOpen || sessionModalOpen;
       if (
         !isInput &&
-        !dialogOpen &&
+        !anyDialogOpen &&
         !e.ctrlKey &&
         !e.metaKey &&
         !e.altKey &&
         e.key.toLowerCase() === 'r'
       ) {
         e.preventDefault();
-        handleManualRefresh();
+        manualRefreshRef.current();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [refreshCooldown, isRefreshing, dispatchModalOpen, commandPaletteOpen, sessionModalOpen]);
+  }, [commandPaletteOpen, sessionModalOpen]);
 
   const fetchAll = (force = false) =>
     Promise.all([
@@ -165,12 +215,12 @@ export const App = () => {
   const handleManualRefresh = () => {
     if (refreshCooldown > 0 || isRefreshing) return;
     setIsRefreshing(true);
-    // The 2s cooldown below bounds click-spam, so forcing a real probe here is safe.
     fetchAll(true).finally(() => {
       setIsRefreshing(false);
       setRefreshCooldown(2);
     });
   };
+  manualRefreshRef.current = handleManualRefresh;
 
   useEffect(() => {
     if (refreshCooldown <= 0) return;
@@ -178,7 +228,67 @@ export const App = () => {
     return () => clearInterval(timer);
   }, [refreshCooldown]);
 
-  const title = TITLES[currentUrl] || 'Not Found';
+  const onSettings = currentUrl.startsWith('/settings');
+  const openComposer = (initial: { backlog?: any; routine?: any } = {}) => {
+    setComposerError(null);
+    setComposer(initial);
+  };
+
+  const submitComposer = async (payload: ComposerPayload) => {
+    setComposerBusy(true);
+    setComposerError(null);
+    try {
+      if (payload.mode === 'run') {
+        const res = await triggerDispatch({
+          repositoryId: payload.repositoryId,
+          repositoryName: payload.repositoryName,
+          title: payload.title,
+          prompt: payload.prompt,
+          cascade: payload.cascade,
+          prPolicy: payload.prPolicy,
+          autoCreatePr: payload.autoCreatePr,
+          verifyCommand: payload.verifyCommand,
+          scheduleMode: payload.scheduleMode,
+        });
+        if (!res.success) throw new Error(res.error || 'Dispatch refused');
+      } else if (payload.mode === 'backlog') {
+        const body = {
+          title: payload.title,
+          prompt: payload.prompt,
+          repositoryId: payload.repositoryId,
+          cascade: payload.cascade,
+          autoCreatePr: payload.autoCreatePr,
+          verifyCommand: payload.verifyCommand,
+          priorityOrder: payload.priorityOrder,
+        };
+        if (payload.id) await updateBacklogTask(payload.id, body as any);
+        else await createBacklogTask(body as any);
+      } else {
+        const body = {
+          title: payload.title,
+          prompt: payload.prompt,
+          repositoryId: payload.repositoryId,
+          cascade: payload.cascade,
+          prPolicy: payload.prPolicy,
+          autoCreatePr: payload.autoCreatePr,
+          verifyCommand: payload.verifyCommand,
+          triggerBeforeResetHours: payload.triggerBeforeResetHours,
+          minHeadroomPercent: payload.minHeadroomPercent,
+        };
+        if (payload.id) await updateRoutine(payload.id, body as any);
+        else await createRoutine(body as any);
+      }
+      setComposer(null);
+      await fetchAll(true);
+    } catch (err: any) {
+      setComposerError(err?.message || 'Could not save');
+    } finally {
+      setComposerBusy(false);
+    }
+  };
+
+  const title =
+    (onSettings ? settingsSectionLabel(section) : null) ?? (TITLES[currentUrl] || 'Not Found');
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const remainingCredits =
     quota.find((q) => typeof q.remainingCredits === 'number')?.remainingCredits ?? null;
@@ -215,7 +325,6 @@ export const App = () => {
       />
 
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
-        {/* Desktop Header: pinned at top of right pane */}
         <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
           <div class="mx-auto max-w-7xl 2xl:max-w-none">
             <TopBar
@@ -230,88 +339,43 @@ export const App = () => {
           </div>
         </header>
 
-        {/* Scrollable View Area: content scrolls cleanly inside this div */}
-        <div class="flex min-h-0 min-w-0 flex-1 flex-col p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
+        <div class="flex min-h-0 min-w-0 flex-1 scrollbar-gutter-stable flex-col p-4 sm:p-6 md:overflow-y-auto md:p-6 2xl:p-8">
           <div class="mx-auto flex min-h-0 w-full max-w-7xl flex-1 flex-col 2xl:max-w-none">
-            {Boolean(
-              alerts?.lastProbeSource === 'auth_required' ||
-              alerts?.authRequired === true ||
-              quotaError?.toLowerCase().includes('authentication required') ||
-              quotaError?.toLowerCase().includes('sign in')
-            ) && (
-              <div class="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-pine-love/40 bg-pine-love/10 px-4 py-3 text-pine-love shadow-xs">
-                <div class="flex min-w-0 items-center gap-2.5">
-                  <span class="rounded-sm bg-pine-love/20 px-2 py-0.5 font-mono text-xs font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
-                    [AUTH REQUIRED]
-                  </span>
-                  <span class="text-xs font-medium text-pine-text">
-                    Antigravity CLI is not authenticated. Launch the CLI in container to sign in:
-                  </span>
-                  <code class="hidden rounded-sm border border-pine-highlight bg-pine-base/80 px-2.5 py-1 font-mono text-xs text-pine-text select-all sm:inline">
-                    docker exec -it agylity agy
-                  </code>
-                </div>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText('docker exec -it agylity agy');
-                      setAuthCopied(true);
-                      setTimeout(() => setAuthCopied(false), 2000);
-                    } catch {}
-                  }}
-                  class="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/20 px-3 py-1 text-xs font-semibold text-pine-love transition-colors hover:bg-pine-love/30"
-                >
-                  <Icon icon={authCopied ? faCheck : faCopy} class="size-3" />
-                  <span>{authCopied ? 'Copied' : 'Copy Command'}</span>
-                </button>
-              </div>
-            )}
-
             <main class="flex min-h-0 flex-1 flex-col">
               <Router onChange={handleRouteChange}>
                 <OverviewView
                   path="/"
                   quota={quota}
+                  quotaUpdatedAt={quotaUpdatedAt}
                   alerts={alerts}
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
                   error={quotaError}
                   onRetry={() => fetchAll(true)}
                   onAlertsChanged={refreshAlerts}
+                  coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
                 />
                 <OverviewView
                   path="/overview"
                   quota={quota}
+                  quotaUpdatedAt={quotaUpdatedAt}
                   alerts={alerts}
                   minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
                   error={quotaError}
                   onRetry={() => fetchAll(true)}
                   onAlertsChanged={refreshAlerts}
+                  coordinatorEnabled={Boolean(config.resolved?.coordinatorEnabled)}
                 />
-                <TasksView
-                  path="/tasks"
-                  onRefresh={fetchAll}
-                  onOpenDispatch={() => setDispatchModalOpen(true)}
-                />
+                <TasksView path="/tasks" onRefresh={fetchAll} onOpenComposer={openComposer} />
                 <LogsView path="/logs" />
-                <GeneralView path="/settings" config={config} onChanged={fetchAll} />
-                <GeneralView path="/settings/general" config={config} onChanged={fetchAll} />
-                <CoordinatorView
-                  path="/settings/coordinator"
-                  config={config}
-                  onChanged={fetchAll}
-                />
-                <NotificationsView
-                  path="/settings/notifications"
-                  config={config}
-                  onSaved={fetchAll}
-                />
-                <RepositoriesView
-                  path="/settings/repositories"
-                  config={config}
-                  onChanged={fetchAll}
-                />
-                <AdvancedView path="/settings/advanced" config={config} onChanged={fetchAll} />
+                <AlertsView path="/alerts" alerts={alerts} />
+                {SETTINGS_PATHS.map((path) => (
+                  <UnifiedSettingsView
+                    key={path}
+                    path={path}
+                    config={config}
+                    onChanged={fetchAll}
+                  />
+                ))}
                 <NotFoundView default />
               </Router>
             </main>
@@ -319,12 +383,38 @@ export const App = () => {
         </div>
       </div>
 
-      <DispatchModal
-        isOpen={dispatchModalOpen}
-        onClose={() => setDispatchModalOpen(false)}
-        config={config}
-        quota={quota}
-      />
+      {composer && (
+        <SlideOverDrawer
+          token={`composer-${composer.backlog?.id ?? composer.routine?.id ?? 'new'}`}
+          label="Task"
+          ariaLabel="Task composer"
+          width="composer"
+          onClosed={() => {
+            setComposer(null);
+            setComposerError(null);
+          }}
+        >
+          <UnifiedTaskComposer
+            initial={
+              composer.backlog
+                ? { mode: 'backlog', backlog: composer.backlog }
+                : composer.routine
+                  ? { mode: 'routine', routine: composer.routine }
+                  : { mode: 'run' }
+            }
+            repositories={(config.resolved?.repositories ?? []).map((repo: any) => ({
+              id: repo.id,
+              name: repo.name,
+            }))}
+            defaultModel={config.resolved?.defaultDispatchModel || 'gemini-4-hydrogen'}
+            headroomPercent={null}
+            submitting={composerBusy}
+            error={composerError}
+            onSubmit={submitComposer}
+            onCancel={() => setComposer(null)}
+          />
+        </SlideOverDrawer>
+      )}
 
       <SessionModal
         isOpen={sessionModalOpen}
@@ -340,7 +430,7 @@ export const App = () => {
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onRefresh={handleManualRefresh}
-        onOpenDispatch={() => setDispatchModalOpen(true)}
+        onOpenDispatch={() => setComposer({})}
         coordinatorEnabled={isCoordinatorEnabled}
       />
     </div>

@@ -4,7 +4,6 @@ import { LogBuffer, installConsoleTee } from '../logs/buffer.js';
 import { logger } from '../logs/logger.js';
 import { createDaemon, type AgylityDaemon } from '../daemon/daemon.js';
 
-// Primary CLI execution entrypoint for standalone daemon process.
 export const main = async (): Promise<AgylityDaemon> => {
   const banner = `agylity v${AGYLITY_VERSION} — Autonomous Quota Sentry & Remote Task Coordinator`;
   const rule = '='.repeat(banner.length + 4);
@@ -16,11 +15,8 @@ export const main = async (): Promise<AgylityDaemon> => {
     if (typeof (process as any).loadEnvFile === 'function') {
       (process as any).loadEnvFile();
     }
-  } catch {
-    // .env file is optional
-  }
+  } catch {}
 
-  // Tee console output into a bounded, secret-redacting ring buffer for the dashboard Logs view
   let daemonRef: AgylityDaemon | undefined;
   let cachedSecrets: string[] = [];
   let secretsLoaded = false;
@@ -51,16 +47,13 @@ export const main = async (): Promise<AgylityDaemon> => {
             secrets.push(val);
           }
         }
-      } catch {
-        // Safe fallback for unparseable URLs
-      }
+      } catch {}
     }
 
     cachedSecrets = secrets.filter((s): s is string => Boolean(s) && typeof s === 'string');
   };
 
   const logBuffer = new LogBuffer(1000, () => {
-    // An empty result is a valid loaded state, so gate on having loaded, not on emptiness.
     if (!secretsLoaded) {
       secretsLoaded = true;
       refreshCachedSecrets();
@@ -94,7 +87,6 @@ export const main = async (): Promise<AgylityDaemon> => {
   process.once('SIGINT', () => void handleSignal('SIGINT'));
   process.once('SIGTERM', () => void handleSignal('SIGTERM'));
 
-  // A fatal error must shut down cleanly (closing the database and web server) before exiting.
   const handleFatal = async (kind: string, err: unknown): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;

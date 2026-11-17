@@ -15,11 +15,11 @@ import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time'
 import { Icon } from '../Icon';
 import { isActiveTaskStatus, isLiveTaskStatus, taskBadgeClass } from './badges';
 
-/** A live run writes output faster than the 4s list poll; the inspector has its own cadence. */
 const POLL_INTERVAL_MS = 3000;
 
-/** Within this distance of the bottom still counts as "following the tail". */
 const AUTOSCROLL_SLACK_PX = 24;
+
+const OVERLAP_SEARCH_LIMIT = 4096;
 
 const PR_POLICY_LABELS: Record<PrPolicy, string> = {
   docs_only: 'Docs only',
@@ -27,8 +27,17 @@ const PR_POLICY_LABELS: Record<PrPolicy, string> = {
   none: 'Disabled',
 };
 
-// Grouped digits, because these run to seven figures and an unseparated count is unreadable.
 const formatTokenCount = (value: number): string => value.toLocaleString();
+
+export const mergeOutput = (previous: string, next: string): string => {
+  if (previous === '' || previous === next || !next.includes(previous)) return next;
+  if (next.startsWith(previous)) return previous + next.slice(previous.length);
+  const maxOverlap = Math.min(previous.length, next.length, OVERLAP_SEARCH_LIMIT);
+  for (let length = maxOverlap; length > 0; length -= 1) {
+    if (previous.endsWith(next.slice(0, length))) return previous + next.slice(length);
+  }
+  return next;
+};
 
 interface DetailItemProps {
   label: string;
@@ -36,27 +45,12 @@ interface DetailItemProps {
   children: ComponentChildren;
 }
 
-/** One label/value cell of the inspector's grids; `span` gives the long strings a whole row. */
 const DetailItem = ({ label, span, children }: DetailItemProps) => (
   <div class={span ? 'sm:col-span-2' : undefined}>
     <span class="text-pine-subtle">{label}</span>
     <div class="mt-0.5 font-mono text-xs wrap-break-word text-pine-text">{children}</div>
   </div>
 );
-
-interface ExecutionInspectorModalProps {
-  task: SwarmTask;
-  onClose: () => void;
-  /** Abort is offered only while the run can still be stopped. */
-  onAbort?: (taskId: string) => void;
-  /** Retry is offered only once the run has settled. */
-  onRetry?: (taskId: string) => void;
-  actionLoading?: boolean;
-  /** A queued run nobody can claim is indistinguishable from a stalled one without this. */
-  noRunnerOnline?: boolean;
-  /** Origin links live in the page, which owns the backlog and routine lists they resolve against. */
-  renderOrigin: (task: SwarmTask) => ComponentChildren;
-}
 
 const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'completed',
@@ -65,29 +59,35 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   'aborted',
 ]);
 
-export const ExecutionInspectorModal = ({
+interface ExecutionInspectorProps {
+  task: SwarmTask;
+  onAbort?: (taskId: string) => void;
+  onRetry?: (taskId: string) => void;
+  actionLoading?: boolean;
+  noRunnerOnline?: boolean;
+  renderOrigin: (task: SwarmTask) => ComponentChildren;
+  onRequestClose?: () => void;
+  headingId?: string;
+}
+
+export const ExecutionInspectorContent = ({
   task,
-  onClose,
   onAbort,
   onRetry,
   actionLoading,
   noRunnerOnline,
   renderOrigin,
-}: ExecutionInspectorModalProps) => {
+  onRequestClose,
+  headingId = 'execution-inspector-title',
+}: ExecutionInspectorProps) => {
   const [timeFormat] = useTimeFormat();
-  const dialogRef = useRef<HTMLDialogElement>(null);
   const outputRef = useRef<HTMLPreElement>(null);
   const stickToBottom = useRef(true);
+  const lastFingerprint = useRef<string | null>(null);
   const [live, setLive] = useState<SwarmTask>(task);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // The page mounts this only while a task is selected, so the dialog is modal from first paint
-  // and every timer below dies with the unmount — no close race to guard against.
-  useEffect(() => {
-    dialogRef.current?.showModal();
-  }, []);
-
-  // The page re-pins the inspected task off the list poll; keep whichever copy is newer.
   useEffect(() => {
     setLive((prev) => {
       if (prev.id !== task.id) return task;
@@ -105,11 +105,27 @@ export const ExecutionInspectorModal = ({
     let cancelled = false;
     const timer = setInterval(() => {
       getTask(taskId)
-        .then((fresh) => {
-          if (!cancelled) setLive(fresh);
+        .then(({ task: fresh, fingerprint }) => {
+          if (cancelled) return;
+          // Equal digests mean nothing rendered moved; skipping setLive skips the re-render and autoscroll pass.
+          if (fingerprint !== undefined && fingerprint === lastFingerprint.current) {
+            setError(null);
+            return;
+          }
+          lastFingerprint.current = fingerprint ?? null;
+          setLive((prev) => ({
+            ...fresh,
+            output:
+              prev.output === fresh.output
+                ? prev.output
+                : mergeOutput(prev.output ?? '', fresh.output ?? ''),
+          }));
+          setError(null);
         })
-        // A single dropped poll is transient; the next tick recovers and the dialog stays open.
-        .catch(() => {});
+        .catch((err: unknown) => {
+          if (cancelled) return;
+          setError(`Live refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+        });
     }, POLL_INTERVAL_MS);
 
     return () => {
@@ -130,20 +146,14 @@ export const ExecutionInspectorModal = ({
   const canRetry = TERMINAL_STATUSES.has(live.status);
 
   return (
-    <dialog
-      id="execution-dialog"
-      aria-labelledby="execution-dialog-title"
-      aria-modal="true"
-      ref={dialogRef}
-      onClose={onClose}
-      onClick={dialogBackdropClickHandler(dialogRef, onClose)}
-      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text shadow-2xl backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
-    >
+    <>
       <div class="flex items-start justify-between border-b border-pine-highlight pb-3">
         <div class="min-w-0 flex-1">
           <div class="flex flex-wrap items-center gap-2">
             <h2
-              id="execution-dialog-title"
+              id={headingId}
+              tabIndex={-1}
+              data-drawer-focus
               class="text-base font-bold wrap-break-word text-pine-text"
             >
               {live.title || (live.taskNumber ? `Task #${live.taskNumber}` : 'Task details')}
@@ -179,14 +189,16 @@ export const ExecutionInspectorModal = ({
               Retry
             </button>
           )}
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close task details"
-            class="inline-flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-          >
-            <Icon icon={faTimes} class="size-4" />
-          </button>
+          {onRequestClose && (
+            <button
+              type="button"
+              onClick={onRequestClose}
+              aria-label="Close task details"
+              class="inline-flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-subtle hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            >
+              <Icon icon={faTimes} class="size-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -204,8 +216,17 @@ export const ExecutionInspectorModal = ({
         </a>
       )}
 
+      {error && (
+        <p
+          role="alert"
+          aria-live="assertive"
+          class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 px-3 py-2 text-xs text-pine-love"
+        >
+          {error}
+        </p>
+      )}
+
       <div class="mt-4 flex flex-col gap-4 text-xs">
-        {/* Token Telemetry */}
         {(live.totalTokens !== undefined ||
           live.thinkingTokens !== undefined ||
           live.numTurns !== undefined) && (
@@ -227,10 +248,8 @@ export const ExecutionInspectorModal = ({
           </div>
         )}
 
-        {/* Run Metadata */}
         <div>
           <h3 class="mb-1 text-xs font-semibold text-pine-subtle uppercase">Run Metadata</h3>
-          {/* A full timestamp does not fit a quarter-width cell; stay at two columns. */}
           <div class="grid grid-cols-1 gap-3 rounded-lg border border-pine-highlight bg-pine-overlay/30 p-3 sm:grid-cols-2">
             <DetailItem label="Initiated By">{renderOrigin(live)}</DetailItem>
             <DetailItem label="Created">
@@ -243,7 +262,6 @@ export const ExecutionInspectorModal = ({
             <DetailItem label="Claimed">
               {formatDateTime(live.claimedAt, { timeFormat }) || '\u2014'}
             </DetailItem>
-            {/* A finished run's last heartbeat equals its completion, so only one is shown. */}
             <DetailItem label={liveStatus ? 'Last Heartbeat' : 'Completed'}>
               {formatDateTime(liveStatus ? live.heartbeatAt : live.completedAt, { timeFormat }) ||
                 '\u2014'}
@@ -277,7 +295,6 @@ export const ExecutionInspectorModal = ({
           </div>
         </div>
 
-        {/* Prompt Block */}
         <div>
           <div class="mb-1 flex items-center justify-between">
             <h3 class="text-xs font-semibold text-pine-subtle uppercase">Prompt</h3>
@@ -299,7 +316,15 @@ export const ExecutionInspectorModal = ({
           </div>
         </div>
 
-        {/* Model Output Block (Rendered even on failure!) */}
+        {live.error && (
+          <div>
+            <h4 class="mb-1 text-xs font-semibold text-pine-love uppercase">Failure Diagnostic</h4>
+            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
+              {live.error}
+            </div>
+          </div>
+        )}
+
         {live.output && (
           <div>
             <div class="mb-1 flex items-center gap-2">
@@ -323,17 +348,50 @@ export const ExecutionInspectorModal = ({
             </pre>
           </div>
         )}
-
-        {/* Error Block */}
-        {live.error && (
-          <div>
-            <h4 class="mb-1 text-xs font-semibold text-pine-love uppercase">Failure Diagnostic</h4>
-            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
-              {live.error}
-            </div>
-          </div>
-        )}
       </div>
+    </>
+  );
+};
+
+interface ExecutionInspectorModalProps extends Omit<ExecutionInspectorProps, 'headingId'> {
+  onClose: () => void;
+}
+
+export const ExecutionInspectorModal = ({
+  task,
+  onClose,
+  onAbort,
+  onRetry,
+  actionLoading,
+  noRunnerOnline,
+  renderOrigin,
+}: ExecutionInspectorModalProps) => {
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    dialogRef.current?.showModal();
+  }, []);
+
+  return (
+    <dialog
+      id="execution-dialog"
+      aria-labelledby="execution-dialog-title"
+      aria-modal="true"
+      ref={dialogRef}
+      onClose={onClose}
+      onClick={dialogBackdropClickHandler(dialogRef, onClose)}
+      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+    >
+      <ExecutionInspectorContent
+        task={task}
+        onAbort={onAbort}
+        onRetry={onRetry}
+        actionLoading={actionLoading}
+        noRunnerOnline={noRunnerOnline}
+        renderOrigin={renderOrigin}
+        onRequestClose={onClose}
+        headingId="execution-dialog-title"
+      />
     </dialog>
   );
 };

@@ -113,16 +113,19 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.deepEqual(milestoneHoursEnv.parse([10, 5]), [10, 5]);
   });
 
-  it('ships 48/24/12 milestones and a 4h pre-reset burn window as built-in defaults', () => {
+  it('ships 48/24/12 milestones, a 4h pre-reset burn window and gemini-4-hydrogen as built-in defaults', () => {
     assert.deepEqual(BUILTIN_DEFAULTS.quotaMilestoneHours, [48, 24, 12]);
     assert.deepEqual(DEFAULT_MILESTONE_HOURS, [48, 24, 12]);
     assert.equal(BUILTIN_DEFAULTS.quotaBurnMaxHours, 4);
     assert.equal(DEFAULT_QUOTA_BURN_MAX_HOURS, 4);
+    // Hydrogen is the shipped dispatch default; 3.8 Flash stays selectable, but not the default.
+    assert.equal(BUILTIN_DEFAULTS.defaultDispatchModel, 'gemini-4-hydrogen');
 
     const store = new ConfigStore(':memory:', {});
     const config = store.resolveConfig();
     assert.deepEqual(config.quotaMilestoneHours, [48, 24, 12]);
     assert.equal(config.quotaBurnMaxHours, 4);
+    assert.equal(config.defaultDispatchModel, 'gemini-4-hydrogen');
     store.close();
   });
 

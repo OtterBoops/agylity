@@ -12,11 +12,8 @@ export const resolvePublicFilePath = (relative: string): string | null => {
   }
   const currentDir = path.dirname(fileURLToPath(import.meta.url));
   const candidateRoots = [
-    // 1. Production bundle: dist/web/public (when running compiled dist/web/controllers/static.js)
     path.resolve(currentDir, '..', 'public'),
-    // 2. Dev mode with tsx: <root>/dist/web/public (relative to src/web/controllers/static.ts)
     path.resolve(currentDir, '..', '..', '..', 'dist', 'web', 'public'),
-    // 3. Process CWD fallback
     path.resolve(process.cwd(), 'dist', 'web', 'public'),
   ];
 
@@ -65,7 +62,6 @@ export const handleStaticAsset = async (
       })
       .end(content);
   } catch (err: any) {
-    // A path naming a directory (`/assets/`) is a missing asset, not a server failure.
     if (err?.code === 'EISDIR') {
       return sendJson(res, 404, { error: 'Asset not found' });
     }

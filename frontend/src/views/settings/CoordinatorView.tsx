@@ -15,9 +15,10 @@ import { toModelOptions, useModelCatalog } from '../../state/modelCatalogStore';
 interface CoordinatorViewProps {
   config: ConfigData;
   onChanged: () => void;
+  searchQuery?: string;
 }
 
-export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => {
+export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorViewProps) => {
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
   const [showRegisterPanel, setShowRegisterPanel] = useState(false);
   const catalog = useModelCatalog();
@@ -53,7 +54,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
   if (!isCoordinatorEnabled) {
     return (
       <SettingsLayout>
-        <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+        <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
           <div class="mb-1 flex flex-wrap items-center gap-2">
             <Icon icon={faNetworkWired} class="size-5 text-pine-subtle" />
             <h2 class="text-lg font-semibold text-pine-text">Task Coordinator</h2>
@@ -84,7 +85,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
 
   return (
     <SettingsLayout>
-      <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 shadow-sm">
+      <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div class="mb-1 flex flex-wrap items-center gap-2">
@@ -136,6 +137,7 @@ export const CoordinatorView = ({ config, onChanged }: CoordinatorViewProps) => 
         config={config}
         onSaved={onChanged}
         modelOptions={toModelOptions(catalog.models)}
+        searchQuery={searchQuery}
       />
     </SettingsLayout>
   );

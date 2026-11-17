@@ -1,23 +1,33 @@
 import type { FieldDef } from '../components/SettingsForm';
 import type { ModelCatalogEntry, ReasoningEffort } from '../types';
+import {
+  ALL_EFFORTS,
+  CANONICAL_AGY_MODELS,
+  DEFAULT_DISPATCH_MODEL,
+} from '../../../src/shared/models.ts';
 
-export const MODEL_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: 'gemini-4-argon', label: 'Gemini 4 Argon' },
-  { value: 'gemini-3.8-flash', label: 'Gemini 3.8 Flash' },
-  { value: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5' },
-  { value: 'claude-opus-5-5', label: 'Claude Opus 5.5' },
-  { value: 'gpt-oss-120b', label: 'GPT-OSS 120B' },
-];
+export const MODEL_OPTIONS: Array<{ value: string; label: string }> = CANONICAL_AGY_MODELS.map(
+  (model) => ({ value: model.id, label: model.label })
+);
+
+const EFFORT_LABELS: Record<ReasoningEffort, string> = {
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'XHigh',
+};
 
 export const EFFORT_OPTIONS: Array<{
   value: ReasoningEffort;
   label: string;
-}> = [
-  { value: 'low', label: 'Low' },
-  { value: 'medium', label: 'Medium' },
-  { value: 'high', label: 'High' },
-  { value: 'xhigh', label: 'XHigh' },
-];
+}> = ALL_EFFORTS.map((effort) => ({ value: effort, label: EFFORT_LABELS[effort] }));
+
+export const EFFORT_CODES: Record<ReasoningEffort, string> = {
+  low: 'L',
+  medium: 'M',
+  high: 'H',
+  xhigh: 'XH',
+};
 
 export const PR_POLICY_OPTIONS: Array<{
   value: 'docs_only' | 'all' | 'none';
@@ -30,32 +40,29 @@ export const PR_POLICY_OPTIONS: Array<{
 
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
 
-/** Collapses a configured model string (e.g. 'gemini-3.8-flash-high') to a catalog id. */
 export const normalizeModelId = (
   raw: string | undefined,
   models: Array<{ id: string }> = [],
-  fallback = 'gemini-3.8-flash'
+  fallback = DEFAULT_DISPATCH_MODEL
 ): string => {
   if (!raw) return fallback;
   const pool = models.length > 0 ? models : FALLBACK_CATALOG;
   return pool.find((m) => raw === m.id || raw.startsWith(m.id))?.id ?? raw;
 };
 
-const ALL_EFFORTS: ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
+export const autocompleteForType = (type: FieldDef['type']): string =>
+  type === 'password' ? 'new-password' : 'off';
 
-/** Bundled effort facts for the pre-load window; the live catalog from /api/models wins. */
 const FALLBACK_MODEL_EFFORTS: Record<
   string,
   { supported: ReasoningEffort[]; defaultEffort: ReasoningEffort }
-> = {
-  'gemini-4-argon': { supported: ALL_EFFORTS, defaultEffort: 'high' },
-  'gemini-3.8-flash': { supported: ALL_EFFORTS, defaultEffort: 'medium' },
-  'claude-sonnet-5-5': { supported: ALL_EFFORTS, defaultEffort: 'high' },
-  'claude-opus-5-5': { supported: ALL_EFFORTS, defaultEffort: 'high' },
-  'gpt-oss-120b': { supported: ['medium'], defaultEffort: 'medium' },
-};
+> = Object.fromEntries(
+  CANONICAL_AGY_MODELS.map((model) => [
+    model.id,
+    { supported: [...(model.supportedEfforts ?? ALL_EFFORTS)], defaultEffort: model.defaultEffort },
+  ])
+);
 
-/** Reads effort rules from the server catalog, so a new model needs no frontend edit. */
 export const resolveModelEffort = (
   models: Array<Pick<ModelCatalogEntry, 'id'> & Partial<ModelCatalogEntry>>,
   id: string
@@ -65,7 +72,7 @@ export const resolveModelEffort = (
   return {
     supported: live?.supportedEfforts?.length
       ? live.supportedEfforts
-      : (fallback?.supported ?? ALL_EFFORTS),
+      : (fallback?.supported ?? [...ALL_EFFORTS]),
     defaultEffort: live?.defaultEffort ?? fallback?.defaultEffort ?? 'medium',
   };
 };
@@ -177,4 +184,11 @@ export const TELEMETRY_OVERRIDE_FIELDS: FieldDef[] = [
     placeholder: 'http://127.0.0.1:60643',
     hint: 'Custom Antigravity Language Server Connect-RPC URL (optional).',
   },
+];
+
+export const ALL_SETTINGS_FIELDS: FieldDef[] = [
+  ...SENTRY_GENERAL_FIELDS,
+  ...COORDINATOR_FIELDS,
+  ...NETWORK_SECURITY_FIELDS,
+  ...TELEMETRY_OVERRIDE_FIELDS,
 ];

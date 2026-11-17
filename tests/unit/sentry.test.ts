@@ -25,6 +25,8 @@ import {
 } from '../../src/sentry/models.js';
 import { SentryStateManager, normalizeMilestoneKey } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
+import { AppDatabase } from '../../src/storage/db.js';
+import { makeTempDir } from '../e2e/harness/index.js';
 import {
   ConnectRpcQuotaClient,
   LanguageServerError,
@@ -333,7 +335,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       assert.equal(flashPool.family, 'gemini-flash');
       assert.equal(flashPool.poolId, 'gemini-flash');
-      assert.equal(flashPool.displayName, 'Gemini Flash');
+      assert.equal(flashPool.displayName, 'Gemini Hydrogen');
       assert.equal(flashPool.remainingFraction, 0.8084);
       assert.equal(flashPool.models.length, 3); // 3 flash variants
     });
@@ -380,6 +382,14 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       'test_sentry_state_' + Date.now() + '_' + Math.random().toString(36).slice(2)
     );
     const stateFile = join(testDir, 'state.json');
+    // The ledger lives beside the state path and holds the file open, so every handle is closed
+    // before the temp directory is removed.
+    const opened: SentryStateManager[] = [];
+    const openState = (statePath: string = stateFile): SentryStateManager => {
+      const manager = new SentryStateManager(statePath);
+      opened.push(manager);
+      return manager;
+    };
 
     beforeEach(() => {
       if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
@@ -387,19 +397,21 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     afterEach(() => {
+      for (const manager of opened) manager.close();
+      opened.length = 0;
       if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
     });
 
-    it('initializes clean default state on ENOENT', async () => {
-      const manager = new SentryStateManager(stateFile);
+    it('initializes clean default state when no ledger exists', async () => {
+      const manager = openState(stateFile);
       const state = await manager.load();
       assert.equal(state.version, 1);
       assert.equal(state.lastProbeSource, 'unreachable');
       assert.deepEqual(state.pools, {});
     });
 
-    it('persists state atomically via temporary file and reload', async () => {
-      const manager = new SentryStateManager(stateFile);
+    it('persists state through the SQLite ledger and reloads it', async () => {
+      const manager = openState(stateFile);
       await manager.load();
 
       manager.updateProbe('connect_rpc', '2026-10-19T14:00:00Z');
@@ -407,10 +419,10 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       manager.recordMilestoneFired('claude', 24);
 
       await manager.save();
-      assert.equal(existsSync(stateFile), true);
+      assert.equal(existsSync(join(testDir, 'state.db')), true);
 
       // Verify second manager loads exact state
-      const manager2 = new SentryStateManager(stateFile);
+      const manager2 = openState(stateFile);
       const loaded = await manager2.load();
 
       assert.equal(loaded.lastProbeSource, 'connect_rpc');
@@ -422,7 +434,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('detects cycle rollover and clears fired milestones when resetTime advances', async () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       await manager.load();
 
       // Cycle 1
@@ -440,11 +452,11 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, []);
     });
 
-    it('quarantines corrupt JSON state file and initializes fresh state', async () => {
-      // Write corrupted JSON to state file
+    it('quarantines a corrupt pre-SQLite state file and initializes fresh state', async () => {
+      // Write corrupted JSON to the legacy state path the ledger imports from.
       writeFileSync(stateFile, '{"version": 1, "pools": INVALID_JSON_SYNTAX', 'utf-8');
 
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const state = await manager.load();
 
       assert.equal(state.version, 1);
@@ -460,7 +472,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const dirAsStatePath = join(testDir, 'state-as-dir');
       mkdirSync(dirAsStatePath, { recursive: true });
 
-      const manager = new SentryStateManager(dirAsStatePath);
+      const manager = openState(dirAsStatePath);
       const state = await manager.load();
 
       assert.equal(state.version, 1);
@@ -478,7 +490,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('reports a premature reset when a used pool refills mid-cycle', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
       const resetTime = new Date(nowMs + 48 * 3600 * 1000).toISOString();
 
@@ -495,7 +507,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('reports a premature reset when the refill also moves the reset deadline', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
       const firstReset = new Date(nowMs + 24 * 3600 * 1000).toISOString();
       const secondReset = new Date(nowMs + 7 * 24 * 3600 * 1000).toISOString();
@@ -509,7 +521,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('ignores a never-used pool whose reset time merely floats forward', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
 
       manager.updatePoolQuota(
@@ -531,7 +543,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('ignores a refill inside the five-minute guard before the scheduled reset', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
       const resetTime = new Date(nowMs + 4 * 60_000).toISOString();
 
@@ -542,7 +554,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('ignores a gain below five percentage points', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
       const resetTime = new Date(nowMs + 24 * 3600 * 1000).toISOString();
 
@@ -553,7 +565,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('keeps only the newest early reset notice and persists it until dismissed', async () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       await manager.load();
 
       manager.recordEarlyResetNotice(
@@ -590,7 +602,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       await manager.save();
 
-      const reloaded = new SentryStateManager(stateFile);
+      const reloaded = openState(stateFile);
       await reloaded.load();
       assert.equal(reloaded.getEarlyResetNotice()?.pools[0]?.poolId, 'gemini-flash');
 
@@ -600,7 +612,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('keeps the fired milestones when the same reset instant is re-rendered differently', async () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       await manager.load();
 
       manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00Z');
@@ -620,7 +632,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('keeps the stored deadline and fired milestones when a probe loses the reset time', async () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState(stateFile);
       await manager.load();
 
       manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00Z');
@@ -632,8 +644,8 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(manager.isMilestoneFired('claude', 24), true);
     });
 
-    it('serialises concurrent saves so a dismissed notice is not resurrected by an in-flight write', async () => {
-      const manager = new SentryStateManager(stateFile);
+    it('does not resurrect a dismissed notice, because a dismissal is already committed', async () => {
+      const manager = openState(stateFile);
       await manager.load();
       manager.recordEarlyResetNotice(
         [
@@ -648,52 +660,145 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         '2026-11-14T12:00:00.000Z'
       );
 
-      const first = manager.save();
       manager.dismissEarlyResetNotice();
       await manager.save();
-      await first;
 
-      const reloaded = new SentryStateManager(stateFile);
+      const reloaded = openState(stateFile);
       await reloaded.load();
       assert.equal(reloaded.getEarlyResetNotice(), null);
     });
 
-    it('queues a second save behind an in-flight one instead of writing concurrently', async () => {
-      const manager = new SentryStateManager(stateFile);
+    it('keeps the newest state when two mutations land back to back', async () => {
+      const manager = openState(stateFile);
       await manager.load();
 
-      // Park the first write until the assertion has run, so "did a second write start?" is the
-      // observable difference between a queued save and two writes racing to rename the same file.
-      const fsPromises = (await import('node:fs')).promises;
-      const realWriteFile = fsPromises.writeFile;
-      const releases: Array<() => void> = [];
-      let writes = 0;
-      (fsPromises as any).writeFile = async (...args: any[]) => {
-        writes++;
-        if (writes === 1) await new Promise<void>((resolve) => releases.push(resolve));
-        return (realWriteFile as any)(...args);
-      };
+      manager.updateProbe('cli', '2026-11-14T00:00:00.000Z');
+      const first = manager.save();
+      manager.updateProbe('connect_rpc', '2026-11-14T00:01:00.000Z');
+      const second = manager.save();
+      // `save()` is a compatibility no-op: the mutations were already durable.
+      await Promise.all([first, second]);
+      assert.equal(existsSync(join(testDir, 'state.json')), false);
 
-      try {
-        manager.updateProbe('cli', '2026-11-14T00:00:00.000Z');
-        const first = manager.save();
-        await new Promise((resolve) => setTimeout(resolve, 10));
-
-        manager.updateProbe('connect_rpc', '2026-11-14T00:01:00.000Z');
-        const second = manager.save();
-        await new Promise((resolve) => setTimeout(resolve, 25));
-
-        assert.equal(writes, 1, 'the second save must not write while the first is in flight');
-
-        for (const release of releases) release();
-        await Promise.all([first, second]);
-      } finally {
-        (fsPromises as any).writeFile = realWriteFile;
-      }
-
-      const reloaded = new SentryStateManager(stateFile);
+      const reloaded = openState(stateFile);
       await reloaded.load();
       assert.equal(reloaded.getState().lastProbeSource, 'connect_rpc');
+    });
+
+    it('records a delivered alert in both alert_events and pool_milestones', () => {
+      const manager = openState(stateFile);
+      const resetTime = '2026-11-21T22:00:00.000Z';
+
+      manager.updatePoolQuota('claude', 0.4, resetTime);
+      manager.recordDeliveredAlert({
+        poolId: 'claude',
+        resetTime,
+        milestoneHours: 24,
+        headroomPercent: 40,
+        channels: { console: { success: true } },
+        firedAt: '2026-11-20T22:00:00.000Z',
+      });
+
+      const page = manager.listAlertEvents();
+      assert.equal(page.events.length, 1);
+      assert.equal(page.events[0]?.kind, 'milestone');
+      assert.equal(page.events[0]?.milestoneHours, 24);
+      assert.equal(page.events[0]?.headroomPercent, 40);
+      assert.deepEqual(page.events[0]?.channels, { console: { success: true } });
+      assert.equal(manager.isMilestoneFired('claude', 24), true);
+
+      // A second identical delivery is deduped by the unique key in both tables.
+      manager.recordDeliveredAlert({
+        poolId: 'claude',
+        resetTime,
+        milestoneHours: 24,
+        headroomPercent: 40,
+      });
+      assert.equal(manager.listAlertEvents().events.length, 1);
+
+      // And the milestone row survives a reload, which is what stops a re-alert after a restart.
+      const reloaded = openState(stateFile);
+      assert.equal(reloaded.isMilestoneFired('claude', 24), true);
+      assert.equal(reloaded.listAlertEvents().events.length, 1);
+    });
+
+    it('keeps an early-reset event after its notice is dismissed', () => {
+      const manager = openState(stateFile);
+      const previousResetTime = '2026-11-16T12:00:00.000Z';
+
+      manager.updatePoolQuota('claude', 0.4, previousResetTime);
+      manager.recordEarlyResetNotice(
+        [
+          {
+            poolId: 'claude',
+            previousRemainingFraction: 0.4,
+            remainingFraction: 1,
+            previousResetTime,
+            resetTime: previousResetTime,
+          },
+        ],
+        '2026-11-14T12:00:00.000Z'
+      );
+      manager.recordCycleAlert({
+        poolId: 'claude',
+        resetTime: previousResetTime,
+        kind: 'early_reset',
+        headroomPercent: 100,
+        firedAt: '2026-11-14T12:00:00.000Z',
+      });
+      // The same premature reset observed twice is one event: `milestone_hours` is NULL here, and
+      // the partial unique index is what makes that dedupe hold.
+      manager.recordCycleAlert({
+        poolId: 'claude',
+        resetTime: previousResetTime,
+        kind: 'early_reset',
+        headroomPercent: 100,
+        firedAt: '2026-11-14T12:05:00.000Z',
+      });
+
+      assert.equal(manager.dismissEarlyResetNotice(), true);
+      assert.equal(manager.getEarlyResetNotice(), null);
+
+      const events = manager.listAlertEvents().events;
+      assert.equal(events.length, 1);
+      assert.equal(events[0]?.kind, 'early_reset');
+      assert.equal(events[0]?.milestoneHours, null);
+      assert.equal(events[0]?.resetTime, previousResetTime);
+    });
+
+    it('paginates alert history newest-first with a keyset cursor', () => {
+      const manager = openState(stateFile);
+      const resetTime = '2026-11-21T22:00:00.000Z';
+
+      for (let i = 0; i < 5; i++) {
+        manager.recordDeliveredAlert({
+          poolId: i % 2 === 0 ? 'claude' : 'gemini-flash',
+          resetTime,
+          milestoneHours: 24 - i,
+          headroomPercent: 40 + i,
+          firedAt: `2026-11-20T2${i}:00:00.000Z`,
+        });
+      }
+
+      const firstPage = manager.listAlertEvents({ limit: 2 });
+      assert.equal(firstPage.events.length, 2);
+      assert.equal(firstPage.events[0]?.milestoneHours, 20);
+      assert.ok(firstPage.nextBefore);
+
+      const secondPage = manager.listAlertEvents({ limit: 2, before: firstPage.nextBefore });
+      assert.equal(secondPage.events.length, 2);
+      assert.equal(secondPage.events[0]?.milestoneHours, 22);
+
+      const lastPage = manager.listAlertEvents({ limit: 2, before: secondPage.nextBefore });
+      assert.equal(lastPage.events.length, 1);
+      assert.equal(lastPage.nextBefore, null);
+
+      // A pool filter narrows the same ledger without disturbing the order.
+      const filtered = manager.listAlertEvents({ poolId: 'claude' });
+      assert.deepEqual(
+        filtered.events.map((event) => event.poolId),
+        ['claude', 'claude', 'claude']
+      );
     });
   });
 
@@ -849,7 +954,11 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('evaluates snapshots and integrates with SentryStateManager seamlessly', () => {
-      const stateManager = new SentryStateManager();
+      // Never the default `data/state.json`: a test must not write into the repository.
+      const { dir, cleanup } = makeTempDir('sentry_evaluator_');
+      const stateManager = new SentryStateManager({
+        db: new AppDatabase(join(dir, 'evaluator.db')),
+      });
       const evaluator = new QuotaEvaluator({
         milestoneHours: [24, 12, 3],
         alertThresholdPercent: 25,
@@ -868,18 +977,23 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         },
       ];
 
-      // First run: fires 3h milestone, supersedes 24 and 12
-      const alerts = evaluator.evaluate(snapshots, stateManager);
-      assert.equal(alerts.length, 1);
-      assert.equal(alerts[0]?.milestoneHours, 3);
+      try {
+        // First run: fires 3h milestone, supersedes 24 and 12
+        const alerts = evaluator.evaluate(snapshots, stateManager);
+        assert.equal(alerts.length, 1);
+        assert.equal(alerts[0]?.milestoneHours, 3);
 
-      assert.equal(stateManager.isMilestoneFired('claude', 3), true);
-      assert.equal(stateManager.isMilestoneFired('claude', 12), true);
-      assert.equal(stateManager.isMilestoneFired('claude', 24), true);
+        assert.equal(stateManager.isMilestoneFired('claude', 3), true);
+        assert.equal(stateManager.isMilestoneFired('claude', 12), true);
+        assert.equal(stateManager.isMilestoneFired('claude', 24), true);
 
-      // Second run immediately after: zero new alerts
-      const alerts2 = evaluator.evaluate(snapshots, stateManager);
-      assert.equal(alerts2.length, 0);
+        // Second run immediately after: zero new alerts
+        const alerts2 = evaluator.evaluate(snapshots, stateManager);
+        assert.equal(alerts2.length, 0);
+      } finally {
+        stateManager.close();
+        cleanup();
+      }
     });
   });
 
@@ -990,7 +1104,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
                 models: [
                   { id: 'claude-sonnet-5-5-high', label: 'Claude Sonnet 5.5 (High)' },
                   { id: 'gemini-4-argon-medium', label: 'Gemini 4 Argon (Medium)' },
-                  { id: 'gemini-3.8-flash-low', label: 'Gemini 3.8 Flash (Low)' },
+                  { id: 'gemini-4-hydrogen-low', label: 'Gemini 4 Hydrogen (Low)' },
                 ],
               },
             },
@@ -1186,7 +1300,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         assert.equal(argon.remainingFraction, 0.28); // Weekly is the primary eval target
         assert.equal(argon.shortTerm, undefined);
 
-        // Gemini Flash: weekly is 0.73, 5h is 0.99
+        // Gemini Hydrogen: weekly is 0.73, 5h is 0.99
         const flash = snapshots.find((s) => s.family === 'gemini-flash');
         assert.ok(flash);
         assert.equal(flash.remainingFraction, 0.73);
@@ -1235,7 +1349,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       );
       assert.deepEqual(
         snapshots.map((s) => s.displayName),
-        ['Gemini Flash', 'Gemini Pro']
+        ['Gemini Hydrogen', 'Gemini Pro']
       );
       assert.equal(snapshots[1]?.family, 'gemini-flash');
 
@@ -1828,17 +1942,27 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       resetTime,
     });
 
+    // The ledger holds its file open, so it is closed before the temp directory goes away.
+    const opened: SentryStateManager[] = [];
+    const openState = (statePath: string = stateFile): SentryStateManager => {
+      const manager = new SentryStateManager(statePath);
+      opened.push(manager);
+      return manager;
+    };
+
     beforeEach(() => {
       if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
       mkdirSync(testDir, { recursive: true });
     });
 
     afterEach(() => {
+      for (const manager of opened) manager.close();
+      opened.length = 0;
       if (existsSync(testDir)) rmSync(testDir, { recursive: true, force: true });
     });
 
     it('appends a sample once ten minutes have passed', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
 
       manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.795, cycleReset, NOW_MS + 59_000);
@@ -1853,7 +1977,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('ignores a rapid observation whose drain is below the noise floor', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
 
       manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.795, cycleReset, NOW_MS + 30_000);
@@ -1864,7 +1988,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('records a recent observation once the drain reaches a whole percent', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
 
       manager.updatePoolQuota('claude', 0.9, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.88, cycleReset, NOW_MS + 30_000);
@@ -1875,7 +1999,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('clears the history when the reset time rolls into a new cycle', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
 
       manager.updatePoolQuota('claude', 0.5, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.45, cycleReset, NOW_MS + 20 * MINUTE_MS);
@@ -1891,7 +2015,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('clears the history when an early refill restarts the balance', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
 
       manager.updatePoolQuota('claude', 0.4, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.35, cycleReset, NOW_MS + 20 * MINUTE_MS);
@@ -1904,7 +2028,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('keeps only the newest twenty-four samples', () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
       let nowMs = NOW_MS;
 
       for (let i = 0; i < 30; i++) {
@@ -1919,12 +2043,12 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     });
 
     it('round-trips samples and still loads a state file written before them', async () => {
-      const manager = new SentryStateManager(stateFile);
+      const manager = openState();
       manager.updatePoolQuota('claude', 0.8, cycleReset, NOW_MS);
       manager.updatePoolQuota('claude', 0.7, cycleReset, NOW_MS + 30 * MINUTE_MS);
       await manager.save();
 
-      const reloaded = new SentryStateManager(stateFile);
+      const reloaded = openState();
       await reloaded.load();
       assert.equal(reloaded.getPoolState('claude')?.samples?.length, 2);
 
@@ -1940,7 +2064,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         'utf-8'
       );
 
-      const legacy = new SentryStateManager(legacyFile);
+      const legacy = openState(legacyFile);
       const loaded = await legacy.load();
       assert.equal(loaded.pools['claude']?.remainingFraction, 0.5);
       assert.equal(loaded.pools['claude']?.samples, undefined);

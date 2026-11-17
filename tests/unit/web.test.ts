@@ -145,8 +145,9 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         );
         assert.equal(scriptRes.headers.get('cache-control'), 'public, max-age=31536000, immutable');
         const scriptBody = await scriptRes.text();
-        assert.ok(scriptBody.includes('dispatchModal'));
-        assert.ok(scriptBody.includes('repoSelect'));
+        // The retired DispatchModal left this marker behind; the palette id proves the shell ships.
+        assert.ok(scriptBody.includes('command-palette-dialog'));
+        assert.ok(scriptBody.includes('settings-search'));
         assert.ok(scriptBody.includes('quotaGrid'));
 
         // Invariant: Zero external CDN links
@@ -210,7 +211,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('GET /api/quota synthesizes snapshots from SentryStateManager when client is omitted', async () => {
       const { dir, cleanup } = makeTempDir('web_test_quota_fallback_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -310,7 +311,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('GET /api/alerts returns sentry alert state from SentryStateManager', async () => {
       const { dir, cleanup } = makeTempDir('web_test_alerts_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: '2026-10-19T14:00:00.000Z',
@@ -350,7 +351,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('POST /api/alerts/dismiss clears the early-reset notice and GET reflects it', async () => {
       const { dir, cleanup } = makeTempDir('web_test_alerts_dismiss_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: '2026-10-19T14:00:00.000Z',
@@ -518,6 +519,120 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           },
           (err: any) => err.response?.status === 400
         );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/config applies { set, clear } in one atomic request', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_envelope_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('quotaAlertThresholdPercent', 35);
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const postRes = await ky
+          .post(`http://127.0.0.1:${started.port}/api/config`, {
+            json: {
+              set: { quotaCheckIntervalSeconds: 300, logLevel: 'debug' },
+              clear: ['quotaAlertThresholdPercent'],
+            },
+          })
+          .json<any>();
+
+        assert.equal(postRes.success, true);
+        assert.equal(postRes.resolved.quotaCheckIntervalSeconds, 300);
+        assert.equal(store.get('quotaCheckIntervalSeconds'), 300);
+        assert.equal(store.get('logLevel'), 'debug');
+        assert.deepEqual(postRes.cleared, ['quotaAlertThresholdPercent']);
+        assert.equal(store.getAllOverrides().quotaAlertThresholdPercent, undefined);
+        assert.equal(postRes.overrides.quotaAlertThresholdPercent, undefined);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/config rejects the whole envelope when any set key is invalid', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_envelope_atomic_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              json: { set: { quotaCheckIntervalSeconds: 300, notARealKey: true } },
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 400
+        );
+
+        // Neither the valid half nor the delete half may land.
+        assert.equal(store.getAllOverrides().quotaCheckIntervalSeconds, undefined);
+        assert.equal(store.get('quotaCheckIntervalSeconds'), 60);
+
+        await assert.rejects(
+          async () => {
+            await ky.post(`http://127.0.0.1:${started.port}/api/config`, {
+              json: { clear: ['notARealKey'] },
+              retry: 0,
+            });
+          },
+          (err: any) => err.response?.status === 400
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/config keeps a masked secret in `set` and deletes a secret in `clear`', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_envelope_secret_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('discordToken', 'stored-discord-token');
+      store.setOverride('webhookSecret', 'stored-hmac-secret');
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const postRes = await ky
+          .post(`http://127.0.0.1:${started.port}/api/config`, {
+            json: { set: { discordToken: '••••••••' }, clear: ['webhookSecret'] },
+          })
+          .json<any>();
+
+        assert.equal(store.getAllOverrides().discordToken, 'stored-discord-token');
+        assert.equal(store.getAllOverrides().webhookSecret, undefined);
+        assert.deepEqual(postRes.cleared, ['webhookSecret']);
+        assert.equal(postRes.secretsMeta.discordToken.isSet, true);
+        assert.equal(postRes.secretsMeta.webhookSecret.isSet, false);
+        assert.equal(postRes.overrides.discordToken, '••••••••');
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -810,12 +925,101 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('POST /api/dispatch validates the cascade: empty or unknown hops 400, an unknown effort clamps', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_dispatch_cascade_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        defaultDispatchModel: 'gemini-4-hydrogen',
+        defaultDispatchEffort: 'medium',
+      });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+          claude: {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const post = (cascade: unknown) =>
+          ky.post(`${base}/api/dispatch`, {
+            json: { repositoryId: 'agylity', prompt: 'Cascade contract', cascade: cascade as any },
+            retry: 0,
+            throwHttpErrors: false,
+          });
+
+        for (const [label, cascade] of [
+          ['an empty cascade', []],
+          ['an unknown model', [{ model: 'gemini-9-turbo', effort: 'low' }]],
+          ['a hop with no model', [{ effort: 'low' }]],
+          ['a hop that is not an object', ['gemini-4-hydrogen']],
+          ['a bare string instead of a list', 'gemini-4-hydrogen'],
+        ] as Array<[string, unknown]>) {
+          const res = await post(cascade);
+          assert.equal(res.status, 400, `${label} must be a 400, got ${res.status}`);
+          const body = (await res.json()) as { error?: string };
+          assert.equal(typeof body.error, 'string', `${label} must explain the rejection`);
+        }
+
+        // A known model with an unknown effort is normalised, not rejected: it clamps to the
+        // model's default effort ('medium' for hydrogen).
+        const clamped = await post([{ model: 'gemini-4-hydrogen', effort: 'ultra' }]);
+        assert.equal(clamped.status, 200);
+        const clampedBody = (await clamped.json()) as any;
+        assert.equal(clampedBody.success, true);
+        const fetchedClamped = await ky
+          .get(`${base}/api/tasks/${clampedBody.taskId}`, { retry: 0 })
+          .json<any>();
+        assert.equal(fetchedClamped.model, 'gemini-4-hydrogen');
+        assert.equal(fetchedClamped.effort, 'medium');
+
+        // The first hop is what dispatches, carrying ITS effort — not the model default, not hop 2.
+        const first = await post([
+          { model: 'gemini-4-hydrogen', effort: 'low' },
+          { model: 'claude-sonnet-5-5', effort: 'high' },
+        ]);
+        assert.equal(first.status, 200);
+        const firstBody = (await first.json()) as any;
+        assert.equal(firstBody.success, true);
+        assert.equal(firstBody.model, 'gemini-4-hydrogen');
+        const fetchedFirst = await ky
+          .get(`${base}/api/tasks/${firstBody.taskId}`, { retry: 0 })
+          .json<any>();
+        assert.equal(fetchedFirst.effort, 'low');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('POST /api/dispatch blocks execution when quota headroom is below safety floor without allowOverage', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_overage_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         minDispatchHeadroomPercent: 15,
       });
-      const sentryState = new SentryStateManager(path.join(dir, 'state.json'));
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
       sentryState.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -1681,13 +1885,192 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   });
 
   /* ==================================================================== */
+  /* 10c. Bulk Backlog Actions                                            */
+  /* ==================================================================== */
+  describe('10c. Bulk Backlog Actions', () => {
+    it('pauses only pending/dispatched rows, reports skipped ids and rejects a bad body', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_bulk_pause_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const create = async (title: string) =>
+          ky
+            .post(`${base}/api/backlog`, {
+              json: { title, prompt: 'P', repositoryId: 'agylity' },
+              retry: 0,
+              throwHttpErrors: false,
+            })
+            .json<{ id: string }>();
+
+        const pending = await create('Pending row');
+        const settled = await create('Completed row');
+        const patched = await ky.patch(`${base}/api/backlog/${encodeURIComponent(settled.id)}`, {
+          json: { status: 'completed' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(patched.status, 200);
+
+        const missing = 'backlog-does-not-exist';
+        const res = await ky.patch(`${base}/api/backlog/bulk`, {
+          json: { ids: [pending.id, settled.id, missing], action: 'pause' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 200);
+        const body = await res.json<{
+          updated: number;
+          items: Array<{ id: string; status: string }>;
+          skipped: string[];
+        }>();
+        assert.equal(body.updated, 1);
+        assert.deepEqual(
+          body.items.map((item) => item.id),
+          [pending.id]
+        );
+        assert.equal(body.items[0]!.status, 'paused');
+        assert.deepEqual([...body.skipped].sort(), [settled.id, missing].sort());
+
+        // A settled row keeps its outcome, and the paused row leaves the pending pool.
+        const settledAfter = await ky
+          .get(`${base}/api/backlog/${encodeURIComponent(settled.id)}`)
+          .json<{ status: string }>();
+        assert.equal(settledAfter.status, 'completed');
+        const pendingPool = await ky
+          .get(`${base}/api/backlog?status=pending`, { retry: 0 })
+          .json<any[]>();
+        assert.deepEqual(pendingPool, []);
+        const pausedPool = await ky
+          .get(`${base}/api/backlog?status=paused`, { retry: 0 })
+          .json<any[]>();
+        assert.deepEqual(
+          pausedPool.map((row) => row.id),
+          [pending.id]
+        );
+
+        const invalidBodies: Array<Record<string, unknown>> = [
+          { ids: [], action: 'pause' },
+          { ids: 'not-an-array', action: 'pause' },
+          { ids: [pending.id], action: 'sideways' },
+          { ids: [1, 2], action: 'pause' },
+        ];
+        for (const invalid of invalidBodies) {
+          const badRes = await ky.patch(`${base}/api/backlog/bulk`, {
+            json: invalid,
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(
+            badRes.status,
+            400,
+            `expected 400 for ${JSON.stringify(invalid)}, got ${badRes.status}`
+          );
+          const errBody = await badRes.json<{ error?: string }>();
+          assert.ok(errBody.error, 'a rejected bulk body must explain itself');
+        }
+
+        // The bulk route is PATCH-only: it must not fall through to the /api/backlog/<id> parser.
+        const getRes = await ky.get(`${base}/api/backlog/bulk`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(getRes.status, 405);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('returns paused rows to pending on resume and counts a repeated id once', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_bulk_resume_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'Resumable row', prompt: 'P', repositoryId: 'agylity' },
+            retry: 0,
+            throwHttpErrors: false,
+          })
+          .json<{ id: string }>();
+
+        const paused = await ky.patch(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id], action: 'pause' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(paused.status, 200);
+        assert.equal(
+          (await paused.json<{ updated: number }>()).updated,
+          1,
+          'a pending row must be pausable'
+        );
+
+        // A repeated id is one row, not two updates.
+        const resumed = await ky.patch(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id, created.id], action: 'resume' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(resumed.status, 200);
+        const body = await resumed.json<{
+          updated: number;
+          items: Array<{ id: string; status: string }>;
+          skipped: string[];
+        }>();
+        assert.equal(body.updated, 1);
+        assert.equal(body.items[0]!.status, 'pending');
+        assert.deepEqual(body.skipped, []);
+
+        const after = await ky
+          .get(`${base}/api/backlog/${encodeURIComponent(created.id)}`)
+          .json<{ status: string }>();
+        assert.equal(after.status, 'pending');
+
+        // Resuming something already pending changes nothing and says so.
+        const again = await ky.patch(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id], action: 'resume' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        const againBody = await again.json<{ updated: number; skipped: string[] }>();
+        assert.equal(againBody.updated, 0);
+        assert.deepEqual(againBody.skipped, [created.id]);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
   /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
   /* ==================================================================== */
   describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {
     const authHeaders = { 'x-agylity-runner-token': 'swarm-secret-token-999' };
 
-    const healthyFlashState = (dir: string): SentryStateManager => {
-      const state = new SentryStateManager(path.join(dir, 'state.json'));
+    const healthyFlashState = (store: ConfigStore): SentryStateManager => {
+      const state = new SentryStateManager({ db: store.getDatabase() });
       state.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -1754,7 +2137,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           }
         );
 
-        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
         const task = tasks.find((t) => t.id === disp.taskId);
         assert.equal(task?.status, 'failed');
         assert.equal(task?.branchName, undefined);
@@ -1773,7 +2156,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       });
       const { server, port } = await startWebServer({
         configStore: store,
-        sentryState: healthyFlashState(dir),
+        sentryState: healthyFlashState(store),
         host: '127.0.0.1',
         port: 0,
       });
@@ -1854,7 +2237,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           },
         });
 
-        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
         const task = tasks.find((t) => t.id === disp.taskId);
         assert.equal(task?.prUrl, 'https://github.com/OtterBoops/agylity/pull/99');
       } finally {
@@ -1902,7 +2285,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           .json<any>();
         assert.equal(reported.success, true);
 
-        const tasks = await ky.get(`${baseUrl}/api/tasks`).json<any[]>();
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
         const task = tasks.find((t) => t.id === disp.taskId);
         assert.equal(task?.numTurns, 4);
         assert.equal(task?.totalTokens, 1670);
@@ -1923,8 +2306,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
     const poolResetTime = () => new Date(Date.now() + 6 * 3600 * 1000).toISOString();
 
-    const healthySentryState = (dir: string, resetTime: string): SentryStateManager => {
-      const state = new SentryStateManager(path.join(dir, 'state.json'));
+    const healthySentryState = (store: ConfigStore, resetTime: string): SentryStateManager => {
+      const state = new SentryStateManager({ db: store.getDatabase() });
       state.setState({
         version: 1,
         lastProbeAt: new Date().toISOString(),
@@ -1959,7 +2342,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       });
       const { server, port } = await startWebServer({
         configStore: store,
-        sentryState: healthySentryState(dir, resetTime),
+        sentryState: healthySentryState(store, resetTime),
         host: '127.0.0.1',
         port: 0,
       });
@@ -1971,7 +2354,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
             json: {
               repositoryId: 'agylity',
               prompt: 'Retry a finished dispatch',
-              model: 'gemini-3.8-flash',
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
             },
             retry: 0,
           })
@@ -1998,8 +2381,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.match(blockedBody.error, /safety floor/);
 
         // Nothing was enqueued by the refused retry.
-        const afterBlock = await ky.get(`${base}/api/tasks`).json<any[]>();
-        assert.equal(afterBlock.length, 1);
+        const afterBlock = await ky.get(`${base}/api/tasks`).json<{ tasks: any[] }>();
+        assert.equal(afterBlock.tasks.length, 1);
 
         // With the floor back under the pool's headroom the same retry succeeds.
         store.set('minDispatchHeadroomPercent', 10);
@@ -2010,9 +2393,133 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.ok(retried.taskId);
         assert.notEqual(retried.taskId, disp.taskId);
 
-        const afterRetry = await ky.get(`${base}/api/tasks`).json<any[]>();
-        assert.equal(afterRetry.length, 2);
-        assert.equal(afterRetry.find((t) => t.id === retried.taskId)?.status, 'queued');
+        const afterRetry = await ky.get(`${base}/api/tasks`).json<{ tasks: any[] }>();
+        assert.equal(afterRetry.tasks.length, 2);
+        assert.equal(afterRetry.tasks.find((t) => t.id === retried.taskId)?.status, 'queued');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/tasks searches title and repository, keeps % literal and reports a full total', async () => {
+      const { dir, cleanup } = makeTempDir('web_task_search_');
+      const resetTime = poolResetTime();
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+        repositories: [
+          {
+            id: 'agylity',
+            name: 'Agylity',
+            path: dir,
+            cloneUrl: 'https://example.invalid/example.git',
+            defaultBranch: 'main',
+          },
+          {
+            id: 'nebula',
+            name: 'Nebula',
+            path: dir,
+            cloneUrl: 'https://example.invalid/nebula.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState: healthySentryState(store, resetTime),
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const dispatch = (repositoryId: string, title: string, prompt: string) =>
+          ky
+            .post(`${base}/api/dispatch`, {
+              json: {
+                repositoryId,
+                title,
+                prompt,
+                cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
+              },
+              retry: 0,
+            })
+            .json<any>();
+
+        const quarterly = await dispatch('agylity', 'Quarterly migration', 'move the schema');
+        const chart = await dispatch('nebula', 'Chart cleanup', 'quarterly prompt-only term');
+        const percent = await dispatch('agylity', 'Latency 99% fixup', 'investigate p99');
+        for (const disp of [quarterly, chart, percent]) assert.equal(disp.success, true);
+
+        const list = (query: string) =>
+          ky.get(`${base}/api/tasks${query}`, { retry: 0 }).json<{
+            tasks: any[];
+            total: number;
+            offset: number;
+            limit: number;
+          }>();
+
+        // The unfiltered page reports the match set, not the page length.
+        const all = await list('?limit=2');
+        assert.equal(all.tasks.length, 2);
+        assert.equal(all.total, 3);
+        assert.equal(all.limit, 2);
+        assert.equal(all.offset, 0);
+
+        const paged = await list('?limit=2&offset=2');
+        assert.equal(paged.tasks.length, 1);
+        assert.equal(paged.total, 3);
+        assert.equal(paged.offset, 2);
+
+        // A title hit. The `chart` row carries "quarterly" only in its prompt and must not appear.
+        const byTitle = await list('?q=quarterly');
+        assert.deepEqual(
+          byTitle.tasks.map((t) => t.title),
+          ['Quarterly migration']
+        );
+        assert.equal(byTitle.total, 1);
+
+        // A repository-name hit, matched case-insensitively.
+        const byRepo = await list('?q=NEBULA');
+        assert.deepEqual(
+          byRepo.tasks.map((t) => t.title),
+          ['Chart cleanup']
+        );
+        assert.equal(byRepo.total, 1);
+
+        // A prompt-only term finds nothing.
+        assert.equal((await list('?q=prompt-only')).total, 0);
+
+        // `%` is literal: it matches only the row whose title contains one, never everything.
+        const byPercent = await list('?q=%25');
+        assert.deepEqual(
+          byPercent.tasks.map((t) => t.title),
+          ['Latency 99% fixup']
+        );
+        assert.equal(byPercent.total, 1);
+
+        // taskNumber names exactly one row.
+        const row = all.tasks.find((t) => t.id === percent.taskId) ?? byPercent.tasks[0];
+        const byNumber = await list(`?taskNumber=${row.taskNumber}`);
+        assert.equal(byNumber.total, 1);
+        assert.deepEqual(
+          byNumber.tasks.map((t) => t.id),
+          [percent.taskId]
+        );
+
+        // An unknown status is a caller error, not a filter that silently matches nothing.
+        const badStatus = await ky.get(`${base}/api/tasks?status=bogus`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(badStatus.status, 400);
+        assert.ok((await badStatus.json<{ error?: string }>()).error);
+
+        // The list is live state and must never be cached.
+        const listRes = await ky.get(`${base}/api/tasks`, { retry: 0 });
+        assert.equal(listRes.headers.get('cache-control'), 'no-store');
       } finally {
         await closeWebServer(server);
         store.close();
@@ -2038,7 +2545,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       });
       const { server, port } = await startWebServer({
         configStore: store,
-        sentryState: healthySentryState(dir, resetTime),
+        sentryState: healthySentryState(store, resetTime),
         host: '127.0.0.1',
         port: 0,
       });
@@ -2051,7 +2558,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Retry a backlog row',
               prompt: 'The retried task must replace the origin pointer',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
             },
             retry: 0,
           })
@@ -2106,7 +2613,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       });
       const { server, port } = await startWebServer({
         configStore: store,
-        sentryState: healthySentryState(dir, resetTime),
+        sentryState: healthySentryState(store, resetTime),
         host: '127.0.0.1',
         port: 0,
       });
@@ -2119,7 +2626,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Pre-reset sweep',
               prompt: 'Burn the remaining flash quota before it resets',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
               triggerBeforeResetHours: 12,
             },
             retry: 0,
@@ -2161,7 +2668,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Guarded routine',
               prompt: 'Original prompt',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
               triggerBeforeResetHours: 12,
               minHeadroomPercent: 15,
             },
@@ -2183,6 +2690,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           { triggerBeforeResetHours: 'abc' },
           { minHeadroomPercent: -1 },
           { minHeadroomPercent: 101 },
+          // A cascade patch is validated hop by hop, never silently coerced.
+          { cascade: [] },
+          { cascade: 'gemini-4-hydrogen' },
+          { cascade: [{}] },
+          { cascade: [{ model: 'gemini-9-turbo', effort: 'low' }] },
         ];
         for (const patch of rejected) {
           const res = await ky.patch(url, { json: patch, retry: 0, throwHttpErrors: false });
@@ -2220,17 +2732,34 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         // A real edit still lands.
         const updated = await ky
           .patch(url, {
-            json: { title: 'Renamed routine', triggerBeforeResetHours: 6, minHeadroomPercent: 25 },
+            json: {
+              title: 'Renamed routine',
+              triggerBeforeResetHours: 6,
+              minHeadroomPercent: 25,
+              cascade: [
+                { model: 'gemini-4-hydrogen', effort: 'low' },
+                { model: 'claude-sonnet-5-5', effort: 'high' },
+              ],
+            },
             retry: 0,
           })
           .json<any>();
         assert.equal(updated.title, 'Renamed routine');
         assert.equal(updated.triggerBeforeResetHours, 6);
         assert.equal(updated.minHeadroomPercent, 25);
+        assert.deepEqual(updated.cascade, [
+          { model: 'gemini-4-hydrogen', effort: 'low' },
+          { model: 'claude-sonnet-5-5', effort: 'high' },
+        ]);
 
         const reread = await ky.get(url).json<any>();
         assert.equal(reread.title, 'Renamed routine');
         assert.equal(reread.prompt, 'Original prompt');
+        // The cascade is echoed back on read, hop order and effort intact.
+        assert.deepEqual(reread.cascade, [
+          { model: 'gemini-4-hydrogen', effort: 'low' },
+          { model: 'claude-sonnet-5-5', effort: 'high' },
+        ]);
       } finally {
         await closeWebServer(server);
         store.close();
@@ -2255,7 +2784,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Guarded backlog row',
               prompt: 'Original backlog prompt',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
             },
             retry: 0,
           })
@@ -2269,6 +2798,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           { prompt: ' \t ' },
           { repositoryId: '' },
           { title: 7 },
+          // A cascade patch is validated hop by hop, never silently coerced.
+          { cascade: [] },
+          { cascade: 'gemini-4-hydrogen' },
+          { cascade: [{}] },
+          { cascade: [{ model: 'gemini-9-turbo', effort: 'low' }] },
         ]) {
           const res = await ky.patch(url, { json: patch, retry: 0, throwHttpErrors: false });
           assert.equal(
@@ -2282,15 +2816,21 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(untouched.title, 'Guarded backlog row');
         assert.equal(untouched.prompt, 'Original backlog prompt');
         assert.equal(untouched.repositoryId, 'agylity');
+        assert.deepEqual(untouched.cascade, [{ model: 'gemini-3.8-flash', effort: 'medium' }]);
 
         const updated = await ky
           .patch(url, {
-            json: { title: 'Renamed backlog row', prompt: 'Rewritten prompt' },
+            json: {
+              title: 'Renamed backlog row',
+              prompt: 'Rewritten prompt',
+              cascade: [{ model: 'gemini-4-hydrogen', effort: 'low' }],
+            },
             retry: 0,
           })
           .json<any>();
         assert.equal(updated.title, 'Renamed backlog row');
         assert.equal(updated.prompt, 'Rewritten prompt');
+        assert.deepEqual(updated.cascade, [{ model: 'gemini-4-hydrogen', effort: 'low' }]);
       } finally {
         await closeWebServer(server);
         store.close();
@@ -2347,7 +2887,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
             title: 'Eligibility list routine',
             prompt: 'Audit the dispatch queue',
             repositoryId: 'agylity',
-            models: ['gemini-3.8-flash'],
+            cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
           },
           retry: 0,
         });
@@ -2361,6 +2901,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(created.prompt, 'Audit the dispatch queue');
         assert.equal(created.repositoryId, 'agylity');
         assert.equal(created.enabled, true);
+        // The posted cascade is echoed back as hops, effort included.
+        assert.deepEqual(created.cascade, [{ model: 'gemini-3.8-flash', effort: 'medium' }]);
 
         const listRes = await ky.get(`${base}/api/routines`, { retry: 0 });
         assert.equal(listRes.status, 200);
@@ -2372,7 +2914,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(listed.taskNumber, created.taskNumber);
         assert.equal(listed.title, 'Eligibility list routine');
         assert.equal(listed.repositoryId, 'agylity');
-        assert.deepEqual(listed.models, ['gemini-3.8-flash']);
+        assert.deepEqual(listed.cascade, [{ model: 'gemini-3.8-flash', effort: 'medium' }]);
 
         const fetched = await ky.get(url, { retry: 0 }).json<any>();
         assertEligibility(fetched.eligibility, 'GET /api/routines/:id');
@@ -2414,7 +2956,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Paused routine',
               prompt: 'Never dispatch me',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
               enabled: false,
             },
             retry: 0,
@@ -2430,7 +2972,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               title: 'Live routine',
               prompt: 'Dispatch me when telemetry exists',
               repositoryId: 'agylity',
-              models: ['gemini-3.8-flash'],
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
             },
             retry: 0,
           })
@@ -2749,6 +3291,229 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.notEqual(retried.task?.id, disp.taskId);
       } finally {
         await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+  });
+  /* ==================================================================== */
+  /* 12. Alert History Ledger & Dispatch Eligibility Preview              */
+  /* ==================================================================== */
+  describe('12. Alert History & Dispatch Eligibility Preview', () => {
+    const runnerToken = 'swarm-secret-token-999';
+
+    const poolState = (remainingFraction: number, resetTime: string) => ({
+      version: 1 as const,
+      lastProbeAt: new Date().toISOString(),
+      lastProbeSource: 'connect_rpc' as const,
+      pools: {
+        'gemini-flash': {
+          resetTime,
+          remainingFraction,
+          firedMilestones: [],
+          lastAlertSentAt: null,
+        },
+      },
+    });
+
+    it('GET /api/alerts/events paginates the ledger newest-first with a keyset cursor', async () => {
+      const { dir, cleanup } = makeTempDir('web_alert_events_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      const resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString();
+
+      let server: http.Server | undefined;
+      try {
+        for (let i = 0; i < 3; i++) {
+          sentryState.recordDeliveredAlert({
+            poolId: i === 1 ? 'claude' : 'gemini-flash',
+            resetTime,
+            milestoneHours: 12 - i,
+            headroomPercent: 40 + i,
+            channels: { console: { success: true } },
+            firedAt: `2026-11-20T1${i}:00:00.000Z`,
+          });
+        }
+
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const baseUrl = `http://127.0.0.1:${started.port}`;
+
+        const firstPage = await ky.get(`${baseUrl}/api/alerts/events?limit=2`).json<any>();
+        assert.equal(firstPage.events.length, 2);
+        assert.equal(firstPage.events[0].kind, 'milestone');
+        assert.equal(firstPage.events[0].milestoneHours, 10);
+        assert.equal(firstPage.events[0].poolId, 'gemini-flash');
+        assert.equal(firstPage.events[0].firedAt, '2026-11-20T12:00:00.000Z');
+        assert.equal(firstPage.events[0].headroomPercent, 42);
+        assert.equal(firstPage.events[0].resetTime, resetTime);
+        assert.deepEqual(firstPage.events[0].channels, { console: { success: true } });
+        assert.equal(typeof firstPage.events[0].id, 'number');
+        assert.ok(firstPage.nextBefore);
+
+        const secondPage = await ky
+          .get(
+            `${baseUrl}/api/alerts/events?limit=2&before=${encodeURIComponent(firstPage.nextBefore)}`
+          )
+          .json<any>();
+        assert.equal(secondPage.events.length, 1);
+        assert.equal(secondPage.events[0].milestoneHours, 12);
+        assert.equal(secondPage.nextBefore, null);
+
+        // A pool filter narrows the ledger without disturbing the ordering.
+        const filtered = await ky.get(`${baseUrl}/api/alerts/events?pool=claude`).json<any>();
+        assert.deepEqual(
+          filtered.events.map((event: any) => event.poolId),
+          ['claude']
+        );
+
+        // The limit is clamped, not trusted.
+        const clamped = await ky.get(`${baseUrl}/api/alerts/events?limit=9999`).json<any>();
+        assert.equal(clamped.events.length, 3);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/dispatch/eligibility refuses while the coordinator is disabled', async () => {
+      const { dir, cleanup } = makeTempDir('web_eligibility_coordinator_off_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: false,
+        defaultDispatchModel: 'gemini-3.8-flash',
+      });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState(poolState(0.95, new Date(Date.now() + 6 * 3600 * 1000).toISOString()));
+
+      let server: http.Server | undefined;
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        // allowOverage clears the floor, so only the coordinator gate can refuse this.
+        const verdict = await ky
+          .get(`http://127.0.0.1:${started.port}/api/dispatch/eligibility?allowOverage=1`)
+          .json<any>();
+        assert.equal(verdict.accepts, false);
+        assert.equal(verdict.code, 'COORDINATOR_DISABLED');
+        assert.match(verdict.reason, /alerting-only mode/);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/dispatch/eligibility reports the safety-floor block and an online runner', async () => {
+      const { dir, cleanup } = makeTempDir('web_eligibility_blocked_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: runnerToken,
+        minDispatchHeadroomPercent: 10,
+        defaultDispatchModel: 'gemini-4-hydrogen',
+      });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      const resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString();
+      sentryState.setState(poolState(0.05, resetTime));
+
+      let server: http.Server | undefined;
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const baseUrl = `http://127.0.0.1:${started.port}`;
+
+        // A poll registers the runner as idle, which is what makes it "online".
+        const pollRes = await ky.post(`${baseUrl}/api/tasks/poll`, {
+          headers: { 'x-agylity-runner-token': runnerToken },
+          json: { runnerId: 'runner-online-1', runnerName: 'Online Runner' },
+        });
+        assert.equal(pollRes.status, 200);
+
+        const blocked = await ky.get(`${baseUrl}/api/dispatch/eligibility`).json<any>();
+        assert.equal(blocked.accepts, false);
+        assert.equal(blocked.code, 'OVERAGE_PROTECTION_TRIGGERED');
+        assert.ok(blocked.reason);
+        assert.equal(blocked.model, 'gemini-4-hydrogen');
+        assert.equal(blocked.family, 'gemini-flash');
+        assert.equal(blocked.floorPercent, 10);
+        assert.equal(blocked.allowOverage, false);
+        assert.equal(blocked.willRunNow, true);
+        assert.equal(blocked.runners.online, 1);
+        assert.deepEqual(blocked.warnings, []);
+        assert.equal(blocked.pool.poolId, 'gemini-flash');
+        assert.equal(blocked.pool.effectivePercent, 5);
+        assert.equal(blocked.pool.limitingWindow, 'weekly');
+        assert.equal(blocked.pool.resetTime, resetTime);
+        // A state-derived snapshot synthesizes a weekly bucket and no short-term one.
+        assert.equal(blocked.pool.weeklyPercent, 5);
+        assert.equal(blocked.pool.shortTermPercent, null);
+        assert.equal(blocked.telemetry.probeSource, 'connect_rpc');
+        assert.equal(blocked.autonomy.quenched, false);
+        assert.equal(blocked.autonomy.remainingMs, 0);
+        assert.ok(blocked.evaluatedAt);
+
+        // allowOverage is the documented override for the safety floor.
+        const overridden = await ky
+          .get(`${baseUrl}/api/dispatch/eligibility?allowOverage=1`)
+          .json<any>();
+        assert.equal(overridden.accepts, true);
+        assert.equal(overridden.allowOverage, true);
+        assert.equal(overridden.code, null);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/dispatch/eligibility keeps accepts=true when no runner is online', async () => {
+      const { dir, cleanup } = makeTempDir('web_eligibility_no_runner_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        minDispatchHeadroomPercent: 10,
+        defaultDispatchModel: 'gemini-3.8-flash',
+      });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      const resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString();
+      sentryState.setState(poolState(0.8, resetTime));
+
+      let server: http.Server | undefined;
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const preview = await ky
+          .get(`http://127.0.0.1:${started.port}/api/dispatch/eligibility`)
+          .json<any>();
+        // Runner availability must never influence the gate: the task queues, it is still accepted.
+        assert.equal(preview.accepts, true);
+        assert.equal(preview.code, null);
+        assert.equal(preview.willRunNow, false);
+        assert.equal(preview.runners.online, 0);
+        assert.deepEqual(preview.warnings, ['No runner online: the task will queue, not run.']);
+        assert.equal(preview.pool.effectivePercent, 80);
+      } finally {
+        if (server) await closeWebServer(server);
         store.close();
         cleanup();
       }

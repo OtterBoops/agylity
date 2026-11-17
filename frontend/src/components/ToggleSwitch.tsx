@@ -1,11 +1,9 @@
 interface ToggleSwitchProps {
   checked: boolean;
   onChange: (next: boolean) => void;
-  /** Accessible name; also used as the tooltip. */
   label: string;
   size?: 'sm' | 'md';
   disabled?: boolean;
-  /** Track colour when on; callers differ (iris for settings, pine for dispatch). */
   activeClass?: string;
 }
 
@@ -35,7 +33,7 @@ export const ToggleSwitch = ({
   >
     <span
       aria-hidden="true"
-      class={`pointer-events-none inline-block ${THUMB[size]} transform rounded-full bg-pine-text shadow-xs ring-0 transition duration-200 ease-in-out ${
+      class={`pointer-events-none inline-block ${THUMB[size]} transform rounded-full bg-pine-text ring-0 transition duration-200 ease-in-out ${
         checked ? SHIFT[size] : 'translate-x-0'
       }`}
     />
