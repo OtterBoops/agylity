@@ -180,7 +180,7 @@ Coordinator (Homelab / Cloud)
 
 - **Branch Isolation:** the executor refuses to run when the branch is `main`/`master`, and `buildContinuationBranchName()` never returns either one. Branches are cut as `git checkout -B agy/<shortId>-<slug>` — an 8-char id fragment plus a prompt slug capped at 32 chars (`agy/<shortId>-work` when the prompt yields no usable words).
 - **A Working Copy Is Never Destroyed:** `prepareBranch()` inspects `git status --porcelain`; when the tree is dirty it runs `git stash push --include-untracked -m "agylity <taskId>"` and logs the stash ref. The stash is **never popped automatically** — a run against a real working copy can therefore leave a stash behind, and recovering it is the operator's job.
-- **Base Sync Is Best-Effort:** `git checkout <baseBranch>` then `git pull --ff-only` are attempted before the branch is cut; a failed pull (unreachable remote) is swallowed, because it must not cancel a run that could otherwise succeed. The `-B` checkout happens regardless of both steps, so an uncommitted-state error never blocks the task branch.
+- **Base Sync Is Best-Effort:** `git checkout <baseBranch>` then `git pull --ff-only` are attempted before the branch is cut; a failed pull (unreachable remote) logs a secret-redacted warning and continues on the local base branch, because it must not cancel a run that could otherwise succeed. The `-B` checkout happens regardless of both steps, so an uncommitted-state error never blocks the task branch.
 - **Zero Token in URL:** tokens are never embedded in git clone URLs.
 - **Extraheader Injection:** authenticated clones pass authorization headers via git configuration:
   ```bash

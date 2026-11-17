@@ -12,6 +12,17 @@ Autonomous coding agents and AI pair programmers working in this repository must
 6. **Zero-Clobber Invariant**: Never execute autonomous `agy` tasks headlessly on the monitoring daemon host; runner execution belongs in isolated runner containers or separate checkouts.
 7. **Node Native Test Hygiene**: Tests use `node:test` (`node --no-warnings --import tsx --test`). Any test binding HTTP servers, sockets, or timers must guarantee teardown in `try ... finally` or `t.after()`.
 
+## GitHub Release Standard
+
+When cutting or editing a GitHub release (`vX.Y.Z`):
+
+- **Release Title (`name`)**: Strictly `vX.Y.Z` (never include the slug in the title so GitHub's "On this page" sidebar stays compact).
+- **Release Body**:
+  1. `### <Short Descriptive Slug>`
+  2. 1–2 sentence summary of the release.
+  3. `## What's Changed` with grouped, bold-prefixed bullet items (do not dump raw commit lists or duplicate `**Full Changelog**` lines).
+  4. `**Full Changelog**: https://github.com/OtterBoops/agylity/compare/<prev>...vX.Y.Z`
+
 ## Verification
 
 Run before finishing any change:
