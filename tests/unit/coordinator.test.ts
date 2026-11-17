@@ -223,18 +223,25 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(claimed1?.id, t1.id);
         assert.equal(claimed1?.status, 'claimed');
 
-        // Next claim gets second task
+        // A runner holds one task at a time, so the second stays queued while the first is live.
+        const refused = queue.claimNext({
+          runnerId: 'runner-docker-1',
+        });
+        assert.equal(refused, null);
+        assert.equal(queue.getTask(t2.id)?.status, 'queued');
+
+        // The runner's own terminal report clears the pointer and releases it for the next claim
+        queue.updateTaskStatus(t1.id, {
+          status: 'completed',
+          runnerId: 'runner-docker-1',
+          branchName: 'antigravity/task-hotfix',
+          durationMs: 1250,
+        });
+
         const claimed2 = queue.claimNext({
           runnerId: 'runner-docker-1',
         });
         assert.equal(claimed2?.id, t2.id);
-
-        // Completing a task updates task record
-        queue.updateTaskStatus(t1.id, {
-          status: 'completed',
-          branchName: 'antigravity/task-hotfix',
-          durationMs: 1250,
-        });
 
         const finalTask = queue.getTask(t1.id);
         assert.equal(finalTask?.branchName, 'antigravity/task-hotfix');
@@ -891,7 +898,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.deepEqual(regRecord1?.labels, ['docker', 'linux']);
         assert.ok(worker1.getRunnerToken()?.startsWith('agyr_run_'));
 
-        // 3. Attempting to reuse the consumed one-time registration token is rejected with 401
+        // 3. The token is spent by the runner's first authenticated poll, not by the exchange itself,
+        //    so a poll is what makes any later reuse fail.
+        await ky.post(`${baseUrl}/api/tasks/poll`, {
+          headers: { Authorization: `Bearer ${worker1.getRunnerToken()}` },
+          json: { timeoutMs: 0 },
+          retry: 0,
+        });
+
         await assert.rejects(
           async () => {
             await ky.post(`${baseUrl}/api/runners/register`, {
@@ -983,6 +997,51 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         );
       } finally {
         await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('never claims a task for a long-poll whose client has already gone', async () => {
+      const { dir, cleanup } = makeTempDir('orch_poll_gone_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-flash': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      try {
+        const coordinator = new Coordinator({ configStore: store, sentryState });
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Only a live client may read this',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+
+        // The socket closed before the claim ran: nothing may be handed to it.
+        const gone = new AbortController();
+        gone.abort();
+        const stranded = await coordinator.pollForTask(
+          { runnerId: 'runner-gone', timeoutMs: 5000 },
+          gone.signal
+        );
+        assert.equal(stranded, null);
+        assert.equal(coordinator.queue.getTask(task.id)?.status, 'queued');
+
+        // Positive control: a live client still claims the same task.
+        const live = await coordinator.pollForTask({ runnerId: 'runner-live', timeoutMs: 0 });
+        assert.equal(live?.id, task.id);
+      } finally {
         store.close();
         cleanup();
       }
@@ -1352,7 +1411,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
 
     it('parseAgyTelemetry extracts NDJSON and JSON tokens, turns, and conversationId while gracefully falling back to plain text', async () => {
-      const { parseAgyTelemetry } = await import('../../src/coordinator/runner.js');
+      const { parseAgyTelemetry } = await import('../../src/runner/index.js');
 
       // 1. Plain text returns empty telemetry object
       assert.deepEqual(parseAgyTelemetry('Task completed cleanly'), {});
@@ -1819,6 +1878,154 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         assert.equal(owned?.applied, true);
         assert.equal(owned?.task.status, 'executing');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('refuses a runner report on a task it was never handed, keeping queued settlement internal', () => {
+      const { dir, cleanup } = makeTempDir('orch_queued_settle_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Never claimed',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+
+        // A runner that never claimed the task cannot settle it by reporting on it.
+        const reported = queue.updateTaskStatus(task.id, {
+          status: 'failed',
+          runnerId: 'runner-opportunist',
+          error: 'pretend failure',
+        });
+        assert.equal(reported?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'queued');
+        assert.equal(queue.getTask(task.id)?.runnerId, undefined);
+
+        // The coordinator settles it itself, which is the only path a queued task has.
+        assert.equal(queue.updateTaskStatus(task.id, { status: 'aborted' })?.applied, true);
+        assert.equal(queue.getTask(task.id)?.status, 'aborted');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('clears a stale active-task pointer so a runner whose last report was lost can claim again', () => {
+      const { dir, cleanup } = makeTempDir('orch_active_stale_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const first = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'First run',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        assert.equal(queue.claimNext({ runnerId: 'runner-stuck' })?.id, first.id);
+        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, first.id);
+
+        // Simulate a terminal report that never reached the coordinator.
+        db.getRawDb()
+          .prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?")
+          .run(first.id);
+        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, first.id);
+
+        const second = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Second run',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        const claimed = queue.claimNext({ runnerId: 'runner-stuck' });
+        assert.equal(claimed?.id, second.id);
+        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, second.id);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('keeps a registration token exchangeable until the runner authenticates with it', () => {
+      const { dir, cleanup } = makeTempDir('orch_reg_reuse_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const reg = queue.createRegistrationToken({ nameHint: 'crashy' });
+
+        // First boot exchanges the token, then dies before it can write runner.json.
+        const first = queue.exchangeRegistrationToken({
+          registrationToken: reg.registrationToken,
+          runnerId: 'runner-crashy',
+        });
+
+        // Second boot re-exchanges the same token instead of being stranded.
+        const second = queue.exchangeRegistrationToken({
+          registrationToken: reg.registrationToken,
+          runnerId: 'runner-crashy',
+        });
+        assert.notEqual(second.runnerToken, first.runnerToken);
+        assert.equal(queue.authenticateRunner(first.runnerToken).authenticated, false);
+        assert.equal(
+          queue.authenticateRunner(second.runnerToken).runner?.runnerId,
+          'runner-crashy'
+        );
+
+        // First authenticated use is what spends it.
+        queue.markRegistrationTokenUsed('runner-crashy');
+        assert.throws(
+          () =>
+            queue.exchangeRegistrationToken({
+              registrationToken: reg.registrationToken,
+              runnerId: 'runner-crashy',
+            }),
+          /already been used/
+        );
+
+        // Spending is idempotent, so a later poll cannot reopen the token.
+        queue.markRegistrationTokenUsed('runner-crashy');
+        assert.throws(
+          () =>
+            queue.exchangeRegistrationToken({
+              registrationToken: reg.registrationToken,
+              runnerId: 'runner-crashy',
+            }),
+          /already been used/
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('refuses to re-register a runner an operator disabled', () => {
+      const { dir, cleanup } = makeTempDir('orch_reg_disabled_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const reg = queue.createRegistrationToken({ nameHint: 'paused' });
+        queue.exchangeRegistrationToken({
+          registrationToken: reg.registrationToken,
+          runnerId: 'runner-paused',
+        });
+        queue.setRunnerEnabled('runner-paused', false);
+
+        assert.throws(
+          () =>
+            queue.exchangeRegistrationToken({
+              registrationToken: reg.registrationToken,
+              runnerId: 'runner-paused',
+            }),
+          /disabled/
+        );
+
+        // Registering again must not undo the pause on its own.
+        assert.equal(queue.getRunner('runner-paused')?.enabled, false);
       } finally {
         db.close();
         cleanup();

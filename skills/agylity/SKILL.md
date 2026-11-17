@@ -10,7 +10,7 @@ description: >-
 
 ## 1. System Topology & Strict Dependency Posture
 
-- **Repository Location:** `D:/Code/OtterBoops/agylity`
+- **Repository Root:** every path in this playbook is relative to the repository root (`src/`, `frontend/`, `tests/`, `data/`). No machine-specific absolute path is required to use the repo.
 - **Runtime:** Pure TypeScript targeting Node 26 (`node:26-slim`).
 - **Zero-CVE Minimal Dependency Surface:**
   - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^4.6.7`.
@@ -29,7 +29,7 @@ description: >-
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
 - **Web UI & Control-Plane Security & Lock Invariant:**
-  - `WEB_UI_AUTH_TOKEN`: When configured, control-plane endpoints enforce constant-time Bearer token verification (`crypto.timingSafeEqual`) and anti-brute-force sliding-window rate limiting (HTTP 429 after 10 failed attempts within 60s). Runner endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/runners/register`) use dedicated runner authentication tokens.
+  - `WEB_UI_AUTH_TOKEN`: When configured, control-plane endpoints enforce constant-time Bearer token verification (`crypto.timingSafeEqual`) and anti-brute-force sliding-window rate limiting (HTTP 429 after 10 failed attempts within 60s). Runner endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/runner/heartbeat`, `/api/runners/register`) use dedicated runner authentication tokens.
   - Zero-DOM-Leak Lock Screen: Unauthenticated requests or locked sessions unmount the application shell completely, rendering a dedicated full-screen `<ControlPlaneGate />`. Zero private views, sidebars, or settings forms are exposed in the DOM.
 - **Application-Native IP Filtering & Anti-Spoofing (CWE-290):**
   - `ALLOWED_IP_RANGES`: Zero-dependency IPv4/IPv6 and CIDR allowlist engine. Dynamically active only when entries exist.
@@ -41,7 +41,7 @@ description: >-
   - Discord and generic webhooks render clean rich embeds without duplicating text content (`delete outgoingPayload.content`).
   - Intermediate runner progress heartbeats (`executing`, polling) are suppressed from webhooks, delivering discrete initial dispatch and final completion embeds with elapsed duration metrics.
 - **Self-Contained Container Swarm Architecture:**
-  - **Baked Container Binaries:** Coordinator and runner images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. `/home/ott/.local/bin/agy`) into containers.
+  - **Baked Container Binaries:** Coordinator and runner images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. the host's `agy` binary) into containers.
   - **Coordinator Isolation:** The coordinator operates as a control plane with baked telemetry binaries and requires only its persistent data volume (`agylity-data:/app/data`). It does not run task loops, git commands, or agent processes, and requires zero runner or host credential mounts.
   - **Runner as an Extra Container:** On container hosts (e.g. homelab Docker / Arcane), the runner is simply an extra container (`agylity-runner:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `RUNNER_SHARED_SECRET` in `.env`.
   - **Zero Host Credential Mounts:** Runners execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never bind-mount user host credentials (`~/.gemini` or host `~/.gitconfig`) into containers.
@@ -128,7 +128,7 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 ### Use Case 1: 24/7 Quota Sentry & Milestone Alerting
 
 - Evaluates quota pools every 60 seconds by default (`QUOTA_CHECK_INTERVAL_SECONDS=60`, minimum clamp 30s).
-- Milestones: Alerts at configurable intervals (default: 24h, 12h, 3h before reset) if quota headroom exceeds threshold (`>25%` remaining).
+- Milestones: Alerts at configurable intervals (`QUOTA_MILESTONE_HOURS`, default `48,24,12` — 48h, 24h and 12h before reset) if quota headroom exceeds the configured threshold (`>25%` remaining).
 - Deduplication: State persisted in `data/state.json` via `SentryStateManager` across daemon restarts.
 - Notification: Clean textual bracketed alerts (`[Alert]`, `[Notice]`, `[Success]`) and rich embeds showing reset countdowns (`"1d 21h"`, `"3h 15m"`).
 
@@ -141,14 +141,15 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 
 ### Use Case 3: Autonomous Task Dispatching via Official CLI
 
-- Runner checks out an isolated continuation branch:
-  `git checkout -b agy/<shortId>-<slug>`
-- Dispatches prompt via `agy`:
+- Runner checks out an isolated continuation branch (never `main`/`master`):
+  `git checkout -B agy/<shortId>-<slug>`
+- Dispatches the prompt via `agy`:
   ```bash
-  agy -p "<prompt>" --mode auto --dangerously-skip-permissions --effort high
+  agy -p "<prompt>" --mode auto --dangerously-skip-permissions \
+    --settings '{"enableTerminalSandbox":false}' --model <model-id> --effort <effort>
   ```
-- Runs verification loop (`npm test` / `pytest`).
-- Pushes isolated branch upstream and posts status back to Discord/Web UI.
+- Runs `verifyCommand` when the task sets one — a bare invocation of an allowlisted runner (`npm`, `pnpm`, `yarn`, `pytest`, `cargo`, `go`); see §5.
+- Commits, pushes the isolated branch upstream and posts status back to Discord/Web UI.
 - Never commits or pushes directly to `main`.
 
 ---
@@ -175,30 +176,62 @@ Coordinator (Homelab / Cloud)
 - **Exchange**: On first boot, runner POSTs to `/api/runners/register` exchanging the registration token for a permanent runner credential (`agyr_run_...`).
 - **Persistence**: Runner credential persisted to `runner.json` (or `/data/runner.json` in containers via volume mount).
 
-### 2. Isolated Git Checkout & Subprocess Credential Hygiene
+### 2. Isolated Git Checkout, Branch Hygiene & Subprocess Credential Handling
 
-- **Zero Token in URL**: Tokens are never embedded in git clone URLs.
-- **Extraheader Injection**: Authenticated clones pass authorization headers via git configuration:
+- **Branch Isolation:** the executor refuses to run when the branch is `main`/`master`, and `buildContinuationBranchName()` never returns either one. Branches are cut as `git checkout -B agy/<shortId>-<slug>` — an 8-char id fragment plus a prompt slug capped at 32 chars (`agy/<shortId>-work` when the prompt yields no usable words).
+- **A Working Copy Is Never Destroyed:** `prepareBranch()` inspects `git status --porcelain`; when the tree is dirty it runs `git stash push --include-untracked -m "agylity <taskId>"` and logs the stash ref. The stash is **never popped automatically** — a run against a real working copy can therefore leave a stash behind, and recovering it is the operator's job.
+- **Base Sync Is Best-Effort:** `git checkout <baseBranch>` then `git pull --ff-only` are attempted before the branch is cut; a failed pull (unreachable remote) is swallowed, because it must not cancel a run that could otherwise succeed. The `-B` checkout happens regardless of both steps, so an uncommitted-state error never blocks the task branch.
+- **Zero Token in URL:** tokens are never embedded in git clone URLs.
+- **Extraheader Injection:** authenticated clones pass authorization headers via git configuration:
   ```bash
-  git -c http.https://github.com/.extraheader="AUTHORIZATION: basic <base64>" clone -- <url> <path>
+  git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ***" clone -- <url> <path>
   ```
-- **Redaction**: Captured stderr/stdout runs through regex redaction (`basic\s+[A-Za-z0-9+/=]+` and token values) before logging or returning to clients.
+  `buildGitAuthArgs()` only attaches that header when the clone URL is unset or starts with `https://github.com/`. The header is host-bound; sending it to any other host would hand that host the token, so non-GitHub remotes get no header at all.
+- **Redaction:** `redactGitSecrets()` (`src/runner/git.ts`) is the single implementation — it splits out both the raw `GITHUB_TOKEN` value and its base64 basic-auth form, replacing each with `[redacted]`. Every git stderr/stdout path (clone, push, refusals) goes through it before logging or returning to a client.
+- **Fail at Boot, Not at Push:** `assertRunnerGitCredentials()` throws on `start()` when `GITHUB_TOKEN` is unset (naming the runner's repository scope) unless `ALLOW_TOKENLESS_RUNNER=true`, because a tokenless runner only discovers the problem at push — after the agent run has already spent quota. `env_file` alone does not put a variable into the container environment; the token must also be listed under `environment:` in the compose file.
 
-### 3. Verification Sandbox (`verifyCommand`)
+### 3. Runner Runtime Loop & Lease Semantics
 
-- **Metacharacter Rejection**: Verifications reject shell operators: `/[;&|`$><\r\n]/`.
+The runner is a pure outbound pull loop; every failure mode below is deliberately asymmetric so a coordinator problem never kills real work.
+
+- **Poll loop:** `POST /api/tasks/poll`; an empty claim sleeps the idle interval (default 2s), and a poll-cycle error logs and sleeps `max(idle, 3s)` before retrying.
+- **Auth gate before each claim:** `checkAuthPreClaim()` runs `agy --output-format json models`. Success caches "authed" for 5 minutes; a CLI auth failure blocks claiming for 30s and warns once until the operator signs in.
+- **Heartbeat:** while a task executes, `POST /api/runner/heartbeat` fires every 10s (`HEARTBEAT_INTERVAL_MS`) with the streamed output tail; an in-flight beat is never stacked. A **409 means the lease is gone** and aborts the task. Every other heartbeat outcome (non-2xx, transport error) is logged and treated as fine — a coordinator hiccup is not a cancelled task.
+- **Credential rejection:** a 401/403 from the coordinator pauses polling for 60s (`CREDENTIAL_REJECT_BACKOFF_MS`) and warns once, instead of hot-looping a dead credential.
+- **Status reporting:** `fitStatusPayload()` pre-clips `output`/`error` to 56 KB (`STATUS_BODY_MAX_BYTES`) so the body stays under the coordinator's 64 KB `MAX_BODY_BYTES` ceiling. The final status report is retried twice (`STATUS_REPORT_ATTEMPTS`) on transport failures and 5xx only; a 4xx is never retried, and a 409 means the task is already terminal. A lost report is treated as the coordinator's lease problem, not a reason to panic.
+- **Coordinator side:** a `claimed`/`executing` task whose `heartbeat_at` is older than the 10-minute lease is failed by `reapStaleClaims()` ("Runner lease expired"). Busy runners are marked `offline` at the same 10 minutes, idle runners after 2 minutes, and `pruneOldRunners()` deletes offline, token-less runners after 10 minutes.
+
+### 4. Capacity Failover & Model Cascade
+
+- **Only capacity exhaustion fails over.** `isCapacityExhaustedOutput()` matches a bare `429` and the strings `model capacity exhausted`, `resource exhausted`, `capacity exhausted`, `too many requests`, `overloaded`. Any other error — or an aborted signal — ends the run on the attempt that produced it, because a second model would burn quota on the same broken task.
+- **Next hop selection:** the next untried model comes from the task's cascade (`pickNextCandidateHop`). No untried hop left ends the run with the original failure.
+- **Continuation prompt:** a dirty working tree hands the next hop a `buildCapacityContinuationPrompt()` brief — git status, diffstat and the last 2000 chars of the interrupted output, plus the original task — so it finishes the remaining work instead of redoing it. A clean tree simply retries the original prompt. Policy and attribution suffixes survive both paths.
+- **Telemetry:** each attempt is parsed (`parseAgyTelemetry`) and the attempts are summed (`sumAgyTelemetry`) into the single final status report.
+- **Invocation:** `agy -p <prompt> --mode auto --dangerously-skip-permissions --settings '{"enableTerminalSandbox":false}' --model <model-id> --effort <effort>`. The settings flag is mandatory in practice: unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
+
+### 5. Verification Sandbox (`verifyCommand`)
+
+- **Metacharacter Rejection**: Verifications reject shell operators: ``/[;&|`$><\r\n]/``.
 - **Executable Allowlist**: Only sanctioned test invocations may execute:
   `['npm', 'pnpm', 'yarn', 'pytest', 'cargo', 'go']`. `node` and `npx` are deliberately excluded -
   with either of them the "allowlist" is arbitrary code execution under the runner's identity.
 - **Inline-Code Rejection**: `-e`, `--eval` and `-c` are rejected for the remaining interpreters.
 
-### 4. Task Tiers: Immediate, Backlog, Routine
+### 6. PR Policy Gate (`PR_POLICY`)
+
+`PR_POLICY` accepts `docs_only | issues_only | all | none` and defaults to `all`. A task-level `pr_policy` column defaults to `inherit` and overrides the env when set to anything else.
+
+- **Autonomous tiers only.** `applyPrPolicy()` returns immediately for `tier === 'immediate'` — an immediate dispatch is a human asking for exactly that work and is never policed. `backlog` and `routine` runs are.
+- **`none` / `issues_only`:** the branch is discarded (`discardBranch()` returns the copy to the base branch) and the task reports `success` with `no_changes` and a `[Policy Guard]` note in the output. `issues_only` additionally injects a prompt suffix forbidding file edits, branch pushes and PRs.
+- **`docs_only`:** `git diff --name-only <base>..HEAD` is checked against `isDocumentationFile()`; the branch is discarded when **any** changed file is not documentation. Doc = `.md/.markdown/.mdown/.mkdn/.txt/.rst/.adoc` plus README/LICENSE/NOTICE/CHANGELOG/CODE_OF_CONDUCT-class basenames.
+
+### 7. Task Tiers: Immediate, Backlog, Routine
 
 Three tiers, and only the first is human-initiated per run:
 
 - **`immediate`** — a direct dispatch from the Web UI, Discord or `POST /api/dispatch`. Sets the autonomy quench timestamp when `actor !== 'bot'`.
 - **`backlog`** (`backlog_tasks`) — queued work items, created by hand or by the GitHub label sync. The evaluator dispatches at most one per quota probe, gated on headroom of at least `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
-- **`routine`** (`routine_tasks`, migrated from `standing_tasks`) — recurring templates released inside `trigger_before_reset_hours`, looping sequentially within one pool reset cycle: a routine re-triggers as soon as its previous run reaches `completed`, gated on `max(min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. At most one run is in flight per routine (`origin_id`), and a `failed`/`aborted` run ends the cycle.
+- **`routine`** (`routine_tasks`, successor to the removed `standing_tasks` table) — recurring templates released inside `trigger_before_reset_hours`, looping sequentially within one pool reset cycle: a routine re-triggers as soon as its previous run reaches `completed`, gated on `max(min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. At most one run is in flight per routine (`origin_id`), and a `failed`/`aborted` run ends the cycle.
 
 - **The autonomy quench is 2 hours** after a manual immediate dispatch, persisted in `runtime_state` so a restart cannot re-arm it.
 - **Both autonomous tiers carry an ordered `models[]`** and dispatch the first candidate whose pool clears the floor (`evaluateModelPreferenceChain`); the manual dispatch routes pass the same chain to `coordinator.dispatch`. A model id mapping to no pool is refused, never charged to another family.
@@ -232,10 +265,11 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
 - **Key Tables & State:**
   - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
-  - `swarm_tasks`: `(id TEXT PRIMARY KEY, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, schedule_mode, required_labels_json, model, pool_family, effort, allow_overage, push_branch, auto_create_pr, pr_url, expires_at, standing_task_id, verify_command, status, runner_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. There is no `title` column.
+  - `swarm_tasks`: `(id TEXT PRIMARY KEY, task_number, title, tier, origin_id, origin_number, origin_title, created_at, updated_at, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, pr_policy DEFAULT 'inherit', schedule_mode, required_labels_json, model, candidate_models_json, pool_family, effort DEFAULT 'high', allow_overage, push_branch, auto_create_pr, pr_url, expires_at, verify_command, status, runner_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. `title` exists (defaults to `''`), `tier` defaults to `immediate`, and `task_number` carries a unique index.
+  - `backlog_tasks`: `(id, task_number, title, prompt, repository_id, models_json, verify_command, auto_create_pr, pr_policy DEFAULT 'inherit', priority_order, status, attempt_count, max_attempts DEFAULT 2, last_error, swarm_task_id, github_issue_number, github_issue_url, created_at, updated_at)` - queued autonomous work; `attempt_count`/`max_attempts` bound retries and `github_issue_number` is the nullable label-sync link.
+  - `routine_tasks`: `(id, task_number, title, prompt, repository_id, models_json, verify_command, auto_create_pr, pr_policy DEFAULT 'inherit', enabled, sort_order, trigger_before_reset_hours, min_headroom_percent DEFAULT 10, last_triggered_reset_time, last_triggered_cycles_json, last_task_id, created_at, updated_at)` - recurring templates (supersedes the old `standing_tasks` table, which no longer exists in the schema). `last_task_id` is the most recent run, and a routine re-arms only when that run reached `completed` (a `failed`/`aborted` run ends the reset cycle).
   - `swarm_runners`: `(runner_id TEXT PRIMARY KEY, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)` - registered runner nodes and heartbeat telemetry. Labels and repositories are JSON columns, not `labels`/`worker_mode`.
   - `swarm_runner_registrations`: one row per one-time registration token; consumed and expired rows are pruned by `pruneRegistrationTokens()`.
-  - `standing_tasks`: recurring task definitions triggered by the pre-reset window.
   - Legacy leftovers from an older schema (`dispatches`, and the `dispatch_id`, `priority`, `priority_rank`, `worker_mode` columns) are no longer written and are intentionally not dropped.
   - **Schema migration must be checked, not assumed:** `initSchema()`/`runMigrations()` are `CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that `ALTER TABLE ADD COLUMN`s anything missing. The CREATE alone never upgrades a database written by an earlier schema, and the failure surfaces only when a user tries to dispatch (`table swarm_tasks has no column named schedule_mode`) while `/api/health` stays green. Diff `PRAGMA table_info` against the source definitions before trusting an existing `data/agylity.db`.
   - **Fail-Closed Startup:** the web server refuses to start when no `WEB_UI_AUTH_TOKEN` is configured and the bind host is not loopback (`127.0.0.1`/`::1`/`localhost`); a loopback bind without a token starts with a warning. Never re-introduce a silent skip of the auth block - that turned the shipped compose file, which binds `0.0.0.0:8484`, into an unauthenticated control plane.
@@ -268,6 +302,8 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
 ## 9. Verification Commands & Test Invariants
 
 - **Full Compilation:** `npm run build` (builds Preact client via Vite into `dist/web/public` and compiles TypeScript daemon via `tsc`).
+- **Format & Lint:** `npm run lint` runs `prettier --check . && eslint frontend/src`; `npm run format` runs `eslint --fix frontend/src && prettier --write .`. Pretty-printed markdown and SVG are checked by prettier, so a hand-edited file that skips `npm run format` fails CI.
+- **Typecheck:** `npm run typecheck` runs `tsc --noEmit`, then `tsc -p tsconfig.test.json --noEmit`, then `npm --prefix frontend run typecheck`. All three must pass; the test tsconfig is separate and a source-only check hides test-file type errors.
 - **Test Suite Execution:** `npm test` runs Node 26 native test runner (`node --no-warnings --import tsx --test tests/**/*.test.ts`).
 - **Test Suite Handle Hygiene & Isolation:**
   - Any test binding an HTTP server, child process, daemon, or database MUST guarantee teardown inside `try ... finally` or `t.after()`.

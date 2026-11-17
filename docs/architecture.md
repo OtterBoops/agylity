@@ -34,7 +34,7 @@ This document details the core architectural subsystems, Connect-RPC integration
                                                 |
                                                 v (REST /api/tasks/poll)
                                   +---------------------------+
-                                  |   Pull-Based Swarm Queue  | (Roadmap Architecture)
+                                  |   Pull-Based Swarm Queue  | (Optional; COORDINATOR_ENABLED)
                                   |   SQLite Task Queue       |
                                   +-------------+-------------+
                                                 ▲
@@ -131,11 +131,61 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 `WEB_UI_AUTH_TOKEN` is mandatory for a non-loopback `WEB_UI_HOST`: the server refuses to start without it, and only warns for a loopback bind. When configured:
 
-- **Route Lockdown**: All `/api/*` routes require Bearer token authorization, except public `/api/health` and runner-authenticated endpoints (`/api/tasks/poll`, `/api/tasks/:id/status`, `/api/runners/register`).
-- **Timing-Safe Verification**: Bearer tokens and runner shared secrets are verified using constant-time `crypto.timingSafeEqual` with buffer length validation.
-- **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP. 10 failures within 60s temporarily blocks the IP with HTTP 429 (`Retry-After: 60`).
+- **Route Lockdown**: every `/api/*` route requires Bearer authorization, except public `GET /api/health` and the four runner-token endpoints (`POST /api/tasks/poll`, `POST /api/tasks/:id/status`, `POST /api/runner/heartbeat`, `POST /api/runners/register`). The full surface is tabulated in §3.9.
+- **Loopback Exemption**: `WEB_UI_AUTH_EXEMPT_LOCALHOST` (default `true`) skips the token requirement only when _both_ the resolved client IP and the direct peer socket address are loopback — one forwarded header alone is never enough.
+- **Timing-Safe Verification**: both sides are hashed with SHA-256 before `crypto.timingSafeEqual`, so the comparison runs over fixed-width digests and a wrong token cannot be distinguished by its length. Runner shared secrets are stored as SHA-256 hex (`hashRunnerToken`) and compared the same way.
+- **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP. 10 failures within 60s temporarily blocks the IP with HTTP 429 (`Retry-After: 60`). The map is pruned of expired records and capped at 10,000 entries.
+- **Body Ceiling**: request bodies are capped at 64 KB (`MAX_BODY_BYTES`, `src/web/http.ts`); an oversized body is answered with 413 and the socket drained. Runner status reports are pre-clipped to 56 KB by `fitStatusPayload` before they are sent, so a legitimate report can never trip the ceiling.
 
-### 3.8. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
+### 3.8. Control-Plane HTTP Surface
+
+`src/web/routes.ts` is the single router. Paths below are the only ones the server answers; anything else outside the static/SPA shell is a `404` plain-text response.
+
+| Route                                  | Auth   | Notes                                                             |
+| :------------------------------------- | :----- | :---------------------------------------------------------------- |
+| `GET /api/health`                      | public | Liveness only; reports `authRequired`.                            |
+| `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
+| `GET /api/alerts`                      | Bearer | Active alert state.                                               |
+| `POST /api/alerts/dismiss`             | Bearer | Clears the active alert set.                                      |
+| `GET /api/alerts/events`               | Bearer | Paginated alert history (`limit` ≤ 200, `before` cursor, `pool`). |
+| `GET /api/logs`                        | Bearer | Redacted in-memory log ring, query-filterable.                    |
+| `GET /api/config`                      | Bearer | Resolved config, overrides, secret metadata.                      |
+| `POST /api/config`                     | Bearer | Upsert overrides (`{key,value}` or `{set,clear}`).                |
+| `DELETE /api/config/:key`              | Bearer | Removes one override.                                             |
+| `POST /api/notify/test`                | Bearer | Fires a test notification through active channels.                |
+| `POST /api/dispatch`                   | Bearer | Enqueues an `immediate`-tier task.                                |
+| `GET /api/models`                      | Bearer | Model catalog with pool mapping and effort options.               |
+| `GET /api/dispatch/eligibility`        | Bearer | Pre-flight safety-floor verdict for a dispatch.                   |
+| `GET /api/tasks`                       | Bearer | Task list (the heavy `output` column is omitted).                 |
+| `GET /api/tasks/:id`                   | Bearer | Single task, including `output`.                                  |
+| `POST /api/tasks/:id/cancel`           | Bearer | Cancels a queued or executing task.                               |
+| `POST /api/tasks/:id/retry`            | Bearer | Re-queues a terminal task.                                        |
+| `GET /api/backlog`                     | Bearer | Backlog items.                                                    |
+| `POST /api/backlog`                    | Bearer | Creates one backlog item.                                         |
+| `PATCH /api/backlog/bulk`              | Bearer | Pause/resume up to 200 ids (`{action, ids}`).                     |
+| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues into the backlog.                           |
+| `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
+| `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
+| `DELETE /api/backlog/:id`              | Bearer | Deletes the item.                                                 |
+| `POST /api/backlog/:id/dispatch`       | Bearer | Dispatches one item now.                                          |
+| `GET /api/routines`                    | Bearer | Routine definitions.                                              |
+| `POST /api/routines`                   | Bearer | Creates a routine.                                                |
+| `GET /api/routines/:id`                | Bearer | Single routine.                                                   |
+| `PATCH /api/routines/:id`              | Bearer | Edits a routine (including `enabled`).                            |
+| `DELETE /api/routines/:id`             | Bearer | Deletes the routine.                                              |
+| `POST /api/routines/:id/trigger`       | Bearer | Manual trigger, subject to the one-in-flight rule.                |
+| `GET /api/runners`                     | Bearer | Registered runners, status and last-seen timestamps.              |
+| `POST /api/runners/registration-token` | Bearer | Mints a short-lived enrolment token.                              |
+| `PATCH /api/runners/:id`               | Bearer | Enables or disables a runner (`{enabled}`).                       |
+| `DELETE /api/runners/:id`              | Bearer | Revokes a runner and its token hash.                              |
+| `POST /api/tasks/poll`                 | Runner | Long-poll for a claimable task.                                   |
+| `POST /api/tasks/:id/status`           | Runner | Intermediate and final status reports.                            |
+| `POST /api/runner/heartbeat`           | Runner | Lease keep-alive while executing.                                 |
+| `POST /api/runners/register`           | Runner | Exchanges a registration token for a runner id.                   |
+
+"Bearer" means the `WEB_UI_AUTH_TOKEN` control-plane check; "Runner" means the request carries a runner credential and is exempt from the web token. The HTML shell and hashed assets are served unauthenticated — the client-side `<ControlPlaneGate />` (§3.9) is what withholds the dashboard DOM, so no API data is reachable without the token.
+
+### 3.9. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
 
 In the Web UI, unauthenticated requests or active lockouts completely unmount the application shell:
 
@@ -153,7 +203,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
   - `discord.js`: Rock-solid Discord gateway interactions and UI components.
   - `ky`: Lightweight HTTP client for Connect-RPC endpoints.
   - `zod`: Schema validation and type inference across configs and RPC payloads.
-- **Development Tooling**: `typescript`, `@types/node`, `tsx`.
+- **Development Tooling**: `typescript`, `@types/node`, `tsx`, plus `eslint`, `prettier` and the Tailwind CSS v4 toolchain used by the frontend build. None of it ships in the runtime image.
 - **Zero Third-Party Primitives**:
   - **Cryptographic Security at Rest**: Native `node:crypto` AES-256-GCM authenticated encryption. Sensitive tokens (Discord Bot Tokens, CSRF headers, webhook secrets) are encrypted before writing to SQLite and masked across all REST endpoints.
   - **Embedded Persistence**: Native Node 26 `node:sqlite` (`DatabaseSync`) in WAL mode.
@@ -247,9 +297,19 @@ Coordinator (Homelab / Cloud)
    - **`pre_reset`**: opportunistic quota-burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
 3. **Target Routing by Labels and Repository**:
    - A task declares `requiredLabels`; a runner claims it only if it holds **all** of them, and only if the task's repository is in the runner's own scope. A runner's scope comes from its registration — the poll payload may narrow it, never widen it.
-4. **Safety Floor Rule**:
+4. **One Active Task per Runner**:
+   - `claimNext` hands out nothing while the runner's `active_task_id` still points at a task in
+     `claimed`/`executing`: a second claim would overwrite the pointer and leave the first task's lease
+     to expire with nobody executing it. A pointer left over from a task that already finished or
+     vanished is cleared on the next poll, so a runner whose final report was lost resumes work instead
+     of idling forever.
+5. **Runner Reports Are Ownership-Scoped**:
+   - A status report carrying a `runnerId` only applies to the row whose `runner_id` matches it, so a
+     runner can never settle a task it was not handed. A `queued` task (`runner_id IS NULL`) is settled
+     only by the coordinator itself: the reaper, a cancel, or the backlog reconciler.
+6. **Safety Floor Rule**:
    - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested family, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
-5. **Alerting-First Operational Mode**:
+7. **Alerting-First Operational Mode**:
    - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
 
 ### 7.2. Task Taxonomy: Three Tiers
@@ -287,14 +347,95 @@ lets the dashboard link a run back to the item that produced it.
   `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
   from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
   user cancel — none of those produce a runner report.
-- **Routes**: `GET|POST /api/backlog`, `GET|PATCH|DELETE /api/backlog/:id`,
+- **Routes**: `GET|POST /api/backlog`, `PATCH /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
   `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
   `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor
   is HTTP 400 on every one of them, including the two single-item dispatch routes.
 
+### 7.3. Runner Execution Lifecycle
+
+A runner cycle is gated in four places, and every gate fails safe rather than burning a run:
+
+1. **CLI auth gate (before any claim)**: the runner executes `agy --output-format json models` and
+   claims nothing until that returns successfully. A pass is cached for 5 minutes, so polling does not
+   shell out on every cycle; a CLI auth failure backs off 30 seconds and logs a `[Blocked]` line telling
+   the operator to authenticate (`docker exec -it agylity agy`). Without this gate an unauthenticated
+   CLI would be discovered only after a clone and a full agent run.
+2. **Lease heartbeat (while executing)**: `POST /api/runner/heartbeat` every 10 seconds with `taskId`,
+   `runnerId` and a tail of the live output. A `409` means the lease is gone — the task was cancelled or
+   reaped and now belongs to someone else — so the runner aborts the task immediately. Every other
+   outcome (5xx, timeout, transport error) is logged and ignored: a coordinator hiccup must never kill
+   real work. Beats do not stack; a tick is skipped while the previous one is still in flight.
+3. **Credential rejection**: a `401`/`403` from the coordinator marks the runner credential rejected and
+   pauses polling for 60 seconds, with one warning to mint a new registration token. Retrying a dead
+   token in a tight loop is treated as the bug it is.
+4. **Final status report**: attempted twice (one retry) on transport failures and 5xx only — a 4xx will
+   never get better, so it is not retried. A `409` means the task is already terminal and is treated as
+   settled. The body is pre-clipped to 56 KB by `fitStatusPayload`, which shortens `output`/`error`
+   tail-first, so a legitimate report always fits under the server's 64 KB ceiling.
+
+Coordinator-side bookkeeping matches it: an executing lease with no heartbeat for **10 minutes** is
+reaped as `failed` (the reaper deliberately does not refresh `last_seen_at`, so the offline sweep still
+notices the dead runner), runners whose `last_seen_at` is older than **10 minutes** are pruned, and the
+newest **250** terminal tasks are retained. Registration tokens are kept to the 50 most recent.
+
+A one-time registration token is spent by the runner's first authenticated request, not by the exchange,
+so a runner that dies before it can write `runner.json` re-exchanges the same token instead of being
+stranded; an exchange naming a runner an operator has since disabled is refused rather than silently
+re-enabling it. A long-poll whose client socket has already closed claims nothing, so a hung-up poll
+cannot strand a task until its lease expires.
+
+### 7.4. Repository Clone Strategy
+
+Runners clone through a local bare mirror cache keyed by the clone URL:
+`<os tmpdir>/agylity-repo-mirrors/<sha256-of-clone-url>.git`. The mirror is created once with
+`git clone --bare` and refreshed with `git fetch --prune` on later runs (a failed fetch logs and reuses
+the mirror it already has), then the working copy is produced with
+`git clone --reference-if-able <mirror> --dissociate`. `--dissociate` copies the objects the clone
+actually needs, so deleting the mirror later cannot corrupt a working tree. If anything in the mirror
+path fails, the runner removes the half-written target and falls back to a plain `git clone`. The cache
+directory is container-local in Docker and is not persisted by the shipped compose file, so the first
+task after a container restart pays for one cold clone to rebuild it.
+
 ---
 
-## 8. Repository Architecture
+## 8. Persistent Schema (`node:sqlite`)
+
+The coordinator's queue schema is declared as column specs in `src/coordinator/queue.ts` and applied
+through forward-only migrations recorded in `schema_migrations` (current head: `v3_cascade_hops`).
+A fresh database is built from the current specs; an existing one is upgraded with idempotent
+`ALTER TABLE ... ADD COLUMN` repairs, so a restart never re-creates a table or drops a row.
+
+| Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| :--------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swarm_tasks`                | `id`, `task_number`, `title`, `tier`, `origin_id`, `origin_number`, `origin_title`, `created_at`, `updated_at`, `repository_id`, `repository_name`, `repository_path`, `clone_url`, `default_branch`, `prompt`, `requested_by`, `pr_policy`, `schedule_mode`, `required_labels_json`, `model`, `candidate_models_json`, `pool_family`, `effort`, `allow_overage`, `push_branch`, `auto_create_pr`, `pr_url`, `expires_at`, `verify_command`, `status`, `runner_id`, `claimed_at`, `heartbeat_at`, `completed_at`, `branch_name`, `output`, `error`, `duration_ms`, `num_turns`, `total_tokens`, `thinking_tokens` |
+| `backlog_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `priority_order`, `status`, `attempt_count`, `max_attempts`, `last_error`, `swarm_task_id`, `github_issue_number`, `github_issue_url`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                        |
+| `routine_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `enabled`, `sort_order`, `trigger_before_reset_hours`, `min_headroom_percent`, `last_triggered_reset_time`, `last_triggered_cycles_json`, `last_task_id`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                     |
+| `swarm_runners`              | `runner_id`, `name`, `token_hash`, `labels_json`, `repositories_json`, `system_info_json`, `enabled`, `active_task_id`, `status`, `registered_at`, `last_seen_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `swarm_runner_registrations` | `id`, `token_hash`, `name_hint`, `labels_json`, `repositories_json`, `expires_at`, `created_at`, `consumed_by_runner_id`, `consumed_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `runtime_state`              | `key`, `value`, `updated_at` — quench timestamps, announced burn cycles and other cross-restart bookkeeping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+
+Defaults worth knowing about: `swarm_tasks.tier` is `immediate`, `schedule_mode` is `immediate`,
+`pr_policy` is `inherit`, `effort` is `high`, `push_branch` and `auto_create_pr` are `1`,
+`allow_overage` is `0`, and `status` starts at `queued`. `backlog_tasks.max_attempts` defaults to `2`,
+`routine_tasks.min_headroom_percent` to `10`, and `routine_tasks.enabled` to `1`. All three task tables
+carry a `title`; `swarm_tasks` also denormalises `repository_name`, `repository_path`, `clone_url` and
+`default_branch` so a run is reproducible from its own row. `swarm_tasks.output` is capped at 512 KB
+per task (tail-kept, with a truncation marker), and `GET /api/tasks` omits that column.
+
+Two column families carry JSON: `*_json` model chains are ordered cascade hops
+(`[{ model, effort }]`), rewritten in place by migration v3, and `required_labels_json` /
+`labels_json` / `repositories_json` are string arrays. Uniqueness: `task_number` on all three task
+tables, `token_hash` on registrations. Indexes: `idx_swarm_tasks_queue (status, created_at)` and the
+three `task_number` unique indexes.
+
+Dropped columns are not coming back: `backlog_tasks.effort` and `routine_tasks.effort` were folded into
+the cascade hops, and the old `standing_task_id` link is gone — routine lineage travels in
+`swarm_tasks.origin_id` / `origin_number` / `origin_title` plus `routine_tasks.last_task_id`.
+
+---
+
+## 9. Repository Architecture
 
 ```
 agylity/
@@ -317,7 +458,8 @@ agylity/
 │   ├── daemon/                 # Probe scheduler, milestone evaluation & lifecycle
 │   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
 │   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
-│   ├── coordinator/            # Swarm coordinator, task queue, model routing & runner
+│   ├── coordinator/            # Swarm coordinator, task queue & model routing
+│   ├── runner/                 # Pull-runner: executor, git auth, PR policy & coordinator client
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
@@ -329,6 +471,7 @@ agylity/
 │   └── unit/                   # Focused unit tests
 ├── Dockerfile                  # Multi-stage production container (node:26-slim)
 ├── docker-compose.yaml         # Container deployment definition (ports: 8484:8484)
+├── docker/entrypoint.sh        # Boot-time agy refresh, then exec the container command
 ├── LICENSE                     # PolyForm Noncommercial License 1.0.0
 ├── package.json                # Root manifest (Node >=26, minimal dependencies)
 ├── tsconfig.json               # NodeNext, strict: true

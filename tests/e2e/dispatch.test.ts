@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
-import { RemoteSwarmRunner, TaskExecutor } from '../../src/coordinator/runner.js';
+import { RemoteSwarmRunner, TaskExecutor } from '../../src/runner/index.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../../src/sentry/discovery.js';
 

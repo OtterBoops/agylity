@@ -1,14 +1,7 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
-import { RemoteSwarmRunner } from './coordinator/runner.js';
+import { RemoteSwarmRunner, normalizePrPolicy } from './runner/index.js';
 import type { PrPolicy } from './config/schema.js';
-
-const VALID_PR_POLICIES: ReadonlySet<string> = new Set(['docs_only', 'issues_only', 'all', 'none']);
-
-const normalizePrPolicy = (raw?: string): PrPolicy | undefined => {
-  const trimmed = raw?.trim();
-  return trimmed && VALID_PR_POLICIES.has(trimmed) ? (trimmed as PrPolicy) : undefined;
-};
 
 export interface RunnerCliOptions {
   coordinatorUrl: string;
@@ -34,6 +27,21 @@ const parseCsvList = (value?: string): string[] => {
     .filter(Boolean);
 };
 
+// A URL missing its scheme fails every poll with the same opaque fetch error, so settle it at boot.
+const normalizeCoordinatorUrl = (raw: string): string => {
+  const trimmed = raw.trim() || 'http://127.0.0.1:8484';
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+  return new URL(withScheme).toString().replace(/\/+$/, '');
+};
+
+// A blank value is not a value: compose emits '' for an unset var, and Number('') is 0, which
+// disables long-polling and leaves the poll loop never sleeping.
+const readIntervalMs = (raw: string | undefined, fallback: number): number => {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 export const parseRunnerCliArgs = (
   argv: string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
@@ -41,29 +49,35 @@ export const parseRunnerCliArgs = (
   const args: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const raw = argv[i]!;
-    if (raw.startsWith('--')) {
-      const eqIdx = raw.indexOf('=');
-      if (eqIdx !== -1) {
-        args[raw.slice(2, eqIdx)] = raw.slice(eqIdx + 1);
-      } else {
-        const next = argv[i + 1];
-        if (next && !next.startsWith('--')) {
-          args[raw.slice(2)] = next;
-          i++;
-        } else {
-          args[raw.slice(2)] = 'true';
-        }
-      }
+    if (!raw.startsWith('--')) continue;
+
+    const eqIdx = raw.indexOf('=');
+    if (eqIdx !== -1) {
+      args[raw.slice(2, eqIdx)] = raw.slice(eqIdx + 1);
+      continue;
+    }
+
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith('--')) {
+      args[raw.slice(2)] = next;
+      i++;
+    } else {
+      args[raw.slice(2)] = 'true';
     }
   }
 
-  const coordinatorUrl = (
+  const rawCoordinatorUrl =
     args.url ||
     args['coordinator-url'] ||
     env.COORDINATOR_URL ||
     env.AGYLITY_COORDINATOR_URL ||
-    'http://127.0.0.1:8484'
-  ).trim();
+    'http://127.0.0.1:8484';
+  let coordinatorUrl: string;
+  try {
+    coordinatorUrl = normalizeCoordinatorUrl(rawCoordinatorUrl);
+  } catch {
+    throw new Error(`Coordinator URL is not a valid URL: "${rawCoordinatorUrl}"`);
+  }
 
   const rawToken = (
     args.token ||
@@ -80,6 +94,7 @@ export const parseRunnerCliArgs = (
     ''
   ).trim();
 
+  // One variable can carry either credential, so the prefix decides which one was supplied.
   const registrationToken = rawToken.startsWith('agyr_reg_')
     ? rawToken
     : !rawRunnerToken && rawToken && !rawToken.startsWith('agyr_run_')
@@ -104,17 +119,6 @@ export const parseRunnerCliArgs = (
   ).trim();
 
   const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
-  // A blank value is not a value: compose emits '' for an unset var, and Number('') is 0, which
-  // disables long-polling and leaves the poll loop never sleeping.
-  const readIntervalMs = (raw: string | undefined, fallback: number): number => {
-    if (raw === undefined || raw.trim() === '') return fallback;
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-  };
-  const pollTimeoutMs = readIntervalMs(env.RUNNER_POLL_TIMEOUT_MS, 25000);
-  const idlePollIntervalMs = readIntervalMs(env.RUNNER_IDLE_INTERVAL_MS, 2000);
-  // An unrecognised policy must not reach the bot guards as "anything goes"; unknown inherits.
-  const prPolicy = normalizePrPolicy(args['pr-policy'] || env.PR_POLICY);
 
   return {
     coordinatorUrl,
@@ -127,11 +131,14 @@ export const parseRunnerCliArgs = (
     repositories: repoList.length > 0 ? repoList : undefined,
     runnerStatePath,
     agyBinPath,
-    pollTimeoutMs: Number.isFinite(pollTimeoutMs) ? pollTimeoutMs : 25000,
-    idlePollIntervalMs: Number.isFinite(idlePollIntervalMs) ? idlePollIntervalMs : 2000,
-    prPolicy: prPolicy || undefined,
+    pollTimeoutMs: readIntervalMs(env.RUNNER_POLL_TIMEOUT_MS, 25000),
+    idlePollIntervalMs: readIntervalMs(env.RUNNER_IDLE_INTERVAL_MS, 2000),
+    // An unrecognised policy must not reach the bot guards as "anything goes"; unknown inherits.
+    prPolicy: normalizePrPolicy(args['pr-policy'] || env.PR_POLICY) ?? undefined,
   };
 };
+
+const SHUTDOWN_GRACE_MS = 8000;
 
 export const runRunnerCli = async (): Promise<void> => {
   process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
@@ -163,15 +170,37 @@ export const runRunnerCli = async (): Promise<void> => {
     logger: log,
   });
 
-  const handleShutdown = (sig: string) => {
-    log.info('[Notice] Received %s, stopping Agylity Swarm Runner...', sig);
+  let shuttingDown = false;
+  const shutdown = (signal: string): void => {
+    if (shuttingDown) {
+      log.warn('[Notice] %s received again; exiting now', signal);
+      process.exit(0);
+    }
+    shuttingDown = true;
+    log.info('[Notice] Received %s, stopping Agylity Swarm Runner...', signal);
     runner.stop();
+    // Docker sends SIGKILL 10s after SIGTERM, so a wedged subprocess must not hold the container open.
+    const watchdog = setTimeout(() => {
+      log.warn(
+        '[Notice] In-flight task did not stop within %dms; exiting with it',
+        SHUTDOWN_GRACE_MS
+      );
+      process.exit(0);
+    }, SHUTDOWN_GRACE_MS);
+    watchdog.unref();
   };
 
-  process.once('SIGINT', () => handleShutdown('SIGINT'));
-  process.once('SIGTERM', () => handleShutdown('SIGTERM'));
+  const onSigint = (): void => shutdown('SIGINT');
+  const onSigterm = (): void => shutdown('SIGTERM');
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
 
-  await runner.start();
+  try {
+    await runner.start();
+  } finally {
+    process.off('SIGINT', onSigint);
+    process.off('SIGTERM', onSigterm);
+  }
 };
 
 const isDirectEntry =

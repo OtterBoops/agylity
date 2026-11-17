@@ -17,18 +17,18 @@ colors:
   accent-rose: '#ea9a97'
 typography:
   heading:
-    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, sans-serif'
+    fontFamily: "'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
     fontSize: '1.25rem'
     fontWeight: 600
     lineHeight: 1.3
     letterSpacing: '-0.02em'
   body:
-    fontFamily: 'Inter, ui-sans-serif, system-ui, -apple-system, sans-serif'
+    fontFamily: "'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif"
     fontSize: '0.875rem'
     fontWeight: 400
     lineHeight: 1.5
   mono:
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+    fontFamily: "'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
     fontSize: '0.8125rem'
     fontWeight: 500
     lineHeight: 1.4
@@ -54,7 +54,7 @@ components:
     backgroundColor: '{colors.bg-surface}'
     textColor: '{colors.text-primary}'
     rounded: '{rounded.lg}'
-    padding: '20px 24px'
+    padding: '20px'
   badge:
     rounded: '{rounded.sm}'
     padding: '2px 8px'
@@ -89,12 +89,12 @@ The palette is Rosé Pine Moon, held in a single `:root` block of Tailwind v4 CS
 
 ## Typography
 
-Typography is strictly dual-stack: **Inter / system-ui** for structural copy and **monospace** for tokens, identifiers, and telemetry:
+Typography is strictly dual-stack, set as Tailwind v4 `@theme` tokens in `frontend/src/index.css`: **Inter Variable** (`'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif`) for structural copy, and **Space Mono** (`'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace`) for tokens, identifiers, and telemetry:
 
 - **Headings (`h1`, `h2`):** `text-lg` (18px) to `text-xl` (20px), `font-semibold` or `font-bold`. Never bloated or oversized (`2xl:text-3xl` is prohibited).
-- **Root Scale:** The document root is `15.4px`, rising to `16.5px` at `sm` and `17.6px` at `2xl`; every rem-derived utility scales with it. Never reintroduce `zoom` on an ancestor — it double-scales any overlay positioned from `getBoundingClientRect()`.
+- **Root Scale:** The document root is a fixed `16px` (`text-[16px]` on `<html>`), so one rem is 16px and every rem-derived utility scales predictably. Never reintroduce `zoom` on an ancestor — it double-scales any overlay positioned from `getBoundingClientRect()`.
 - **Body & Captions:** `text-sm` for data tables and controls; `text-xs` for secondary metadata. Body text below 12px is prohibited.
-- **Mono Telemetry:** `font-mono text-xs` or `text-sm` for task IDs, commit hashes, branches, durations, and credit balances.
+- **Mono Telemetry:** `font-mono text-xs` or `text-sm` for task IDs, commit hashes, branches, durations, and credit balances. Space Mono ships 400/700 only, so mono text never asks for a 500 weight.
 
 ## Layout
 
@@ -110,7 +110,7 @@ Typography is strictly dual-stack: **Inter / system-ui** for structural copy and
 
 ## Shapes
 
-- **Cards & Dialogs:** `rounded-xl` (12px) with subtle 1px borders.
+- **Cards & Dialogs:** `rounded-xl` (12px) with subtle 1px borders. The card recipe in use is `rounded-xl border border-pine-highlight bg-pine-surface p-5 sm:p-6` — 20px padding, 24px from the `sm` breakpoint up.
 - **Buttons & Selectors:** `rounded-lg` (8px).
 - **Status Badges & Chips:** `rounded-md` (6px) or `rounded-sm` (4px).
 - **Progress & Toggles:** `rounded-full`.

@@ -158,24 +158,29 @@ jobs:
           cache-from: type=gha,scope=runner
           cache-to: type=gha,mode=min,scope=runner
 
-      # The annotated tag message IS the release title: git tag -a v0.3.4 -m "v0.3.4 — <themes>"
-      - name: Resolve Release Title
+      # The annotated tag message (or commit subject) becomes the ### <slug> at the top of the release body.
+      - name: Resolve Release Slug
         if: startsWith(github.ref, 'refs/tags/')
-        id: release_title
+        id: release_slug
         run: |
           TAG="${{ github.ref_name }}"
-          # actions/checkout leaves the tag as a lightweight ref, so fetch the annotated object.
           git fetch --force --no-tags origin "+refs/tags/${TAG}:refs/tags/${TAG}" || true
           if [ "$(git cat-file -t "refs/tags/${TAG}" 2>/dev/null)" = "tag" ]; then
-            TITLE=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:subject)')
+            RAW_TITLE=$(git for-each-ref "refs/tags/${TAG}" --format='%(contents:subject)')
           else
-            TITLE="$TAG"
+            RAW_TITLE=$(git log -1 --format=%s "refs/tags/${TAG}" 2>/dev/null || echo "")
           fi
-          echo "name=${TITLE:-$TAG}" >> "$GITHUB_OUTPUT"
+          SLUG=$(printf '%s' "$RAW_TITLE" | sed -E 's/^v?[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*(—|:|-)[[:space:]]*//')
+          if [ -n "$SLUG" ] && [ "$SLUG" != "$TAG" ]; then
+            echo "body=### ${SLUG}" >> "$GITHUB_OUTPUT"
+          else
+            echo "body=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: ${{ steps.release_title.outputs.name }}
+          name: ${{ github.ref_name }}
+          body: ${{ steps.release_slug.outputs.body }}
           generate_release_notes: true

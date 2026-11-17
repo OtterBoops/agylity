@@ -765,7 +765,7 @@ export class TaskQueue {
         throw new RegistrationTokenError('Invalid runner registration token');
       }
 
-      if (regRow.consumed_by_runner_id) {
+      if (regRow.consumed_at) {
         throw new RegistrationTokenError('Runner registration token has already been used');
       }
 
@@ -784,6 +784,13 @@ export class TaskQueue {
       } catch {}
 
       const runnerId = input.runnerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
+      const existingRunner = this.getRunner(runnerId);
+      // Re-registering must not undo a pause an operator set deliberately.
+      if (existingRunner && !existingRunner.enabled) {
+        throw new RegistrationTokenError(
+          `Runner "${runnerId}" is disabled; re-enable it before registering again`
+        );
+      }
       const runnerName =
         input.runnerName?.trim() ||
         (regRow.name_hint ? String(regRow.name_hint) : undefined) ||
@@ -808,13 +815,15 @@ export class TaskQueue {
       const runnerTokenHash = hashRunnerToken(runnerToken);
       const nowIso = new Date(nowMs).toISOString();
 
+      // Issued, not spent: consumed_at stays null until the runner authenticates, so a runner that
+      // crashed before persisting runner.json can exchange the same token again.
       this.rawDb
         .prepare(
           `UPDATE swarm_runner_registrations
-           SET consumed_by_runner_id = ?, consumed_at = ?
+           SET consumed_by_runner_id = ?
            WHERE id = ?`
         )
-        .run(runnerId, nowIso, String(regRow.id));
+        .run(runnerId, String(regRow.id));
 
       this.rawDb
         .prepare(
@@ -828,7 +837,6 @@ export class TaskQueue {
             labels_json = excluded.labels_json,
             repositories_json = excluded.repositories_json,
             system_info_json = excluded.system_info_json,
-            enabled = 1,
             status = 'idle',
             last_seen_at = excluded.last_seen_at`
         )
@@ -848,6 +856,16 @@ export class TaskQueue {
         runnerToken,
       };
     });
+  }
+
+  public markRegistrationTokenUsed(runnerId: string, nowMs = Date.now()): void {
+    this.rawDb
+      .prepare(
+        `UPDATE swarm_runner_registrations
+         SET consumed_at = ?
+         WHERE consumed_by_runner_id = ? AND consumed_at IS NULL`
+      )
+      .run(new Date(nowMs).toISOString(), runnerId);
   }
 
   public authenticateRunner(
@@ -1167,6 +1185,25 @@ export class TaskQueue {
         return null;
       }
 
+      // One active task per runner: a second claim would overwrite active_task_id and leave the
+      // first task's lease to expire with no one executing it.
+      if (existingRunner?.activeTaskId) {
+        const activeTask = this.getTask(existingRunner.activeTaskId);
+        if (activeTask && (activeTask.status === 'claimed' || activeTask.status === 'executing')) {
+          return null;
+        }
+        // A finished or vanished task leaves a stale pointer behind; clearing it is what lets a
+        // runner whose final status report was lost ever claim again.
+        this.registerRunnerHeartbeat({
+          runnerId: options.runnerId,
+          name: options.runnerName,
+          labels: effectiveLabels,
+          repositories: effectiveRepos,
+          systemInfo: options.systemInfo,
+          status: 'idle',
+        });
+      }
+
       const repoFilter =
         effectiveRepos.length > 0 ? new Set(effectiveRepos.map((r) => r.toLowerCase())) : null;
 
@@ -1310,13 +1347,8 @@ export class TaskQueue {
       return refused;
     }
 
-    if (patch.runnerId) {
-      if (existing.runnerId !== undefined) {
-        if (existing.runnerId !== patch.runnerId) return refused;
-      } else if (existing.status !== 'queued') {
-        return refused;
-      }
-    }
+    // An external report claims ownership: a runner may only touch the task it was given.
+    if (patch.runnerId && existing.runnerId !== patch.runnerId) return refused;
 
     const now = new Date().toISOString();
     const isTerminal = isTerminalTaskStatus(patch.status);
@@ -1342,6 +1374,11 @@ export class TaskQueue {
     const thinkingTokens =
       patch.thinkingTokens !== undefined ? patch.thinkingTokens : (existing.thinkingTokens ?? null);
 
+    // Internal settlement (cancel, reaper) carries no runner id and may settle any task; a runner
+    // report must match runner_id, so a queued task is only ever settled by the coordinator itself.
+    const ownershipClause = patch.runnerId ? 'AND runner_id = ?' : '';
+    const ownershipParams = patch.runnerId ? [patch.runnerId] : [];
+
     // Ownership and the queued->active guard sit in the predicate so the check and write are atomic.
     const updateResult = this.rawDb
       .prepare(
@@ -1360,7 +1397,7 @@ export class TaskQueue {
              completed_at = ?,
              updated_at = ?
          WHERE id = ?
-           AND (runner_id IS NULL OR runner_id = ?)
+           ${ownershipClause}
            AND NOT (status = 'queued' AND ? IN ('claimed', 'executing'))`
       )
       .run(
@@ -1378,7 +1415,7 @@ export class TaskQueue {
         completedAt,
         now,
         taskId,
-        runnerId,
+        ...ownershipParams,
         patch.status
       ) as unknown as { changes?: number };
 

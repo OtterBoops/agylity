@@ -40,7 +40,7 @@ import {
   type SwarmTask,
   type TaskStatusPatch,
 } from './queue.js';
-import { buildContinuationBranchName } from './runner.js';
+import { buildContinuationBranchName } from '../runner/policy.js';
 
 const BURN_KICK_CYCLES_KEY = 'burnKickAnnouncedCycles';
 
@@ -1189,6 +1189,11 @@ export class Coordinator {
   } {
     const resolved = this.configStore.resolveConfig();
     const res = this.queue.authenticateRunner(providedToken, resolved.runnerSharedSecret);
+    // A registration token is spent on first authenticated use, not on exchange, so a runner that
+    // crashed before persisting runner.json can still re-exchange it.
+    if (res.authenticated && res.runner) {
+      this.queue.markRegistrationTokenUsed(res.runner.runnerId);
+    }
     return {
       ...res,
       isSharedSecret: res.viaSharedSecret,
@@ -1220,6 +1225,10 @@ export class Coordinator {
       });
     };
 
+    // A claim nobody reads strands the task until its lease expires, so a hung-up client gets nothing.
+    const clientGone = (): boolean => abortSignal?.aborted === true;
+    if (clientGone()) return null;
+
     const immediate = tryClaim();
     if (immediate) {
       this.fireBurnKickAnnouncement(immediate);
@@ -1247,6 +1256,11 @@ export class Coordinator {
       };
 
       const onAvailable = () => {
+        if (clientGone()) {
+          cleanup();
+          resolve(null);
+          return;
+        }
         const claimed = tryClaim();
         if (claimed) {
           cleanup();

@@ -1,0 +1,86 @@
+import path from 'node:path';
+import type { PrPolicy } from '../config/schema.js';
+
+const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'issues_only', 'all']);
+
+// An unrecognised policy string (a typo or a blank compose var) must never read as "no restriction".
+export const normalizePrPolicy = (value?: string): PrPolicy | undefined => {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && PR_POLICIES.has(normalized) ? (normalized as PrPolicy) : undefined;
+};
+
+// Never returns 'main' or 'master'.
+export const buildContinuationBranchName = (taskId: string, prompt: string): string => {
+  const shortId =
+    taskId
+      .replace(/^task-\d+-/, '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 8) || 'cont';
+
+  const words = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean);
+
+  let slug = '';
+  for (const word of words) {
+    const candidate = slug ? `${slug}-${word}` : word;
+    if (candidate.length > 32) break;
+    slug = candidate;
+  }
+
+  return `agy/${shortId}-${slug || 'work'}`;
+};
+
+const DOC_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkdn', '.txt', '.rst', '.adoc']);
+
+const DOC_SPECIAL_BASENAMES = new Set([
+  'license',
+  'licence',
+  'notice',
+  'copying',
+  'authors',
+  'contributors',
+  'changelog',
+  'changes',
+  'code_of_conduct',
+  'contributing',
+  'security',
+]);
+
+export const isDocumentationFile = (filePath: string): boolean => {
+  const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const baseName = path.basename(normalized);
+  const ext = path.extname(baseName).toLowerCase();
+  const nameWithoutExt = ext
+    ? baseName.slice(0, -ext.length).toLowerCase()
+    : baseName.toLowerCase();
+
+  if (nameWithoutExt.startsWith('readme') || DOC_SPECIAL_BASENAMES.has(nameWithoutExt)) {
+    if (!ext || DOC_EXTENSIONS.has(ext)) return true;
+  }
+
+  if (DOC_EXTENSIONS.has(ext)) {
+    return true;
+  }
+
+  const lowerPath = normalized.toLowerCase();
+  if (lowerPath.startsWith('docs/') || lowerPath.startsWith('doc/')) {
+    const docAssetExts = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
+    if (docAssetExts.has(ext)) return true;
+  }
+
+  return false;
+};
+
+export const ALLOWED_TEST_RUNNERS: ReadonlySet<string> = new Set([
+  'npm',
+  'pnpm',
+  'yarn',
+  'pytest',
+  'cargo',
+  'go',
+]);
+export const INLINE_CODE_FLAGS: ReadonlySet<string> = new Set(['-e', '--eval', '-c']);

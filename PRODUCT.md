@@ -20,7 +20,7 @@ A lightweight, non-invasive telemetry sentry and coordinator that communicates d
 
 ## Operating Context
 
-- Single-tenant homelab deployment (`ottbox:5007`, `localhost:5173`).
+- Self-hosted, single-tenant deployment on a single operator-owned box.
 - Docker containerized backend with SQLite state store and Discord notification dispatch.
 - Vite + Preact + Tailwind CSS single-page frontend.
 
