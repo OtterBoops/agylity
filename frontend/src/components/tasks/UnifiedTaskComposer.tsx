@@ -1,3 +1,4 @@
+import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import { PR_POLICY_OPTIONS, resolveModelEffort } from '../../config/fields';
 import { useModelCatalog } from '../../state/modelCatalogStore';
@@ -8,6 +9,7 @@ import type {
   RoutineTaskRecord,
   SwarmTask,
 } from '../../types';
+import { Icon } from '../Icon';
 import { ModelCascadeField } from './ModelCascadeField';
 
 export type ComposerMode = 'run' | 'backlog' | 'routine';
@@ -83,8 +85,9 @@ const labelClass = 'text-xs font-medium text-pine-subtle';
 const hintClass = 'text-xs text-pine-subtle';
 
 const PR_POLICY_HINTS: Record<PrPolicy, string> = {
-  docs_only: 'docs only — code changes ship as an issue, not a PR',
-  all: 'all files — code changes open a PR',
+  docs_only: 'PRs allowed for docs only — code changes ship as an issue',
+  issues_only: 'issues only — no code changes or PRs; file GitHub Issues',
+  all: 'all files — code and doc changes open a PR',
   none: 'none — no pull requests, no branch pushes',
 };
 
@@ -280,21 +283,27 @@ export const UnifiedTaskComposer = ({
           <label for="composer-repository" class={labelClass}>
             Repository
           </label>
-          <select
-            id="composer-repository"
-            name="repositoryId"
-            class={`cursor-pointer ${fieldClass}`}
-            value={repositoryId}
-            onChange={(event) => setRepositoryId((event.target as HTMLSelectElement).value)}
-            required
-          >
-            <option value="">Select a repository</option>
-            {repoOptions.map((repo) => (
-              <option key={repo.id} value={repo.id}>
-                {repo.name}
-              </option>
-            ))}
-          </select>
+          <div class="relative">
+            <select
+              id="composer-repository"
+              name="repositoryId"
+              class={`cursor-pointer appearance-none pr-9 ${fieldClass}`}
+              value={repositoryId}
+              onChange={(event) => setRepositoryId((event.target as HTMLSelectElement).value)}
+              required
+            >
+              <option value="">Select a repository</option>
+              {repoOptions.map((repo) => (
+                <option key={repo.id} value={repo.id}>
+                  {repo.name}
+                </option>
+              ))}
+            </select>
+            <Icon
+              icon={faChevronDown}
+              class="pointer-events-none absolute top-1/2 right-3 size-3 -translate-y-1/2 text-pine-subtle"
+            />
+          </div>
         </div>
 
         <div class="flex flex-col gap-1.5">
@@ -327,19 +336,27 @@ export const UnifiedTaskComposer = ({
           <label for="composer-pr-policy" class={labelClass}>
             PR Policy
           </label>
-          <select
-            id="composer-pr-policy"
-            name="prPolicy"
-            class={`cursor-pointer ${fieldClass}`}
-            value={prPolicy}
-            onChange={(event) => setPrPolicy((event.target as HTMLSelectElement).value as PrPolicy)}
-          >
-            {PR_POLICY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+          <div class="relative">
+            <select
+              id="composer-pr-policy"
+              name="prPolicy"
+              class={`cursor-pointer appearance-none pr-9 ${fieldClass}`}
+              value={prPolicy}
+              onChange={(event) =>
+                setPrPolicy((event.target as HTMLSelectElement).value as PrPolicy)
+              }
+            >
+              {PR_POLICY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <Icon
+              icon={faChevronDown}
+              class="pointer-events-none absolute top-1/2 right-3 size-3 -translate-y-1/2 text-pine-subtle"
+            />
+          </div>
           <p class={hintClass}>{PR_POLICY_HINTS[prPolicy]}</p>
         </div>
 

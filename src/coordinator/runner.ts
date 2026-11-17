@@ -18,7 +18,7 @@ import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask, TaskStatusPatch } 
 import { normalizeCascade, resolveReasoningEffortForModel, type CascadeHop } from './models.js';
 import type { PrPolicy } from '../config/schema.js';
 
-const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'all']);
+const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'issues_only', 'all']);
 
 // An unrecognised policy string (a typo or a blank compose var) must never read as "no restriction".
 export const normalizePrPolicy = (value?: string): PrPolicy | undefined => {
@@ -851,8 +851,14 @@ export class TaskExecutor {
       };
       const safeEffort = primaryHop.effort;
       const tierLabel = task.tier || 'immediate';
+      const effectivePrPolicy: PrPolicy =
+        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'all';
+      const issuesOnlySuffix =
+        effectivePrPolicy === 'issues_only'
+          ? `\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]`
+          : '';
       const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${safeEffort} reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
-      const effectivePrompt = `${task.prompt}${attributionSuffix}`;
+      const effectivePrompt = `${task.prompt}${issuesOnlySuffix}${attributionSuffix}`;
 
       const attemptTelemetry: TaskExecutionTelemetry[] = [];
       const attemptedModels = new Set<string>([primaryHop.model]);
@@ -1061,13 +1067,16 @@ export class TaskExecutor {
       let prUrl: string | undefined;
 
       const agentRun = task.tier !== 'immediate';
-      const effectivePrPolicy: PrPolicy =
-        normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'all';
 
       if (agentRun) {
-        if (effectivePrPolicy === 'none') {
+        if (effectivePrPolicy === 'none' || effectivePrPolicy === 'issues_only') {
+          const policyGuardMsg =
+            effectivePrPolicy === 'issues_only'
+              ? "[Policy Guard] Autonomous PR suppressed: PR policy is 'issues_only' (no code changes or PRs allowed; report findings as GitHub Issues)."
+              : "[Policy Guard] Autonomous PR suppressed: PR policy is 'none'.";
           this.log.info(
-            'Autonomous PR policy is "none": suppressing branch push and PR creation for task %s on %s',
+            'Autonomous PR policy is "%s": suppressing branch push and PR creation for task %s on %s',
+            effectivePrPolicy,
             task.id,
             branchName
           );
@@ -1079,7 +1088,7 @@ export class TaskExecutor {
             success: true,
             noChanges: true,
             branchName,
-            output: `${combinedOutput}\n\n[Policy Guard] Autonomous PR suppressed: PR policy is 'none'.`,
+            output: `${combinedOutput}\n\n${policyGuardMsg}`,
             durationMs: Date.now() - startMs,
             numTurns: telemetry.numTurns,
             totalTokens: telemetry.totalTokens,

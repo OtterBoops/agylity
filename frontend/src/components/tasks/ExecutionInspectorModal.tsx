@@ -23,6 +23,7 @@ const OVERLAP_SEARCH_LIMIT = 4096;
 
 const PR_POLICY_LABELS: Record<PrPolicy, string> = {
   docs_only: 'Docs only',
+  issues_only: 'Issues only',
   all: 'All files',
   none: 'Disabled',
 };

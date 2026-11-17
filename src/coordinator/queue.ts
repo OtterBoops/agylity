@@ -1954,7 +1954,10 @@ export class TaskQueue {
     const cascade = coerceCascade(input.cascade);
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const prPolicy =
-      input.prPolicy === 'docs_only' || input.prPolicy === 'all' || input.prPolicy === 'none'
+      input.prPolicy === 'docs_only' ||
+      input.prPolicy === 'issues_only' ||
+      input.prPolicy === 'all' ||
+      input.prPolicy === 'none'
         ? input.prPolicy
         : 'inherit';
     const enabled = input.enabled !== false ? 1 : 0;
@@ -2033,7 +2036,10 @@ export class TaskQueue {
     const prPolicy =
       patch.prPolicy === null
         ? 'inherit'
-        : patch.prPolicy === 'docs_only' || patch.prPolicy === 'all' || patch.prPolicy === 'none'
+        : patch.prPolicy === 'docs_only' ||
+            patch.prPolicy === 'issues_only' ||
+            patch.prPolicy === 'all' ||
+            patch.prPolicy === 'none'
           ? patch.prPolicy
           : (existing.prPolicy ?? 'inherit');
     const enabled =

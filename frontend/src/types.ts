@@ -166,7 +166,7 @@ export type TaskStatus =
   | 'failed'
   | 'aborted';
 
-export type PrPolicy = 'docs_only' | 'all' | 'none';
+export type PrPolicy = 'docs_only' | 'issues_only' | 'all' | 'none';
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 export type BacklogStatus =
   'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled' | 'paused';

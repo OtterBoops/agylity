@@ -89,12 +89,10 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [totalTasks, setTotalTasks] = useState(0);
 
   const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
-  const [routinesLoading, setRoutinesLoading] = useState(false);
   const [routinesInitialLoaded, setRoutinesInitialLoaded] = useState(false);
   const [routineActionId, setRoutineActionId] = useState<string | null>(null);
 
   const [backlogTasks, setBacklogTasks] = useState<BacklogTaskRecord[]>([]);
-  const [backlogLoading, setBacklogLoading] = useState(false);
   const [backlogInitialLoaded, setBacklogInitialLoaded] = useState(false);
   const [backlogActionId, setBacklogActionId] = useState<string | null>(null);
   const [bulkNote, setBulkNote] = useState<string | null>(null);
@@ -163,20 +161,17 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   }, []);
 
   const loadBacklog = useCallback(async () => {
-    setBacklogLoading(true);
     try {
       setBacklogTasks(await getBacklogTasks());
       setLoadError(null);
     } catch (err: any) {
       setLoadError(err?.message || String(err));
     } finally {
-      setBacklogLoading(false);
       setBacklogInitialLoaded(true);
     }
   }, []);
 
   const loadRoutines = useCallback(async () => {
-    setRoutinesLoading(true);
     try {
       const next = await getRoutines();
       const pending = pendingRoutineToggles.current;
@@ -189,7 +184,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     } catch (err: any) {
       setLoadError(err?.message || String(err));
     } finally {
-      setRoutinesLoading(false);
       setRoutinesInitialLoaded(true);
     }
   }, []);
@@ -672,7 +666,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
         <section aria-labelledby="backlog-heading" class="mt-6 flex flex-col first:mt-0">
           <SectionHeader id="backlog-heading" title="Backlog" count={backlogTasks.length} />
 
-          {backlogLoading && backlogTasks.length === 0 ? (
+          {!backlogInitialLoaded ? (
             <EmptyCard>Loading backlog tasks...</EmptyCard>
           ) : backlogTasks.length === 0 ? (
             <EmptyCard>
@@ -708,7 +702,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
           <section aria-labelledby="routines-heading" class="mt-6 flex flex-col first:mt-0">
             <SectionHeader id="routines-heading" title="Routines" count={routines.length} />
 
-            {routinesLoading && routines.length === 0 ? (
+            {!routinesInitialLoaded ? (
               <EmptyCard>Loading routine templates...</EmptyCard>
             ) : routines.length === 0 ? (
               <EmptyCard>

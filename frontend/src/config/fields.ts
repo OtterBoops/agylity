@@ -30,11 +30,12 @@ export const EFFORT_CODES: Record<ReasoningEffort, string> = {
 };
 
 export const PR_POLICY_OPTIONS: Array<{
-  value: 'docs_only' | 'all' | 'none';
+  value: 'docs_only' | 'issues_only' | 'all' | 'none';
   label: string;
 }> = [
-  { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
   { value: 'all', label: 'All files (Allow code & doc PRs)' },
+  { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
+  { value: 'issues_only', label: 'Issues only (No PRs or code changes)' },
   { value: 'none', label: 'None (Disable autonomous PRs & branch pushes)' },
 ];
 

@@ -118,7 +118,7 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
   return val;
 }, z.array(RepositorySchema).default([]));
 
-export const PrPolicyEnum = z.enum(['docs_only', 'all', 'none']);
+export const PrPolicyEnum = z.enum(['docs_only', 'issues_only', 'all', 'none']);
 export type PrPolicy = z.infer<typeof PrPolicyEnum>;
 
 export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);

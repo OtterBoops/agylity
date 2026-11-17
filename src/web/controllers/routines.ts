@@ -19,7 +19,10 @@ const parseOptionalPrPolicy = (
   if (raw === null || raw === '') return { ok: true, value: null };
   const parsed = PrPolicyEnum.safeParse(raw);
   if (!parsed.success) {
-    return { ok: false, error: "prPolicy must be 'docs_only', 'all', 'none', or null" };
+    return {
+      ok: false,
+      error: "prPolicy must be 'docs_only', 'issues_only', 'all', 'none', or null",
+    };
   }
   return { ok: true, value: parsed.data };
 };

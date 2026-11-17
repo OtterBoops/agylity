@@ -3404,6 +3404,57 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('injects issues-only instruction and suppresses PRs/pushes when prPolicy=issues_only', async () => {
+      const { dir, cleanup } = makeTempDir('orch_bot_policy_issues_only_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Find bugs',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+          tier: 'routine',
+          pushBranch: true,
+          autoCreatePr: true,
+          prPolicy: 'issues_only',
+        });
+
+        const gitInvocations: string[][] = [];
+        let capturedPrompt = '';
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          execFileFn: async (file, args) => {
+            if (file === 'agy') {
+              const pIdx = (args as string[]).indexOf('-p');
+              if (pIdx >= 0) capturedPrompt = String(args[pIdx + 1] ?? '');
+            }
+            if (file === 'git') {
+              gitInvocations.push(args as string[]);
+              if (args[0] === 'status') {
+                return { stdout: ' M src/index.ts\n', stderr: '' };
+              }
+            }
+            return { stdout: 'done', stderr: '' };
+          },
+        });
+
+        const res = await executor.execute(task);
+        assert.equal(res.success, true);
+        assert.equal(res.noChanges, true);
+        assert.ok(capturedPrompt.includes('[Policy: Issues Only'));
+        assert.ok(
+          res.output.includes("[Policy Guard] Autonomous PR suppressed: PR policy is 'issues_only'")
+        );
+        assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
+        assert.ok(gitInvocations.some((args) => args[0] === 'branch' && args[1] === '-D'));
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('supports per-routine prPolicy override and clearing back to inherit global', () => {
       const { dir, cleanup } = makeTempDir('orch_routine_policy_override_');
       const db = new AppDatabase(path.join(dir, 'test.db'));

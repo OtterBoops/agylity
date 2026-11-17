@@ -226,7 +226,10 @@ export const handlePostDispatch = async (
     originTitle: toStringOrUndefined(payload.originTitle),
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
     prPolicy:
-      payload.prPolicy === 'docs_only' || payload.prPolicy === 'all' || payload.prPolicy === 'none'
+      payload.prPolicy === 'docs_only' ||
+      payload.prPolicy === 'issues_only' ||
+      payload.prPolicy === 'all' ||
+      payload.prPolicy === 'none'
         ? payload.prPolicy
         : undefined,
     scheduleMode,

@@ -3,7 +3,7 @@ import { logger } from './logs/logger.js';
 import { RemoteSwarmRunner } from './coordinator/runner.js';
 import type { PrPolicy } from './config/schema.js';
 
-const VALID_PR_POLICIES: ReadonlySet<string> = new Set(['docs_only', 'all', 'none']);
+const VALID_PR_POLICIES: ReadonlySet<string> = new Set(['docs_only', 'issues_only', 'all', 'none']);
 
 const normalizePrPolicy = (raw?: string): PrPolicy | undefined => {
   const trimmed = raw?.trim();
