@@ -74,6 +74,35 @@ export const handleGetQuota = async (
   }
 };
 
+export const handleGetSummary = (
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  method: string
+): void => {
+  if (method !== 'GET') return methodNotAllowed(res);
+
+  const snapshots = options.sentryState
+    ? snapshotsFromSentryState(options.sentryState.getState())
+    : [];
+  const percentFor = (family: QuotaFamily): number | null => {
+    const match = snapshots.find((s) => s.family === family || s.poolId === family);
+    return match ? Math.round(match.remainingFraction * 100) : null;
+  };
+
+  return sendJson(
+    res,
+    200,
+    {
+      hydrogenPercent: percentFor('gemini-hydrogen'),
+      argonPercent: percentFor('gemini-argon'),
+      claudePercent: percentFor('claude'),
+      agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
+    },
+    { 'Cache-Control': 'no-store' }
+  );
+};
+
 export const handleGetAlerts = (
   _req: http.IncomingMessage,
   res: http.ServerResponse,

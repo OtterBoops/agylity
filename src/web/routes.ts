@@ -6,7 +6,12 @@ import { logger } from '../logs/logger.js';
 import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from './ip.js';
 import { PayloadTooLargeError, sendPayloadTooLarge, sendJson, methodNotAllowed } from './http.js';
 import { handleStaticAsset, handleIndexHtml } from './controllers/static.js';
-import { handleGetQuota, handleGetAlerts, handleDismissAlerts } from './controllers/quota.js';
+import {
+  handleGetQuota,
+  handleGetSummary,
+  handleGetAlerts,
+  handleDismissAlerts,
+} from './controllers/quota.js';
 import { handleGetAlertEvents } from './controllers/alerts.js';
 import { handleDispatchEligibility } from './controllers/eligibility.js';
 import { handleGetLogs } from './controllers/logs.js';
@@ -241,6 +246,10 @@ export const handleRequest = async (
 
     if (pathname === '/api/quota') {
       return await handleGetQuota(req, res, options, method);
+    }
+
+    if (pathname === '/api/summary') {
+      return handleGetSummary(req, res, options, method);
     }
 
     if (pathname === '/api/alerts') {

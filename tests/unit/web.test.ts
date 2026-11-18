@@ -3433,4 +3433,38 @@ describe('Web: Antigravity CLI version reporting', () => {
       cleanup();
     }
   });
+
+  it('serves flat pool percentages and agyVersion on GET /api/summary', async () => {
+    const { dir, cleanup } = makeTempDir('web_summary_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const state = new SentryStateManager(path.join(dir, 'state.json'));
+    const resetTime = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    state.updatePoolQuota('gemini-hydrogen', 0.874, resetTime);
+    state.updatePoolQuota('gemini-argon', 0.5, resetTime);
+    state.updatePoolQuota('claude', 0.25, resetTime);
+    let server: http.Server | undefined;
+
+    try {
+      const started = await startWebServer({
+        configStore: store,
+        sentryState: state,
+        host: '127.0.0.1',
+        port: 0,
+        agyUpdater: agyUpdaterStub('1.5.11'),
+      });
+      server = started.server;
+
+      const summary = await ky.get(`http://127.0.0.1:${started.port}/api/summary`).json<any>();
+      assert.deepEqual(summary, {
+        hydrogenPercent: 87,
+        argonPercent: 50,
+        claudePercent: 25,
+        agyVersion: '1.5.11',
+      });
+    } finally {
+      if (server) await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
 });
