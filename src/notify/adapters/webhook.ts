@@ -242,7 +242,7 @@ export class WebhookNotifier implements Notifier {
     } catch {}
   }
 
-  async notifyInfo(notice: InfoNotice): Promise<void> {
+  async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
     const textMsg = escapeMentions(`[Notice] ${notice.title} — ${notice.message}`);
     const embed = buildInfoNoticeEmbed(notice, { baseUrl: this.config.baseUrl });
 
@@ -259,7 +259,13 @@ export class WebhookNotifier implements Notifier {
 
     try {
       await this.postWebhook(payload);
-    } catch {}
+      return { delivered: true, results: { [this.channelName]: { success: true } } };
+    } catch (err: any) {
+      return {
+        delivered: false,
+        results: { [this.channelName]: { success: false, error: err?.message ?? String(err) } },
+      };
+    }
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {

@@ -66,9 +66,11 @@ export class CompositeNotifier implements Notifier {
     }
   }
 
-  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
-    await this.syncResolvedOwner();
-    const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyQuotaAlert(alert)));
+  private async fanOutOutcome(
+    label: string,
+    deliver: (notifier: Notifier) => Promise<DeliveryOutcome | void>
+  ): Promise<DeliveryOutcome> {
+    const results = await Promise.allSettled(this.notifiers.map(deliver));
     const channelResults: Record<string, DeliveryChannelResult> = {};
     let delivered = this.notifiers.length === 0;
     results.forEach((res, i) => {
@@ -76,17 +78,23 @@ export class CompositeNotifier implements Notifier {
       if (res.status === 'fulfilled') {
         const outcome = res.value as DeliveryOutcome | undefined;
         const ok = !outcome || outcome.delivered !== false;
-        channelResults[channelName] = { success: ok };
+        const innerErr = outcome?.results?.[channelName]?.error;
+        channelResults[channelName] = innerErr ? { success: ok, error: innerErr } : { success: ok };
         if (ok) delivered = true;
       } else {
         channelResults[channelName] = {
           success: false,
           error: (res.reason as any)?.message ?? String(res.reason),
         };
-        logger.child('notify:composite').error('Quota alert delivery error:', res.reason);
+        logger.child('notify:composite').error('%s delivery error:', label, res.reason);
       }
     });
     return { delivered, results: channelResults };
+  }
+
+  async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
+    await this.syncResolvedOwner();
+    return this.fanOutOutcome('Quota alert', (n) => n.notifyQuotaAlert(alert));
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
@@ -100,13 +108,8 @@ export class CompositeNotifier implements Notifier {
     }
   }
 
-  async notifyInfo(notice: InfoNotice): Promise<void> {
-    const results = await Promise.allSettled(this.notifiers.map((n) => n.notifyInfo(notice)));
-    for (const res of results) {
-      if (res.status === 'rejected') {
-        logger.child('notify:composite').error('Info notice delivery error:', res.reason);
-      }
-    }
+  async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
+    return this.fanOutOutcome('Info notice', (n) => n.notifyInfo(notice));
   }
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {

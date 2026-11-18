@@ -82,7 +82,7 @@ export interface Notifier {
   initialize(): Promise<void>;
   notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome>;
   notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void>;
-  notifyInfo(notice: InfoNotice): Promise<void>;
+  notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome | void>;
   updateConfig?(newConfig: Partial<ResolvedConfig>): Promise<void>;
   shutdown(): Promise<void>;
   testNotification?(targetChannel?: string): Promise<{

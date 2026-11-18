@@ -325,7 +325,7 @@ export const App = () => {
       />
 
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
-        <header class="shrink-0 border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
+        <header class="shrink-0 scrollbar-gutter-stable border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
           <div class="mx-auto max-w-7xl 2xl:max-w-none">
             <TopBar
               title={title}

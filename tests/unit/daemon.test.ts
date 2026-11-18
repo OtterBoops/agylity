@@ -441,8 +441,9 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       let remainingFraction = 1;
       const notices: InfoNotice[] = [];
       class RecordingNotifier extends ConsoleNotifier {
-        override async notifyInfo(notice: InfoNotice): Promise<void> {
+        override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
+          return { delivered: true, results: { discord: { success: true } } };
         }
       }
 
@@ -514,8 +515,9 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       const notices: InfoNotice[] = [];
       class RecordingNotifier extends ConsoleNotifier {
-        override async notifyInfo(notice: InfoNotice): Promise<void> {
+        override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
+          return { delivered: true, results: { discord: { success: true } } };
         }
       }
 
@@ -556,6 +558,9 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         await announce.call(daemon, [recordedPool]);
         assert.equal(notices.length, 1);
         assert.equal(daemon.sentryState.listAlertEvents().events.length, 1);
+        assert.deepEqual(daemon.sentryState.listAlertEvents().events[0]?.channels, {
+          discord: { success: true },
+        });
 
         // A batch carrying one already-recorded pool announces only the fresh one.
         await announce.call(daemon, [recordedPool, freshPool]);
@@ -598,8 +603,9 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       const notices: InfoNotice[] = [];
       class RecordingNotifier extends ConsoleNotifier {
-        override async notifyInfo(notice: InfoNotice): Promise<void> {
+        override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
+          return { delivered: true, results: { discord: { success: true } } };
         }
       }
 

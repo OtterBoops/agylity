@@ -578,16 +578,7 @@ export class AgylityDaemon {
     const detectedAt = new Date().toISOString();
     const fresh: EarlyResetPool[] = [];
     for (const pool of pools) {
-      const recorded = this.sentryState.recordCycleAlert({
-        poolId: pool.poolId,
-        resetTime: pool.previousResetTime,
-        kind: 'early_reset',
-        headroomPercent: Math.round(pool.remainingFraction * 1000) / 10,
-        firedAt: detectedAt,
-      });
-      // The cycle alert is the dedupe key, so a pool whose reset was already announced is skipped
-      // rather than re-notified when upstream flaps.
-      if (!recorded) {
+      if (this.sentryState.hasEarlyResetAlert(pool.poolId, pool.previousResetTime)) {
         this.logger.debug(
           '%s already announced an early reset for the %s cycle; skipping the notice',
           pool.displayName || pool.poolId,
@@ -607,10 +598,24 @@ export class AgylityDaemon {
     if (fresh.length === 0) return;
 
     const notice = this.sentryState.recordEarlyResetNotice(fresh, detectedAt);
+    let outcome: DeliveryOutcome = { delivered: false, results: {} };
     try {
-      await this.notifier.notifyInfo(buildEarlyResetNotice(fresh, notice.detectedAt));
+      outcome = (await this.notifier.notifyInfo(
+        buildEarlyResetNotice(fresh, notice.detectedAt)
+      )) ?? { delivered: true, results: {} };
     } catch (err: any) {
       this.logger.warn('Early reset notice delivery failed: %s', err?.message ?? err);
+    }
+
+    for (const pool of fresh) {
+      this.sentryState.recordCycleAlert({
+        poolId: pool.poolId,
+        resetTime: pool.previousResetTime,
+        kind: 'early_reset',
+        headroomPercent: Math.round(pool.remainingFraction * 1000) / 10,
+        channels: outcome.results,
+        firedAt: notice.detectedAt,
+      });
     }
   }
 

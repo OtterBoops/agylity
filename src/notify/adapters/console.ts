@@ -57,8 +57,9 @@ export class ConsoleNotifier implements Notifier {
     ]);
   }
 
-  async notifyInfo(notice: InfoNotice): Promise<void> {
+  async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome | void> {
     printAsciiBox([`[NOTICE] ${notice.title}`, notice.message]);
+    return { delivered: true, results: { [this.channelName]: { success: true } } };
   }
 
   async testNotification(): Promise<{ success: boolean; message: string; channel: string }> {
