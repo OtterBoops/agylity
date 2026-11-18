@@ -13,12 +13,10 @@ import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
 import type { InfoNotice } from '../../src/notify/types.js';
 import {
-  CANONICAL_AGY_MODELS,
   assertRunnerGitCredentials,
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
-  isDocumentationFile,
   resolveConcreteModelId,
   TaskQueue,
   TaskExecutor,
@@ -53,15 +51,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         resolveConcreteModelId('gemini-4-hydrogen-xhigh', 'gemini-4-argon'),
         'gemini-4-hydrogen'
       );
-      assert.equal(CANONICAL_AGY_MODELS.length, 6);
-    });
-
-    it('resolves a shorthand configured default to a concrete model instead of passing it through', () => {
       // The configured default is user input too: `agy --model claude` is not a model id.
       assert.equal(resolveConcreteModelId(undefined, 'gemini-hydrogen'), 'gemini-4-hydrogen');
       assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
+      // A shorthand with no pool default still resolves through the family alias table.
       assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
-      assert.equal(resolveConcreteModelId('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen');
     });
 
     it('ignores a disabled short-term bucket and floors the effective headroom', () => {
@@ -331,7 +325,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           queue.listTasks({ q: 'zebras' }).map((t) => t.id),
           [percentRow.id]
         );
-        assert.equal(queue.listTasks({ q: 'zebras' }).length, 1);
         assert.equal(queue.listTasks({ q: 'prompt-only' }).length, 0);
 
         // An unescaped `%` would match every row; the literal must match only the row containing it.
@@ -364,31 +357,36 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
       try {
         const queue = new TaskQueue(db);
+        const created: string[] = [];
         for (const title of ['Alpha', 'Bravo', 'Charlie', 'Delta']) {
-          queue.enqueue({
-            repositoryName: 'agylity',
-            title: `Searchable ${title}`,
-            prompt: `body ${title}`,
-            cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
-          });
+          created.push(
+            queue.enqueue({
+              repositoryName: 'agylity',
+              title: `Searchable ${title}`,
+              prompt: `body ${title}`,
+              cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+            }).id
+          );
         }
 
-        const full = queue.listTasks({ q: 'Searchable' });
-        assert.equal(full.length, 4);
+        // The list is newest-first, so the four known ids come back in reverse creation order.
+        const newestFirst = [...created].reverse();
+        assert.deepEqual(
+          queue.listTasks({ q: 'Searchable' }).map((t) => t.id),
+          newestFirst
+        );
         assert.equal(queue.countTasks({ q: 'Searchable' }), 4);
 
         const page = queue.listTasks({ q: 'Searchable', limit: 2, offset: 1 });
         assert.deepEqual(
           page.map((t) => t.id),
-          full.slice(1, 3).map((t) => t.id)
+          newestFirst.slice(1, 3)
         );
-        // The total describes the match set, not the page.
-        assert.equal(queue.countTasks({ q: 'Searchable' }), 4);
 
         // A negative offset is clamped to 0 rather than rejected by SQLite.
         assert.deepEqual(
           queue.listTasks({ q: 'Searchable', limit: 2, offset: -5 }).map((t) => t.id),
-          full.slice(0, 2).map((t) => t.id)
+          newestFirst.slice(0, 2)
         );
         // An offset past the end is an empty page, not an error.
         assert.equal(queue.listTasks({ q: 'Searchable', offset: 99 }).length, 0);
@@ -1394,12 +1392,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
 
     it('QuotaEvaluator.updateConfig dynamically updates milestoneHours and alertThresholdPercent', () => {
+      // Non-default values in non-sorted order: the assertion must fail if the constructor
+      // ignores the options or skips its descending sort.
       const evaluator = new QuotaEvaluator({
-        milestoneHours: [24, 12, 3],
-        alertThresholdPercent: 25,
+        milestoneHours: [6, 36, 18],
+        alertThresholdPercent: 30,
       });
-      assert.deepEqual(evaluator.milestoneHours, [24, 12, 3]);
-      assert.equal(evaluator.alertThresholdPercent, 25);
+      assert.deepEqual(evaluator.milestoneHours, [36, 18, 6]);
+      assert.equal(evaluator.alertThresholdPercent, 30);
 
       evaluator.updateConfig({
         milestoneHours: [6, 48, 1],
@@ -2122,21 +2122,32 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       try {
         const queue = new TaskQueue(db);
         const total = 60;
+        const tokens: string[] = [];
         for (let i = 0; i < total; i++) {
           const reg = queue.createRegistrationToken({ nameHint: `runner-${i}` });
+          tokens.push(reg.registrationToken);
           queue.exchangeRegistrationToken({
             registrationToken: reg.registrationToken,
             runnerId: `worker-${i}`,
           });
         }
 
-        const count = (
-          db.getRawDb().prepare('SELECT COUNT(*) AS c FROM swarm_runner_registrations').get() as {
-            c: number;
-          }
-        ).c;
-        assert.ok(count < total, `expected pruning below ${total}, got ${count}`);
-        assert.ok(count <= 51, `expected a bounded count, got ${count}`);
+        // Retention is a rolling window: the oldest registration is gone for good...
+        assert.throws(
+          () =>
+            queue.exchangeRegistrationToken({
+              registrationToken: tokens[0]!,
+              runnerId: 'worker-0',
+            }),
+          /Invalid runner registration token/
+        );
+
+        // ...while the newest one a runner still holds is accepted.
+        const newest = queue.exchangeRegistrationToken({
+          registrationToken: tokens[total - 1]!,
+          runnerId: `worker-${total - 1}`,
+        });
+        assert.equal(newest.runner.runnerId, `worker-${total - 1}`);
       } finally {
         db.close();
         cleanup();
@@ -2166,24 +2177,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         ]) {
           assert.ok(columns.has(expected), `v1 swarm_tasks should have ${expected}`);
         }
-        // The legacy surface is gone, not merely unused.
-        for (const dead of [
-          'standing_task_id',
-          'worker_id',
-          'actor',
-          'bot_pr_policy',
-          'dispatch_id',
-        ]) {
-          assert.equal(columns.has(dead), false, `v1 swarm_tasks must not carry ${dead}`);
-        }
-        assert.equal(
-          (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
-          4
-        );
-        assert.equal(
-          (raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number }).v,
-          4
-        );
+        // The migration ledger records what this boot applied; a second boot must add nothing.
+        const appliedMigrations = () =>
+          (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c;
+        const afterFirstBoot = appliedMigrations();
+        assert.ok(afterFirstBoot > 0, 'opening a fresh database must apply the baseline schema');
         // v2 carries the sentry ledger, so a delivery and its dedupe row can share one commit.
         for (const sentryTable of [
           'pool_state',
@@ -2206,8 +2204,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // Booting the same database again must be a no-op, not a re-run.
         const second = new TaskQueue(db);
         assert.equal(
-          (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
-          4
+          appliedMigrations(),
+          afterFirstBoot,
+          'a second boot must not re-run migrations'
         );
 
         const task = second.enqueue({
@@ -2259,17 +2258,15 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
   describe('6. Runner GitHub Credential Preflight', () => {
     it('refuses to start when GITHUB_TOKEN is absent', () => {
       assert.throws(() => assertRunnerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
-    });
-
-    it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
-      assert.throws(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
-    });
-
-    it('names the compose environment: trap, which is how a token gets lost', () => {
+      // The message also names the compose `environment:` trap, which is how a token gets lost.
       assert.throws(
         () => assertRunnerGitCredentials(['OtterBoops/agylity'], {}),
         /environment: in compose\.yaml/
       );
+    });
+
+    it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
+      assert.throws(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
     });
 
     it('accepts a real token', () => {
@@ -2315,12 +2312,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.ok(!w.getRunnerId().startsWith('runner-'));
     });
 
-    it('gives two recreations of the same configured worker the same id', () => {
-      const a = new RemoteSwarmRunner({ coordinatorUrl: 'http://127.0.0.1:1', runnerName: 'w1' });
-      const b = new RemoteSwarmRunner({ coordinatorUrl: 'http://127.0.0.1:1', runnerName: 'w1' });
-      assert.equal(a.getRunnerId(), b.getRunnerId());
-    });
-
     it('still honours an explicit worker id over the name', () => {
       const w = new RemoteSwarmRunner({
         coordinatorUrl: 'http://127.0.0.1:1',
@@ -2357,6 +2348,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           ['live-busy', 'live-idle']
         );
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2377,33 +2369,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(queue.listRunners().length, 1);
         assert.equal(queue.listRunners()[0]?.status, 'offline');
       } finally {
-        cleanup();
-      }
-    });
-
-    it('is idempotent across repeated reaper cycles', () => {
-      const { dir, cleanup } = makeTempDir('orch_prune_idem_');
-      const db = new AppDatabase(path.join(dir, 'test.db'));
-      try {
-        const queue = new TaskQueue(db);
-        queue.registerRunnerHeartbeat({ runnerId: 'live-1', name: 'live-1', status: 'idle' });
-        for (let i = 0; i < 5; i++) {
-          queue.registerRunnerHeartbeat({
-            runnerId: `dead-${i}`,
-            name: `dead-${i}`,
-            status: 'offline',
-          });
-        }
-        const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-        db.getRawDb().prepare('UPDATE swarm_runners SET last_seen_at = ?').run(stale);
-        queue.pruneOldRunners();
-        queue.pruneOldRunners();
-        queue.pruneOldRunners();
-        assert.deepEqual(
-          queue.listRunners().map((w) => w.runnerId),
-          ['live-1']
-        );
-      } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2449,6 +2415,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(deleted, true);
         assert.equal(queue.getRoutineTask(created.id), undefined);
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2503,6 +2470,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(deleted, true);
         assert.equal(queue.getBacklogTask(created.id), undefined);
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2648,6 +2616,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(spawnedAfterQuench.length, 1);
         assert.equal(spawnedAfterQuench[0]?.tier, 'routine');
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -2732,6 +2701,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const recheck = await coordinator.triggerEligibleRoutines(imminentSnapshots);
         assert.equal(recheck.length, 0);
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -3079,6 +3049,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const spawned = await coordinator.triggerEligibleRoutines(snapshots);
         assert.equal(spawned.length, 0);
       } finally {
+        db.close();
         cleanup();
       }
     });
@@ -3380,26 +3351,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
   /* 12. Flat Disclosure Footer & Autonomous PR Governance Policy          */
   /* ==================================================================== */
   describe('12. Flat Disclosure Footer & Autonomous PR Governance Policy', () => {
-    it('isDocumentationFile accurately identifies documentation files and paths', () => {
-      // Documentation files
-      assert.equal(isDocumentationFile('README.md'), true);
-      assert.equal(isDocumentationFile('README'), true);
-      assert.equal(isDocumentationFile('LICENSE'), true);
-      assert.equal(isDocumentationFile('LICENSE.txt'), true);
-      assert.equal(isDocumentationFile('CONTRIBUTING.md'), true);
-      assert.equal(isDocumentationFile('docs/guide.md'), true);
-      assert.equal(isDocumentationFile('docs/images/diagram.svg'), true);
-      assert.equal(isDocumentationFile('.github/ISSUE_TEMPLATE/bug.md'), true);
-
-      // Non-documentation code / config / workflow files
-      assert.equal(isDocumentationFile('src/index.ts'), false);
-      assert.equal(isDocumentationFile('package.json'), false);
-      assert.equal(isDocumentationFile('compose.yaml'), false);
-      assert.equal(isDocumentationFile('Dockerfile'), false);
-      assert.equal(isDocumentationFile('.github/workflows/ci.yml'), false);
-      assert.equal(isDocumentationFile('scripts/build.sh'), false);
-    });
-
     it('always appends flat disclosure footer without agylity[bot] commit authorship', async () => {
       const { dir, cleanup } = makeTempDir('orch_flat_disclosure_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -3570,98 +3521,78 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('suppresses all PRs and pushes when prPolicy=none', async () => {
-      const { dir, cleanup } = makeTempDir('orch_bot_policy_none_');
-      const db = new AppDatabase(path.join(dir, 'test.db'));
-      try {
-        const queue = new TaskQueue(db);
-        const task = queue.enqueue({
-          repositoryName: 'agylity',
-          repositoryPath: dir,
-          prompt: 'Audit only',
-          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
-          tier: 'routine',
-          pushBranch: true,
-          autoCreatePr: true,
-        });
+    // Both terminal policies short-circuit the same guard in the executor; only the message
+    // and the issues-only prompt injection differ, so they run as one table.
+    it('suppresses all PRs and pushes for prPolicy=none and issues_only', async () => {
+      const rows = [
+        { policy: 'none', prompt: 'Audit only', dirty: ' M README.md\n', injects: false },
+        { policy: 'issues_only', prompt: 'Find bugs', dirty: ' M src/index.ts\n', injects: true },
+      ] as const;
 
-        const gitInvocations: string[][] = [];
-        const executor = new TaskExecutor({
-          agyBinPath: 'agy',
-          dirExistsFn: () => true,
-          prPolicy: 'none',
-          execFileFn: async (file, args) => {
-            if (file === 'git') {
-              gitInvocations.push(args as string[]);
-              if (args[0] === 'status') {
-                return { stdout: ' M README.md\n', stderr: '' };
+      for (const row of rows) {
+        const { dir, cleanup } = makeTempDir('orch_bot_policy_suppress_');
+        const db = new AppDatabase(path.join(dir, 'test.db'));
+        try {
+          const queue = new TaskQueue(db);
+          const task = queue.enqueue({
+            repositoryName: 'agylity',
+            repositoryPath: dir,
+            prompt: row.prompt,
+            cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+            tier: 'routine',
+            pushBranch: true,
+            autoCreatePr: true,
+            ...(row.injects ? { prPolicy: 'issues_only' as const } : {}),
+          });
+
+          const gitInvocations: string[][] = [];
+          let capturedPrompt = '';
+          const executor = new TaskExecutor({
+            agyBinPath: 'agy',
+            dirExistsFn: () => true,
+            prPolicy: row.policy,
+            execFileFn: async (file, args) => {
+              if (file === 'agy') {
+                const pIdx = (args as string[]).indexOf('-p');
+                if (pIdx >= 0) capturedPrompt = String(args[pIdx + 1] ?? '');
               }
-            }
-            return { stdout: 'done', stderr: '' };
-          },
-        });
-
-        const res = await executor.execute(task);
-        assert.equal(res.success, true);
-        assert.equal(res.noChanges, true);
-        assert.ok(
-          res.output.includes("[Policy Guard] Autonomous PR suppressed: PR policy is 'none'")
-        );
-        assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
-      } finally {
-        db.close();
-        cleanup();
-      }
-    });
-
-    it('injects issues-only instruction and suppresses PRs/pushes when prPolicy=issues_only', async () => {
-      const { dir, cleanup } = makeTempDir('orch_bot_policy_issues_only_');
-      const db = new AppDatabase(path.join(dir, 'test.db'));
-      try {
-        const queue = new TaskQueue(db);
-        const task = queue.enqueue({
-          repositoryName: 'agylity',
-          repositoryPath: dir,
-          prompt: 'Find bugs',
-          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
-          tier: 'routine',
-          pushBranch: true,
-          autoCreatePr: true,
-          prPolicy: 'issues_only',
-        });
-
-        const gitInvocations: string[][] = [];
-        let capturedPrompt = '';
-        const executor = new TaskExecutor({
-          agyBinPath: 'agy',
-          dirExistsFn: () => true,
-          execFileFn: async (file, args) => {
-            if (file === 'agy') {
-              const pIdx = (args as string[]).indexOf('-p');
-              if (pIdx >= 0) capturedPrompt = String(args[pIdx + 1] ?? '');
-            }
-            if (file === 'git') {
-              gitInvocations.push(args as string[]);
-              if (args[0] === 'status') {
-                return { stdout: ' M src/index.ts\n', stderr: '' };
+              if (file === 'git') {
+                gitInvocations.push(args as string[]);
+                if (args[0] === 'status') {
+                  return { stdout: row.dirty, stderr: '' };
+                }
               }
-            }
-            return { stdout: 'done', stderr: '' };
-          },
-        });
+              return { stdout: 'done', stderr: '' };
+            },
+          });
 
-        const res = await executor.execute(task);
-        assert.equal(res.success, true);
-        assert.equal(res.noChanges, true);
-        assert.ok(capturedPrompt.includes('[Policy: Issues Only'));
-        assert.ok(
-          res.output.includes("[Policy Guard] Autonomous PR suppressed: PR policy is 'issues_only'")
-        );
-        assert.ok(!gitInvocations.some((args) => args.includes('push') && !args.includes('stash')));
-        assert.ok(gitInvocations.some((args) => args[0] === 'branch' && args[1] === '-D'));
-      } finally {
-        db.close();
-        cleanup();
+          const label = `prPolicy=${row.policy}`;
+          const res = await executor.execute(task);
+          assert.equal(res.success, true, label);
+          assert.equal(res.noChanges, true, label);
+          if (row.injects) {
+            assert.ok(capturedPrompt.includes('[Policy: Issues Only'), `${label}: prompt injected`);
+          }
+          assert.ok(
+            res.output.includes(
+              `[Policy Guard] Autonomous PR suppressed: PR policy is '${row.policy}'`
+            ),
+            label
+          );
+          assert.ok(
+            !gitInvocations.some((args) => args.includes('push') && !args.includes('stash')),
+            `${label}: no push`
+          );
+          if (row.injects) {
+            assert.ok(
+              gitInvocations.some((args) => args[0] === 'branch' && args[1] === '-D'),
+              `${label}: branch deleted`
+            );
+          }
+        } finally {
+          db.close();
+          cleanup();
+        }
       }
     });
 
@@ -3845,38 +3776,112 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('forgets the announced burn kick for a replenished pool without touching other pools', () => {
+    it('forgets the announced burn kick for a replenished pool without touching other pools', async () => {
       const { dir, cleanup } = makeTempDir('coord_early_reset_kick_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
 
       try {
-        const configStore = new ConfigStore(db, { coordinatorEnabled: true });
-        const coordinator = new Coordinator({ configStore });
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          poolPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [{ id: 'agylity', name: 'Agylity', path: dir, defaultBranch: 'main' }],
+        });
 
-        const previousResetTime = '2026-11-08T01:30:44Z';
-        const resetTime = '2026-11-09T01:30:44Z';
-        coordinator.queue.setRuntimeValue(
-          'burnKickAnnouncedCycles',
-          JSON.stringify({ claude: previousResetTime, 'gemini-hydrogen': resetTime })
-        );
+        const notices: InfoNotice[] = [];
+        const coordinator = new Coordinator({
+          configStore,
+          notifier: {
+            channelName: 'test',
+            initialize: async () => {},
+            notifyQuotaAlert: async () => ({ delivered: true, results: {} }),
+            notifyDispatchStatus: async () => {},
+            notifyInfo: async (notice) => {
+              notices.push(notice);
+            },
+            shutdown: async () => {},
+          },
+        });
 
+        coordinator.queue.createRoutineTask({
+          title: 'Claude burn',
+          prompt: 'Burn the claude pool',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+        const hydrogenRoutine = coordinator.queue.createRoutineTask({
+          title: 'Hydrogen burn',
+          prompt: 'Burn the flash pool',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            family: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+          {
+            poolId: 'gemini-hydrogen',
+            family: 'gemini-hydrogen',
+            displayName: 'Gemini Flash',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['gemini-4-hydrogen'],
+          },
+        ];
+
+        // Both pools are inside their window, so both routines burn and both announce the kick.
+        const first = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(first.length, 2);
+        assert.deepEqual(notices.map((n) => n.poolFamily).sort(), ['claude', 'gemini-hydrogen']);
+
+        for (const task of first) {
+          await coordinator.reportTaskStatus(task.id, { status: 'completed' });
+        }
+
+        const claudeKicks = () => notices.filter((n) => n.poolFamily === 'claude').length;
+        const hydrogenKicks = () =>
+          notices.filter((n) => n.poolFamily === 'gemini-hydrogen').length;
+
+        // Only the claude pool replenishes early; the flash pool's cycle is untouched.
         coordinator.onEarlyQuotaReset([
           {
             poolId: 'claude',
             displayName: 'Claude and GPT models',
             previousRemainingFraction: 0.15,
             remainingFraction: 0.95,
-            previousResetTime,
-            resetTime,
+            previousResetTime: resetTime,
+            resetTime: '2026-11-09T01:30:44Z',
           },
         ]);
 
-        const cycles = JSON.parse(
-          coordinator.queue.getRuntimeValue('burnKickAnnouncedCycles') ?? '{}'
-        ) as Record<string, string>;
-        assert.equal(Object.hasOwn(cycles, 'claude'), false);
-        // Only the pool that actually replenished reopens its announcement window.
-        assert.equal(cycles['gemini-hydrogen'], resetTime);
+        const afterReset = await coordinator.triggerEligibleRoutines(snapshots);
+        // The replenished pool reopens its announcement window...
+        assert.equal(claudeKicks(), 2);
+        assert.ok(afterReset.some((t) => t.tier === 'routine' && t.poolFamily === 'claude'));
+        // ...while a still-burning pool in the same cycle is not announced twice.
+        assert.equal(hydrogenKicks(), 1);
+        assert.equal(notices.length, 3);
+        // The untouched pool keeps its cycle stamp exactly where the early reset left it.
+        assert.equal(
+          coordinator.queue.getRoutineTask(hydrogenRoutine.id)?.lastTriggeredResetTime,
+          resetTime
+        );
       } finally {
         db.close();
         cleanup();

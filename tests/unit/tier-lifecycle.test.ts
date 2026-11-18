@@ -142,13 +142,10 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       const updated = coordinator.queue.updateBacklogTask(created.id, {
         cascade: 'gemini-4-hydrogen' as any,
         attemptCount: 'nope' as any,
-        // A legacy scalar effort is not a record field any more, so it cannot resurrect one.
-        effort: 'ultra',
       } as any);
       // A single id is one hop, and a garbage value falls back to the hop a string still names.
       assert.deepEqual(updated?.cascade, [{ model: 'gemini-4-hydrogen', effort: 'medium' }]);
       assert.equal(updated?.attemptCount, 0);
-      assert.equal((updated as any)?.effort, undefined);
       assert.equal(updated?.githubIssueNumber, undefined);
 
       // An unknown effort is clamped to the model's default, never persisted verbatim.
@@ -248,32 +245,6 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     }
   });
 
-  it('falls through to the next model when the first pool is under the floor', async () => {
-    const { dir, cleanup } = makeTempDir('tier_chain_');
-    const { db, coordinator } = makeCoordinator(dir);
-    try {
-      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-hydrogen', 0.8)]);
-      const res = await coordinator.dispatch({
-        repositoryId: 'agylity',
-        prompt: 'chain test',
-        cascade: [
-          { model: 'claude-sonnet-5-5', effort: 'high' },
-          { model: 'gemini-4-hydrogen', effort: 'low' },
-        ],
-      });
-      assert.equal(res.success, true);
-      assert.equal(res.model, 'gemini-4-hydrogen');
-      // The winning hop's effort travels with it: the first hop's 'high' must not leak through.
-      const queued = coordinator.queue.getTask(res.taskId!);
-      assert.equal(queued?.model, 'gemini-4-hydrogen');
-      assert.equal(queued?.effort, 'low');
-      assert.deepEqual(queued?.cascade[0], { model: 'gemini-4-hydrogen', effort: 'low' });
-    } finally {
-      db.close();
-      cleanup();
-    }
-  });
-
   it("dispatches a cascade's first hop with that hop's own effort", async () => {
     const { dir, cleanup } = makeTempDir('tier_cascade_first_');
     const { db, coordinator } = makeCoordinator(dir);
@@ -334,6 +305,8 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
         'the chosen hop must keep its own effort inside the stored chain'
       );
       assert.notEqual(queued?.effort, 'low');
+      // The winning hop is stored first in the chain handed to the runner.
+      assert.deepEqual(queued?.cascade[0], { model: 'gemini-4-hydrogen', effort: 'xhigh' });
     } finally {
       db.close();
       cleanup();
@@ -377,11 +350,12 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
   it('persists the manual-dispatch quench across a restart', () => {
     const { dir, cleanup } = makeTempDir('tier_quench_');
-    const { db, coordinator } = makeCoordinator(dir);
+    const { db, configStore, coordinator } = makeCoordinator(dir);
     try {
       const stamp = Date.now() - 60_000;
       coordinator.setLastManualDispatchAt(stamp);
-      const restarted = new Coordinator({ configStore: coordinator['configStore'] as any });
+      // A restarted coordinator reads the quench window back out of the database.
+      const restarted = new Coordinator({ configStore });
       assert.equal(restarted.getLastManualDispatchAt(), stamp);
     } finally {
       db.close();

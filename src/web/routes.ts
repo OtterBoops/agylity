@@ -4,31 +4,13 @@ import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';
 import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from './ip.js';
-import {
-  MAX_BODY_BYTES,
-  PayloadTooLargeError,
-  sendPayloadTooLarge,
-  readBody,
-  sendJson,
-  methodNotAllowed,
-} from './http.js';
-import {
-  resolvePublicFilePath,
-  resolveIndexHtmlPath,
-  loadIndexHtml,
-  handleStaticAsset,
-  handleIndexHtml,
-} from './controllers/static.js';
+import { PayloadTooLargeError, sendPayloadTooLarge, sendJson, methodNotAllowed } from './http.js';
+import { handleStaticAsset, handleIndexHtml } from './controllers/static.js';
 import { handleGetQuota, handleGetAlerts, handleDismissAlerts } from './controllers/quota.js';
 import { handleGetAlertEvents } from './controllers/alerts.js';
 import { handleDispatchEligibility } from './controllers/eligibility.js';
 import { handleGetLogs } from './controllers/logs.js';
-import {
-  handleConfigEndpoint,
-  handleDeleteConfigOverride,
-  sanitizeConfigForClient,
-  getSecretsMeta,
-} from './controllers/config.js';
+import { handleConfigEndpoint, handleDeleteConfigOverride } from './controllers/config.js';
 import { handleTestNotify } from './controllers/notify.js';
 import {
   handlePostDispatch,
@@ -54,17 +36,6 @@ import {
 import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
 
 export type { WebServerOptions };
-export {
-  MAX_BODY_BYTES,
-  PayloadTooLargeError,
-  sendPayloadTooLarge,
-  readBody,
-  resolvePublicFilePath,
-  resolveIndexHtmlPath,
-  loadIndexHtml,
-  sanitizeConfigForClient,
-  getSecretsMeta,
-};
 
 const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean => {
   const authHeader = req.headers.authorization;

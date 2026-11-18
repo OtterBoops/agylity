@@ -6,6 +6,16 @@ export const QuotaInfoSchema = z.object({
   resetTime: z.string(),
 });
 
+// The server lists models it will not serve with `quotaInfo: {}`, so a telemetry-free placeholder
+// must resolve to absent rather than fail the whole response parse.
+const quotaInfoOrAbsent = (value: unknown): unknown => {
+  if (typeof value !== 'object' || value === null) return value;
+  const record = value as Record<string, unknown>;
+  return record.remainingFraction === undefined || record.resetTime === undefined
+    ? undefined
+    : value;
+};
+
 export const LanguageServerModelConfigSchema = z.object({
   label: z.string(),
   modelId: z.string(),
@@ -17,8 +27,10 @@ export const LanguageServerModelConfigSchema = z.object({
   supportsImages: z.boolean().optional(),
   isRecommended: z.boolean().optional(),
   allowedTiers: z.array(z.string()).optional(),
-  quotaInfo: QuotaInfoSchema.optional().nullable(),
+  quotaInfo: z.preprocess(quotaInfoOrAbsent, QuotaInfoSchema.optional().nullable()),
   tagTitle: z.string().optional(),
+  tagDescription: z.string().optional(),
+  disabled: z.boolean().optional(),
   supportedMimeTypes: z.record(z.string(), z.boolean()).optional(),
 });
 
@@ -306,13 +318,22 @@ export const resolveModelFamily = (config: {
   const mid = (config.modelId || '').toLowerCase();
   const lbl = (config.label || '').toLowerCase();
 
+  // A `-disabled` id is a listing placeholder with no quota; it belongs to no pool.
+  if (mid.endsWith('-disabled')) return null;
+
   if (mid.includes('argon') || lbl.includes('argon')) {
     return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
-  // The orchestrator codenames carry 'pro' rather than 'argon' but bill the Argon pool.
+  // Carbon runs on Hydrogen and matches before the orchestrator prefix, which spans both pools.
+  if (mid.includes('carbon') || lbl.includes('carbon')) {
+    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
+  }
+
+  // Only the G1 Pro route bills Argon; a bare `gemini-pro-orchestrator` is the Carbon route.
   if (mid.includes('orchestrator') || lbl.includes('orchestrator')) {
-    return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
+    const family: QuotaFamily = mid.includes('g1-pro') ? 'gemini-argon' : 'gemini-hydrogen';
+    return { family, displayName: FAMILY_DISPLAY_NAMES[family] };
   }
 
   // Hydrogen shares the Flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
@@ -513,6 +534,8 @@ export const aggregateQuotaPools = (
   const orphans: LanguageServerModelConfig[] = [];
 
   for (const config of configs) {
+    // A disabled entry keeps the pool's numbers but is not a usable model for that pool.
+    if (config.disabled) continue;
     if (!config.quotaInfo) continue;
     const resolved = resolveModelFamily(config);
     if (!resolved) {

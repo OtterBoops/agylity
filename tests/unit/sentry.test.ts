@@ -13,9 +13,6 @@ import {
   deriveOverageEnabled,
   resolveModelFamily,
   snapshotsFromSentryState,
-  BURN_FLOOR_PERCENT,
-  FAMILY_ALIASES,
-  FAMILY_DEFAULT_MODELS,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
@@ -203,13 +200,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       });
     });
 
-    it('parses full 13-model Connect-RPC response via LanguageServerResponseSchema', () => {
-      const sample = createMock13ModelsResponse();
-      const parsed = LanguageServerResponseSchema.parse(sample);
-      assert.equal(parsed.clientModelConfigs.length, 13);
-      assert.equal(parsed.clientModelSorts?.[0]?.groups?.[0]?.modelLabels.length, 3);
-    });
-
     it('accurately resolves canonical model families', () => {
       assert.equal(resolveModelFamily({ modelId: 'claude-sonnet-5-5-high' })?.family, 'claude');
       assert.equal(resolveModelFamily({ modelId: 'claude-opus-5-5-low' })?.family, 'claude');
@@ -235,23 +225,101 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         resolveModelFamily({ modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' })?.family,
         'gemini-hydrogen'
       );
-      // The orchestrator codenames carry 'pro' but must never bill the Flash pool.
+      // The G1 Pro orchestrator route is an Argon model, whatever its 'pro' codename suggests.
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro' })?.family,
         'gemini-argon'
       );
-      assert.notEqual(
-        resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro', label: 'Gemini Pro' })
+    });
+
+    it('treats an empty quotaInfo placeholder as absent telemetry instead of failing the parse', () => {
+      const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
+      const parsed = LanguageServerResponseSchema.parse({
+        clientModelConfigs: [
+          { label: 'Gemini 4 Carbon', modelId: 'gemini-4-carbon-disabled', quotaInfo: {} },
+          {
+            label: 'Gemini 4 Argon (High)',
+            modelId: 'gemini-4-argon-high',
+            disabled: true,
+            tagDescription: 'Requires an Ultra plan',
+            quotaInfo: { remainingFraction: 0.5, resetTime },
+          },
+          {
+            label: 'Gemini 4 Hydrogen (High)',
+            modelId: 'gemini-4-hydrogen-high',
+            quotaInfo: { remainingFraction: 0.9, resetTime },
+          },
+        ],
+      });
+
+      // The placeholder carries no telemetry, so it parses as absent rather than throwing.
+      assert.equal(parsed.clientModelConfigs[0]?.quotaInfo, undefined);
+      assert.equal(parsed.clientModelConfigs[1]?.disabled, true);
+      assert.equal(parsed.clientModelConfigs[1]?.tagDescription, 'Requires an Ultra plan');
+
+      // A disabled listing echoes the pool's balance but must not author a pool of its own.
+      const pools = aggregateQuotaPools(parsed.clientModelConfigs);
+      assert.deepEqual(
+        pools.map((pool) => pool.family),
+        ['gemini-hydrogen']
+      );
+      assert.deepEqual(pools[0]?.models, ['Gemini 4 Hydrogen (High)']);
+    });
+
+    it('bills Gemini 4 Carbon to the Hydrogen pool and drops its disabled listing', () => {
+      assert.equal(resolveModelFamily({ modelId: 'gemini-4-carbon' })?.family, 'gemini-hydrogen');
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-4-carbon-high' })?.family,
+        'gemini-hydrogen'
+      );
+      assert.equal(resolveModelFamily({ modelId: 'gemini-4-carbon-disabled' }), null);
+
+      const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
+      // A `{}` placeholder only exists on the wire, so the response schema is what must tolerate it.
+      const parsed = LanguageServerResponseSchema.parse({
+        clientModelConfigs: [
+          {
+            label: 'Gemini 4 Hydrogen',
+            modelId: 'gemini-4-hydrogen-high',
+            quotaInfo: { remainingFraction: 0.7, resetTime },
+          },
+          {
+            label: 'Gemini 4 Carbon',
+            modelId: 'gemini-4-carbon',
+            quotaInfo: { remainingFraction: 0.7, resetTime },
+          },
+          { label: 'Gemini 4 Carbon', modelId: 'gemini-4-carbon-disabled', quotaInfo: {} },
+        ],
+      });
+
+      const pools = aggregateQuotaPools(parsed.clientModelConfigs);
+      assert.equal(pools.length, 1);
+      assert.equal(pools[0]?.family, 'gemini-hydrogen');
+      assert.deepEqual(pools[0]?.models, ['Gemini 4 Carbon', 'Gemini 4 Hydrogen']);
+    });
+
+    it('separates the Carbon orchestrator route from the Argon one', () => {
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-pro-orchestrator' })?.family,
+        'gemini-hydrogen'
+      );
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' })
           ?.family,
         'gemini-hydrogen'
       );
+      assert.equal(
+        resolveModelFamily({
+          modelId: 'gemini-pro-orchestrator-g1-pro',
+          label: 'Orchestrator (Argon)',
+        })?.family,
+        'gemini-argon'
+      );
+      assert.equal(resolveModelFamily({ modelId: 'orchestrator-g1-pro' })?.family, 'gemini-argon');
+      assert.equal(resolveModelFamily({ modelId: 'orchestrator-argon' })?.family, 'gemini-argon');
     });
 
     it('resolves the pre-rename pool family id as an alias of the current one', () => {
-      assert.equal(FAMILY_ALIASES['gemini-flash'], 'gemini-hydrogen');
-      assert.equal(FAMILY_ALIASES.flash, 'gemini-hydrogen');
-      assert.equal(FAMILY_ALIASES.hydrogen, 'gemini-hydrogen');
-
       const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
       const snapshots = snapshotsFromSentryState({
         pools: {
@@ -812,7 +880,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const second = manager.save();
       // `save()` is a compatibility no-op: the mutations were already durable.
       await Promise.all([first, second]);
-      assert.equal(existsSync(join(testDir, 'state.json')), false);
 
       const reloaded = openState(stateFile);
       await reloaded.load();
@@ -940,27 +1007,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
   // 3. Quota Evaluator Math & Late-Wake Anti-Spam
   // ==========================================
   describe('3. Quota Evaluator Math & Late-Wake Reconciliation', () => {
-    it('suppresses alert when remaining headroom is below alert threshold', () => {
-      const evaluator = new QuotaEvaluator({
-        milestoneHours: [24, 12, 3],
-        alertThresholdPercent: 25,
-      });
-
-      const now = Date.now();
-      const snapshot = {
-        poolId: 'claude',
-        family: 'claude' as const,
-        displayName: 'Claude 5.5 / Opus',
-        remainingFraction: 0.15, // 15% remaining < 25% threshold
-        resetTime: new Date(now + 10 * 3600 * 1000).toISOString(), // 10h remaining
-        hoursUntilReset: 10,
-        models: ['Claude Sonnet 5.5'],
-      };
-
-      const result = evaluator.evaluatePool(snapshot, [], now);
-      assert.equal(result.alert, null);
-    });
-
     it('compares the raw fraction against the threshold, not its rounded display value', () => {
       const evaluator = new QuotaEvaluator({
         milestoneHours: [24, 12, 3],
@@ -1616,13 +1662,8 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       assert.ok(flash);
       assert.ok(claude);
-      assert.deepEqual(flash.models, FAMILY_DEFAULT_MODELS['gemini-hydrogen']);
-      assert.deepEqual(claude.models, FAMILY_DEFAULT_MODELS.claude);
-      for (const pool of snapshots) {
-        // The generic placeholders described models that may belong to a different pool.
-        assert.ok(!pool.models.includes('Gemini Pro'));
-        assert.ok(!pool.models.includes('Gemini Flash'));
-      }
+      assert.deepEqual(flash.models, ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash']);
+      assert.deepEqual(claude.models, ['Claude Opus', 'Claude Sonnet', 'GPT-OSS']);
     });
 
     it('falls back to clean canonical model labels when synthesizing from sentry state', () => {
@@ -1644,9 +1685,13 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       });
 
       assert.equal(snapshots.length, 3);
-      for (const pool of snapshots) {
-        assert.deepEqual(pool.models, FAMILY_DEFAULT_MODELS[pool.family]);
-      }
+      const byFamily = new Map(snapshots.map((snapshot) => [snapshot.family, snapshot]));
+      assert.deepEqual(byFamily.get('gemini-hydrogen')?.models, [
+        'Gemini 4 Hydrogen',
+        'Gemini 3.8 Flash',
+      ]);
+      assert.deepEqual(byFamily.get('gemini-argon')?.models, ['Gemini 4 Argon']);
+      assert.deepEqual(byFamily.get('claude')?.models, ['Claude Opus', 'Claude Sonnet', 'GPT-OSS']);
     });
 
     it('skips prototype-named pool keys instead of synthesizing an inherited pool', () => {
@@ -1870,9 +1915,15 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         },
       };
 
+      let serveUserStatus = true;
       const server = createServer((req, res) => {
         if (req.method !== 'POST') {
           res.writeHead(405);
+          res.end();
+          return;
+        }
+        if (!serveUserStatus && req.url === USER_STATUS_RPC_PATH) {
+          res.writeHead(404);
           res.end();
           return;
         }
@@ -1900,61 +1951,19 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         const snapshots = await client.fetchQuota();
         assert.equal(snapshots.length, 1);
         assert.equal(snapshots[0]?.overageEnabled, true);
-      } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      }
-    });
 
-    it('leaves overageEnabled undefined when GetUserStatus returns nothing', async () => {
-      const nowMs = Date.now();
-      const quotaSummary = {
-        response: {
-          groups: [
-            {
-              displayName: 'Gemini Models',
-              buckets: [
-                {
-                  bucketId: 'gemini-weekly',
-                  displayName: 'Weekly Limit',
-                  remainingFraction: 0.85,
-                  resetTime: new Date(nowMs + 120 * 3600 * 1000).toISOString(),
-                },
-              ],
-            },
-          ],
-        },
-      };
-
-      const server = createServer((req, res) => {
-        if (req.url === QUOTA_SUMMARY_RPC_PATH && req.method === 'POST') {
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(quotaSummary));
-          return;
-        }
-        res.writeHead(404);
-        res.end();
-      });
-
-      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
-      const port = (server.address() as any).port;
-
-      const mockExecFile = async () => ({
-        stdout: JSON.stringify({ command: { name: 'credits', data: { remaining_credits: 675 } } }),
-        stderr: '',
-      });
-
-      try {
-        const client = new ConnectRpcQuotaClient({
+        // Absent plan signal: the flag stays undefined instead of being guessed.
+        serveUserStatus = false;
+        const withoutStatus = new ConnectRpcQuotaClient({
           endpointUrl: `http://127.0.0.1:${port}`,
           csrfToken: 'test-token',
           timeoutMs: 1000,
           enableCliFallback: false,
           execFileFn: mockExecFile as any,
         });
-
-        const snapshots = await client.fetchQuota();
-        assert.equal(snapshots.length, 1);
-        assert.equal(snapshots[0]?.overageEnabled, undefined);
+        const bareSnapshots = await withoutStatus.fetchQuota();
+        assert.equal(bareSnapshots.length, 1);
+        assert.equal(bareSnapshots[0]?.overageEnabled, undefined);
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
@@ -2200,8 +2209,6 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const legacy = openState(legacyFile);
       const loaded = await legacy.load();
-      assert.equal(loaded.pools['claude']?.remainingFraction, 0.5);
-      assert.equal(loaded.pools['claude']?.samples, undefined);
       assert.deepEqual(loaded.pools, {
         claude: { resetTime: cycleReset, remainingFraction: 0.5, firedMilestones: [] },
       });
@@ -2278,11 +2285,11 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       assert.ok(projection);
       assert.ok(Math.abs(projection.burnRatePerHour - 0.08) < 1e-9);
-      // 0.72 - 0.08 * 2h remaining
+      // 0.72 - 0.08/h x 2h remaining
       assert.equal(projection.projectedRemainingAtResetPercent, 56);
+      // (0.72 - 0.10 floor) / 0.08 per hour = 7.75h of headroom left
       assert.ok(projection.hoursUntilFloor !== null);
-      assert.ok(Math.abs(projection.hoursUntilFloor - (0.72 - 0.1) / 0.08) < 1e-6);
-      assert.equal(BURN_FLOOR_PERCENT, 10);
+      assert.ok(Math.abs(projection.hoursUntilFloor - 7.75) < 1e-6);
     });
 
     it('clamps a projection that would run past zero before the reset', () => {

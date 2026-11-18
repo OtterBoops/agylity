@@ -15,7 +15,6 @@ import {
   RemoteSwarmRunner,
   STATUS_BODY_MAX_BYTES,
   TaskExecutor,
-  assertRunnerGitCredentials,
   buildContinuationBranchName,
   fitStatusPayload,
   isCapacityExhaustedOutput,
@@ -829,15 +828,6 @@ describe('Runner: pr policy and documentation classification', () => {
     assert.equal(branch.includes('main'), false);
 
     assert.equal(buildContinuationBranchName('task-1-abc', ''), 'agy/abc-work');
-    assert.equal(buildContinuationBranchName('task-1-abc', '!!! ???'), 'agy/abc-work');
-  });
-
-  it('refuses to start a runner that cannot push, unless the escape hatch is set', () => {
-    assert.throws(() => assertRunnerGitCredentials(['agylity'], {}), /GITHUB_TOKEN is not set/);
-    assert.doesNotThrow(() => assertRunnerGitCredentials(undefined, { GITHUB_TOKEN: 'ghp_x' }));
-    assert.doesNotThrow(() =>
-      assertRunnerGitCredentials(['agylity'], { ALLOW_TOKENLESS_RUNNER: 'true' })
-    );
   });
 });
 

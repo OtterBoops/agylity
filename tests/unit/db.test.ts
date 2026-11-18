@@ -9,7 +9,6 @@ import {
   decryptSecret,
   SecretDecryptionError,
   isSecretKey,
-  SECRET_KEYS,
 } from '../../src/storage/db.js';
 
 describe('AppDatabase (node:sqlite Native Storage)', () => {
@@ -33,7 +32,6 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings';")
       .get() as { name: string } | undefined;
     assert.ok(tableCheck);
-    assert.equal(tableCheck.name, 'settings');
   });
 
   it('round-trips an object-valued secret and never stores it in plaintext', () => {
@@ -136,7 +134,8 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
 
     // 10. getAllRecords
     const allRecords = db.getAllRecords();
-    assert.ok(allRecords.length >= 5);
+    // Six distinct keys were written above; the later channel write was an upsert.
+    assert.equal(allRecords.length, 6);
 
     // 11. Delete
     assert.equal(db.delete('channel'), true);
@@ -152,13 +151,6 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     const raw = db.getRawDb();
     raw.exec("INSERT INTO settings (key, value) VALUES ('raw_str', 'unquoted_plain_text');");
     assert.equal(db.get('raw_str'), 'unquoted_plain_text');
-  });
-
-  it('supports constructor with string path directly', () => {
-    const memDb = new AppDatabase(':memory:');
-    memDb.set('k', 'v');
-    assert.equal(memDb.get('k'), 'v');
-    memDb.close();
   });
 
   it('sets busyTimeoutMs pragma correctly', () => {
@@ -213,21 +205,13 @@ describe('Secret encryption failure surfacing (AES-256-GCM)', () => {
 
 describe('Secret key classification (canonical map and env spellings)', () => {
   it('reports a secret key and its env spelling as secret, and a non-secret key as not', () => {
-    // Both spellings of a canonical secret come from the single map in schema.ts
-    assert.ok(SECRET_KEYS.has('webhookSecret'));
-    assert.ok(SECRET_KEYS.has('WEBHOOK_SECRET'));
-    assert.ok(SECRET_KEYS.has('webUiAuthToken'));
-    assert.ok(SECRET_KEYS.has('WEB_UI_AUTH_TOKEN'));
+    // Both spellings must resolve through isSecretKey: these are the keys the vault encrypts.
+    for (const key of ['webhookSecret', 'WEBHOOK_SECRET', 'webUiAuthToken', 'WEB_UI_AUTH_TOKEN']) {
+      assert.equal(isSecretKey(key), true, `${key} must be encrypted`);
+    }
 
-    assert.equal(isSecretKey('webhookSecret'), true);
-    assert.equal(isSecretKey('WEBHOOK_SECRET'), true);
-    assert.equal(isSecretKey('discordToken'), true);
-    assert.equal(isSecretKey('DISCORD_TOKEN'), true);
-
-    // Non-secret keys must not be classified as secret
-    assert.equal(SECRET_KEYS.has('webUiPort'), false);
-    assert.equal(isSecretKey('webUiPort'), false);
-    assert.equal(isSecretKey('notificationChannel'), false);
-    assert.equal(isSecretKey('logLevel'), false);
+    for (const key of ['webUiPort', 'notificationChannel', 'logLevel']) {
+      assert.equal(isSecretKey(key), false, `${key} must not be encrypted`);
+    }
   });
 });

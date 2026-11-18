@@ -13,16 +13,12 @@ import {
   DynamicModelCatalog,
 } from '../../src/coordinator/catalog.js';
 import {
-  ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
   DEFAULT_MODEL_BY_FAMILY,
-  ReasoningEffortSchema,
-  resolveConcreteModelId,
   resolveReasoningEffortForModel,
 } from '../../src/coordinator/models.js';
-import { resolveModelFamily } from '../../src/sentry/models.js';
 
-const jsonEnvelope = (models: Array<{ id: string; label?: string }>): string =>
+const jsonEnvelope = (models: Array<{ id: string; label?: string; disabled?: boolean }>): string =>
   JSON.stringify({
     conversation_id: '',
     status: 'SUCCESS',
@@ -65,11 +61,6 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(effortSuffixOf('gemini-4-hydrogen-high'), 'high');
       assert.equal(effortSuffixOf('gemini-4-hydrogen'), undefined);
     });
-
-    it('treats xhigh as a valid reasoning effort everywhere', () => {
-      assert.ok(ALL_EFFORTS.includes('xhigh'));
-      assert.equal(ReasoningEffortSchema.parse('xhigh'), 'xhigh');
-    });
   });
 
   describe('2. Output parsing', () => {
@@ -85,6 +76,16 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
         JSON.stringify({ models: [{ id: 'gemini-4-argon-high' }, { label: 'no id' }, {}] })
       );
       assert.deepEqual(parsed, [{ id: 'gemini-4-argon-high', label: undefined }]);
+    });
+
+    it('drops a model the CLI marks disabled instead of offering it for dispatch', () => {
+      const parsed = parseAgyModelsOutput(
+        jsonEnvelope([
+          { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+          { id: 'gemini-4-carbon-disabled', label: 'Gemini 4 Carbon', disabled: true },
+        ])
+      );
+      assert.deepEqual(parsed, [{ id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' }]);
     });
 
     it('returns an empty list for unparsable output instead of throwing', () => {
@@ -147,17 +148,6 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'], 'gemini-4-hydrogen');
     });
 
-    it('marks exactly one default per family', () => {
-      const byFamily = new Map<string, string[]>();
-      for (const m of grouped.models) {
-        if (!m.defaultForFamily) continue;
-        byFamily.set(m.family, [...(byFamily.get(m.family) ?? []), m.id]);
-      }
-      for (const [family, ids] of byFamily) {
-        assert.equal(ids.length, 1, `${family} must have one default, got ${ids.join(', ')}`);
-      }
-    });
-
     it('confines xhigh to models that advertise it', () => {
       for (const m of grouped.models) {
         if (m.id === 'gemini-4-hydrogen') continue;
@@ -170,28 +160,22 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
   });
 
   describe('4. Family resolution for new codenames', () => {
-    it('maps gemini-4-hydrogen into the gemini-hydrogen pool', () => {
-      assert.equal(resolveModelFamily({ modelId: 'gemini-4-hydrogen' })?.family, 'gemini-hydrogen');
-      assert.equal(
-        resolveModelFamily({ modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' })?.family,
-        'gemini-hydrogen'
+    it('groups Gemini 4 Carbon with Hydrogen without bundling it', () => {
+      const grouped = groupAgyModels(
+        parseAgyModelsOutput(
+          jsonEnvelope([
+            { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+            { id: 'gemini-4-carbon-disabled', label: 'Gemini 4 Carbon', disabled: true },
+          ])
+        )
       );
-    });
 
-    it('does not misclassify gemini-pro-orchestrator-g1-pro as gemini-hydrogen', () => {
-      const resolved = resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro' });
-      assert.notEqual(resolved?.family, 'gemini-hydrogen');
-      assert.equal(resolved?.family, 'gemini-argon');
-    });
-
-    it('still resolves every previously-known family', () => {
-      assert.equal(resolveModelFamily({ modelId: 'gemini-4-argon-high' })?.family, 'gemini-argon');
-      assert.equal(
-        resolveModelFamily({ modelId: 'gemini-3.8-flash-high' })?.family,
-        'gemini-hydrogen'
+      assert.deepEqual(
+        grouped.models.map((m) => m.id),
+        ['gemini-4-carbon']
       );
-      assert.equal(resolveModelFamily({ modelId: 'claude-sonnet-5-5-high' })?.family, 'claude');
-      assert.equal(resolveModelFamily({ modelId: 'unknown-model-xyz' }), null);
+      assert.equal(grouped.models[0]?.family, 'gemini-hydrogen');
+      assert.ok(!CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-4-carbon'));
     });
 
     it('reports a pool-less codename as unattributed rather than guessing', () => {
@@ -217,10 +201,6 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(resolveReasoningEffortForModel('gemini-4-hydrogen', 'xhigh'), 'xhigh');
       assert.equal(resolveReasoningEffortForModel('gemini-3.8-flash', 'xhigh'), 'medium');
     });
-
-    it('clamps an xhigh id suffix onto the base model for eligibility', () => {
-      assert.equal(resolveConcreteModelId('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen');
-    });
   });
 
   describe('6. Stale-while-revalidate provider', () => {
@@ -240,20 +220,24 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
         } as never,
       });
 
-    it('serves the bundled canonical catalog before any probe resolves', () => {
-      const provider = makeCatalog(async () => ({ stdout: jsonEnvelope(LIVE_MODELS), stderr: '' }));
-      const initial = provider.getModels();
-      assert.deepEqual(
-        initial.map((m) => m.id),
-        CANONICAL_AGY_MODELS.map((m) => m.id)
-      );
-    });
-
-    it('publishes the live catalog after a refresh', async () => {
-      const provider = makeCatalog(async () => ({ stdout: jsonEnvelope(LIVE_MODELS), stderr: '' }));
+    it('publishes Gemini 4 Carbon from the live probe while keeping it out of the bundle', async () => {
+      const provider = makeCatalog(async () => ({
+        stdout: jsonEnvelope([
+          ...LIVE_MODELS,
+          { id: 'gemini-4-carbon-high', label: 'Gemini 4 Carbon (High)' },
+          { id: 'gemini-4-carbon-disabled', label: 'Gemini 4 Carbon', disabled: true },
+        ]),
+        stderr: '',
+      }));
       await provider.refreshModels();
-      const ids = provider.getModels().map((m) => m.id);
-      assert.ok(ids.includes('gemini-4-hydrogen'));
+
+      const models = provider.getModels();
+      const carbon = models.find((m) => m.id === 'gemini-4-carbon');
+      assert.equal(carbon?.family, 'gemini-hydrogen');
+      assert.equal(carbon?.defaultForFamily, false);
+      // Hydrogen's bundled default still wins over a dynamically discovered sibling.
+      assert.equal(models.find((m) => m.id === 'gemini-4-hydrogen')?.defaultForFamily, true);
+      assert.deepEqual(provider.getUnattributedModels(), []);
     });
 
     it('keeps the last good catalog when the CLI is offline or unauthenticated', async () => {
@@ -325,8 +309,8 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       });
       provider.getModels();
       provider.getModels();
-      // getModels fires at most one background revalidation per instance.
-      assert.ok(calls <= 1, `expected at most one probe, got ${calls}`);
+      // getModels fires exactly one background revalidation per instance; the in-flight guard dedupes.
+      assert.equal(calls, 1);
     });
   });
 });

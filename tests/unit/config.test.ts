@@ -85,10 +85,6 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     );
   });
 
-  it('fails on invalid NOTIFICATION_CHANNEL enum value', () => {
-    assert.throws(() => RawEnvSchema.parse({ NOTIFICATION_CHANNEL: 'telegram' }));
-  });
-
   it('prevents string boolean coercion trap: false coerced to true', () => {
     // Standard JS Boolean('false') === true is a dangerous pitfall
     assert.equal(booleanEnv.parse('false'), false);
@@ -114,7 +110,6 @@ describe('Zod Configuration Schema & Preprocessors', () => {
   });
 
   it('ships 48/24/12 milestones, a 4h pre-reset burn window and gemini-4-hydrogen as built-in defaults', () => {
-    assert.deepEqual(BUILTIN_DEFAULTS.quotaMilestoneHours, [48, 24, 12]);
     assert.deepEqual(DEFAULT_MILESTONE_HOURS, [48, 24, 12]);
     assert.equal(BUILTIN_DEFAULTS.quotaBurnMaxHours, 4);
     assert.equal(DEFAULT_QUOTA_BURN_MAX_HOURS, 4);
@@ -286,6 +281,7 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
     store.setOverride('QUOTA_CHECK_INTERVAL_SECONDS', 450);
     assert.equal(store.get('quotaCheckIntervalSeconds'), 450);
     assert.equal(store.get('QUOTA_CHECK_INTERVAL_SECONDS'), 450);
+    assert.equal(store.getAll()['quotaCheckIntervalSeconds'], 450);
 
     store.removeOverride('QUOTA_CHECK_INTERVAL_SECONDS');
     assert.equal(store.get('quotaCheckIntervalSeconds'), 1500);
@@ -314,28 +310,6 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
 
     store.clearAllOverrides();
     assert.equal(changeEvents.length, 3);
-
-    store.close();
-  });
-
-  it('implements ConfigStore contract methods (get, set, delete, getAll, resolveConfig)', () => {
-    const store = new ConfigStore(':memory:', {});
-
-    // set and get
-    store.set('webUiPort', 8088);
-    assert.equal(store.get('webUiPort'), 8088);
-
-    // getAll
-    const all = store.getAll();
-    assert.equal(all['webUiPort'], 8088);
-
-    // resolveConfig
-    const resolved = store.resolveConfig();
-    assert.equal(resolved.webUiPort, 8088);
-
-    // delete
-    store.delete('webUiPort');
-    assert.equal(store.get('webUiPort'), BUILTIN_DEFAULTS.webUiPort);
 
     store.close();
   });

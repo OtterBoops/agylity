@@ -121,8 +121,12 @@ export const parseAgyModelsOutput = (stdout: string): AgyRawModel[] => {
   }
   const list = payload?.command?.data?.models ?? payload?.models;
   if (!Array.isArray(list)) return [];
+  // A disabled entry is offered for display only, so cataloguing it would dispatch a model that cannot run.
   return list
-    .filter((m: any): m is AgyRawModel => typeof m?.id === 'string' && m.id.trim() !== '')
+    .filter(
+      (m: any): m is AgyRawModel =>
+        typeof m?.id === 'string' && m.id.trim() !== '' && m.disabled !== true
+    )
     .map((m: any) => ({ id: m.id, label: typeof m.label === 'string' ? m.label : undefined }));
 };
 

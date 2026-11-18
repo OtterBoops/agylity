@@ -188,10 +188,6 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
-  async init(): Promise<void> {
-    return this.initialize();
-  }
-
   // The first awaited call on every handler path must be the Discord ack, inside the 3s deadline.
   async handleInteraction(interaction: any): Promise<void> {
     return routeInteraction(this.interactionDeps(), interaction);

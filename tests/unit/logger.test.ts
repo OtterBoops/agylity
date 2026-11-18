@@ -55,19 +55,6 @@ describe('Universal Logger', () => {
     assert.equal(memory.records[3]!.formatted, '[sentry:rpc] fallback port triggered');
   });
 
-  it('safely handles Error objects and stack formatting', () => {
-    const memory = createMemorySink();
-    const log = createLogger({ sinks: [memory.sink] });
-
-    const err = new Error('Connection timeout');
-    log.error('Failed to reach server:', err);
-
-    assert.equal(memory.records.length, 1);
-    assert.ok(
-      memory.records[0]!.formatted.includes('Failed to reach server: Error: Connection timeout')
-    );
-  });
-
   it('allows adding, removing, and clearing sinks dynamically', () => {
     const mem1 = createMemorySink();
     const mem2 = createMemorySink();

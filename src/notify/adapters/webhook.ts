@@ -138,9 +138,6 @@ const escapeMentions = (text: string): string => text.replace(/<(?=[!@])/g, '&lt
 export class WebhookNotifier implements Notifier {
   readonly channelName: string = 'webhook';
   public initialized = false;
-  public alerts: QuotaAlert[] = [];
-  public statuses: DispatchStatusUpdate[] = [];
-  public notices: InfoNotice[] = [];
   protected config: ResolvedConfig;
   protected options: NotifierOptions;
 
@@ -153,10 +150,6 @@ export class WebhookNotifier implements Notifier {
     this.initialized = true;
   }
 
-  async init(): Promise<void> {
-    return this.initialize();
-  }
-
   async shutdown(): Promise<void> {
     this.initialized = false;
   }
@@ -166,9 +159,6 @@ export class WebhookNotifier implements Notifier {
   }
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
-    this.alerts.push(alert);
-    if (this.alerts.length > 100) this.alerts.shift();
-
     const poolName = alert.pool.displayName || alert.pool.poolId || 'Quota Pool';
     const percent = alert.remainingPercentage;
     const hours = alert.milestoneHours;
@@ -222,9 +212,6 @@ export class WebhookNotifier implements Notifier {
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
-    this.statuses.push(status);
-    if (this.statuses.length > 100) this.statuses.shift();
-
     const step = normalizeStep(status);
     const isTerminal = isTerminalStep(step);
     const isInitial = step === 'polling' || step === 'waking';
@@ -256,9 +243,6 @@ export class WebhookNotifier implements Notifier {
   }
 
   async notifyInfo(notice: InfoNotice): Promise<void> {
-    this.notices.push(notice);
-    if (this.notices.length > 100) this.notices.shift();
-
     const textMsg = escapeMentions(`[Notice] ${notice.title} — ${notice.message}`);
     const embed = buildInfoNoticeEmbed(notice, { baseUrl: this.config.baseUrl });
 

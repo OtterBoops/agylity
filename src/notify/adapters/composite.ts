@@ -33,10 +33,6 @@ export class CompositeNotifier implements Notifier {
     }
   }
 
-  public getNotifiers(): Notifier[] {
-    return this.notifiers;
-  }
-
   public getNotifier(channelName: string): Notifier | undefined {
     return this.notifiers.find((n) => n.channelName === channelName);
   }
@@ -54,10 +50,6 @@ export class CompositeNotifier implements Notifier {
           );
       }
     });
-  }
-
-  async init(): Promise<void> {
-    return this.initialize();
   }
 
   private async syncResolvedOwner(): Promise<void> {

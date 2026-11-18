@@ -78,6 +78,9 @@ Frontier models in Antigravity are governed by two distinct limits:
    agy --output-format json models
    ```
    Validated against `CliModelsResponseSchema`, preserving previously cached reset deadlines while monitoring available models.
+5. **Listed-but-unavailable models**: a cascade entry carrying `disabled: true` or an empty `quotaInfo: {}`
+   is skipped, and a `-disabled` model id resolves to no pool. One placeholder the account cannot use must
+   not fail the whole probe, and it never contributes a pool.
 
 ---
 

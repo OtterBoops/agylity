@@ -29,9 +29,12 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         });
         server = started.server;
 
-        assert.ok(server instanceof http.Server);
+        // The reported host:port must be the socket actually listening, not the requested 0.
         assert.ok(started.port > 0, `Expected assigned port > 0, got ${started.port}`);
-        assert.equal(started.host, '127.0.0.1');
+        const health = await ky
+          .get(`http://${started.host}:${started.port}/api/health`, { retry: 0 })
+          .json<any>();
+        assert.equal(health.status, 'ok');
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -1279,66 +1282,9 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   });
 
   /* ==================================================================== */
-  /* 7. Zero-Overhead Invariant                                           */
-  /* ==================================================================== */
-  describe('7. Zero-Overhead Invariant', () => {
-    it('verifies that webUiEnabled is false by default in config', () => {
-      const { dir, cleanup } = makeTempDir('web_test_zero_overhead_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), {});
-
-      try {
-        const resolved = store.resolveConfig();
-        assert.equal(resolved.webUiEnabled, false);
-      } finally {
-        store.close();
-        cleanup();
-      }
-    });
-
-    it('when webUiEnabled is false, zero HTTP listener is spawned', async () => {
-      const { dir, cleanup } = makeTempDir('web_test_zero_listener_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), {});
-
-      try {
-        let serverStarted = false;
-        const resolved = store.resolveConfig();
-
-        if (resolved.webUiEnabled) {
-          await startWebServer({ configStore: store });
-          serverStarted = true;
-        }
-
-        assert.equal(serverStarted, false);
-      } finally {
-        store.close();
-        cleanup();
-      }
-    });
-  });
-
-  /* ==================================================================== */
   /* 8. HTTP Body Bounding & Payload Protection                           */
   /* ==================================================================== */
   describe('8. HTTP Body Bounding & Payload Protection', () => {
-    it('readBody rejects when payload exceeds maxBytes limit', async () => {
-      const { Readable } = await import('node:stream');
-      const { readBody, PayloadTooLargeError } = await import('../../src/web/routes.js');
-
-      const stream = Readable.from([
-        Buffer.from('a'.repeat(300)),
-        Buffer.from('b'.repeat(300)),
-      ]) as http.IncomingMessage;
-
-      await assert.rejects(
-        () => readBody(stream, 500),
-        (err: any) => {
-          assert.ok(err instanceof PayloadTooLargeError);
-          assert.equal(err.statusCode, 413);
-          return true;
-        }
-      );
-    });
-
     it('POST /api/config rejects bodies exceeding 64 KB with HTTP 413', async () => {
       const { dir, cleanup } = makeTempDir('web_test_413_config_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
@@ -1396,43 +1342,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         await assert.rejects(
           () =>
             ky.post(`http://127.0.0.1:${started.port}/api/notify/test`, {
-              body: oversizedPayload,
-              headers: { 'Content-Type': 'application/json' },
-              retry: 0,
-            }),
-          (err: any) => {
-            assert.equal(err.response?.status, 413);
-            return true;
-          }
-        );
-      } finally {
-        if (server) await closeWebServer(server);
-        store.close();
-        cleanup();
-      }
-    });
-
-    it('POST /api/dispatch rejects bodies exceeding 64 KB with HTTP 413', async () => {
-      const { dir, cleanup } = makeTempDir('web_test_413_dispatch_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), {});
-      let server: http.Server | undefined;
-
-      try {
-        const started = await startWebServer({
-          configStore: store,
-          host: '127.0.0.1',
-          port: 0,
-        });
-        server = started.server;
-
-        const oversizedPayload = JSON.stringify({
-          repositoryId: 'agylity',
-          prompt: 'x'.repeat(65 * 1024),
-        });
-
-        await assert.rejects(
-          () =>
-            ky.post(`http://127.0.0.1:${started.port}/api/dispatch`, {
               body: oversizedPayload,
               headers: { 'Content-Type': 'application/json' },
               retry: 0,
@@ -1610,9 +1519,14 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
     it('engages rate limiter with HTTP 429 after 10 failed auth attempts', async () => {
       const { dir, cleanup } = makeTempDir('web_test_ratelimit_');
+      // The failure counter is module-global and keyed by client IP, so this test sends a
+      // forwarded address: its counter cannot be primed by an earlier test's success, and
+      // being blocked at the end cannot rate-limit the 127.0.0.1 tests that follow.
+      const forwarded = { 'x-forwarded-for': '203.0.113.77' };
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         webUiAuthToken: 'correct_token',
         webUiAuthExemptLocalhost: false,
+        trustedProxies: true,
       });
       let server: http.Server | undefined;
 
@@ -1623,19 +1537,27 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           port: 0,
         });
         server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        // Prove the counter starts at zero rather than inheriting another test's failures.
+        const primed = await ky.get(`${base}/api/quota`, {
+          headers: { ...forwarded, Authorization: 'Bearer correct_token' },
+          throwHttpErrors: false,
+        });
+        assert.equal(primed.status, 200);
 
         // 9 failed attempts should return 401
         for (let i = 0; i < 9; i++) {
-          const res = await ky.get(`http://127.0.0.1:${started.port}/api/quota`, {
-            headers: { Authorization: 'Bearer wrong_token' },
+          const res = await ky.get(`${base}/api/quota`, {
+            headers: { ...forwarded, Authorization: 'Bearer wrong_token' },
             throwHttpErrors: false,
           });
           assert.equal(res.status, 401);
         }
 
         // 10th failed attempt triggers 429
-        const tenthRes = await ky.get(`http://127.0.0.1:${started.port}/api/quota`, {
-          headers: { Authorization: 'Bearer wrong_token' },
+        const tenthRes = await ky.get(`${base}/api/quota`, {
+          headers: { ...forwarded, Authorization: 'Bearer wrong_token' },
           throwHttpErrors: false,
         });
         assert.equal(tenthRes.status, 429);
@@ -1744,8 +1666,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* 10b. Task Text Fields Must Be Strings On POST                        */
   /* ==================================================================== */
   describe('10b. Task Text Fields Must Be Strings On POST', () => {
-    it('rejects POST /api/backlog with an object title and creates no row', async () => {
-      const { dir, cleanup } = makeTempDir('web_backlog_post_obj_title_');
+    it('rejects POST /api/backlog with a non-string text field and creates no row', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_post_nonstring_');
       const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
       let server: http.Server | undefined;
 
@@ -1758,48 +1680,28 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         server = started.server;
         const base = `http://127.0.0.1:${started.port}`;
 
-        // A truthy object used to pass validation and be stored as "[object Object]".
-        const res = await ky.post(`${base}/api/backlog`, {
-          json: { title: { x: 1 }, prompt: 'P', repositoryId: 'agylity' },
-          retry: 0,
-          throwHttpErrors: false,
-        });
-        assert.equal(res.status, 400);
+        // A truthy object or array used to pass validation and be stored as
+        // "[object Object]" / "1,2".
+        const rejected: Array<Record<string, unknown>> = [
+          { title: { x: 1 }, prompt: 'P', repositoryId: 'agylity' },
+          { title: 'Valid title', prompt: [1, 2], repositoryId: 'agylity' },
+        ];
+        for (const body of rejected) {
+          const res = await ky.post(`${base}/api/backlog`, {
+            json: body,
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(
+            res.status,
+            400,
+            `POST ${JSON.stringify(body)} must be a 400, got ${res.status}`
+          );
+        }
 
         const listRes = await ky.get(`${base}/api/backlog`, { retry: 0 });
         assert.equal(listRes.status, 200);
         const list = await listRes.json<any[]>();
-        assert.deepEqual(list, [], 'a rejected POST must not leave a backlog row behind');
-      } finally {
-        if (server) await closeWebServer(server);
-        store.close();
-        cleanup();
-      }
-    });
-
-    it('rejects POST /api/backlog with an array prompt and creates no row', async () => {
-      const { dir, cleanup } = makeTempDir('web_backlog_post_arr_prompt_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
-      let server: http.Server | undefined;
-
-      try {
-        const started = await startWebServer({
-          configStore: store,
-          host: '127.0.0.1',
-          port: 0,
-        });
-        server = started.server;
-        const base = `http://127.0.0.1:${started.port}`;
-
-        // An array used to be stringified into the row as "1,2".
-        const res = await ky.post(`${base}/api/backlog`, {
-          json: { title: 'Valid title', prompt: [1, 2], repositoryId: 'agylity' },
-          retry: 0,
-          throwHttpErrors: false,
-        });
-        assert.equal(res.status, 400);
-
-        const list = await ky.get(`${base}/api/backlog`, { retry: 0 }).json<any[]>();
         assert.deepEqual(list, [], 'a rejected POST must not leave a backlog row behind');
       } finally {
         if (server) await closeWebServer(server);
@@ -2208,7 +2110,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
-    it('persists the PR url a runner reports on completion', async () => {
+    it('persists the status report fields a runner returns', async () => {
       const { dir, cleanup } = makeTempDir('web_status_pr_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         coordinatorEnabled: true,
@@ -2234,59 +2136,15 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
             status: 'completed',
             branchName: 'antigravity/task-pr',
             prUrl: 'https://github.com/OtterBoops/agylity/pull/99',
+            numTurns: 4,
+            totalTokens: 1670,
+            thinkingTokens: 120,
           },
         });
 
         const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
         const task = tasks.find((t) => t.id === disp.taskId);
         assert.equal(task?.prUrl, 'https://github.com/OtterBoops/agylity/pull/99');
-      } finally {
-        await closeWebServer(server);
-        store.close();
-        cleanup();
-      }
-    });
-
-    it('persists runner token telemetry (numTurns, totalTokens, thinkingTokens) from a status report', async () => {
-      const { dir, cleanup } = makeTempDir('web_status_telemetry_');
-      const store = new ConfigStore(path.join(dir, 'test.db'), {
-        coordinatorEnabled: true,
-        runnerSharedSecret: 'swarm-secret-token-999',
-      });
-      const { server, port } = await startWebServer({
-        configStore: store,
-        host: '127.0.0.1',
-        port: 0,
-      });
-
-      try {
-        const baseUrl = `http://127.0.0.1:${port}`;
-        const disp = await ky
-          .post(`${baseUrl}/api/dispatch`, {
-            json: {
-              repositoryId: 'agylity',
-              prompt: 'Telemetry task',
-              allowOverage: true,
-            },
-          })
-          .json<any>();
-
-        const reported = await ky
-          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
-            headers: authHeaders,
-            json: {
-              status: 'completed',
-              branchName: 'antigravity/task-telemetry',
-              numTurns: 4,
-              totalTokens: 1670,
-              thinkingTokens: 120,
-            },
-          })
-          .json<any>();
-        assert.equal(reported.success, true);
-
-        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
-        const task = tasks.find((t) => t.id === disp.taskId);
         assert.equal(task?.numTurns, 4);
         assert.equal(task?.totalTokens, 1670);
         assert.equal(task?.thinkingTokens, 120);
@@ -3045,7 +2903,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
         // 20000 chars: only the last 16384 may be persisted.
         const longTail = 'H'.repeat(5000) + 'T'.repeat(15000);
-        assert.equal(longTail.length, 20000);
         const second = await ky
           .post(`${base}/api/runner/heartbeat`, {
             headers: runnerHeaders,

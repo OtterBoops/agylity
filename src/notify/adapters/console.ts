@@ -26,9 +26,6 @@ const printAsciiBox = (lines: string[]): void => {
 export class ConsoleNotifier implements Notifier {
   readonly channelName: string = 'console';
   public initialized = false;
-  public alerts: QuotaAlert[] = [];
-  public statuses: DispatchStatusUpdate[] = [];
-  public notices: InfoNotice[] = [];
   protected config: ResolvedConfig;
   protected options: NotifierOptions;
 
@@ -41,14 +38,7 @@ export class ConsoleNotifier implements Notifier {
     this.initialized = true;
   }
 
-  async init(): Promise<void> {
-    return this.initialize();
-  }
-
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
-    this.alerts.push(alert);
-    if (this.alerts.length > 100) this.alerts.shift();
-
     const poolName = alert.pool.displayName || alert.pool.poolId;
     printAsciiBox([
       `[QUOTA ALERT] ${poolName}`,
@@ -59,9 +49,6 @@ export class ConsoleNotifier implements Notifier {
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
-    this.statuses.push(status);
-    if (this.statuses.length > 100) this.statuses.shift();
-
     const step = normalizeStep(status);
     printAsciiBox([
       `[DISPATCH STATUS] Step: ${step.toUpperCase()}`,
@@ -71,9 +58,6 @@ export class ConsoleNotifier implements Notifier {
   }
 
   async notifyInfo(notice: InfoNotice): Promise<void> {
-    this.notices.push(notice);
-    if (this.notices.length > 100) this.notices.shift();
-
     printAsciiBox([`[NOTICE] ${notice.title}`, notice.message]);
   }
 

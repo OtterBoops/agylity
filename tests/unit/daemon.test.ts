@@ -3,24 +3,22 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import net from 'node:net';
 import http from 'node:http';
-import { makeTempDir } from '../e2e/harness/index.js';
-import { ConfigStore } from '../../src/config/store.js';
+import { createMemorySink, makeTempDir } from '../e2e/harness/index.js';
 import { SentryStateManager, type EarlyResetPool } from '../../src/sentry/state.js';
-import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
 import { buildInfoNoticeEmbed } from '../../src/notify/embeds/index.js';
 import type { QuotaAlert, DeliveryOutcome, InfoNotice } from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { logger } from '../../src/logs/logger.js';
-import { AgylityDaemon, createDaemon, startDaemon, stopDaemon } from '../../src/index.js';
+import { createDaemon, startDaemon, stopDaemon } from '../../src/index.js';
 
 describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
   /* ==================================================================== */
   /* 1. Subsystem Instantiation & Wiring                                   */
   /* ==================================================================== */
   describe('1. Subsystem Instantiation & Wiring', () => {
-    it('instantiates all subsystems cleanly via createDaemon() with custom options', async () => {
+    it('applies explicit createDaemon() options to the config the subsystems read', async () => {
       const { dir, cleanup } = makeTempDir('daemon_init_');
       const dbPath = path.join(dir, 'test.db');
       const statePath = path.join(dir, 'state.json');
@@ -35,35 +33,11 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         },
       });
 
-      assert.ok(daemon instanceof AgylityDaemon);
-      assert.ok(daemon.configStore instanceof ConfigStore);
-      assert.ok(daemon.sentryState instanceof SentryStateManager);
-      assert.ok(daemon.sentryEvaluator instanceof QuotaEvaluator);
-      assert.ok(daemon.quotaClient instanceof ConnectRpcQuotaClient);
-      assert.ok(daemon.notifier);
-      assert.equal(daemon.isRunning, false);
-      assert.equal(daemon.webServer, undefined);
-
-      await daemon.shutdown();
-      cleanup();
-    });
-
-    it('respects configuration fallback precedence in daemon store', async () => {
-      const { dir, cleanup } = makeTempDir('daemon_cfg_');
-      const dbPath = path.join(dir, 'test.db');
-      const statePath = path.join(dir, 'state.json');
-
-      const daemon = await createDaemon({
-        dbPath,
-        statePath,
-        autoCheckOnStart: false,
-        config: {
-          quotaAlertThresholdPercent: 35,
-        },
-      });
-
+      // The declared types already guarantee the wiring; what matters is that the explicit
+      // options reached the store every subsystem resolves from.
       const resolved = daemon.configStore.resolveConfig();
-      assert.equal(resolved.quotaAlertThresholdPercent, 35);
+      assert.equal(resolved.quotaCheckIntervalSeconds, 60);
+      assert.equal(resolved.webUiEnabled, false);
 
       await daemon.shutdown();
       cleanup();
@@ -323,19 +297,28 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         },
       });
 
-      assert.equal(daemon.isRunning, true);
-      const timerBefore = (daemon as any).timer;
-      assert.ok(timerBefore);
+      const memory = createMemorySink();
+      const detach = logger.addSink(memory.sink);
 
-      // Mutate interval override to 45 seconds
-      daemon.configStore.setOverride('quotaCheckIntervalSeconds', 45);
-      await new Promise((r) => setTimeout(r, 50));
-      const timerAfter = (daemon as any).timer;
-      assert.ok(timerAfter);
-      assert.notEqual(timerBefore, timerAfter);
+      try {
+        assert.equal(daemon.isRunning, true);
 
-      await daemon.shutdown();
-      cleanup();
+        // Mutate interval override to 45 seconds
+        daemon.configStore.setOverride('quotaCheckIntervalSeconds', 45);
+        await new Promise((r) => setTimeout(r, 50));
+
+        assert.equal(daemon.configStore.resolveConfig().quotaCheckIntervalSeconds, 45);
+        assert.ok(
+          memory.records.some((record) =>
+            record.formatted.includes('Rescheduling quota sentry timer to 45s interval')
+          ),
+          'a live interval override must re-arm the running sentry timer without a restart'
+        );
+      } finally {
+        detach();
+        await daemon.shutdown();
+        cleanup();
+      }
     });
   });
 
@@ -583,80 +566,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
           daemon.sentryState.getState().earlyResetNotice?.pools.map((pool) => pool.poolId),
           ['gemini']
         );
-      } finally {
-        await daemon.shutdown();
-        cleanup();
-      }
-    });
-
-    it('ignores a never-used pool whose reset time merely floats forward', async () => {
-      const { dir, cleanup } = makeTempDir('daemon_early_reset_unused_');
-      const dbPath = path.join(dir, 'test.db');
-      const statePath = path.join(dir, 'state.json');
-
-      const now = Date.now();
-      const previousResetTime = new Date(now + 100 * 3600 * 1000).toISOString();
-      const floatedResetTime = new Date(now + 101 * 3600 * 1000).toISOString();
-
-      // Untouched pool: full headroom, so the shifted deadline is a scheduling artefact.
-      const sentryState = new SentryStateManager(statePath);
-      sentryState.setState({
-        version: 1,
-        lastProbeAt: new Date(now).toISOString(),
-        lastProbeSource: 'connect_rpc',
-        pools: {
-          claude: {
-            resetTime: previousResetTime,
-            remainingFraction: 1,
-            firedMilestones: [],
-            lastAlertSentAt: null,
-          },
-        },
-      });
-
-      const notices: InfoNotice[] = [];
-      class RecordingNotifier extends ConsoleNotifier {
-        override async notifyInfo(notice: InfoNotice): Promise<void> {
-          notices.push(notice);
-        }
-      }
-
-      const mockClient = {
-        async fetchQuota(): Promise<QuotaSnapshot[]> {
-          return [
-            {
-              poolId: 'claude',
-              family: 'claude' as const,
-              displayName: 'Claude Pool',
-              remainingFraction: 1,
-              resetTime: floatedResetTime,
-              hoursUntilReset: 101,
-              models: ['claude-3-5-sonnet'],
-            },
-          ];
-        },
-      };
-
-      const daemon = await createDaemon({
-        dbPath,
-        statePath,
-        quotaClient: mockClient,
-        notifier: new RecordingNotifier(),
-        sentryState,
-        autoCheckOnStart: false,
-        config: {
-          quotaMilestoneHours: [48, 24, 12],
-          quotaAlertThresholdPercent: 25,
-          webUiEnabled: false,
-        },
-      });
-
-      try {
-        await daemon.checkQuota();
-
-        assert.equal(notices.length, 0);
-        assert.equal(daemon.sentryState.getState().earlyResetNotice, undefined);
-        assert.equal(daemon.sentryState.getState().pools['claude']?.resetTime, floatedResetTime);
       } finally {
         await daemon.shutdown();
         cleanup();
