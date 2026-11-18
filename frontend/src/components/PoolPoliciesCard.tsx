@@ -11,14 +11,14 @@ interface PoolPoliciesCardProps {
 }
 
 interface PoolDef {
-  key: 'gemini-argon' | 'gemini-flash' | 'claude';
+  key: 'gemini-argon' | 'gemini-hydrogen' | 'claude';
   name: string;
   description: string;
 }
 
 const POOLS: PoolDef[] = [
   {
-    key: 'gemini-flash',
+    key: 'gemini-hydrogen',
     name: 'Gemini Hydrogen',
     description:
       'High-speed standard Gemini models (Gemini 4 Hydrogen, 3.8 Flash) with shared weekly and 5-hour limits.',
@@ -46,9 +46,9 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
       alertsEnabled: rawPolicies['gemini-argon']?.alertsEnabled ?? true,
       dispatchEnabled: rawPolicies['gemini-argon']?.dispatchEnabled ?? true,
     },
-    'gemini-flash': {
-      alertsEnabled: rawPolicies['gemini-flash']?.alertsEnabled ?? true,
-      dispatchEnabled: rawPolicies['gemini-flash']?.dispatchEnabled ?? true,
+    'gemini-hydrogen': {
+      alertsEnabled: rawPolicies['gemini-hydrogen']?.alertsEnabled ?? true,
+      dispatchEnabled: rawPolicies['gemini-hydrogen']?.dispatchEnabled ?? true,
     },
     claude: {
       alertsEnabled: rawPolicies.claude?.alertsEnabled ?? false,
@@ -57,7 +57,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
   };
 
   const handleToggle = async (
-    poolKey: 'gemini-argon' | 'gemini-flash' | 'claude',
+    poolKey: 'gemini-argon' | 'gemini-hydrogen' | 'claude',
     field: 'alertsEnabled' | 'dispatchEnabled'
   ) => {
     const key = `${poolKey}:${field}`;

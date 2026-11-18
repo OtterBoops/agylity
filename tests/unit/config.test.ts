@@ -175,6 +175,33 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.equal(mapped.webUiEnabled, false);
     assert.equal(mapped.minDispatchHeadroomPercent, 20);
   });
+
+  it('normalizes a pool policy set saved under the pre-rename family key', () => {
+    const legacy = validateConfigOverridePatch({
+      poolPolicies: {
+        claude: { alertsEnabled: false, dispatchEnabled: false },
+        'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+        'gemini-flash': { alertsEnabled: false, dispatchEnabled: true },
+      },
+    }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
+
+    assert.deepEqual(legacy.poolPolicies?.['gemini-hydrogen'], {
+      alertsEnabled: false,
+      dispatchEnabled: true,
+    });
+    assert.equal(legacy.poolPolicies?.['gemini-flash'], undefined);
+
+    // A current payload keeps the canonical key it was written with.
+    const current = validateConfigOverridePatch({
+      poolPolicies: {
+        claude: { alertsEnabled: true, dispatchEnabled: true },
+        'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+        'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: false },
+      },
+    }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
+
+    assert.equal(current.poolPolicies?.['gemini-hydrogen']?.dispatchEnabled, false);
+  });
 });
 
 describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {

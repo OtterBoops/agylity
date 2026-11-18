@@ -91,7 +91,7 @@ const defaultModelFor = (family: QuotaFamily): string => {
 
 export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
   'gemini-argon': defaultModelFor('gemini-argon'),
-  'gemini-flash': defaultModelFor('gemini-flash'),
+  'gemini-hydrogen': defaultModelFor('gemini-hydrogen'),
   claude: defaultModelFor('claude'),
 };
 
@@ -132,8 +132,14 @@ const resolveShorthandModelId = (lowercased: string): string | undefined => {
   if (lowercased === 'gemini-argon' || lowercased === 'argon') {
     return DEFAULT_MODEL_BY_FAMILY['gemini-argon'];
   }
-  if (lowercased === 'gemini-flash' || lowercased === 'flash') {
-    return DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
+  // `gemini-flash` is the pre-rename family key; a stored default model must keep resolving.
+  if (
+    lowercased === 'gemini-hydrogen' ||
+    lowercased === 'gemini-flash' ||
+    lowercased === 'hydrogen' ||
+    lowercased === 'flash'
+  ) {
+    return DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'];
   }
   if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
     return DEFAULT_MODEL_BY_FAMILY.claude;
@@ -205,7 +211,7 @@ export const normalizeCascade = (input: unknown, fallbackModel?: string): Cascad
 
   if (hops.length > 0) return hops;
 
-  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_FAMILY['gemini-flash'];
+  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'];
   const resolvedFallback = resolveConcreteModelId(fallback);
   return [
     {
@@ -474,7 +480,7 @@ export const evaluateModelPreferenceChain = (options: {
   const hops =
     options.cascade.length > 0
       ? options.cascade
-      : normalizeCascade([], options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-flash']);
+      : normalizeCascade([], options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen']);
   const nowMs = options.nowMs ?? Date.now();
   const rejectionReasons: string[] = [];
 

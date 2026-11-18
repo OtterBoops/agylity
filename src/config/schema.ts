@@ -90,17 +90,29 @@ export const PoolPolicySchema = z.object({
   dispatchEnabled: z.boolean(),
 });
 
-export const PoolPoliciesSchema = z.object({
-  claude: PoolPolicySchema,
-  'gemini-argon': PoolPolicySchema,
-  'gemini-flash': PoolPolicySchema,
-});
+// A policy set saved before the pool rename carries `gemini-flash` and no `gemini-hydrogen`.
+const normalizePoolPolicyKeys = (val: unknown): unknown => {
+  if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
+  const raw = val as Record<string, unknown>;
+  if (raw['gemini-hydrogen'] !== undefined) return val;
+  const legacy = raw['gemini-flash'];
+  return legacy === undefined ? val : { ...raw, 'gemini-hydrogen': legacy };
+};
+
+export const PoolPoliciesSchema = z.preprocess(
+  normalizePoolPolicyKeys,
+  z.object({
+    claude: PoolPolicySchema,
+    'gemini-argon': PoolPolicySchema,
+    'gemini-hydrogen': PoolPolicySchema,
+  })
+);
 
 export type PoolPolicies = z.infer<typeof PoolPoliciesSchema>;
 
 export const DEFAULT_POOL_POLICIES: PoolPolicies = {
   'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-  'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+  'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
   claude: { alertsEnabled: false, dispatchEnabled: false },
 };
 

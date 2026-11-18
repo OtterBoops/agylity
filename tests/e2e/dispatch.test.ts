@@ -71,7 +71,7 @@ async function main() {
       lastProbeAt: new Date().toISOString(),
       lastProbeSource: 'connect_rpc',
       pools: {
-        'gemini-flash': {
+        'gemini-hydrogen': {
           resetTime: new Date(Date.now() + 3600000).toISOString(),
           remainingFraction: 0.8,
           firedMilestones: [],

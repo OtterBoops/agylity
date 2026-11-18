@@ -2,6 +2,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { renderColumns, type ColumnSpec } from '../storage/schema.js';
+import { LEGACY_POOL_FAMILY_IDS, upgradePoolFamilyId } from '../shared/models.js';
 import type { QuotaFamily } from '../sentry/models.js';
 import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
@@ -502,6 +503,137 @@ const rewriteChainColumn = (db: DatabaseSync, table: string, column: string): vo
   }
 };
 
+const tableExists = (db: DatabaseSync, table: string): boolean =>
+  db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !==
+  undefined;
+
+// A pool id is the family or `family:slug`, so only the prefix carries the family name. The id is a
+// primary or unique key in every table it appears, so a row already carrying the new id wins and the
+// legacy duplicate is dropped instead of failing the boot.
+const renameLegacyPoolIds = (db: DatabaseSync, table: string, column = 'pool_id'): void => {
+  if (!tableExists(db, table) || !tableHasColumn(db, table, column)) return;
+  let renamed = 0;
+  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
+    const upgraded = upgradePoolFamilyId(legacy);
+    const match = `${column} = ? OR ${column} LIKE ?`;
+    const info = db
+      .prepare(`UPDATE OR IGNORE ${table} SET ${column} = ? || substr(${column}, ?) WHERE ${match}`)
+      .run(upgraded, legacy.length + 1, legacy, `${legacy}:%`) as unknown as { changes?: number };
+    renamed += Number(info?.changes ?? 0);
+    db.prepare(`DELETE FROM ${table} WHERE ${match}`).run(legacy, `${legacy}:%`);
+  }
+  if (renamed > 0) {
+    logger.info('Migration v4: renamed %d legacy %s.%s row(s)', renamed, table, column);
+  }
+};
+
+const renameLegacyTaskPoolFamilies = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'swarm_tasks') || !tableHasColumn(db, 'swarm_tasks', 'pool_family')) return;
+  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
+    db.prepare('UPDATE swarm_tasks SET pool_family = ? WHERE pool_family = ?').run(
+      upgradePoolFamilyId(legacy),
+      legacy
+    );
+  }
+};
+
+// Cycle stamps are keyed by pool id, so a stale key silently re-arms the routine inside the same
+// cycle and burns quota a second time.
+const renameLegacyRoutineCycleKeys = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'routine_tasks')) return;
+  if (!tableHasColumn(db, 'routine_tasks', 'last_triggered_cycles_json')) return;
+  const rows = db
+    .prepare('SELECT rowid AS row_id, last_triggered_cycles_json AS cycles FROM routine_tasks')
+    .all() as Array<{ row_id?: number; cycles?: unknown }>;
+  const update = db.prepare(
+    'UPDATE routine_tasks SET last_triggered_cycles_json = ? WHERE rowid = ?'
+  );
+  for (const row of rows) {
+    if (typeof row.cycles !== 'string') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.cycles);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const cycles: Record<string, unknown> = {};
+    let changed = false;
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const upgraded = upgradePoolFamilyId(key);
+      if (upgraded !== key) changed = true;
+      cycles[upgraded] = value;
+    }
+    if (changed) update.run(JSON.stringify(cycles), Number(row.row_id));
+  }
+};
+
+const renameLegacyNoticePoolIds = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'early_reset_notice')) return;
+  const row = db.prepare('SELECT pools_json FROM early_reset_notice WHERE id = 1').get() as
+    { pools_json?: string } | undefined;
+  if (typeof row?.pools_json !== 'string') return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.pools_json);
+  } catch {
+    return;
+  }
+  if (!Array.isArray(parsed)) return;
+  let changed = false;
+  const pools = parsed.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const pool = entry as Record<string, unknown>;
+    if (typeof pool.poolId !== 'string') return entry;
+    const upgraded = upgradePoolFamilyId(pool.poolId);
+    if (upgraded === pool.poolId) return entry;
+    changed = true;
+    return { ...pool, poolId: upgraded };
+  });
+  if (!changed) return;
+  db.prepare('UPDATE early_reset_notice SET pools_json = ? WHERE id = 1').run(
+    JSON.stringify(pools)
+  );
+};
+
+// Config overrides live as one JSON row in `settings`, not in a table of their own.
+const renameLegacyPoolPolicyKeys = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'settings')) return;
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'poolPolicies'").get() as
+    { value?: string } | undefined;
+  if (typeof row?.value !== 'string') return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.value);
+  } catch {
+    return;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+  const policies = { ...(parsed as Record<string, unknown>) };
+  let changed = false;
+  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
+    if (policies[legacy] === undefined) continue;
+    const upgraded = upgradePoolFamilyId(legacy);
+    if (policies[upgraded] === undefined) policies[upgraded] = policies[legacy];
+    delete policies[legacy];
+    changed = true;
+  }
+  if (!changed) return;
+  db.prepare(
+    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'poolPolicies'"
+  ).run(JSON.stringify(policies));
+};
+
+const migrateLegacyPoolFamily = (db: DatabaseSync): void => {
+  for (const table of ['pool_state', 'pool_milestones', 'pool_samples', 'alert_events']) {
+    renameLegacyPoolIds(db, table);
+  }
+  renameLegacyNoticePoolIds(db);
+  renameLegacyTaskPoolFamilies(db);
+  renameLegacyRoutineCycleKeys(db);
+  renameLegacyPoolPolicyKeys(db);
+};
+
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -548,6 +680,13 @@ const MIGRATIONS: readonly Migration[] = [
           );
         }
       }
+    },
+  },
+  {
+    version: 4,
+    name: 'v4_pool_family_hydrogen',
+    up: (db) => {
+      migrateLegacyPoolFamily(db);
     },
   },
 ];

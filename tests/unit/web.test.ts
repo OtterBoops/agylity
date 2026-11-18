@@ -275,8 +275,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const mockQuotaClient: QuotaClient = {
         fetchQuota: async (): Promise<QuotaSnapshot[]> => [
           {
-            poolId: 'gemini-flash',
-            family: 'gemini-flash',
+            poolId: 'gemini-hydrogen',
+            family: 'gemini-hydrogen',
             displayName: 'Gemini Flash',
             remainingFraction: 0.7,
             resetTime: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
@@ -938,7 +938,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -2076,7 +2076,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -2313,7 +2313,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime,
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -3307,7 +3307,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       lastProbeAt: new Date().toISOString(),
       lastProbeSource: 'connect_rpc' as const,
       pools: {
-        'gemini-flash': {
+        'gemini-hydrogen': {
           resetTime,
           remainingFraction,
           firedMilestones: [],
@@ -3326,7 +3326,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       try {
         for (let i = 0; i < 3; i++) {
           sentryState.recordDeliveredAlert({
-            poolId: i === 1 ? 'claude' : 'gemini-flash',
+            poolId: i === 1 ? 'claude' : 'gemini-hydrogen',
             resetTime,
             milestoneHours: 12 - i,
             headroomPercent: 40 + i,
@@ -3348,7 +3348,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(firstPage.events.length, 2);
         assert.equal(firstPage.events[0].kind, 'milestone');
         assert.equal(firstPage.events[0].milestoneHours, 10);
-        assert.equal(firstPage.events[0].poolId, 'gemini-flash');
+        assert.equal(firstPage.events[0].poolId, 'gemini-hydrogen');
         assert.equal(firstPage.events[0].firedAt, '2026-11-20T12:00:00.000Z');
         assert.equal(firstPage.events[0].headroomPercent, 42);
         assert.equal(firstPage.events[0].resetTime, resetTime);
@@ -3449,13 +3449,13 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(blocked.code, 'OVERAGE_PROTECTION_TRIGGERED');
         assert.ok(blocked.reason);
         assert.equal(blocked.model, 'gemini-4-hydrogen');
-        assert.equal(blocked.family, 'gemini-flash');
+        assert.equal(blocked.family, 'gemini-hydrogen');
         assert.equal(blocked.floorPercent, 10);
         assert.equal(blocked.allowOverage, false);
         assert.equal(blocked.willRunNow, true);
         assert.equal(blocked.runners.online, 1);
         assert.deepEqual(blocked.warnings, []);
-        assert.equal(blocked.pool.poolId, 'gemini-flash');
+        assert.equal(blocked.pool.poolId, 'gemini-hydrogen');
         assert.equal(blocked.pool.effectivePercent, 5);
         assert.equal(blocked.pool.limitingWindow, 'weekly');
         assert.equal(blocked.pool.resetTime, resetTime);

@@ -136,15 +136,15 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(byId.get('gpt-oss-120b')?.defaultEffort, 'medium');
     });
 
-    it('names gemini-4-hydrogen the gemini-flash pool default', () => {
+    it('names gemini-4-hydrogen the gemini-hydrogen pool default', () => {
       const flashDefaults = grouped.models.filter(
-        (m) => m.family === 'gemini-flash' && m.defaultForFamily
+        (m) => m.family === 'gemini-hydrogen' && m.defaultForFamily
       );
       assert.deepEqual(
         flashDefaults.map((m) => m.id),
         ['gemini-4-hydrogen']
       );
-      assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-flash'], 'gemini-4-hydrogen');
+      assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'], 'gemini-4-hydrogen');
     });
 
     it('marks exactly one default per family', () => {
@@ -170,17 +170,17 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
   });
 
   describe('4. Family resolution for new codenames', () => {
-    it('maps gemini-4-hydrogen into the gemini-flash pool', () => {
-      assert.equal(resolveModelFamily({ modelId: 'gemini-4-hydrogen' })?.family, 'gemini-flash');
+    it('maps gemini-4-hydrogen into the gemini-hydrogen pool', () => {
+      assert.equal(resolveModelFamily({ modelId: 'gemini-4-hydrogen' })?.family, 'gemini-hydrogen');
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' })?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
       );
     });
 
-    it('does not misclassify gemini-pro-orchestrator-g1-pro as gemini-flash', () => {
+    it('does not misclassify gemini-pro-orchestrator-g1-pro as gemini-hydrogen', () => {
       const resolved = resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro' });
-      assert.notEqual(resolved?.family, 'gemini-flash');
+      assert.notEqual(resolved?.family, 'gemini-hydrogen');
       assert.equal(resolved?.family, 'gemini-argon');
     });
 
@@ -188,7 +188,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(resolveModelFamily({ modelId: 'gemini-4-argon-high' })?.family, 'gemini-argon');
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-3.8-flash-high' })?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
       );
       assert.equal(resolveModelFamily({ modelId: 'claude-sonnet-5-5-high' })?.family, 'claude');
       assert.equal(resolveModelFamily({ modelId: 'unknown-model-xyz' }), null);
@@ -364,17 +364,17 @@ describe('GET /api/models: dynamic catalog annotation', () => {
       const hydrogen = body.models.find((m: any) => m.id === 'gemini-4-hydrogen');
       assert.ok(hydrogen, 'dynamic catalog must expose Gemini 4 Hydrogen');
       assert.equal(hydrogen.label, 'Gemini 4 Hydrogen');
-      assert.equal(hydrogen.family, 'gemini-flash');
+      assert.equal(hydrogen.family, 'gemini-hydrogen');
       assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
     });
   });
 
-  it('advertises gemini-4-hydrogen as the gemini-flash default', async () => {
+  it('advertises gemini-4-hydrogen as the gemini-hydrogen default', async () => {
     await withServer(async ({ baseUrl }) => {
       const body: any = await ky.get(`${baseUrl}/api/models`).json();
       assert.equal(body.defaultModel, 'gemini-4-hydrogen');
       const flashDefaults = body.models.filter(
-        (m: any) => m.family === 'gemini-flash' && m.defaultForFamily
+        (m: any) => m.family === 'gemini-hydrogen' && m.defaultForFamily
       );
       assert.deepEqual(
         flashDefaults.map((m: any) => m.id),

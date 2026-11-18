@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { QuotaFamily } from '../shared/models.js';
+import { upgradePoolFamilyId, type QuotaFamily } from '../shared/models.js';
 
 export const QuotaInfoSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
@@ -56,7 +56,7 @@ export type QuotaBucket = z.infer<typeof QuotaBucketSchema>;
 
 export const QuotaSnapshotSchema = z.object({
   poolId: z.string(),
-  family: z.enum(['claude', 'gemini-argon', 'gemini-flash']),
+  family: z.enum(['claude', 'gemini-argon', 'gemini-hydrogen']),
   displayName: z.string(),
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
@@ -229,7 +229,7 @@ export const computeBurnProjection = (input: {
 };
 
 export const FAMILY_ORDER: Record<QuotaFamily, number> = {
-  'gemini-flash': 0,
+  'gemini-hydrogen': 0,
   'gemini-argon': 1,
   claude: 2,
 };
@@ -238,21 +238,24 @@ export const FAMILY_ORDER: Record<QuotaFamily, number> = {
 export const FAMILY_ALIASES: Record<string, QuotaFamily> = Object.assign(Object.create(null), {
   'gemini-argon': 'gemini-argon',
   argon: 'gemini-argon',
-  'gemini-flash': 'gemini-flash',
-  flash: 'gemini-flash',
+  'gemini-hydrogen': 'gemini-hydrogen',
+  hydrogen: 'gemini-hydrogen',
+  // Legacy key from state files and pool ids written before the family was renamed.
+  'gemini-flash': 'gemini-hydrogen',
+  flash: 'gemini-hydrogen',
   claude: 'claude',
   sonnet: 'claude',
   '3p': 'claude',
 } as Record<string, QuotaFamily>);
 
 export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
-  'gemini-flash': 'Gemini Hydrogen',
+  'gemini-hydrogen': 'Gemini Hydrogen',
   'gemini-argon': 'Gemini Argon',
   claude: 'Claude and GPT models',
 };
 
 export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
-  'gemini-flash': ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash'],
+  'gemini-hydrogen': ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash'],
   'gemini-argon': ['Gemini 4 Argon'],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
 };
@@ -312,14 +315,14 @@ export const resolveModelFamily = (config: {
     return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
-  // Hydrogen ships in the flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
+  // Hydrogen shares the Flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
   if (mid.includes('hydrogen') || lbl.includes('hydrogen')) {
-    return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
+    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
   }
 
   // No bare 'pro' branch: `gemini-pro-orchestrator-g1-pro` is not a Flash model, so a substring match would charge the wrong pool.
   if (mid.includes('flash') || lbl.includes('flash')) {
-    return { family: 'gemini-flash', displayName: FAMILY_DISPLAY_NAMES['gemini-flash'] };
+    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
   }
 
   if (
@@ -370,9 +373,9 @@ export const resolveGroupFamily = (
   }
   if (name.includes('gemini')) {
     return {
-      family: 'gemini-flash',
-      displayName: FAMILY_DISPLAY_NAMES['gemini-flash'],
-      defaultModels: FAMILY_DEFAULT_MODELS['gemini-flash'],
+      family: 'gemini-hydrogen',
+      displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'],
+      defaultModels: FAMILY_DEFAULT_MODELS['gemini-hydrogen'],
     };
   }
   return null;
@@ -616,7 +619,7 @@ export const snapshotsFromSentryState = (
     };
 
     const snapshot = toSnapshot({
-      poolId,
+      poolId: upgradePoolFamilyId(poolId),
       family,
       remainingFraction: pool.remainingFraction,
       resetTime: pool.resetTime,

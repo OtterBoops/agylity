@@ -3,6 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../storage/db.js';
+import { upgradePoolFamilyId } from '../shared/models.js';
 import type { BurnSample } from './models.js';
 import type { DeliveryChannelResult } from '../notify/types.js';
 import {
@@ -137,6 +138,47 @@ export const createInitialState = (): SentryState => ({
   pools: {},
 });
 
+type ResetKeyed = { resetTime?: unknown };
+
+// Pools are keyed by pool id, so an id written before the family rename must move onto its family
+// the moment it enters the manager; two ids collapsing onto one keep the newer quota cycle.
+const upgradeLegacyPoolMap = <T extends ResetKeyed>(
+  pools: Record<string, T>
+): Record<string, T> => {
+  const upgraded: Record<string, T> = {};
+  for (const [poolId, pool] of Object.entries(pools)) {
+    const key = upgradePoolFamilyId(poolId);
+    const existing = upgraded[key];
+    if (existing === undefined || String(pool.resetTime ?? '') > String(existing.resetTime ?? '')) {
+      upgraded[key] = pool;
+    }
+  }
+  return upgraded;
+};
+
+const upgradeLegacyState = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const state = raw as Record<string, unknown>;
+
+  const pools = state.pools;
+  if (pools && typeof pools === 'object' && !Array.isArray(pools)) {
+    state.pools = upgradeLegacyPoolMap(pools as Record<string, ResetKeyed>);
+  }
+
+  const notice = state.earlyResetNotice as { pools?: unknown } | null | undefined;
+  if (notice && typeof notice === 'object' && Array.isArray(notice.pools)) {
+    notice.pools = notice.pools.map((entry) => {
+      if (!entry || typeof entry !== 'object') return entry;
+      const pool = entry as Record<string, unknown>;
+      return typeof pool.poolId === 'string'
+        ? { ...pool, poolId: upgradePoolFamilyId(pool.poolId) }
+        : entry;
+    });
+  }
+
+  return state;
+};
+
 export interface SentryStateManagerOptions {
   db: AppDatabase | DatabaseSync;
   legacyStatePath?: string;
@@ -222,7 +264,7 @@ export class SentryStateManager {
       lastProbeSource: probe.lastProbeSource
         ? (probe.lastProbeSource as ProbeSource)
         : 'unreachable',
-      pools: this.store.readPools(),
+      pools: upgradeLegacyPoolMap(this.store.readPools()),
     };
     if (probe.authRequired !== undefined) state.authRequired = probe.authRequired;
     if (probe.authErrorMessage !== undefined) state.authErrorMessage = probe.authErrorMessage;
@@ -243,7 +285,7 @@ export class SentryStateManager {
     }
 
     try {
-      return SentryStateSchema.parse(JSON.parse(raw));
+      return SentryStateSchema.parse(upgradeLegacyState(JSON.parse(raw)));
     } catch (err: unknown) {
       const contentInvalid = err instanceof SyntaxError || err instanceof z.ZodError;
       if (!contentInvalid) return null;

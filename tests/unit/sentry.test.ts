@@ -14,6 +14,7 @@ import {
   resolveModelFamily,
   snapshotsFromSentryState,
   BURN_FLOOR_PERCENT,
+  FAMILY_ALIASES,
   FAMILY_DEFAULT_MODELS,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
@@ -219,11 +220,11 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       );
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-3.8-flash-high' })?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
       );
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-4-hydrogen-high' })?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
       );
       assert.equal(resolveModelFamily({ modelId: 'unknown-model-xyz' }), null);
     });
@@ -232,7 +233,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // Hydrogen is a Flash-pool model that no canonical list mentioned when this shipped.
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-4-hydrogen', label: 'Gemini 4 Hydrogen' })?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
       );
       // The orchestrator codenames carry 'pro' but must never bill the Flash pool.
       assert.equal(
@@ -242,7 +243,31 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.notEqual(
         resolveModelFamily({ modelId: 'gemini-pro-orchestrator-g1-pro', label: 'Gemini Pro' })
           ?.family,
-        'gemini-flash'
+        'gemini-hydrogen'
+      );
+    });
+
+    it('resolves the pre-rename pool family id as an alias of the current one', () => {
+      assert.equal(FAMILY_ALIASES['gemini-flash'], 'gemini-hydrogen');
+      assert.equal(FAMILY_ALIASES.flash, 'gemini-hydrogen');
+      assert.equal(FAMILY_ALIASES.hydrogen, 'gemini-hydrogen');
+
+      const resetTime = new Date(Date.now() + 3600 * 1000).toISOString();
+      const snapshots = snapshotsFromSentryState({
+        pools: {
+          'gemini-flash': { resetTime, remainingFraction: 0.5 },
+          'gemini-flash:gemini-pro': { resetTime, remainingFraction: 0.3 },
+        },
+      });
+
+      assert.deepEqual(
+        snapshots.map((snapshot) => snapshot.family),
+        ['gemini-hydrogen', 'gemini-hydrogen']
+      );
+      // The suffixed pool keeps its own identity; only the family prefix moved.
+      assert.deepEqual(
+        snapshots.map((snapshot) => snapshot.poolId),
+        ['gemini-hydrogen', 'gemini-hydrogen:gemini-pro']
       );
     });
 
@@ -272,7 +297,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       ];
 
       const pools = aggregateQuotaPools(configs);
-      const flashPool = pools.find((p) => p.family === 'gemini-flash');
+      const flashPool = pools.find((p) => p.family === 'gemini-hydrogen');
       assert.ok(flashPool);
       // Same telemetry as the flash pool, so the unknown codename joins that pool's model list.
       assert.ok(flashPool.models.includes('Gemini Q7 Nebula'));
@@ -315,7 +340,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const claudePool = snapshots.find((s) => s.family === 'claude');
       const argonPool = snapshots.find((s) => s.family === 'gemini-argon');
-      const flashPool = snapshots.find((s) => s.family === 'gemini-flash');
+      const flashPool = snapshots.find((s) => s.family === 'gemini-hydrogen');
 
       assert.ok(claudePool);
       assert.ok(argonPool);
@@ -333,8 +358,8 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(argonPool.remainingFraction, 0.1699);
       assert.equal(argonPool.models.length, 3); // 3 argon variants
 
-      assert.equal(flashPool.family, 'gemini-flash');
-      assert.equal(flashPool.poolId, 'gemini-flash');
+      assert.equal(flashPool.family, 'gemini-hydrogen');
+      assert.equal(flashPool.poolId, 'gemini-hydrogen');
       assert.equal(flashPool.displayName, 'Gemini Hydrogen');
       assert.equal(flashPool.remainingFraction, 0.8084);
       assert.equal(flashPool.models.length, 3); // 3 flash variants
@@ -467,6 +492,64 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(quarantined.length, 1);
     });
 
+    it('imports a legacy state file keyed by the pre-rename pool family', async () => {
+      writeFileSync(
+        stateFile,
+        JSON.stringify({
+          version: 1,
+          lastProbeAt: '2026-11-01T00:00:00Z',
+          lastProbeSource: 'connect_rpc',
+          pools: {
+            'gemini-flash': {
+              resetTime: '2026-11-20T00:00:00Z',
+              remainingFraction: 0.4,
+              firedMilestones: ['24h'],
+            },
+            'gemini-flash:gemini-pro': {
+              resetTime: '2026-11-20T00:00:00Z',
+              remainingFraction: 0.2,
+              firedMilestones: [],
+            },
+            'gemini-hydrogen': {
+              resetTime: '2026-11-25T00:00:00Z',
+              remainingFraction: 0.9,
+              firedMilestones: [],
+            },
+          },
+          earlyResetNotice: {
+            detectedAt: '2026-11-01T00:00:00Z',
+            pools: [
+              {
+                poolId: 'gemini-flash',
+                previousRemainingFraction: 0.1,
+                remainingFraction: 0.9,
+                previousResetTime: '2026-10-30T00:00:00Z',
+                resetTime: '2026-11-20T00:00:00Z',
+              },
+            ],
+          },
+        }),
+        'utf-8'
+      );
+
+      const manager = openState(stateFile);
+      const state = await manager.load();
+
+      assert.deepEqual(Object.keys(state.pools).sort(), [
+        'gemini-hydrogen',
+        'gemini-hydrogen:gemini-pro',
+      ]);
+      // Both ids collapse onto one key, so the newer quota cycle decides which state survives.
+      assert.equal(state.pools['gemini-hydrogen']?.remainingFraction, 0.9);
+      assert.equal(state.pools['gemini-hydrogen:gemini-pro']?.remainingFraction, 0.2);
+      assert.equal(state.earlyResetNotice?.pools[0]?.poolId, 'gemini-hydrogen');
+      // A state file that imported cleanly is history, not corruption.
+      assert.deepEqual(
+        readdirSync(testDir).filter((f) => f.includes('.corrupt.')),
+        []
+      );
+    });
+
     it('leaves a valid state file alone when the read fails for a reason other than its content', async () => {
       // A directory at the state path makes the read throw EISDIR, not a parse or validation error.
       const dirAsStatePath = join(testDir, 'state-as-dir');
@@ -563,8 +646,8 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const firstReset = new Date(nowMs + 24 * 3600 * 1000).toISOString();
       const secondReset = new Date(nowMs + 7 * 24 * 3600 * 1000).toISOString();
 
-      manager.updatePoolQuota('gemini-flash', 0.2, firstReset, nowMs);
-      const update = manager.updatePoolQuota('gemini-flash', 1, secondReset, nowMs + 60_000);
+      manager.updatePoolQuota('gemini-hydrogen', 0.2, firstReset, nowMs);
+      const update = manager.updatePoolQuota('gemini-hydrogen', 1, secondReset, nowMs + 60_000);
 
       assert.equal(update.cycleRolled, true);
       assert.equal(update.earlyReset?.previousResetTime, firstReset);
@@ -576,13 +659,13 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const nowMs = Date.parse('2026-11-14T12:00:00Z');
 
       manager.updatePoolQuota(
-        'gemini-flash',
+        'gemini-hydrogen',
         1,
         new Date(nowMs + 3 * 3600 * 1000).toISOString(),
         nowMs
       );
       const update = manager.updatePoolQuota(
-        'gemini-flash',
+        'gemini-hydrogen',
         1,
         new Date(nowMs + 4 * 3600 * 1000).toISOString(),
         nowMs + 60_000
@@ -634,7 +717,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       manager.recordEarlyResetNotice(
         [
           {
-            poolId: 'gemini-flash',
+            poolId: 'gemini-hydrogen',
             previousRemainingFraction: 0.1,
             remainingFraction: 0.95,
             previousResetTime: '2026-11-17T12:00:00.000Z',
@@ -648,14 +731,14 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(notice?.detectedAt, '2026-11-14T13:00:00.000Z');
       assert.deepEqual(
         notice?.pools.map((p) => p.poolId),
-        ['gemini-flash']
+        ['gemini-hydrogen']
       );
 
       await manager.save();
 
       const reloaded = openState(stateFile);
       await reloaded.load();
-      assert.equal(reloaded.getEarlyResetNotice()?.pools[0]?.poolId, 'gemini-flash');
+      assert.equal(reloaded.getEarlyResetNotice()?.pools[0]?.poolId, 'gemini-hydrogen');
 
       assert.equal(reloaded.dismissEarlyResetNotice(), true);
       assert.equal(reloaded.getEarlyResetNotice(), null);
@@ -823,7 +906,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       for (let i = 0; i < 5; i++) {
         manager.recordDeliveredAlert({
-          poolId: i % 2 === 0 ? 'claude' : 'gemini-flash',
+          poolId: i % 2 === 0 ? 'claude' : 'gemini-hydrogen',
           resetTime,
           milestoneHours: 24 - i,
           headroomPercent: 40 + i,
@@ -1352,7 +1435,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         assert.equal(argon.shortTerm, undefined);
 
         // Gemini Hydrogen: weekly is 0.73, 5h is 0.99
-        const flash = snapshots.find((s) => s.family === 'gemini-flash');
+        const flash = snapshots.find((s) => s.family === 'gemini-hydrogen');
         assert.ok(flash);
         assert.equal(flash.remainingFraction, 0.73);
         assert.equal(flash.shortTerm?.remainingFraction, 0.99);
@@ -1396,18 +1479,18 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // Sharing a pool id would flip the stored deadline between the two on every poll.
       assert.deepEqual(
         snapshots.map((s) => s.poolId),
-        ['gemini-flash', 'gemini-flash:gemini-pro']
+        ['gemini-hydrogen', 'gemini-hydrogen:gemini-pro']
       );
       assert.deepEqual(
         snapshots.map((s) => s.displayName),
         ['Gemini Hydrogen', 'Gemini Pro']
       );
-      assert.equal(snapshots[1]?.family, 'gemini-flash');
+      assert.equal(snapshots[1]?.family, 'gemini-hydrogen');
 
       // The cached state path must still resolve a qualified id back to its family.
       const cached = snapshotsFromSentryState({
         pools: {
-          'gemini-flash:gemini-pro': {
+          'gemini-hydrogen:gemini-pro': {
             resetTime: '2026-11-21T22:00:00.000Z',
             remainingFraction: 0.4,
             firedMilestones: [],
@@ -1415,7 +1498,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         },
       });
       assert.equal(cached.length, 1);
-      assert.equal(cached[0]?.family, 'gemini-flash');
+      assert.equal(cached[0]?.family, 'gemini-hydrogen');
     });
 
     it('parses overageInfo and sets overageEnabled flag accurately', () => {
@@ -1528,12 +1611,12 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       });
 
       const snapshots = aggregateUserQuotaSummary(parsed);
-      const flash = snapshots.find((s) => s.family === 'gemini-flash');
+      const flash = snapshots.find((s) => s.family === 'gemini-hydrogen');
       const claude = snapshots.find((s) => s.family === 'claude');
 
       assert.ok(flash);
       assert.ok(claude);
-      assert.deepEqual(flash.models, FAMILY_DEFAULT_MODELS['gemini-flash']);
+      assert.deepEqual(flash.models, FAMILY_DEFAULT_MODELS['gemini-hydrogen']);
       assert.deepEqual(claude.models, FAMILY_DEFAULT_MODELS.claude);
       for (const pool of snapshots) {
         // The generic placeholders described models that may belong to a different pool.
@@ -1545,7 +1628,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     it('falls back to clean canonical model labels when synthesizing from sentry state', () => {
       const snapshots = snapshotsFromSentryState({
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600 * 1000).toISOString(),
             remainingFraction: 0.8,
           },
@@ -2237,7 +2320,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
               firedMilestones: [],
               samples: [sampleAt(60, 0.8), sampleAt(0, 0.72)],
             },
-            'gemini-flash': {
+            'gemini-hydrogen': {
               resetTime: nextCycleReset,
               remainingFraction: 0.9,
               firedMilestones: [],
@@ -2255,7 +2338,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       const byFamily = new Map(snapshots.map((snapshot) => [snapshot.family, snapshot]));
       assert.equal(byFamily.get('claude')?.burnProjection?.projectedRemainingAtResetPercent, 56);
-      assert.equal(byFamily.get('gemini-flash')?.burnProjection, undefined);
+      assert.equal(byFamily.get('gemini-hydrogen')?.burnProjection, undefined);
       // A single sample is history, but not a rate.
       assert.equal(byFamily.get('gemini-argon')?.burnProjection, undefined);
 

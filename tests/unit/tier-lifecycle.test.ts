@@ -14,7 +14,7 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
 const pool = (
-  family: 'gemini-flash' | 'gemini-argon' | 'claude',
+  family: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
   fraction: number
 ): QuotaSnapshot =>
   ({
@@ -34,7 +34,7 @@ const makeCoordinator = (dir: string) => {
     poolPolicies: {
       claude: { alertsEnabled: true, dispatchEnabled: true },
       'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-      'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+      'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
     },
   });
   const coordinator = new Coordinator({ configStore });
@@ -198,7 +198,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
         minHeadroomPercent: 10,
       });
 
-      const flash = pool('gemini-flash', 0.8);
+      const flash = pool('gemini-hydrogen', 0.8);
       const claude = pool('claude', 0.8);
       const farOut = new Date(Date.now() + 48 * 3600_000).toISOString();
       const inWindow = new Date(Date.now() + 5 * 3600_000).toISOString();
@@ -229,7 +229,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       assert.match(second[0]?.model ?? '', /claude/);
 
       const stamped = coordinator.queue.getRoutineTask(routine.id);
-      assert.equal(stamped?.lastTriggeredCycles['gemini-flash'], inWindow);
+      assert.equal(stamped?.lastTriggeredCycles['gemini-hydrogen'], inWindow);
       assert.equal(stamped?.lastTriggeredCycles.claude, inWindow);
 
       // 4. Flash is back inside its window on the same cycle: it must stay burned, even though
@@ -252,7 +252,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const { dir, cleanup } = makeTempDir('tier_chain_');
     const { db, coordinator } = makeCoordinator(dir);
     try {
-      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-flash', 0.8)]);
+      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-hydrogen', 0.8)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'chain test',
@@ -278,7 +278,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const { dir, cleanup } = makeTempDir('tier_cascade_first_');
     const { db, coordinator } = makeCoordinator(dir);
     try {
-      coordinator.onQuotaUpdated([pool('gemini-flash', 0.8), pool('claude', 0.8)]);
+      coordinator.onQuotaUpdated([pool('gemini-hydrogen', 0.8), pool('claude', 0.8)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'first hop wins',
@@ -290,7 +290,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
       assert.equal(res.success, true);
       assert.equal(res.model, 'gemini-4-hydrogen');
-      assert.equal(res.poolFamily, 'gemini-flash');
+      assert.equal(res.poolFamily, 'gemini-hydrogen');
 
       const queued = coordinator.queue.getTask(res.taskId!);
       assert.equal(queued?.model, 'gemini-4-hydrogen');
@@ -312,7 +312,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const { db, coordinator } = makeCoordinator(dir);
     try {
       // claude is below the floor, flash is healthy: hop 0 can never run.
-      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-flash', 0.8)]);
+      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-hydrogen', 0.8)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'second hop wins',
@@ -349,13 +349,13 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       poolPolicies: {
         claude: { alertsEnabled: true, dispatchEnabled: false },
         'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-        'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+        'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
       },
     });
     const coordinator = new Coordinator({ configStore });
     try {
       // Both pools are healthy, so only the dispatch switch can reject hop 0.
-      coordinator.onQuotaUpdated([pool('claude', 0.9), pool('gemini-flash', 0.9)]);
+      coordinator.onQuotaUpdated([pool('claude', 0.9), pool('gemini-hydrogen', 0.9)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'disabled pool wins nothing',

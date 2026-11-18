@@ -44,7 +44,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(resolveConcreteModelId('auto', 'gemini-4-argon'), 'gemini-4-argon');
       assert.equal(resolveConcreteModelId('claude-opus-5-5', 'gemini-4-argon'), 'claude-opus-5-5');
       assert.equal(resolveConcreteModelId('claude', 'gemini-4-argon'), 'claude-sonnet-5-5');
-      assert.equal(resolveConcreteModelId('gemini-flash', 'gemini-4-argon'), 'gemini-4-hydrogen');
+      assert.equal(
+        resolveConcreteModelId('gemini-hydrogen', 'gemini-4-argon'),
+        'gemini-4-hydrogen'
+      );
       // Hydrogen is now the flash pool default; its xhigh suffix still collapses to the base id.
       assert.equal(
         resolveConcreteModelId('gemini-4-hydrogen-xhigh', 'gemini-4-argon'),
@@ -55,7 +58,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
     it('resolves a shorthand configured default to a concrete model instead of passing it through', () => {
       // The configured default is user input too: `agy --model claude` is not a model id.
-      assert.equal(resolveConcreteModelId(undefined, 'gemini-flash'), 'gemini-4-hydrogen');
+      assert.equal(resolveConcreteModelId(undefined, 'gemini-hydrogen'), 'gemini-4-hydrogen');
       assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
       assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
       assert.equal(resolveConcreteModelId('gemini-4-hydrogen-xhigh'), 'gemini-4-hydrogen');
@@ -717,7 +720,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -742,7 +745,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(modelsRes.models.length, 6);
         const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
         assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
-        assert.equal(hydrogen.family, 'gemini-flash');
+        assert.equal(hydrogen.family, 'gemini-hydrogen');
         assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
 
         // 2. Unauthenticated poll is rejected with 401
@@ -838,7 +841,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -1011,7 +1014,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-flash': {
+          'gemini-hydrogen': {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -1502,14 +1505,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         poolPolicies: {
           claude: { alertsEnabled: true, dispatchEnabled: true },
           'gemini-argon': { alertsEnabled: true, dispatchEnabled: false },
-          'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
         },
       });
       const coordinator = new Coordinator({ configStore: store });
       coordinator.onQuotaUpdated([
         {
-          poolId: 'gemini-flash',
-          family: 'gemini-flash',
+          poolId: 'gemini-hydrogen',
+          family: 'gemini-hydrogen',
           displayName: 'Gemini Flash',
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1521,7 +1524,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       // The disabled gemini-argon policy must not be consulted for the flash default model
       const omitted = coordinator.evaluateEligibility({});
       assert.equal(omitted.allowed, true);
-      assert.equal(omitted.family, 'gemini-flash');
+      assert.equal(omitted.family, 'gemini-hydrogen');
 
       store.close();
       cleanup();
@@ -1617,7 +1620,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           lastProbeAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
           lastProbeSource: 'connect_rpc',
           pools: {
-            'gemini-flash': {
+            'gemini-hydrogen': {
               resetTime: new Date(Date.now() + 3600000).toISOString(),
               remainingFraction: 0.8,
               firedMilestones: [],
@@ -1642,8 +1645,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const coordinator = new Coordinator({ configStore: store });
       coordinator.onQuotaUpdated([
         {
-          poolId: 'gemini-flash',
-          family: 'gemini-flash',
+          poolId: 'gemini-hydrogen',
+          family: 'gemini-hydrogen',
           displayName: 'Gemini Flash',
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -2175,11 +2178,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         }
         assert.equal(
           (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
-          3
+          4
         );
         assert.equal(
           (raw.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as { v: number }).v,
-          3
+          4
         );
         // v2 carries the sentry ledger, so a delivery and its dedupe row can share one commit.
         for (const sentryTable of [
@@ -2204,7 +2207,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const second = new TaskQueue(db);
         assert.equal(
           (raw.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c,
-          3
+          4
         );
 
         const task = second.enqueue({
@@ -2514,7 +2517,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
           repositories: [
             {
@@ -2599,7 +2602,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
           repositories: [
             {
@@ -2659,7 +2662,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
           repositories: [
             {
@@ -2743,7 +2746,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
           repositories: [
             {
@@ -2817,7 +2820,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
           repositories: [
             {
@@ -2908,7 +2911,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
         });
         const coordinator = new Coordinator({ configStore });
@@ -2969,7 +2972,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-            'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
           },
         });
         const coordinator = new Coordinator({ configStore });
@@ -3046,7 +3049,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolPolicies: {
             claude: { dispatchEnabled: false, alertsEnabled: true },
             'gemini-argon': { dispatchEnabled: true, alertsEnabled: true },
-            'gemini-flash': { dispatchEnabled: true, alertsEnabled: true },
+            'gemini-hydrogen': { dispatchEnabled: true, alertsEnabled: true },
           },
         });
         const coordinator = new Coordinator({ configStore });
@@ -3089,7 +3092,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         poolPolicies: {
           claude: { alertsEnabled: true, dispatchEnabled: true },
           'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-          'gemini-flash': { alertsEnabled: true, dispatchEnabled: true },
+          'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
         },
         repositories: [
           {
@@ -3105,7 +3108,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     };
 
     const poolSnapshot = (
-      family: 'claude' | 'gemini-argon' | 'gemini-flash',
+      family: 'claude' | 'gemini-argon' | 'gemini-hydrogen',
       hoursUntilReset: number,
       remainingFraction: number
     ): QuotaSnapshot => ({
@@ -3227,7 +3230,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           triggerBeforeResetHours: 12,
         });
         assert.equal(
-          coordinator.computeRoutineEligibility(waiting, [poolSnapshot('gemini-flash', 15, 0.9)])
+          coordinator.computeRoutineEligibility(waiting, [poolSnapshot('gemini-hydrogen', 15, 0.9)])
             .state,
           'waiting_window'
         );
@@ -3253,7 +3256,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           triggerBeforeResetHours: 12,
         });
         assert.equal(
-          coordinator.computeRoutineEligibility(ready, [poolSnapshot('gemini-flash', 10, 0.5)])
+          coordinator.computeRoutineEligibility(ready, [poolSnapshot('gemini-hydrogen', 10, 0.5)])
             .state,
           'ready'
         );
@@ -3697,8 +3700,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString()
     ): QuotaSnapshot[] => [
       {
-        poolId: 'gemini-flash',
-        family: 'gemini-flash',
+        poolId: 'gemini-hydrogen',
+        family: 'gemini-hydrogen',
         displayName: 'Gemini Flash',
         remainingFraction: 0.8,
         resetTime,
@@ -3854,7 +3857,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const resetTime = '2026-11-09T01:30:44Z';
         coordinator.queue.setRuntimeValue(
           'burnKickAnnouncedCycles',
-          JSON.stringify({ claude: previousResetTime, 'gemini-flash': resetTime })
+          JSON.stringify({ claude: previousResetTime, 'gemini-hydrogen': resetTime })
         );
 
         coordinator.onEarlyQuotaReset([
@@ -3873,7 +3876,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         ) as Record<string, string>;
         assert.equal(Object.hasOwn(cycles, 'claude'), false);
         // Only the pool that actually replenished reopens its announcement window.
-        assert.equal(cycles['gemini-flash'], resetTime);
+        assert.equal(cycles['gemini-hydrogen'], resetTime);
       } finally {
         db.close();
         cleanup();

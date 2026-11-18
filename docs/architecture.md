@@ -402,9 +402,16 @@ task after a container restart pays for one cold clone to rebuild it.
 ## 8. Persistent Schema (`node:sqlite`)
 
 The coordinator's queue schema is declared as column specs in `src/coordinator/queue.ts` and applied
-through forward-only migrations recorded in `schema_migrations` (current head: `v3_cascade_hops`).
+through forward-only migrations recorded in `schema_migrations` (current head: `v4_pool_family_hydrogen`).
 A fresh database is built from the current specs; an existing one is upgraded with idempotent
 `ALTER TABLE ... ADD COLUMN` repairs, so a restart never re-creates a table or drops a row.
+
+Migration v4 renamed the `gemini-flash` pool family to `gemini-hydrogen` everywhere a pool id or family
+key is stored: the sentry tables (`pool_state`, `pool_milestones`, `pool_samples`, `alert_events`), the
+early-reset notice, `swarm_tasks.pool_family`, the routine cycle stamps and the stored `poolPolicies`
+override. A row already carrying the new id wins over the legacy duplicate, so the migration is safe to
+replay, and `gemini-flash` is still accepted as a legacy alias by the state importer and the config
+schema.
 
 | Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | :--------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

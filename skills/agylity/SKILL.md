@@ -250,6 +250,7 @@ Antigravity models do not consume a single monolithic quota counter; they are pa
 | **Claude and GPT models** | Claude Opus, Claude Sonnet, GPT-OSS | `3p-weekly`, `3p-5h`         | Separate 3P bucket with independent 5h and weekly limits.                   |
 | **Gemini 4 Argon**        | Gemini 4 Argon                      | `gemini-argon-wtu-weekly`    | Dedicated weekly Work-Through-Unit (WTU) budget on Pro plans.               |
 
+- **Internal family keys:** `claude`, `gemini-argon`, `gemini-hydrogen`. Gemini 3.8 Flash and Gemini 4 Hydrogen share the `gemini-hydrogen` pool; `gemini-flash` is the pre-rename key and stays accepted as a legacy alias in state files and pool policy overrides. Stored pool ids are `family` or `family:slug`, so migration v4 rewrites only the prefix.
 - **Effective Headroom Calculation:** When evaluating whether a task can dispatch safely, Agylity takes the most constrained window:
   $$\text{effectiveHeadroom} = \min(\text{weeklyRemaining}, \text{fiveHourRemaining})$$
 - **Human-Friendly Calendar Reset Strings:** Matches native IDE formatting (`"4d 16h"`, `"1d 3h"`, `"3h 18m"`).

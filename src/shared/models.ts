@@ -3,11 +3,28 @@
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
-export type QuotaFamily = 'claude' | 'gemini-argon' | 'gemini-flash';
+export type QuotaFamily = 'claude' | 'gemini-argon' | 'gemini-hydrogen';
 
 export const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
 export const DEFAULT_DISPATCH_MODEL = 'gemini-4-hydrogen';
+
+// Families that were renamed after shipping. A pool id is either the family or `family:slug`, so
+// only the prefix carries the family and only the prefix may be rewritten.
+export const LEGACY_POOL_FAMILIES: Readonly<Record<string, QuotaFamily>> = {
+  'gemini-flash': 'gemini-hydrogen',
+};
+
+export const upgradePoolFamilyId = (poolId: string): string => {
+  for (const [legacy, family] of Object.entries(LEGACY_POOL_FAMILIES)) {
+    if (poolId === legacy || poolId.startsWith(`${legacy}:`)) {
+      return `${family}${poolId.slice(legacy.length)}`;
+    }
+  }
+  return poolId;
+};
+
+export const LEGACY_POOL_FAMILY_IDS: readonly string[] = Object.keys(LEGACY_POOL_FAMILIES);
 
 export interface AgyModelCatalogEntry {
   id: string;
@@ -22,14 +39,14 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   {
     id: 'gemini-3.8-flash',
     label: 'Gemini 3.8 Flash',
-    family: 'gemini-flash',
+    family: 'gemini-hydrogen',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'gemini-4-hydrogen',
     label: 'Gemini 4 Hydrogen',
-    family: 'gemini-flash',
+    family: 'gemini-hydrogen',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultForFamily: true,
