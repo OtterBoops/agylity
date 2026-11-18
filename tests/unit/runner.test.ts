@@ -373,6 +373,72 @@ describe('Runner: capacity-exhaustion detection', () => {
   });
 });
 
+describe('Runner: effortless models', () => {
+  it('omits --effort for a model that advertises no effort variants', async () => {
+    const { dir, cleanup } = makeTempDir('runner_effortless_');
+    const { task, db } = enqueueTask(dir, {
+      cascade: [{ model: 'gemini-pro-orchestrator-g1-pro', effort: 'high' }],
+    });
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call) => {
+        finishChild(call.child, 0, 'done\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createGitExecFile({ status: () => '', revList: () => '0\n' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, true);
+      assert.equal(modelOf(calls[0]), 'gemini-pro-orchestrator-g1-pro');
+      assert.equal(calls[0]?.args.includes('--effort'), false);
+      // The footer must not claim a reasoning level the model never ran at.
+      assert.equal(promptOf(calls[0]).includes('(high reasoning)'), false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('still passes --effort for a model that advertises variants', async () => {
+    const { dir, cleanup } = makeTempDir('runner_effort_');
+    const { task, db } = enqueueTask(dir, {
+      cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+    });
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call) => {
+        finishChild(call.child, 0, 'done\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createGitExecFile({ status: () => '', revList: () => '0\n' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, true);
+      const args = calls[0]?.args ?? [];
+      const effortIndex = args.indexOf('--effort');
+      assert.equal(effortIndex === -1 ? '' : args[effortIndex + 1], 'high');
+      assert.ok(promptOf(calls[0]).includes('(high reasoning)'));
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+});
+
 describe('Runner: capacity fallback with continuation context', () => {
   it('re-runs a clean tree with the next candidate model and the original prompt', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_clean_');

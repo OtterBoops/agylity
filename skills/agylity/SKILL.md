@@ -26,6 +26,7 @@ description: >-
   - `src/shared/models.ts` is the only place the agy model catalog, effort list (`ALL_EFFORTS`) and dispatch default exist. It must stay import-free and erasable-syntax-only, because the frontend bundles it directly.
   - `src/coordinator/models.ts` re-exports it for backend callers and keeps the zod schemas; `frontend/src/config/fields.ts` derives `MODEL_OPTIONS` and the pre-load effort fallback from it. Never re-type a model or effort table in the UI.
   - The file sits outside the Vite root, so `frontend/vite.config.ts` must keep `server.fs.allow` pointing at the repo root or the dev server 403s the module.
+  - Effort belongs to the model, not the task: `modelSupportsEffort(modelId, supportedEfforts?)` is the only check, and a model whose catalog entry has `supportedEfforts: []` (an `orchestrator` route such as `gemini-pro-orchestrator-g1-pro`) is invoked WITHOUT `--effort`. `agy` rejects the flag on such a model, so never default it back to a full effort list.
 - **Native Modal Invariant:**
   - All modals in the Preact UI strictly use the native HTML `<dialog>` element triggered via `dialogRef.current.showModal()`, eliminating custom fixed-position `role="dialog"` div overlays.
 - **Web UI & Control-Plane Security & Lock Invariant:**
@@ -146,8 +147,9 @@ To remain 100% compliant with Google Cloud Platform Terms of Service, Google Gen
 - Dispatches the prompt via `agy`:
   ```bash
   agy -p "<prompt>" --mode auto --dangerously-skip-permissions \
-    --settings '{"enableTerminalSandbox":false}' --model <model-id> --effort <effort>
+    --settings '{"enableTerminalSandbox":false}' --model <model-id> [--effort <effort>]
   ```
+  `--effort` is present only when `modelSupportsEffort(<model-id>)` is true; the instruction footer and the PR body drop their "reasoning" clause on the same condition.
 - Runs `verifyCommand` when the task sets one — a bare invocation of an allowlisted runner (`npm`, `pnpm`, `yarn`, `pytest`, `cargo`, `go`); see §5.
 - Commits, pushes the isolated branch upstream and posts status back to Discord/Web UI.
 - Never commits or pushes directly to `main`.
@@ -207,7 +209,7 @@ The runner is a pure outbound pull loop; every failure mode below is deliberatel
 - **Next hop selection:** the next untried model comes from the task's cascade (`pickNextCandidateHop`). No untried hop left ends the run with the original failure.
 - **Continuation prompt:** a dirty working tree hands the next hop a `buildCapacityContinuationPrompt()` brief — git status, diffstat and the last 2000 chars of the interrupted output, plus the original task — so it finishes the remaining work instead of redoing it. A clean tree simply retries the original prompt. Policy and attribution suffixes survive both paths.
 - **Telemetry:** each attempt is parsed (`parseAgyTelemetry`) and the attempts are summed (`sumAgyTelemetry`) into the single final status report.
-- **Invocation:** `agy -p <prompt> --mode auto --dangerously-skip-permissions --settings '{"enableTerminalSandbox":false}' --model <model-id> --effort <effort>`. The settings flag is mandatory in practice: unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
+- **Invocation:** `agy -p <prompt> --mode auto --dangerously-skip-permissions --settings '{"enableTerminalSandbox":false}' --model <model-id> [--effort <effort>]`. The settings flag is mandatory in practice: unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec. `--effort` is omitted for a model with no effort variants.
 
 ### 5. Verification Sandbox (`verifyCommand`)
 

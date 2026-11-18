@@ -82,3 +82,18 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     supportedEfforts: ['medium'],
   },
 ] as const;
+
+// Orchestrator routes expose no effort variants, so `agy` rejects `--effort` for them.
+const EFFORTLESS_MODEL_ID_RE = /orchestrator/i;
+
+// False means the flag must be omitted: a guessed `--effort` fails the whole agy invocation.
+export const modelSupportsEffort = (
+  modelId: string | undefined,
+  supportedEfforts?: readonly ReasoningEffort[] | null
+): boolean => {
+  const id = (modelId ?? '').trim().toLowerCase();
+  if (EFFORTLESS_MODEL_ID_RE.test(id)) return false;
+  if (supportedEfforts) return supportedEfforts.length > 0;
+  const declared = CANONICAL_AGY_MODELS.find((entry) => entry.id === id)?.supportedEfforts;
+  return declared ? declared.length > 0 : true;
+};

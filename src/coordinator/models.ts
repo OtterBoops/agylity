@@ -15,7 +15,7 @@ import {
   type ReasoningEffort,
 } from '../shared/models.js';
 
-export { ALL_EFFORTS, CANONICAL_AGY_MODELS };
+export { ALL_EFFORTS, CANONICAL_AGY_MODELS, modelSupportsEffort } from '../shared/models.js';
 export type { AgyModelCatalogEntry, ReasoningEffort };
 
 export type ScheduleMode = 'immediate' | 'pre_reset';

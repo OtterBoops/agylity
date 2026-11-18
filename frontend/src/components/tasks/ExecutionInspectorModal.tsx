@@ -9,6 +9,7 @@ import {
   faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
 import type { PrPolicy, SwarmTask } from '../../types';
+import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { getTask } from '../../api';
 import { dialogBackdropClickHandler } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
@@ -182,7 +183,8 @@ export const ExecutionInspectorContent = ({
             </span>
           </div>
           <p class="mt-1 font-mono text-xs text-pine-subtle">
-            #{live.taskNumber ?? 0} &bull; {live.repositoryName} &bull; {live.model} ({live.effort})
+            #{live.taskNumber ?? 0} &bull; {live.repositoryName} &bull; {live.model}
+            {modelSupportsEffort(live.model) ? ` (${live.effort})` : ''}
           </p>
         </div>
         <div class="ml-2 flex shrink-0 items-center gap-2">

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { getModels } from '../api';
-import type { ModelCatalogEntry } from '../types';
+import type { ModelCatalogEntry, ReasoningEffort } from '../types';
 
 export interface ModelCatalogState {
   models: ModelCatalogEntry[];
@@ -79,4 +79,5 @@ export const useModelCatalog = (): ModelCatalogState => {
 
 export const toModelOptions = (
   models: ModelCatalogEntry[]
-): Array<{ value: string; label: string }> => models.map((m) => ({ value: m.id, label: m.label }));
+): Array<{ value: string; label: string; supportedEfforts: ReasoningEffort[] }> =>
+  models.map((m) => ({ value: m.id, label: m.label, supportedEfforts: m.supportedEfforts }));

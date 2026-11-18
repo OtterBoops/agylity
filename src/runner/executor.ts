@@ -8,6 +8,7 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { logger, type Logger } from '../logs/logger.js';
 import type { SwarmTask, TaskStatusPatch } from '../coordinator/queue.js';
 import {
+  modelSupportsEffort,
   normalizeCascade,
   resolveReasoningEffortForModel,
   type CascadeHop,
@@ -747,13 +748,14 @@ export class TaskExecutor {
     task: SwarmTask,
     prPolicy: PrPolicy,
     tierLabel: string,
-    effort: CascadeHop['effort']
+    effort: CascadeHop['effort'] | undefined
   ): { prompt: string; policySuffix: string; attributionSuffix: string } {
     const policySuffix =
       prPolicy === 'issues_only'
         ? `\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]`
         : '';
-    const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${effort} reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
+    const effortNote = effort ? ` (${effort} reasoning)` : '';
+    const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
     return {
       prompt: `${task.prompt}${policySuffix}${attributionSuffix}`,
       policySuffix,
@@ -798,6 +800,8 @@ export class TaskExecutor {
     for (;;) {
       const attemptModel = attemptHop.model;
       const attemptEffort = resolveReasoningEffortForModel(attemptHop.model, attemptHop.effort);
+      // A model with no effort variants rejects `--effort`, so the flag is absent, not defaulted.
+      const supportsEffort = modelSupportsEffort(attemptModel);
       // Unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
       const agyArgs: string[] = [
         '-p',
@@ -809,8 +813,7 @@ export class TaskExecutor {
         '{"enableTerminalSandbox":false}',
         '--model',
         attemptModel,
-        '--effort',
-        attemptEffort,
+        ...(supportsEffort ? ['--effort', attemptEffort] : []),
       ];
 
       this.log.info(
@@ -819,7 +822,7 @@ export class TaskExecutor {
         cwd,
         branchName,
         attemptModel,
-        attemptEffort
+        supportsEffort ? attemptEffort : 'none'
       );
 
       try {
@@ -1008,15 +1011,16 @@ export class TaskExecutor {
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
-    effort: string
+    effort: string | undefined
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
+      const effortNote = effort ? ` (${effort} reasoning)` : '';
       const prBody = [
         task.prompt,
         '',
         '---',
-        `*Dispatched via Agylity (${tierLabel}) with \`${task.model}\` (${effort} reasoning) — please review carefully.*`,
+        `*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*`,
       ].join('\n');
 
       const { stdout: prOut } = await this.execFileFn(
@@ -1177,7 +1181,7 @@ export class TaskExecutor {
         task,
         effectivePrPolicy,
         tierLabel,
-        primaryHop.effort
+        modelSupportsEffort(task.model) ? primaryHop.effort : undefined
       );
 
       const agent = await this.runAgentWithCascade(task, {
@@ -1247,7 +1251,7 @@ export class TaskExecutor {
             task,
             branchName,
             baseBranch,
-            task.effort || primaryHop.effort
+            modelSupportsEffort(task.model) ? task.effort || primaryHop.effort : undefined
           );
         }
       }

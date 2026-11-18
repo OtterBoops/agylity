@@ -13,6 +13,7 @@ import {
   FAMILY_DISPLAY_NAMES,
   type QuotaSnapshot,
 } from '../../sentry/models.js';
+import { modelSupportsEffort } from '../../shared/models.js';
 
 export interface EmbedBuildOptions {
   ownerUserId?: string;
@@ -233,9 +234,12 @@ export const buildDispatchStatusEmbed = (
   }
 
   if (status.model) {
+    // A model with no effort variants never ran at one, so the embed must not claim it did.
+    const effortLabel =
+      status.effort && modelSupportsEffort(status.model) ? ` · ${status.effort}` : '';
     fields.push({
       name: 'Model',
-      value: `${status.model}${status.effort ? ` · ${status.effort}` : ''}`.slice(0, 100),
+      value: `${status.model}${effortLabel}`.slice(0, 100),
       inline: true,
     });
   }

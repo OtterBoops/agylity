@@ -81,13 +81,17 @@ export const groupAgyModels = (raw: readonly AgyRawModel[]): GroupedModelCatalog
 
   const models: AgyModelCatalogEntry[] = [];
   for (const [id, group] of groups) {
-    const supported = ALL_EFFORTS.filter((e) => group.efforts.has(e));
+    const advertised = ALL_EFFORTS.filter((e) => group.efforts.has(e));
+    // Only an advertised suffix set or a bundled declaration proves a model takes an effort;
+    // a bare listing (orchestrator routes) must carry none so dispatch omits `--effort`.
+    const supported =
+      advertised.length > 0 ? advertised : [...(CATALOG_BY_ID.get(id)?.supportedEfforts ?? [])];
     models.push({
       id,
       label: group.label,
       family: group.family!.family,
-      defaultEffort: defaultEffortFor(id, supported.length > 0 ? supported : ALL_EFFORTS),
-      supportedEfforts: supported.length > 0 ? supported : ALL_EFFORTS,
+      defaultEffort: defaultEffortFor(id, supported),
+      supportedEfforts: supported,
     });
   }
 

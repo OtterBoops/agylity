@@ -4,6 +4,7 @@ import {
   ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
   DEFAULT_DISPATCH_MODEL,
+  modelSupportsEffort,
 } from '../../../src/shared/models.ts';
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = CANONICAL_AGY_MODELS.map(
@@ -70,10 +71,11 @@ export const resolveModelEffort = (
 ): { supported: ReasoningEffort[]; defaultEffort: ReasoningEffort } => {
   const live = models.find((m) => m.id === id);
   const fallback = FALLBACK_MODEL_EFFORTS[id];
+  const supported = live?.supportedEfforts
+    ? [...live.supportedEfforts]
+    : (fallback?.supported ?? [...ALL_EFFORTS]);
   return {
-    supported: live?.supportedEfforts?.length
-      ? live.supportedEfforts
-      : (fallback?.supported ?? [...ALL_EFFORTS]),
+    supported: modelSupportsEffort(id, supported) ? supported : [],
     defaultEffort: live?.defaultEffort ?? fallback?.defaultEffort ?? 'medium',
   };
 };

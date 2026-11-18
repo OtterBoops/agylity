@@ -863,6 +863,21 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(data.custom_id, `modal_dispatch:${'x'.repeat(85)}`);
     });
 
+    it('omits an effort the model never runs at from the status embed', () => {
+      const modelField = (status: DispatchStatusUpdate): string =>
+        buildDispatchStatusEmbed(status).fields?.find((field) => field.name === 'Model')?.value ??
+        '';
+
+      assert.equal(
+        modelField({ step: 'completed', model: 'gemini-pro-orchestrator-g1-pro', effort: 'high' }),
+        'gemini-pro-orchestrator-g1-pro'
+      );
+      assert.equal(
+        modelField({ step: 'completed', model: 'gemini-4-hydrogen', effort: 'high' }),
+        'gemini-4-hydrogen · high'
+      );
+    });
+
     it('handleRepoSelect replies ephemerally when selected repository is none or empty', async () => {
       const interaction = createMockInteraction({
         selectedRepo: 'none',

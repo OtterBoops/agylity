@@ -1,6 +1,7 @@
 import { faTriangleExclamation } from '@fortawesome/free-solid-svg-icons';
 import { route } from 'preact-router';
 import type { SwarmTask } from '../../types';
+import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { formatDateTime, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { taskBadgeClass } from './badges';
@@ -70,7 +71,7 @@ export const ActiveRunCard = ({
 
       <p class="font-mono text-xs wrap-break-word text-pine-subtle">
         <span class="text-pine-iris">{run.model}</span>
-        {run.effort ? ` · ${run.effort}` : ''}
+        {run.effort !== undefined && modelSupportsEffort(run.model) ? ` · ${run.effort}` : ''}
         {run.scheduleMode ? ` · ${run.scheduleMode}` : ''}
       </p>
 

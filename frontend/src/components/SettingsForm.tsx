@@ -1,6 +1,6 @@
 import { useState } from 'preact/hooks';
-import { autocompleteForType, normalizeModelId } from '../config/fields';
-import type { ConfigData, ToastState } from '../types';
+import { autocompleteForType, normalizeModelId, resolveModelEffort } from '../config/fields';
+import type { ConfigData, ReasoningEffort, ToastState } from '../types';
 import { deleteConfigOverride } from '../api';
 import { clearDraft, configStore, dirtyKeys, saveDrafts, setDraft } from '../state/configStore';
 import { useStore } from '../state/store';
@@ -27,7 +27,7 @@ interface SettingsFormProps {
   fields: FieldDef[];
   config: ConfigData;
   onSaved: () => void;
-  modelOptions?: Array<{ value: string; label: string }>;
+  modelOptions?: Array<{ value: string; label: string; supportedEfforts?: ReasoningEffort[] }>;
   searchQuery?: string;
 }
 
@@ -76,6 +76,10 @@ export const SettingsForm = ({
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
   const modelIds = modelOptions.map((o) => ({ id: o.value }));
+  const modelEfforts = modelOptions.map((o) => ({
+    id: o.value,
+    supportedEfforts: o.supportedEfforts,
+  }));
 
   const formKeys = fields.map((f) => f.key);
   const formKeySet = new Set(formKeys);
@@ -104,6 +108,13 @@ export const SettingsForm = ({
     }
     return options;
   };
+
+  const dispatchModelField = fields.find((f) => f.key === 'defaultDispatchModel');
+  const dispatchModelId = dispatchModelField ? valueOf(dispatchModelField) : '';
+  // A model with no effort variants must not offer a picker agy would reject with --effort.
+  const dispatchEffortLocked =
+    dispatchModelId !== '' &&
+    resolveModelEffort(modelEfforts, dispatchModelId).supported.length === 0;
 
   const handleReset = () => {
     for (const key of formKeys) clearDraft(key);
@@ -160,6 +171,11 @@ export const SettingsForm = ({
           const placeholder =
             f.placeholder ??
             (isSecret && isConfigured ? 'Enter new secret to update...' : undefined);
+          const isEffortField = f.key === 'defaultDispatchEffort';
+          const hintText =
+            isEffortField && dispatchEffortLocked
+              ? 'This model has no effort variants; agy runs it without --effort.'
+              : f.hint;
 
           return (
             <div
@@ -209,8 +225,9 @@ export const SettingsForm = ({
                   id={`f-${f.key}`}
                   name={`agylity_cfg_${f.key}`}
                   autoComplete={autocompleteFor(f)}
-                  class={`${inputClass} cursor-pointer`}
+                  class={`${inputClass} cursor-pointer disabled:cursor-not-allowed disabled:opacity-60`}
                   value={valueOf(f)}
+                  disabled={isEffortField && dispatchEffortLocked}
                   onChange={(e) => setDraft(f.key, (e.target as HTMLSelectElement).value)}
                 >
                   {optionsFor(f).map((o) => (
@@ -273,7 +290,7 @@ export const SettingsForm = ({
                   onInput={(e) => setDraft(f.key, (e.target as HTMLInputElement).value)}
                 />
               )}
-              {f.hint && <p class="text-xs text-pine-subtle">{f.hint}</p>}
+              {hintText && <p class="text-xs text-pine-subtle">{hintText}</p>}
             </div>
           );
         })}

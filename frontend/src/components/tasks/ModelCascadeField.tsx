@@ -7,6 +7,7 @@ import {
 } from '../../config/fields';
 import { useModelCatalog } from '../../state/modelCatalogStore';
 import type { CascadeHop, ModelCatalogEntry, ReasoningEffort } from '../../types';
+import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { Icon } from '../Icon';
 
 const DEFAULT_HINT = 'Evaluated in order; the first pool above the floor wins.';
@@ -28,7 +29,11 @@ const labelFor = (effort: ReasoningEffort): string => EFFORT_LABELS.get(effort) 
 export const modelChainLabel = (cascade: CascadeHop[]): string => {
   const primary = cascade[0];
   if (!primary) return 'no model';
-  const base = `${primary.model} · ${EFFORT_CODES[primary.effort] ?? primary.effort}`;
+  // Effort is still stored for effortless models, but the runner never passes it — don't print it.
+  const effort = modelSupportsEffort(primary.model)
+    ? ` · ${EFFORT_CODES[primary.effort] ?? primary.effort}`
+    : '';
+  const base = `${primary.model}${effort}`;
   const extra = cascade.length - 1;
   return extra > 0 ? `${base} (+${extra})` : base;
 };
@@ -50,7 +55,12 @@ const staticEffortClass =
 
 const effortsFor = (modelId: string, current: ReasoningEffort, catalog: ModelCatalogEntry[]) => {
   const supported = resolveModelEffort(catalog, modelId).supported;
-  return supported.includes(current) ? supported : [...supported, current];
+  // Empty must stay empty: appending `current` would fake a one-item effort control.
+  return supported.length === 0
+    ? []
+    : supported.includes(current)
+      ? supported
+      : [...supported, current];
 };
 
 const orderedEfforts = (efforts: ReasoningEffort[]): ReasoningEffort[] =>
@@ -184,6 +194,7 @@ export const ModelCascadeField = ({
             const headroom = headroomOf(hop.model);
             const efforts = orderedEfforts(effortsFor(hop.model, hop.effort, catalog.models));
             const fixed = efforts.length === 1;
+            const hasChoices = efforts.length > 1;
             return (
               <li
                 key={`${hop.model}-${index}`}
@@ -198,7 +209,7 @@ export const ModelCascadeField = ({
                     {headroom}%
                   </span>
                 )}
-                {fixed ? null : (
+                {hasChoices && (
                   <EffortPills
                     name={name}
                     efforts={efforts}
@@ -210,12 +221,14 @@ export const ModelCascadeField = ({
                   {fixed ? (
                     <EffortFixed effort={efforts[0]} />
                   ) : (
-                    <EffortCycleBadge
-                      name={name}
-                      efforts={efforts}
-                      value={hop.effort}
-                      onChange={(effort) => setEffort(index, effort)}
-                    />
+                    hasChoices && (
+                      <EffortCycleBadge
+                        name={name}
+                        efforts={efforts}
+                        value={hop.effort}
+                        onChange={(effort) => setEffort(index, effort)}
+                      />
+                    )
                   )}
                   <span class="ml-auto flex items-center sm:ml-0">
                     <button

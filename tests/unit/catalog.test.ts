@@ -15,6 +15,7 @@ import {
 import {
   CANONICAL_AGY_MODELS,
   DEFAULT_MODEL_BY_FAMILY,
+  modelSupportsEffort,
   resolveReasoningEffortForModel,
 } from '../../src/coordinator/models.js';
 
@@ -311,6 +312,41 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       provider.getModels();
       // getModels fires exactly one background revalidation per instance; the in-flight guard dedupes.
       assert.equal(calls, 1);
+    });
+  });
+
+  describe('7. Effortless models', () => {
+    it('emits no supported efforts for a model listed without an effort suffix', () => {
+      const grouped = groupAgyModels([
+        { id: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)' },
+        { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
+      ]);
+      const byId = new Map(grouped.models.map((m) => [m.id, m]));
+
+      assert.deepEqual(byId.get('gemini-pro-orchestrator-g1-pro')?.supportedEfforts, []);
+      assert.deepEqual(byId.get('gemini-pro-orchestrator')?.supportedEfforts, []);
+      assert.equal(byId.get('gemini-pro-orchestrator-g1-pro')?.defaultEffort, 'medium');
+    });
+
+    it('keeps the bundled declaration when the probe lists a known model with no suffix', () => {
+      const grouped = groupAgyModels([{ id: 'gemini-4-hydrogen' }, { id: 'gpt-oss-120b' }]);
+      const byId = new Map(grouped.models.map((m) => [m.id, m]));
+
+      assert.deepEqual(byId.get('gemini-4-hydrogen')?.supportedEfforts, [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+      ]);
+      assert.deepEqual(byId.get('gpt-oss-120b')?.supportedEfforts, ['medium']);
+    });
+
+    it('reports effort support for an orchestrator route as false', () => {
+      assert.equal(modelSupportsEffort('gemini-pro-orchestrator-g1-pro'), false);
+      assert.equal(modelSupportsEffort('gemini-pro-orchestrator'), false);
+      assert.equal(modelSupportsEffort('gemini-4-carbon', []), false);
+      assert.equal(modelSupportsEffort('gemini-4-hydrogen'), true);
+      assert.equal(modelSupportsEffort('gemini-4-carbon', ['low', 'high']), true);
     });
   });
 });
