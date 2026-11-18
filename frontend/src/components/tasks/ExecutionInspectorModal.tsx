@@ -101,6 +101,22 @@ export const ExecutionInspectorContent = ({
   const polling = isActiveTaskStatus(live.status);
   const taskId = task.id;
 
+  // List projections omit output to keep /api/tasks compact; hydrate once when opening a terminal task.
+  useEffect(() => {
+    if (task.output !== undefined) return;
+    let cancelled = false;
+    getTask(taskId)
+      .then(({ task: fresh, fingerprint }) => {
+        if (cancelled) return;
+        lastFingerprint.current = fingerprint ?? null;
+        setLive((prev) => (prev.id === fresh.id ? { ...prev, ...fresh } : fresh));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [taskId, task.output]);
+
   useEffect(() => {
     if (!polling) return;
     let cancelled = false;

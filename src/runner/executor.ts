@@ -52,7 +52,7 @@ export type SpawnFn = (
 export interface TaskExecutionResult {
   success: boolean;
   noChanges?: boolean;
-  branchName: string;
+  branchName?: string;
   prUrl?: string;
   output: string;
   error?: string;
@@ -1077,7 +1077,7 @@ export class TaskExecutor {
       return {
         success: true,
         noChanges: true,
-        branchName,
+        branchName: undefined,
         output: `${output}\n\n${detail}`,
         durationMs: Date.now() - startMs,
         ...this.telemetryFields(telemetry),
@@ -1211,7 +1211,7 @@ export class TaskExecutor {
         return {
           success: true,
           noChanges: true,
-          branchName,
+          branchName: undefined,
           output: capturedOutput,
           durationMs: Date.now() - startMs,
           ...this.telemetryFields(telemetry),
