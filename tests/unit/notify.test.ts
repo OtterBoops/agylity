@@ -38,6 +38,7 @@ import {
   createDispatchModal,
   TaskPromptSchema,
 } from '../../src/notify/adapters/discord.js';
+import { buildSlashCommandDefinitions } from '../../src/notify/discord/commands.js';
 import { BUILTIN_DEFAULTS } from '../../src/config/schema.js';
 
 const execFileAsync = promisify(execFile);
@@ -53,6 +54,7 @@ const createMockInteraction = (
     taskPrompt?: string;
     customId?: string;
     commandOptions?: Record<string, string>;
+    stringSelects?: Record<string, string>;
   } = {}
 ) => {
   let deferred = false;
@@ -80,6 +82,10 @@ const createMockInteraction = (
     },
     fields: {
       getTextInputValue: (id: string) => (id === 'task_prompt' ? (options.taskPrompt ?? '') : ''),
+      getStringSelectValues: (id: string) => {
+        const value = options.stringSelects?.[id];
+        return value === undefined ? [] : [value];
+      },
     },
     isChatInputCommand: () => options.commandName !== undefined,
     isStringSelectMenu: () => options.selectedRepo !== undefined,
@@ -586,9 +592,217 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       });
     });
 
-    it('StringSelectMenu repository selection opens modal', async () => {
+    it('repo_select opens the universal dispatch modal with the chosen repository pre-selected', async () => {
       const interaction = createMockInteraction({
+        selectedRepo: 'repo-2',
+      });
+
+      const notifier = new DiscordNotifier({
+        repositories: [
+          { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+          { id: 'repo-2', name: 'Web UI', path: '/opt/web', defaultBranch: 'main' },
+        ],
+      });
+
+      await notifier.handleInteraction(interaction);
+
+      assert.ok(interaction.state.modalShown);
+      const modalData = (interaction.state.modalShown as any).toJSON();
+      assert.equal(modalData.custom_id, 'modal_dispatch');
+      assert.equal(modalData.title, 'Dispatch Task');
+
+      const ids = modalData.components.map((component: any) => component.component?.custom_id);
+      assert.deepEqual(ids, ['task_repository', 'task_prompt', 'task_model', 'task_effort']);
+
+      const repoSelect = modalData.components[0].component;
+      const preselected = repoSelect.options.filter((option: any) => option.default === true);
+      assert.equal(preselected.length, 1);
+      assert.equal(preselected[0].value, 'repo-2');
+    });
+
+    it('repo_select carrying a pool family preserves it through the universal modal submit', async () => {
+      let received: DispatchRequest | null = null;
+
+      const select = createMockInteraction({
         selectedRepo: 'repo-1',
+        customId: 'repo_select:claude',
+      });
+      const notifier = new DiscordNotifier(
+        {
+          repositories: [
+            { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+            { id: 'repo-2', name: 'Web UI', path: '/opt/web', defaultBranch: 'main' },
+          ],
+        },
+        {
+          onDispatchRequested: async (req: DispatchRequest) => {
+            received = req;
+            return { success: true, branchName: 'main', durationMs: 5 };
+          },
+        }
+      );
+
+      await notifier.handleInteraction(select);
+
+      const modalData = (select.state.modalShown as any).toJSON();
+      assert.equal(modalData.custom_id, 'modal_dispatch::claude');
+
+      // The operator re-picks the repository inside the modal; the alert's pool family rides along.
+      const submit = createMockInteraction({
+        customId: modalData.custom_id,
+        taskPrompt: 'Tune the pool',
+        stringSelects: { task_repository: 'repo-2' },
+      });
+
+      await notifier.handleInteraction(submit);
+
+      assert.equal((received as any)?.repositoryId, 'repo-2');
+      assert.equal((received as any)?.repositoryName, 'Web UI');
+      assert.equal((received as any)?.poolFamily, 'claude');
+    });
+
+    it('defines every /dispatch option as optional so the modal can collect them', () => {
+      const definitions = buildSlashCommandDefinitions() as any[];
+      const dispatch = definitions.find((definition) => definition.name === 'dispatch');
+      assert.ok(dispatch, '/dispatch must be registered');
+
+      const byName = new Map(dispatch.options.map((option: any) => [option.name, option]));
+      for (const name of ['repository', 'prompt', 'model', 'effort']) {
+        const option = byName.get(name) as any;
+        assert.ok(option, `/dispatch is missing the ${name} option`);
+        assert.ok(!option.required, `${name} must be optional`);
+      }
+    });
+
+    it('slash command /dispatch without prompt opens the dispatch modal with a repository select', async () => {
+      const interaction = createMockInteraction({
+        commandName: 'dispatch',
+        commandOptions: {},
+      });
+
+      const notifier = new DiscordNotifier({
+        repositories: [
+          { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+          { id: 'repo-2', name: 'Web UI', path: '/opt/web', defaultBranch: 'main' },
+        ],
+      });
+
+      await notifier.handleInteraction(interaction);
+
+      assert.equal(interaction.state.deferred, false, 'the modal must be shown before any defer');
+      assert.equal(interaction.state.replied, false);
+      const modalData = (interaction.state.modalShown as any).toJSON();
+      assert.equal(modalData.custom_id, 'modal_dispatch');
+      assert.equal(modalData.title, 'Dispatch Task');
+
+      const ids = modalData.components.map((component: any) => component.component?.custom_id);
+      assert.deepEqual(ids, ['task_repository', 'task_prompt', 'task_model', 'task_effort']);
+
+      const repoSelect = modalData.components[0].component;
+      assert.equal(repoSelect.type, 3); // StringSelect
+      assert.equal(repoSelect.options?.length, 2);
+      assert.equal(repoSelect.options[0].value, 'repo-1');
+      assert.equal(repoSelect.options[1].value, 'repo-2');
+      assert.ok(
+        repoSelect.options.every((option: any) => option.default !== true),
+        'no repository is pre-selected when none is named'
+      );
+
+      for (const id of ['task_model', 'task_effort']) {
+        const select = modalData.components.find(
+          (component: any) => component.component?.custom_id === id
+        ).component;
+        assert.equal(
+          select.options.filter((option: any) => option.default === true).length,
+          1,
+          `${id} must pre-select exactly one default`
+        );
+      }
+    });
+
+    it('slash command /dispatch pre-selects the repository and effort named on the command', async () => {
+      const interaction = createMockInteraction({
+        commandName: 'dispatch',
+        commandOptions: { repository: 'repo-2', effort: 'high' },
+      });
+
+      const notifier = new DiscordNotifier({
+        repositories: [
+          { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+          { id: 'repo-2', name: 'Web UI', path: '/opt/web', defaultBranch: 'main' },
+        ],
+      });
+
+      await notifier.handleInteraction(interaction);
+
+      const modalData = (interaction.state.modalShown as any).toJSON();
+      const repoSelect = modalData.components[0].component;
+      const preselected = repoSelect.options.filter((option: any) => option.default === true);
+      assert.equal(preselected.length, 1);
+      assert.equal(preselected[0].value, 'repo-2');
+
+      const effortSelect = modalData.components.find(
+        (component: any) => component.component?.custom_id === 'task_effort'
+      ).component;
+      const preselectedEffort = effortSelect.options.filter(
+        (option: any) => option.default === true
+      );
+      assert.equal(preselectedEffort.length, 1);
+      assert.equal(preselectedEffort[0].value, 'high');
+    });
+
+    it('slash command /dispatch replies ephemerally instead of opening a modal when no repositories exist', async () => {
+      const interaction = createMockInteraction({
+        commandName: 'dispatch',
+        commandOptions: {},
+      });
+
+      const notifier = new DiscordNotifier({ repositories: [] });
+
+      await notifier.handleInteraction(interaction);
+
+      assert.equal(interaction.state.modalShown, null);
+      assert.deepEqual(interaction.state.replyData, {
+        content:
+          '[Notice] No repositories are currently configured. Please configure repositories in settings.',
+        ephemeral: true,
+      });
+    });
+
+    it('slash command /dispatch with an inline prompt dispatches directly without a modal', async () => {
+      let received: DispatchRequest | null = null;
+      const interaction = createMockInteraction({
+        commandName: 'dispatch',
+        commandOptions: { repository: 'repo-1', prompt: 'Run inline task' },
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          repositories: [
+            { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+          ],
+        },
+        {
+          onDispatchRequested: async (req: DispatchRequest) => {
+            received = req;
+            return { success: true, branchName: 'main', durationMs: 5 };
+          },
+        }
+      );
+
+      await notifier.handleInteraction(interaction);
+
+      assert.equal(interaction.state.modalShown, null);
+      assert.equal(interaction.state.deferred, true);
+      assert.equal((received as any)?.repositoryId, 'repo-1');
+      assert.equal((received as any)?.prompt, 'Run inline task');
+      assert.ok((interaction.state.editedData?.content ?? '').includes('[Success]'));
+    });
+
+    it('slash command /dispatch rejects an inline prompt with no repository', async () => {
+      const interaction = createMockInteraction({
+        commandName: 'dispatch',
+        commandOptions: { prompt: 'Run inline task' },
       });
 
       const notifier = new DiscordNotifier({
@@ -599,10 +813,44 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       await notifier.handleInteraction(interaction);
 
-      assert.ok(interaction.state.modalShown);
-      const modalData = (interaction.state.modalShown as any).toJSON();
-      assert.equal(modalData.custom_id, 'modal_dispatch:repo-1');
-      assert.equal(modalData.title, 'Dispatch Task: Agylity Sentry');
+      assert.equal(interaction.state.modalShown, null);
+      assert.equal(interaction.state.deferred, false);
+      assert.deepEqual(interaction.state.replyData, {
+        content: '[Error] Repository is required when the prompt is given inline.',
+        ephemeral: true,
+      });
+    });
+
+    it('modal_dispatch submission reads the repository from the task_repository select', async () => {
+      let received: DispatchRequest | null = null;
+      const interaction = createMockInteraction({
+        customId: 'modal_dispatch',
+        taskPrompt: 'Run the full suite',
+        stringSelects: { task_repository: 'repo-2', task_effort: 'high' },
+      });
+
+      const notifier = new DiscordNotifier(
+        {
+          repositories: [
+            { id: 'repo-1', name: 'Agylity Sentry', path: '/opt/agylity', defaultBranch: 'main' },
+            { id: 'repo-2', name: 'Web UI', path: '/opt/web', defaultBranch: 'main' },
+          ],
+        },
+        {
+          onDispatchRequested: async (req: DispatchRequest) => {
+            received = req;
+            return { success: true, branchName: 'main', durationMs: 5 };
+          },
+        }
+      );
+
+      await notifier.handleInteraction(interaction);
+
+      assert.equal((received as any)?.repositoryId, 'repo-2');
+      assert.equal((received as any)?.repositoryName, 'Web UI');
+      assert.equal((received as any)?.repositoryPath, '/opt/web');
+      assert.equal((received as any)?.prompt, 'Run the full suite');
+      assert.ok((interaction.state.editedData?.content ?? '').includes('[Success]'));
     });
 
     it('createRepoSelectMenu gracefully truncates list > 25 repositories and labels/values to 100 chars', () => {

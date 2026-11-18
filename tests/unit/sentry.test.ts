@@ -506,6 +506,57 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(update.earlyReset?.resetTime, resetTime);
     });
 
+    it('reports a premature reset once per cycle when upstream flaps back and forth', () => {
+      const manager = openState(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = new Date(nowMs + 48 * 3600 * 1000).toISOString();
+
+      manager.updatePoolQuota('claude', 0.43, resetTime, nowMs);
+      const refill = manager.updatePoolQuota('claude', 1, resetTime, nowMs + 60_000);
+      assert.ok(refill.earlyReset);
+
+      const recorded = manager.recordCycleAlert({
+        poolId: 'claude',
+        resetTime,
+        kind: 'early_reset',
+        firedAt: new Date(nowMs + 60_000).toISOString(),
+      });
+      assert.equal(recorded, true);
+      assert.equal(manager.hasEarlyResetAlert('claude', resetTime), true);
+
+      // Drain and refill again inside the same cycle: the ledger row is the dedupe key.
+      const drain = manager.updatePoolQuota('claude', 0.43, resetTime, nowMs + 120_000);
+      assert.equal(drain.earlyReset, null);
+      const flap = manager.updatePoolQuota('claude', 1, resetTime, nowMs + 180_000);
+      assert.equal(flap.earlyReset, null);
+      assert.equal(manager.getPoolState('claude')?.remainingFraction, 1);
+      assert.equal(
+        manager.recordCycleAlert({
+          poolId: 'claude',
+          resetTime,
+          kind: 'early_reset',
+        }),
+        false
+      );
+    });
+
+    it('reports a premature reset again once the cycle has moved past the recorded one', () => {
+      const manager = openState(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const firstReset = new Date(nowMs + 48 * 3600 * 1000).toISOString();
+      const secondReset = new Date(nowMs + 96 * 3600 * 1000).toISOString();
+
+      manager.updatePoolQuota('claude', 0.2, firstReset, nowMs);
+      manager.recordCycleAlert({ poolId: 'claude', resetTime: firstReset, kind: 'early_reset' });
+
+      // The deadline rolls on its own, then the refill lands inside the new cycle.
+      manager.updatePoolQuota('claude', 0.15, secondReset, nowMs + 60_000);
+      const next = manager.updatePoolQuota('claude', 1, secondReset, nowMs + 120_000);
+
+      assert.equal(next.earlyReset?.previousResetTime, secondReset);
+      assert.equal(next.earlyReset?.resetTime, secondReset);
+    });
+
     it('reports a premature reset when the refill also moves the reset deadline', () => {
       const manager = openState(stateFile);
       const nowMs = Date.parse('2026-11-14T12:00:00Z');

@@ -308,13 +308,17 @@ export class SentryStateManager {
     const nextResetMs = Date.parse(resetTime);
     const priorResetMs = Date.parse(existing.resetTime);
     const effectiveResetTime = Number.isFinite(nextResetMs) ? resetTime : existing.resetTime;
-    const earlyReset = detectEarlyReset(
+    const detected = detectEarlyReset(
       poolId,
       existing,
       remainingFraction,
       effectiveResetTime,
       nowMs
     );
+    // Upstream can refill, drain and refill again inside one cycle; the ledger key
+    // (pool, cycle, kind) is the invariant, so a repeat refill is not a second early reset.
+    const earlyReset =
+      detected && this.hasEarlyResetAlert(poolId, detected.previousResetTime) ? null : detected;
 
     if (
       Number.isFinite(nextResetMs) &&
@@ -436,8 +440,8 @@ export class SentryStateManager {
     headroomPercent?: number | null;
     channels?: Record<string, DeliveryChannelResult>;
     firedAt?: string;
-  }): void {
-    this.store.recordAlertEvent({
+  }): boolean {
+    return this.store.recordAlertEvent({
       poolId: input.poolId,
       resetTime: input.resetTime,
       kind: input.kind,
@@ -446,6 +450,10 @@ export class SentryStateManager {
       channels: input.channels ?? {},
       firedAt: input.firedAt,
     });
+  }
+
+  hasEarlyResetAlert(poolId: string, resetTime: string): boolean {
+    return this.store.hasCycleAlert(poolId, resetTime, 'early_reset');
   }
 
   listAlertEvents(options: ListAlertEventsOptions = {}): AlertEventPage {

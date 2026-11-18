@@ -215,7 +215,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 ## 5. Subsystem Breakdown
 
 1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
-2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`).
+2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).

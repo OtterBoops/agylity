@@ -21,7 +21,7 @@ const POOLS: PoolDef[] = [
     key: 'gemini-flash',
     name: 'Gemini Hydrogen',
     description:
-      'High-speed standard Gemini models (Gemini 4 Hydrogen, 3.8 Flash) with shared 5-hour limit.',
+      'High-speed standard Gemini models (Gemini 4 Hydrogen, 3.8 Flash) with shared weekly and 5-hour limits.',
   },
   {
     key: 'gemini-argon',
@@ -115,10 +115,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
               class="flex flex-col gap-3 py-4 first:pt-4 last:pb-0 sm:flex-row sm:items-center sm:justify-between"
             >
               <div class="min-w-0 flex-1">
-                <div class="flex items-center gap-2">
-                  <h4 class="text-sm font-semibold text-pine-text">{pool.name}</h4>
-                  <span class="font-mono text-xs text-pine-subtle">({pool.key})</span>
-                </div>
+                <h4 class="text-sm font-semibold text-pine-text">{pool.name}</h4>
                 <p class="mt-0.5 text-xs text-pine-subtle">{pool.description}</p>
               </div>
 

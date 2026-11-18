@@ -5,7 +5,7 @@ import net from 'node:net';
 import http from 'node:http';
 import { makeTempDir } from '../e2e/harness/index.js';
 import { ConfigStore } from '../../src/config/store.js';
-import { SentryStateManager } from '../../src/sentry/state.js';
+import { SentryStateManager, type EarlyResetPool } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
 import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
@@ -426,6 +426,163 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         assert.equal(notice.pools[0]?.remainingFraction, 0.98);
         assert.equal(notice.pools[0]?.previousResetTime, resetTime);
         assert.equal(notice.pools[0]?.resetTime, resetTime);
+      } finally {
+        await daemon.shutdown();
+        cleanup();
+      }
+    });
+
+    it('emits one early-reset notice when upstream flaps back and forth on the same cycle', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_early_reset_flap_');
+      const dbPath = path.join(dir, 'test.db');
+      const statePath = path.join(dir, 'state.json');
+
+      const now = Date.now();
+      const resetTime = new Date(now + 100 * 3600 * 1000).toISOString();
+
+      const sentryState = new SentryStateManager(statePath);
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date(now).toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          claude: {
+            resetTime,
+            remainingFraction: 0.43,
+            firedMilestones: ['48h', '24h', '12h'],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      let remainingFraction = 1;
+      const notices: InfoNotice[] = [];
+      class RecordingNotifier extends ConsoleNotifier {
+        override async notifyInfo(notice: InfoNotice): Promise<void> {
+          notices.push(notice);
+        }
+      }
+
+      const daemon = await createDaemon({
+        dbPath,
+        statePath,
+        sentryState,
+        quotaClient: {
+          async fetchQuota(): Promise<QuotaSnapshot[]> {
+            return [
+              {
+                poolId: 'claude',
+                family: 'claude' as const,
+                displayName: 'Claude Pool',
+                remainingFraction,
+                resetTime,
+                hoursUntilReset: 100,
+                models: ['claude-3-5-sonnet'],
+              },
+            ];
+          },
+        },
+        notifier: new RecordingNotifier(),
+        autoCheckOnStart: false,
+        config: {
+          quotaMilestoneHours: [48, 24, 12],
+          quotaAlertThresholdPercent: 25,
+          webUiEnabled: false,
+        },
+      });
+
+      const hookCalls: EarlyResetPool[][] = [];
+      const coordinator = daemon.coordinator;
+      const earlyResetHook = coordinator.onEarlyQuotaReset.bind(coordinator);
+      coordinator.onEarlyQuotaReset = (pools) => {
+        hookCalls.push(pools);
+        earlyResetHook(pools);
+      };
+
+      try {
+        // 0.43 -> 1.0 -> 0.43 -> 1.0 on one deadline: the refill flaps, the cycle does not change.
+        for (const next of [1, 0.43, 1]) {
+          remainingFraction = next;
+          await daemon.checkQuota();
+        }
+
+        assert.equal(notices.length, 1);
+        assert.equal(hookCalls.length, 1);
+
+        const events = daemon.sentryState.listAlertEvents().events;
+        assert.equal(events.length, 1);
+        assert.equal(events[0]?.kind, 'early_reset');
+        assert.equal(events[0]?.resetTime, resetTime);
+        assert.equal(daemon.sentryState.getState().earlyResetNotice?.pools.length, 1);
+      } finally {
+        await daemon.shutdown();
+        sentryState.close();
+        cleanup();
+      }
+    });
+
+    it('skips pools whose early-reset cycle alert was already recorded', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_early_reset_recorded_');
+      const dbPath = path.join(dir, 'test.db');
+
+      const now = Date.now();
+      const resetTime = new Date(now + 100 * 3600 * 1000).toISOString();
+      const previousResetTime = new Date(now + 40 * 3600 * 1000).toISOString();
+
+      const notices: InfoNotice[] = [];
+      class RecordingNotifier extends ConsoleNotifier {
+        override async notifyInfo(notice: InfoNotice): Promise<void> {
+          notices.push(notice);
+        }
+      }
+
+      const daemon = await createDaemon({
+        dbPath,
+        statePath: path.join(dir, 'state.json'),
+        notifier: new RecordingNotifier(),
+        autoCheckOnStart: false,
+        config: { webUiEnabled: false },
+      });
+
+      const recordedPool: EarlyResetPool = {
+        poolId: 'claude',
+        displayName: 'Claude Pool',
+        previousRemainingFraction: 0.43,
+        remainingFraction: 1,
+        previousResetTime,
+        resetTime,
+      };
+      const freshPool: EarlyResetPool = {
+        poolId: 'gemini',
+        displayName: 'Gemini Pool',
+        previousRemainingFraction: 0.3,
+        remainingFraction: 1,
+        previousResetTime,
+        resetTime,
+      };
+      const announce = (daemon as any).announceEarlyReset as (
+        pools: EarlyResetPool[]
+      ) => Promise<void>;
+
+      try {
+        await announce.call(daemon, [recordedPool]);
+        assert.equal(notices.length, 1);
+        assert.match(notices[0]?.message ?? '', /Claude Pool/);
+
+        // Same cycle again: nothing new to announce, and the stored notice is left untouched.
+        await announce.call(daemon, [recordedPool]);
+        assert.equal(notices.length, 1);
+        assert.equal(daemon.sentryState.listAlertEvents().events.length, 1);
+
+        // A batch carrying one already-recorded pool announces only the fresh one.
+        await announce.call(daemon, [recordedPool, freshPool]);
+        assert.equal(notices.length, 2);
+        assert.match(notices[1]?.message ?? '', /Gemini Pool/);
+        assert.doesNotMatch(notices[1]?.message ?? '', /Claude Pool/);
+        assert.deepEqual(
+          daemon.sentryState.getState().earlyResetNotice?.pools.map((pool) => pool.poolId),
+          ['gemini']
+        );
       } finally {
         await daemon.shutdown();
         cleanup();

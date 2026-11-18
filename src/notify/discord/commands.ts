@@ -21,12 +21,15 @@ export const buildSlashCommandDefinitions = (): unknown[] => [
     .addStringOption((opt) =>
       opt
         .setName('repository')
-        .setDescription('Target repository ID or name')
-        .setRequired(true)
+        .setDescription('Target repository ID or name (prompted in a modal when omitted)')
+        .setRequired(false)
         .setAutocomplete(true)
     )
     .addStringOption((opt) =>
-      opt.setName('prompt').setDescription('Task prompt or instructions').setRequired(true)
+      opt
+        .setName('prompt')
+        .setDescription('Task prompt; omit to open the dispatch modal')
+        .setRequired(false)
     )
     .addStringOption((opt) =>
       opt

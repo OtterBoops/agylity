@@ -82,13 +82,13 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
           <div class="min-w-0 flex-1">
             <div class="flex flex-wrap items-center gap-2">
               <h2 class="text-base font-bold text-pine-text">Instance Base URL</h2>
-              <span class="rounded-full border border-pine-love/40 bg-pine-love/15 px-2.5 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap text-pine-love uppercase">
-                Required
+              <span class="rounded-full border border-pine-iris/40 bg-pine-iris/15 px-2.5 py-0.5 text-xs font-bold tracking-wider whitespace-nowrap text-pine-iris uppercase">
+                Recommended
               </span>
             </div>
             <p class="mt-0.5 text-xs text-pine-subtle">
-              Canonical public origin for this Agylity instance. Required for dashboard links in
-              alert notifications, runner callbacks, and webhook payloads.
+              Public origin of the dashboard for clickable links in Discord and webhook embeds.
+              Leave empty for plain, unlinked embeds.
             </p>
           </div>
         </div>

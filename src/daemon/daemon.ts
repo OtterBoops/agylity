@@ -509,8 +509,27 @@ export class AgylityDaemon {
   }
 
   private async announceEarlyReset(pools: EarlyResetPool[]): Promise<void> {
-    const notice = this.sentryState.recordEarlyResetNotice(pools);
+    const detectedAt = new Date().toISOString();
+    const fresh: EarlyResetPool[] = [];
     for (const pool of pools) {
+      const recorded = this.sentryState.recordCycleAlert({
+        poolId: pool.poolId,
+        resetTime: pool.previousResetTime,
+        kind: 'early_reset',
+        headroomPercent: Math.round(pool.remainingFraction * 1000) / 10,
+        firedAt: detectedAt,
+      });
+      // The cycle alert is the dedupe key, so a pool whose reset was already announced is skipped
+      // rather than re-notified when upstream flaps.
+      if (!recorded) {
+        this.logger.debug(
+          '%s already announced an early reset for the %s cycle; skipping the notice',
+          pool.displayName || pool.poolId,
+          pool.previousResetTime
+        );
+        continue;
+      }
+      fresh.push(pool);
       this.logger.info(
         '%s reset ahead of schedule: %s -> %s remaining before the %s deadline',
         pool.displayName || pool.poolId,
@@ -518,16 +537,12 @@ export class AgylityDaemon {
         formatPercent(pool.remainingFraction),
         pool.previousResetTime
       );
-      this.sentryState.recordCycleAlert({
-        poolId: pool.poolId,
-        resetTime: pool.previousResetTime,
-        kind: 'early_reset',
-        headroomPercent: Math.round(pool.remainingFraction * 1000) / 10,
-        firedAt: notice.detectedAt,
-      });
     }
+    if (fresh.length === 0) return;
+
+    const notice = this.sentryState.recordEarlyResetNotice(fresh, detectedAt);
     try {
-      await this.notifier.notifyInfo(buildEarlyResetNotice(pools, notice.detectedAt));
+      await this.notifier.notifyInfo(buildEarlyResetNotice(fresh, notice.detectedAt));
     } catch (err: any) {
       this.logger.warn('Early reset notice delivery failed: %s', err?.message ?? err);
     }

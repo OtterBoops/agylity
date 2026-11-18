@@ -378,16 +378,29 @@ export class SentryStore {
     });
   }
 
-  public recordAlertEvent(input: RecordAlertEventInput): void {
+  public recordAlertEvent(input: RecordAlertEventInput): boolean {
     const firedAt = input.firedAt ?? new Date().toISOString();
-    this.inTransaction(() => {
-      this.insertAlertEventRow({ ...input, firedAt });
+    return this.inTransaction(() => {
+      const inserted = this.insertAlertEventRow({ ...input, firedAt });
       this.pruneAlertEvents();
+      return inserted;
     });
   }
 
-  private insertAlertEventRow(input: RecordAlertEventInput): void {
-    this.db
+  public hasCycleAlert(poolId: string, resetTime: string, kind: AlertEventKind): boolean {
+    // Mirrors the idx_alert_events_cycle predicate: a cycle event is the row whose milestone is NULL.
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS hit FROM alert_events
+         WHERE pool_id = ? AND reset_time = ? AND kind = ? AND milestone_hours IS NULL
+         LIMIT 1`
+      )
+      .get(poolId, resetTime, kind) as { hit?: number } | undefined;
+    return row !== undefined;
+  }
+
+  private insertAlertEventRow(input: RecordAlertEventInput): boolean {
+    const result = this.db
       .prepare(
         `INSERT OR IGNORE INTO alert_events
            (pool_id, reset_time, kind, milestone_hours, headroom_percent, fired_at, channels_json)
@@ -406,6 +419,7 @@ export class SentryStore {
         input.firedAt ?? new Date().toISOString(),
         JSON.stringify(input.channels ?? {})
       );
+    return Number(result.changes) > 0;
   }
 
   public replaceAll(

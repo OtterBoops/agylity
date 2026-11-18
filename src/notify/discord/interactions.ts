@@ -71,7 +71,8 @@ export const routeInteraction = async (
   if (interaction.isModalSubmit && interaction.isModalSubmit()) {
     if (
       typeof interaction.customId === 'string' &&
-      interaction.customId.startsWith('modal_dispatch:')
+      (interaction.customId === 'modal_dispatch' ||
+        interaction.customId.startsWith('modal_dispatch:'))
     ) {
       await handleModalSubmit(deps, interaction);
     }
@@ -118,26 +119,51 @@ const handleDispatchCommand = async (
     return;
   }
 
+  const repositoryId = String(interaction.options?.getString?.('repository') ?? '');
+  const prompt = String(interaction.options?.getString?.('prompt') ?? '');
+  const model = interaction.options?.getString?.('model') || undefined;
+  const effort = interaction.options?.getString?.('effort') || undefined;
+
+  const ephemeralReply = async (content: string): Promise<void> => {
+    if (typeof interaction.reply === 'function') {
+      await interaction.reply({ content, ephemeral: true });
+    }
+  };
+
+  // showModal has to land before any deferReply — an interaction can only be acknowledged once.
+  if (!prompt.trim()) {
+    const repositories = deps.config.repositories ?? [];
+    if (repositories.length === 0) {
+      await ephemeralReply(
+        '[Notice] No repositories are currently configured. Please configure repositories in settings.'
+      );
+      return;
+    }
+
+    const wantedRepo = repositoryId.trim();
+    const preselected = repositories.find((r) => r.id === wantedRepo || r.name === wantedRepo);
+    await interaction.showModal(
+      createDispatchModal(null, null, {
+        includeModelInput: true,
+        defaultModel: model || deps.config.defaultDispatchModel,
+        defaultEffort: effort || deps.config.defaultDispatchEffort,
+        repositories,
+        selectedRepoId: preselected?.id ?? '',
+      })
+    );
+    return;
+  }
+
+  if (!repositoryId.trim()) {
+    await ephemeralReply('[Error] Repository is required when the prompt is given inline.');
+    return;
+  }
+
   const canDefer = typeof interaction.deferReply === 'function';
   if (canDefer) {
     try {
       await interaction.deferReply({ ephemeral: true });
     } catch {}
-  }
-
-  const repositoryId = interaction.options?.getString?.('repository') ?? '';
-  const prompt = interaction.options?.getString?.('prompt') ?? '';
-  const model = interaction.options?.getString?.('model') || undefined;
-  const effort = interaction.options?.getString?.('effort') || undefined;
-
-  if (!prompt.trim()) {
-    const errReply = { content: '[Error] Task prompt cannot be empty.' };
-    if (canDefer && typeof interaction.editReply === 'function') {
-      await interaction.editReply(errReply);
-    } else if (typeof interaction.reply === 'function') {
-      await interaction.reply({ ...errReply, ephemeral: true });
-    }
-    return;
   }
 
   const onDispatch = deps.options.onDispatchRequested || (deps.options as any).onContinueRequested;
@@ -287,22 +313,19 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
     return;
   }
 
-  const repo = deps.config.repositories.find(
-    (r) =>
-      r.id === selectedRepoId ||
-      r.name === selectedRepoId ||
-      (selectedRepoId && r.id.startsWith(selectedRepoId))
-  );
-  const repoName = repo ? repo.name : selectedRepoId;
   const poolFamily =
     typeof interaction.customId === 'string' && interaction.customId.startsWith('repo_select:')
       ? interaction.customId.slice('repo_select:'.length)
       : undefined;
 
-  const modal = createDispatchModal(selectedRepoId, repoName, {
+  // Every dispatch entry point opens the same 4-field modal; the selected repo is only a default.
+  const modal = createDispatchModal(null, null, {
     includeModelInput: true,
     defaultModel: deps.config.defaultDispatchModel,
+    defaultEffort: deps.config.defaultDispatchEffort,
     poolFamily,
+    repositories: deps.config.repositories,
+    selectedRepoId,
   });
   await interaction.showModal(modal);
 };
@@ -324,6 +347,34 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     return;
   }
 
+  const rawCustomSuffix =
+    typeof interaction.customId === 'string' && interaction.customId.startsWith('modal_dispatch:')
+      ? interaction.customId.slice('modal_dispatch:'.length)
+      : '';
+
+  const lastColonIdx = rawCustomSuffix.lastIndexOf(':');
+  let rawRepoId = lastColonIdx !== -1 ? rawCustomSuffix.slice(0, lastColonIdx) : rawCustomSuffix;
+  const alertPoolFamily = lastColonIdx !== -1 ? rawCustomSuffix.slice(lastColonIdx + 1) : undefined;
+
+  // An empty repo slot (`modal_dispatch`, `modal_dispatch::<family>`) means the universal modal,
+  // whose repository arrives as a select field.
+  if (!rawRepoId) {
+    rawRepoId = readStringSelect(interaction, 'task_repository');
+  }
+  if (rawRepoId === 'none') rawRepoId = '';
+
+  const repo = deps.config.repositories.find(
+    (r) => r.id === rawRepoId || r.name === rawRepoId || (rawRepoId && r.id.startsWith(rawRepoId))
+  );
+  const repoId = rawRepoId;
+  const repoName = repo?.name ?? rawRepoId;
+  const repoPath = repo?.path ?? '';
+
+  if (!repoId) {
+    await interaction.editReply({ content: '[Error] Task repository is required.' });
+    return;
+  }
+
   const userId = interaction.user?.id ?? 'user';
   const submissionKey = `${userId}_${interaction.customId}`;
   if (deps.activeSubmissions.has(submissionKey)) {
@@ -333,22 +384,6 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     return;
   }
   deps.activeSubmissions.add(submissionKey);
-
-  const rawCustomSuffix =
-    typeof interaction.customId === 'string' && interaction.customId.startsWith('modal_dispatch:')
-      ? interaction.customId.slice('modal_dispatch:'.length)
-      : '';
-
-  const lastColonIdx = rawCustomSuffix.lastIndexOf(':');
-  const rawRepoId = lastColonIdx !== -1 ? rawCustomSuffix.slice(0, lastColonIdx) : rawCustomSuffix;
-  const alertPoolFamily = lastColonIdx !== -1 ? rawCustomSuffix.slice(lastColonIdx + 1) : undefined;
-
-  const repo = deps.config.repositories.find(
-    (r) => r.id === rawRepoId || r.name === rawRepoId || (rawRepoId && r.id.startsWith(rawRepoId))
-  );
-  const repoId = rawRepoId;
-  const repoName = repo?.name ?? rawRepoId;
-  const repoPath = repo?.path ?? '';
 
   let result: DispatchResult | undefined;
   try {
