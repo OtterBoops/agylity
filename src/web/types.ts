@@ -6,6 +6,7 @@ import type { Logger } from '../logs/logger.js';
 import type { Notifier } from '../notify/types.js';
 import type { Coordinator } from '../coordinator/coordinator.js';
 import type { ModelCatalogProvider } from '../coordinator/catalog.js';
+import type { AgyUpdaterLike } from '../agy/updater.js';
 
 export interface WebServerOptions {
   host?: string;
@@ -17,6 +18,7 @@ export interface WebServerOptions {
   notifier?: Notifier;
   coordinator?: Coordinator;
   modelCatalog?: ModelCatalogProvider;
+  agyUpdater?: AgyUpdaterLike;
   logger?: Logger;
 }
 

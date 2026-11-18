@@ -213,11 +213,14 @@ export const handleRequest = async (
       if (method !== 'GET') {
         return methodNotAllowed(res);
       }
+      // Cache-only: a healthcheck must answer while `agy update` is rewriting the binary.
+      void options.agyUpdater?.getVersion();
       return sendJson(res, 200, {
         status: 'ok',
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
         authRequired,
+        agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
       });
     }
 

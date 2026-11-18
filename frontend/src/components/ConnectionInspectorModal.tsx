@@ -7,6 +7,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
+import { checkHealth } from '../api';
 import { dialogBackdropClickHandler } from '../utils/dialog';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
@@ -33,6 +34,7 @@ export const ConnectionInspectorModal = ({
   const [timeFormat] = useTimeFormat();
   const { config } = useStore(configStore);
   const [copied, setCopied] = useState(false);
+  const [agyVersion, setAgyVersion] = useState<string | null>(null);
   const [updateInfo, setUpdateInfo] = useState<{
     hasUpdate: boolean;
     latestVersion: string | null;
@@ -62,6 +64,18 @@ export const ConnectionInspectorModal = ({
   }, []);
 
   useEffect(() => {
+    if (!isOpen) return;
+    let mounted = true;
+    checkHealth().then((health) => {
+      if (!mounted) return;
+      setAgyVersion(health.agyVersion ?? null);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     if (isOpen) {
@@ -85,6 +99,7 @@ export const ConnectionInspectorModal = ({
   const handleCopyDiagnostics = async () => {
     const diag = {
       appVersion: APP_VERSION,
+      agyVersion: agyVersion ?? 'unknown',
       probeSource: lastProbeSource,
       lastProbeAt: lastProbeAt || 'N/A',
       coordinatorEnabled,
@@ -190,6 +205,17 @@ export const ConnectionInspectorModal = ({
             ) : (
               <span class="font-sans text-xs text-pine-subtle">Up to date</span>
             )}
+          </dd>
+        </div>
+
+        <div class="flex flex-col gap-0.5 px-3 py-2.5 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+          <dt class="text-pine-subtle">Antigravity CLI</dt>
+          <dd class="font-mono text-pine-text">
+            {agyVersion === null
+              ? 'Unknown'
+              : /^\d/.test(agyVersion)
+                ? `v${agyVersion}`
+                : agyVersion}
           </dd>
         </div>
       </dl>

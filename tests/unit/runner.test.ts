@@ -1514,3 +1514,75 @@ describe('Runner CLI: argument and environment precedence', () => {
     assert.equal(explicit.idlePollIntervalMs, 0);
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Periodic agy update (idle-only)                                            */
+/* -------------------------------------------------------------------------- */
+
+const waitForCondition = async (predicate: () => boolean, label: string): Promise<void> => {
+  // The stub records on request end, so a loaded suite can take well past a second to see it.
+  for (let attempt = 0; attempt < 500; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+};
+
+describe('Runner: idle-only agy update', () => {
+  it('defers the scheduled update while a task is executing', async () => {
+    const { dir, cleanup } = makeTempDir('runner_agy_idle_');
+    const { task, db } = enqueueTask(dir);
+    const stub = await startCoordinatorStub({ task });
+
+    let releaseTask = (): void => {};
+    const taskStarted = new Promise<void>((resolve) => {
+      releaseTask = resolve;
+    });
+    const updates: string[] = [];
+
+    const runner = new RemoteSwarmRunner({
+      coordinatorUrl: stub.baseUrl,
+      runnerToken: 'agyr_run_test',
+      runnerStatePath: path.join(dir, 'runner.json'),
+      executor: {
+        execute: async () => {
+          await taskStarted;
+          return { success: true, output: '', durationMs: 1 };
+        },
+      } as unknown as TaskExecutor,
+      execFileFn: async () => ({ stdout: '', stderr: '' }),
+      agyUpdater: {
+        getVersion: async () => null,
+        getCachedVersion: () => null,
+        invalidate: () => {},
+        update: async () => {
+          updates.push('update');
+          return { before: null, after: null, updated: false };
+        },
+      },
+      logger: quietLogger,
+    });
+
+    try {
+      const polling = runner.pollOnce();
+      await waitForCondition(
+        () => stub.requests.some((request) => request.body?.status === 'executing'),
+        'the executing claim'
+      );
+
+      assert.equal(await runner.runScheduledAgyUpdate(), false);
+      assert.deepEqual(updates, [], 'a running task owns the binary');
+
+      releaseTask();
+      await polling;
+
+      assert.equal(await runner.runScheduledAgyUpdate(), true);
+      assert.deepEqual(updates, ['update']);
+    } finally {
+      releaseTask();
+      await closeStubServer(stub.server);
+      db.close();
+      cleanup();
+    }
+  });
+});

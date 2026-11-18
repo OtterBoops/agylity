@@ -1,4 +1,5 @@
 import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
+import { warnDeprecatedEnvVars } from '../config/deprecated.js';
 import { AGYLITY_VERSION } from '../version.js';
 import { LogBuffer, installConsoleTee } from '../logs/buffer.js';
 import { logger } from '../logs/logger.js';
@@ -28,7 +29,6 @@ export const main = async (): Promise<AgylityDaemon> => {
       process.env.WEB_UI_AUTH_TOKEN,
       process.env.GITHUB_TOKEN,
       process.env.AGYLITY_SECRET_KEY,
-      process.env.ENCRYPTION_KEY,
       ...(c?.webhookCustomHeaders ? Object.values(c.webhookCustomHeaders) : []),
     ];
 
@@ -61,6 +61,7 @@ export const main = async (): Promise<AgylityDaemon> => {
     return cachedSecrets;
   });
   installConsoleTee(logBuffer);
+  warnDeprecatedEnvVars(process.env, logger);
 
   const daemon = await createDaemon({ logBuffer });
   daemonRef = daemon;

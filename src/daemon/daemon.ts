@@ -18,6 +18,7 @@ import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
 import { Coordinator } from '../coordinator/index.js';
 import { DynamicModelCatalog } from '../coordinator/catalog.js';
+import { sharedAgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 
 interface MilestonePlan {
   alerts: QuotaAlert[];
@@ -74,6 +75,7 @@ export interface AgylityDaemonOptions {
   autoCheckOnStart?: boolean;
   logBuffer?: LogBuffer;
   logger?: Logger;
+  agyUpdater?: AgyUpdaterLike;
 }
 
 export class AgylityDaemon {
@@ -88,6 +90,7 @@ export class AgylityDaemon {
   public webServer?: http.Server;
   public readonly logBuffer?: LogBuffer;
   public readonly logger: Logger;
+  public agyUpdater: AgyUpdaterLike = sharedAgyUpdater;
 
   public isRunning = false;
   public isSentryStopped = false;
@@ -95,7 +98,9 @@ export class AgylityDaemon {
   public isNotifierShutdown = false;
 
   private timer: NodeJS.Timeout | null = null;
+  private agyUpdateTimer: NodeJS.Timeout | null = null;
   private probeInFlight = false;
+  private agyUpdateInFlight = false;
   private shutdownPromise?: Promise<void>;
   private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
@@ -165,6 +170,11 @@ export class AgylityDaemon {
           const newIntervalSeconds = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds);
           this.logger.info('Rescheduling quota sentry timer to %ds interval', newIntervalSeconds);
           this.scheduleSentryTimer(newIntervalSeconds);
+        }
+      });
+      await this.syncComponent('agy update timer', () => {
+        if (key === 'agyUpdateIntervalHours' || key === '*') {
+          this.scheduleAgyUpdateTimer(resolvedConfig.agyUpdateIntervalHours);
         }
       });
     });
@@ -298,7 +308,7 @@ export class AgylityDaemon {
 
     const autoCheckOnStart = options.autoCheckOnStart ?? true;
 
-    return new AgylityDaemon(
+    const daemon = new AgylityDaemon(
       configStore,
       quotaClient,
       sentryState,
@@ -309,6 +319,10 @@ export class AgylityDaemon {
       options.logger,
       coordinator
     );
+    if (options.agyUpdater) {
+      daemon.agyUpdater = options.agyUpdater;
+    }
+    return daemon;
   }
 
   public async start(): Promise<void> {
@@ -342,6 +356,7 @@ export class AgylityDaemon {
         notifier: this.notifier,
         coordinator: this.coordinator,
         modelCatalog: this.modelCatalog,
+        agyUpdater: this.agyUpdater,
         logger: this.logger.child('web'),
         port: resolved.webUiPort,
         host: resolved.webUiHost,
@@ -349,6 +364,12 @@ export class AgylityDaemon {
       this.webServer = server;
       this.logger.info('Web UI active on http://%s:%d', host, port);
     }
+
+    if (resolved.webUiEnabled) {
+      // Primed here so /api/health answers from cache instead of spawning on the request path.
+      void this.agyUpdater.getVersion();
+    }
+    this.scheduleAgyUpdateTimer(resolved.agyUpdateIntervalHours);
 
     if (this.autoCheckOnStart) {
       await this.checkQuota().catch((err) => {
@@ -370,6 +391,20 @@ export class AgylityDaemon {
   }
 
   public async checkQuota(): Promise<QuotaAlert[]> {
+    // One probe at a time: the agy CLI fallback must never read an install mid-update.
+    if (this.probeInFlight || this.agyUpdateInFlight) {
+      this.logger.debug('Skipping quota evaluation; a probe or agy update is already running');
+      return [];
+    }
+    this.probeInFlight = true;
+    try {
+      return await this.probeQuota();
+    } finally {
+      this.probeInFlight = false;
+    }
+  }
+
+  private async probeQuota(): Promise<QuotaAlert[]> {
     let reaped = false;
     try {
       this.logger.debug('Running scheduled quota evaluation...');
@@ -474,16 +509,47 @@ export class AgylityDaemon {
   private scheduleSentryTimer(intervalSeconds: number): void {
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
-      if (this.probeInFlight) return;
-      this.probeInFlight = true;
-      void this.checkQuota()
-        .catch((err) => {
-          this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
-        })
-        .finally(() => {
-          this.probeInFlight = false;
-        });
+      void this.checkQuota().catch((err) => {
+        this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
+      });
     }, intervalSeconds * 1000);
+  }
+
+  private scheduleAgyUpdateTimer(intervalHours: number): void {
+    if (this.agyUpdateTimer) {
+      clearInterval(this.agyUpdateTimer);
+      this.agyUpdateTimer = null;
+    }
+    if (!(intervalHours > 0)) {
+      this.logger.info('Periodic agy update disabled (agyUpdateIntervalHours=0)');
+      return;
+    }
+    this.agyUpdateTimer = setInterval(
+      () => {
+        void this.runScheduledAgyUpdate();
+      },
+      intervalHours * 3600 * 1000
+    );
+    this.agyUpdateTimer.unref();
+    this.logger.info('Periodic agy update scheduled every %sh', intervalHours);
+  }
+
+  /** Idle-only: a probe or an in-flight refresh already owns the binary, so this tick is skipped. */
+  public async runScheduledAgyUpdate(): Promise<boolean> {
+    if (this.probeInFlight || this.agyUpdateInFlight) {
+      this.logger.debug('Skipping scheduled agy update; a probe or update is already running');
+      return false;
+    }
+    this.agyUpdateInFlight = true;
+    try {
+      await this.agyUpdater.update();
+      return true;
+    } catch (err: any) {
+      this.logger.warn('Scheduled agy update failed: %s', err?.message ?? err);
+      return false;
+    } finally {
+      this.agyUpdateInFlight = false;
+    }
   }
 
   private evaluateMilestonePlan(snapshots: QuotaSnapshot[]): MilestonePlan {
@@ -604,6 +670,10 @@ export class AgylityDaemon {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.agyUpdateTimer) {
+      clearInterval(this.agyUpdateTimer);
+      this.agyUpdateTimer = null;
     }
     this.isSentryStopped = true;
 

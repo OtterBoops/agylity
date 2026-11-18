@@ -10,7 +10,7 @@ import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
 import { buildInfoNoticeEmbed } from '../../src/notify/embeds/index.js';
 import type { QuotaAlert, DeliveryOutcome, InfoNotice } from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
-import { logger } from '../../src/logs/logger.js';
+import { createLogger, logger, type Logger } from '../../src/logs/logger.js';
 import { createDaemon, startDaemon, stopDaemon } from '../../src/index.js';
 
 describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
@@ -871,5 +871,218 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
         cleanup();
       }
     });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Periodic agy update (idle-only)                                            */
+/* -------------------------------------------------------------------------- */
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+const deferred = <T>(): Deferred<T> => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
+const quietAgyLogger = (): Logger => createLogger({ minLevel: 'error', sinks: [() => {}] });
+
+describe('Daemon: idle-only agy update', () => {
+  it('skips the scheduled update while a quota probe is in flight', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_agy_probe_busy_');
+    const probeStarted = deferred<void>();
+    const probeGate = deferred<QuotaSnapshot[]>();
+    const updates: string[] = [];
+
+    const quotaClient = {
+      async fetchQuota(): Promise<QuotaSnapshot[]> {
+        probeStarted.resolve();
+        return probeGate.promise;
+      },
+    };
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient,
+      agyUpdater: {
+        getVersion: async () => null,
+        getCachedVersion: () => null,
+        invalidate: () => {},
+        update: async () => {
+          updates.push('update');
+          return { before: null, after: null, updated: false };
+        },
+      },
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      const probe = daemon.checkQuota();
+      await probeStarted.promise;
+
+      assert.equal(await daemon.runScheduledAgyUpdate(), false);
+      assert.deepEqual(updates, [], 'a probe in flight must win over a scheduled refresh');
+
+      probeGate.resolve([]);
+      await probe;
+
+      assert.equal(await daemon.runScheduledAgyUpdate(), true);
+      assert.deepEqual(updates, ['update']);
+    } finally {
+      probeGate.resolve([]);
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('blocks a quota probe while the agy update runs', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_agy_update_busy_');
+    const updateGate = deferred<void>();
+    let quotaCalls = 0;
+
+    const quotaClient = {
+      async fetchQuota(): Promise<QuotaSnapshot[]> {
+        quotaCalls++;
+        return [];
+      },
+    };
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient,
+      agyUpdater: {
+        getVersion: async () => '0.1.0',
+        getCachedVersion: () => '0.1.0',
+        invalidate: () => {},
+        update: async () => {
+          await updateGate.promise;
+          return { before: '0.1.0', after: '0.2.0', updated: true };
+        },
+      },
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      const updating = daemon.runScheduledAgyUpdate();
+      assert.deepEqual(await daemon.checkQuota(), []);
+      assert.equal(quotaCalls, 0, 'the CLI fallback must not run against an install mid-update');
+      assert.equal(await daemon.runScheduledAgyUpdate(), false, 'ticks must not stack');
+
+      updateGate.resolve();
+      assert.equal(await updating, true);
+
+      await daemon.checkQuota();
+      assert.equal(quotaCalls, 1);
+    } finally {
+      updateGate.resolve();
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Live settings overrides (written by the Web UI)                             */
+/* -------------------------------------------------------------------------- */
+
+const inertAgyUpdater = {
+  getVersion: async () => null,
+  getCachedVersion: () => null,
+  invalidate: () => {},
+  update: async () => ({ before: null, after: null, updated: false }),
+};
+
+const settle = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+describe('Daemon: live settings overrides', () => {
+  it('reschedules the agy update timer when the interval override changes', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_live_agy_interval_');
+    const sink = createMemorySink();
+    const logger = createLogger({ minLevel: 'debug', sinks: [sink.sink] });
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      autoCheckOnStart: false,
+      logger,
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      sink.clear();
+
+      daemon.configStore.setOverride('agyUpdateIntervalHours', 6);
+      await settle();
+      assert.ok(
+        sink.records.some(
+          (record) =>
+            record.level === 'info' &&
+            record.formatted.includes('Periodic agy update scheduled every 6h')
+        ),
+        'a saved interval must reschedule the running timer, not wait for a restart'
+      );
+
+      sink.clear();
+      daemon.configStore.setOverride('agyUpdateIntervalHours', 0);
+      await settle();
+      assert.ok(
+        sink.records.some((record) => record.formatted.includes('agy update disabled')),
+        '0 must clear the timer'
+      );
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('applies a logLevel override to the running logger without a restart', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_live_log_level_');
+    const logger = createLogger({ minLevel: 'info', sinks: [() => {}] });
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      autoCheckOnStart: false,
+      logger,
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      assert.equal(daemon.logger.getLevel(), 'info');
+
+      daemon.configStore.setOverride('logLevel', 'debug');
+      await settle();
+
+      assert.equal(daemon.logger.getLevel(), 'debug');
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
   });
 });

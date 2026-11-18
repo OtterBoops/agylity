@@ -333,11 +333,7 @@ export class WebhookNotifier implements Notifier {
   }
 
   public getWebhookUrl(): string | undefined {
-    return (
-      this.config.notificationWebhookUrl ||
-      process.env.NOTIFICATION_WEBHOOK_URL ||
-      process.env.WEBHOOK_URL
-    );
+    return this.config.notificationWebhookUrl || process.env.NOTIFICATION_WEBHOOK_URL;
   }
 
   public getWebhookSecret(): string | undefined {

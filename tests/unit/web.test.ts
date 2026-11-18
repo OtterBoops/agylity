@@ -3377,3 +3377,60 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 });
+
+describe('Web: Antigravity CLI version reporting', () => {
+  const agyUpdaterStub = (version: string | null) => ({
+    getVersion: async () => version,
+    getCachedVersion: () => version,
+    invalidate: () => {},
+    update: async () => ({ before: version, after: version, updated: false }),
+  });
+
+  it('reports the cached agy version on /api/health', async () => {
+    const { dir, cleanup } = makeTempDir('web_agy_version_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    let server: http.Server | undefined;
+
+    try {
+      const started = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+        agyUpdater: agyUpdaterStub('0.4.2'),
+      });
+      server = started.server;
+
+      const health = await ky.get(`http://127.0.0.1:${started.port}/api/health`).json<any>();
+      assert.equal(health.status, 'ok');
+      assert.equal(health.agyVersion, '0.4.2');
+    } finally {
+      if (server) await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('answers /api/health with a null version when agy could not be probed', async () => {
+    const { dir, cleanup } = makeTempDir('web_agy_version_unknown_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    let server: http.Server | undefined;
+
+    try {
+      const started = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+        agyUpdater: agyUpdaterStub(null),
+      });
+      server = started.server;
+
+      const health = await ky.get(`http://127.0.0.1:${started.port}/api/health`).json<any>();
+      assert.equal(health.status, 'ok');
+      assert.equal(health.agyVersion, null);
+    } finally {
+      if (server) await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+});

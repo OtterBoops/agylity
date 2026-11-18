@@ -15,6 +15,8 @@ export interface FieldDef {
   hint?: string;
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;
+  onLabel?: string;
+  offLabel?: string;
   colSpan?: 1 | 2;
   autocomplete?: string;
 }
@@ -199,7 +201,7 @@ export const SettingsForm = ({
                     label={f.label}
                   />
                   <span class="text-sm text-pine-text">
-                    {valueOf(f) === 'true' ? 'Allowed' : 'Blocked'}
+                    {valueOf(f) === 'true' ? (f.onLabel ?? 'Allowed') : (f.offLabel ?? 'Blocked')}
                   </span>
                 </div>
               ) : f.type === 'select' ? (

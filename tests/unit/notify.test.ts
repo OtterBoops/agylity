@@ -1212,10 +1212,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     it('reports an unconfigured webhook as undelivered instead of a false success', async () => {
       const saved = {
         url: process.env.NOTIFICATION_WEBHOOK_URL,
-        legacy: process.env.WEBHOOK_URL,
       };
       delete process.env.NOTIFICATION_WEBHOOK_URL;
-      delete process.env.WEBHOOK_URL;
 
       try {
         const notifier = new WebhookNotifier({});
@@ -1240,7 +1238,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await notifier.shutdown();
       } finally {
         if (saved.url !== undefined) process.env.NOTIFICATION_WEBHOOK_URL = saved.url;
-        if (saved.legacy !== undefined) process.env.WEBHOOK_URL = saved.legacy;
       }
     });
 

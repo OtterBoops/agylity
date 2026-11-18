@@ -36,7 +36,7 @@ export const isSecretKey = (key: string): boolean => {
 let processMemoryKey: Buffer | null = null;
 
 export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
-  const envKey = process.env.AGYLITY_SECRET_KEY || process.env.ENCRYPTION_KEY;
+  const envKey = process.env.AGYLITY_SECRET_KEY;
   if (envKey && envKey.trim()) {
     const trimmed = envKey.trim();
     if (trimmed.length === 64 && /^[0-9a-fA-F]+$/.test(trimmed)) {

@@ -12,13 +12,14 @@ import {
   DEFAULT_QUOTA_BURN_MAX_HOURS,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
+import { warnDeprecatedEnvVars } from '../../src/config/deprecated.js';
 import { logger } from '../../src/logs/logger.js';
 import { createMemorySink } from '../e2e/harness/index.js';
 
 describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses valid environment variables with correct coerced types', () => {
     const raw = {
-      NOTIFICATION_CHANNEL: 'discord',
+      NOTIFICATION_CHANNELS: 'discord',
       QUOTA_CHECK_INTERVAL_SECONDS: '600',
       QUOTA_ALERT_THRESHOLD_PERCENT: '30',
       WEB_UI_PORT: '8080',
@@ -26,7 +27,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       WEB_UI_AUTH_TOKEN: 'secret-token-123',
     };
     const parsed = RawEnvSchema.parse(raw);
-    assert.equal(parsed.NOTIFICATION_CHANNEL, 'discord');
+    assert.equal(parsed.NOTIFICATION_CHANNELS, 'discord');
     assert.equal(parsed.QUOTA_CHECK_INTERVAL_SECONDS, 600);
     assert.equal(parsed.QUOTA_ALERT_THRESHOLD_PERCENT, 30);
     assert.equal(parsed.WEB_UI_PORT, 8080);
@@ -157,7 +158,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
 
   it('parseRawEnv correctly maps raw env strings to typed Partial<AppConfig>', () => {
     const mapped = parseRawEnv({
-      NOTIFICATION_CHANNEL: 'console',
+      NOTIFICATION_CHANNELS: 'console',
       QUOTA_CHECK_INTERVAL_SECONDS: '300',
       QUOTA_MILESTONE_HOURS: '12,6,1',
       WEB_UI_ENABLED: 'false',
@@ -165,6 +166,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     });
 
     assert.equal(mapped.notificationChannel, 'console');
+    assert.deepEqual(mapped.notificationChannels, ['console']);
     assert.equal(mapped.quotaCheckIntervalSeconds, 300);
     assert.deepEqual(mapped.quotaMilestoneHours, [12, 6, 1]);
     assert.equal(mapped.webUiEnabled, false);
@@ -393,5 +395,34 @@ describe('ConfigStore accessor agreement', () => {
     assert.equal(store.get('notificationChannel'), 'console');
 
     store.close();
+  });
+});
+
+describe('Antigravity CLI update scheduling configuration', () => {
+  it('coerces AGY_UPDATE_INTERVAL_HOURS, defaults to 24 and lets 0 disable it', () => {
+    const parsed = RawEnvSchema.parse({ AGY_UPDATE_INTERVAL_HOURS: '6' });
+    assert.equal(parsed.AGY_UPDATE_INTERVAL_HOURS, 6);
+
+    assert.equal(BUILTIN_DEFAULTS.agyUpdateIntervalHours, 24);
+    assert.equal(parseRawEnv({}).agyUpdateIntervalHours, undefined);
+    assert.equal(parseRawEnv({ AGY_UPDATE_INTERVAL_HOURS: '0' }).agyUpdateIntervalHours, 0);
+
+    assert.equal(
+      validateConfigOverridePatch({ agyUpdateIntervalHours: 12 }).agyUpdateIntervalHours,
+      12
+    );
+    assert.throws(() => validateConfigOverridePatch({ agyUpdateIntervalHours: -1 }));
+  });
+
+  it('warns at boot when removed legacy env vars are still set', () => {
+    const warnings: string[] = [];
+    const found = warnDeprecatedEnvVars(
+      { NOTIFICATION_CHANNEL: 'discord', WEBHOOK_URL: '   ', ENCRYPTION_KEY: 'secret' },
+      { warn: (...args: unknown[]) => warnings.push(args.map(String).join(' ')) }
+    );
+    assert.deepEqual(found, ['NOTIFICATION_CHANNEL', 'ENCRYPTION_KEY']);
+    assert.equal(warnings.length, 2);
+    assert.ok(warnings[0]?.includes('NOTIFICATION_CHANNELS'));
+    assert.ok(warnings[1]?.includes('AGYLITY_SECRET_KEY'));
   });
 });

@@ -94,11 +94,12 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Reasoning effort level passed to agy --effort.',
   },
   {
-    key: 'prPolicy',
-    label: 'Pull Request policy',
-    type: 'select',
-    options: PR_POLICY_OPTIONS,
-    hint: 'Restricts autonomous tasks (routines and pre-reset triggers) from opening code PRs. Code issues are filed as GitHub Issues instead.',
+    key: 'routinesEnabled',
+    label: 'Routine automation',
+    type: 'boolean',
+    onLabel: 'Enabled',
+    offLabel: 'Disabled',
+    hint: 'Master switch for Tier 3 routine tasks. When disabled, no routine fires regardless of its own toggle.',
   },
   {
     key: 'quotaBurnMaxHours',
@@ -113,6 +114,20 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     type: 'number',
     placeholder: '30',
     hint: 'Minimum remaining pool quota required to trigger scheduled maintenance routines (default: 30%).',
+  },
+  {
+    key: 'githubBacklogLabel',
+    label: 'GitHub backlog label',
+    type: 'text',
+    placeholder: 'backlog',
+    hint: 'Issue label the GitHub backlog sync imports as pending work (default: backlog).',
+  },
+  {
+    key: 'prPolicy',
+    label: 'Pull Request policy',
+    type: 'select',
+    options: PR_POLICY_OPTIONS,
+    hint: 'Restricts autonomous tasks (routines and pre-reset triggers) from opening code PRs. Code issues are filed as GitHub Issues instead.',
   },
   {
     key: 'minDispatchHeadroomPercent',
@@ -187,9 +202,32 @@ export const TELEMETRY_OVERRIDE_FIELDS: FieldDef[] = [
   },
 ];
 
+export const RUNTIME_FIELDS: FieldDef[] = [
+  {
+    key: 'agyUpdateIntervalHours',
+    label: 'Antigravity CLI refresh interval (hours)',
+    type: 'number',
+    placeholder: '24',
+    hint: 'Hours between background agy update runs on this coordinator; 0 disables them. Runners read AGY_UPDATE_INTERVAL_HOURS from their own environment.',
+  },
+  {
+    key: 'logLevel',
+    label: 'Log level',
+    type: 'select',
+    options: [
+      { value: 'debug', label: 'Debug' },
+      { value: 'info', label: 'Info' },
+      { value: 'warn', label: 'Warn' },
+      { value: 'error', label: 'Error' },
+    ],
+    hint: 'Verbosity of the daemon log stream and the in-memory log buffer. Applies immediately.',
+  },
+];
+
 export const ALL_SETTINGS_FIELDS: FieldDef[] = [
   ...SENTRY_GENERAL_FIELDS,
   ...COORDINATOR_FIELDS,
   ...NETWORK_SECURITY_FIELDS,
   ...TELEMETRY_OVERRIDE_FIELDS,
+  ...RUNTIME_FIELDS,
 ];

@@ -9,6 +9,7 @@ import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask } from '../coordina
 import type { PrPolicy } from '../config/schema.js';
 import { TaskExecutor, type TaskExecutionResult } from './executor.js';
 import { assertRunnerGitCredentials } from './git.js';
+import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 
 // The coordinator rejects a JSON body over 64 KB, so an untruncated run output would turn a
 // finished task into a 413 and a lease-expiry failure.
@@ -84,6 +85,8 @@ export interface RemoteSwarmRunnerOptions {
   execFileFn?: ExecFileAsyncFn;
   pollTimeoutMs?: number;
   idlePollIntervalMs?: number;
+  agyUpdateIntervalHours?: number;
+  agyUpdater?: AgyUpdaterLike;
   prPolicy?: PrPolicy;
   executor?: TaskExecutor;
   logger?: Logger;
@@ -93,6 +96,10 @@ export class RemoteSwarmRunner {
   private readonly options: RemoteSwarmRunnerOptions;
   private readonly executor: TaskExecutor;
   private readonly log: Logger;
+  private readonly agyUpdater: AgyUpdaterLike;
+  private readonly agyUpdateIntervalHours: number;
+  private agyUpdateTimer: NodeJS.Timeout | null = null;
+  private agyUpdateInFlight = false;
   private runnerId: string;
   private runnerName: string;
   private labels: string[];
@@ -117,6 +124,14 @@ export class RemoteSwarmRunner {
     this.repositories = options.repositories;
     this.runnerToken = options.runnerToken?.trim() || undefined;
     this.log = options.logger ?? logger.child(`runner:${this.runnerId}`);
+    this.agyUpdateIntervalHours = options.agyUpdateIntervalHours ?? 24;
+    this.agyUpdater =
+      options.agyUpdater ??
+      new AgyUpdater({
+        agyBinPath: options.agyBinPath || 'agy',
+        execFileFn: options.execFileFn,
+        logger: this.log.child('agy'),
+      });
     this.executor =
       options.executor ??
       new TaskExecutor({
@@ -450,6 +465,8 @@ export class RemoteSwarmRunner {
       );
     }
 
+    this.scheduleAgyUpdateTimer();
+
     const idleIntervalMs = this.options.idlePollIntervalMs ?? 2000;
     this.log.info(
       'Starting outbound swarm runner loop (%s -> %s)',
@@ -469,6 +486,40 @@ export class RemoteSwarmRunner {
         this.log.warn('Poll cycle error on runner %s: %s', this.runnerId, err?.message ?? err);
         await this.sleep(Math.max(idleIntervalMs, 3000));
       }
+    }
+  }
+
+  private scheduleAgyUpdateTimer(): void {
+    if (this.agyUpdateTimer) {
+      clearTimeout(this.agyUpdateTimer);
+      this.agyUpdateTimer = null;
+    }
+    if (!(this.agyUpdateIntervalHours > 0)) return;
+
+    const intervalMs = this.agyUpdateIntervalHours * 3600 * 1000;
+    const arm = (): void => {
+      this.agyUpdateTimer = setTimeout(() => {
+        void this.runScheduledAgyUpdate().finally(() => {
+          if (this.isRunning) arm();
+        });
+      }, intervalMs);
+      this.agyUpdateTimer.unref?.();
+    };
+    arm();
+  }
+
+  /** Idle-only: an executing task owns the binary, so the refresh waits for the next idle tick. */
+  public async runScheduledAgyUpdate(): Promise<boolean> {
+    if (this.currentExecutingTaskId !== null || this.agyUpdateInFlight) return false;
+    this.agyUpdateInFlight = true;
+    try {
+      await this.agyUpdater.update();
+      return true;
+    } catch (err: any) {
+      this.log.warn('Scheduled agy update failed: %s', err?.message ?? err);
+      return false;
+    } finally {
+      this.agyUpdateInFlight = false;
     }
   }
 
@@ -591,6 +642,10 @@ export class RemoteSwarmRunner {
 
   public stop(): void {
     this.isRunning = false;
+    if (this.agyUpdateTimer) {
+      clearTimeout(this.agyUpdateTimer);
+      this.agyUpdateTimer = null;
+    }
     this.abortController?.abort();
     this.taskAbortController?.abort();
   }

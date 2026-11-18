@@ -47,6 +47,7 @@ export interface HealthStatus {
   uptime?: number;
   timestamp?: string;
   authRequired?: boolean;
+  agyVersion?: string | null;
 }
 
 export const checkHealth = async (): Promise<HealthStatus> => {

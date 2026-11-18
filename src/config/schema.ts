@@ -155,9 +155,7 @@ export const NotificationChannelsSchema = z.preprocess((val) => {
 
 export const RawEnvSchema = z.object({
   NOTIFICATION_CHANNELS: z.string().optional(),
-  NOTIFICATION_CHANNEL: NotificationChannelEnum.optional(),
   NOTIFICATION_WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
-  WEBHOOK_URL: z.string().url().optional().or(z.literal('')),
   WEBHOOK_SECRET: z.string().optional(),
   WEBHOOK_CUSTOM_HEADERS: z.string().optional(),
   DISCORD_TOKEN: z.string().optional(),
@@ -169,6 +167,7 @@ export const RawEnvSchema = z.object({
   ANTIGRAVITY_ENDPOINT_URL: z.string().url().optional().or(z.literal('')),
   ANTIGRAVITY_CSRF_TOKEN: z.string().optional(),
   QUOTA_CHECK_INTERVAL_SECONDS: z.coerce.number().int().min(30).optional(),
+  AGY_UPDATE_INTERVAL_HOURS: z.coerce.number().min(0).optional(),
   QUOTA_ALERT_THRESHOLD_PERCENT: z.coerce.number().min(0).max(100).optional(),
   QUOTA_MILESTONE_HOURS: z.string().optional(),
   MIN_DISPATCH_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
@@ -215,6 +214,7 @@ export interface AppConfig {
 
   antigravityEndpointUrl?: string;
   antigravityCsrfToken?: string;
+  agyUpdateIntervalHours: number;
   quotaCheckIntervalSeconds: number;
   quotaAlertThresholdPercent: number;
   quotaMilestoneHours: number[];
@@ -251,7 +251,6 @@ export type ResolvedConfig = AppConfig;
 
 export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   notificationChannels: 'NOTIFICATION_CHANNELS',
-  notificationChannel: 'NOTIFICATION_CHANNEL',
   notificationWebhookUrl: 'NOTIFICATION_WEBHOOK_URL',
   webhookSecret: 'WEBHOOK_SECRET',
   webhookCustomHeaders: 'WEBHOOK_CUSTOM_HEADERS',
@@ -263,6 +262,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   discordPingOwner: 'DISCORD_PING_OWNER',
   antigravityEndpointUrl: 'ANTIGRAVITY_ENDPOINT_URL',
   antigravityCsrfToken: 'ANTIGRAVITY_CSRF_TOKEN',
+  agyUpdateIntervalHours: 'AGY_UPDATE_INTERVAL_HOURS',
   quotaCheckIntervalSeconds: 'QUOTA_CHECK_INTERVAL_SECONDS',
   quotaAlertThresholdPercent: 'QUOTA_ALERT_THRESHOLD_PERCENT',
   quotaMilestoneHours: 'QUOTA_MILESTONE_HOURS',
@@ -289,10 +289,6 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   logLevel: 'LOG_LEVEL',
 };
 
-export const CONFIG_ENV_ALIASES: Record<string, keyof AppConfig> = {
-  WEBHOOK_URL: 'notificationWebhookUrl',
-};
-
 export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
   ...Object.fromEntries(
     Object.entries(CONFIG_KEY_ENV_NAMES).map(([key, env]) => [
@@ -300,7 +296,6 @@ export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
       key as keyof AppConfig,
     ])
   ),
-  ...CONFIG_ENV_ALIASES,
 };
 
 export const CANONICAL_SECRET_CONFIG_KEYS = [
@@ -337,6 +332,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
 
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
+  agyUpdateIntervalHours: 24,
   quotaCheckIntervalSeconds: 60,
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
   quotaMilestoneHours: DEFAULT_MILESTONE_HOURS,
@@ -400,13 +396,9 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.NOTIFICATION_CHANNELS) {
     result.notificationChannels = NotificationChannelsSchema.parse(parsed.NOTIFICATION_CHANNELS);
     result.notificationChannel = result.notificationChannels[0] ?? 'none';
-  } else if (parsed.NOTIFICATION_CHANNEL) {
-    result.notificationChannel = parsed.NOTIFICATION_CHANNEL;
-    result.notificationChannels =
-      parsed.NOTIFICATION_CHANNEL !== 'none' ? [parsed.NOTIFICATION_CHANNEL] : [];
   }
 
-  const rawWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL || parsed.WEBHOOK_URL;
+  const rawWebhookUrl = parsed.NOTIFICATION_WEBHOOK_URL;
   if (rawWebhookUrl && !isTemplatePlaceholder(rawWebhookUrl)) {
     result.notificationWebhookUrl = rawWebhookUrl;
   }
@@ -455,6 +447,8 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.ANTIGRAVITY_CSRF_TOKEN && !isTemplatePlaceholder(parsed.ANTIGRAVITY_CSRF_TOKEN)) {
     result.antigravityCsrfToken = parsed.ANTIGRAVITY_CSRF_TOKEN;
   }
+  if (parsed.AGY_UPDATE_INTERVAL_HOURS !== undefined)
+    result.agyUpdateIntervalHours = parsed.AGY_UPDATE_INTERVAL_HOURS;
   if (parsed.QUOTA_CHECK_INTERVAL_SECONDS !== undefined)
     result.quotaCheckIntervalSeconds = parsed.QUOTA_CHECK_INTERVAL_SECONDS;
   if (parsed.QUOTA_ALERT_THRESHOLD_PERCENT !== undefined)
@@ -580,6 +574,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   discordPingOwner: z.boolean(),
   antigravityEndpointUrl: z.string().url().or(z.literal('')).optional(),
   antigravityCsrfToken: z.string().optional(),
+  agyUpdateIntervalHours: z.number().min(0),
   quotaCheckIntervalSeconds: z.number().int().min(30),
   quotaAlertThresholdPercent: z.number().min(0).max(100),
   quotaMilestoneHours: z.array(z.number().positive()),

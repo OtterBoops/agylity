@@ -290,7 +290,7 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
 ## 8. Notifier Architecture & Discord Runtime Invariants
 
 - **Dynamic Import Isolation Invariant:**
-  To guarantee a minimal runtime memory footprint, inactive notification channels must never initialize listeners or load modules into memory. The notifier factory uses dynamic `await import()` so `discord.js` is strictly isolated and never loaded when `NOTIFICATION_CHANNEL=console` or `webhook`.
+  To guarantee a minimal runtime memory footprint, inactive notification channels must never initialize listeners or load modules into memory. The notifier factory uses dynamic `await import()` so `discord.js` is strictly isolated and never loaded when `NOTIFICATION_CHANNELS` lists only `console` or `webhook`.
 - **Discord 3-Second Timeout Guard:**
   Discord API requires interactions (slash commands like `/quota`, modal submissions) to receive an initial acknowledgment within **3000ms**, or it throws fatal error `10062: Unknown interaction`.
   - **Invariant:** Modal submissions and slash commands must immediately invoke `await interaction.deferReply()` prior to any network I/O, quota polling, or task spawning.

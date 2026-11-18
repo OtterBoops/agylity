@@ -132,7 +132,7 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
 
       <SettingsForm
         title="Model Selection &amp; Dispatch Thresholds"
-        description="Configure the default dispatch model, fallback runner secret, routine pre-reset triggers, and the dispatch safety floor that blocks overage."
+        description="Configure the default dispatch model, routine automation and its pre-reset triggers, the GitHub backlog label, and the dispatch safety floor that blocks overage."
         fields={COORDINATOR_FIELDS}
         config={config}
         onSaved={onChanged}

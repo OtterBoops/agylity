@@ -1,5 +1,6 @@
 import os from 'node:os';
 import { logger } from './logs/logger.js';
+import { warnDeprecatedEnvVars } from './config/deprecated.js';
 import { RemoteSwarmRunner, normalizePrPolicy } from './runner/index.js';
 import type { PrPolicy } from './config/schema.js';
 
@@ -16,6 +17,7 @@ export interface RunnerCliOptions {
   agyBinPath: string;
   pollTimeoutMs: number;
   idlePollIntervalMs: number;
+  agyUpdateIntervalHours: number;
   prPolicy?: PrPolicy;
 }
 
@@ -36,7 +38,7 @@ const normalizeCoordinatorUrl = (raw: string): string => {
 
 // A blank value is not a value: compose emits '' for an unset var, and Number('') is 0, which
 // disables long-polling and leaves the poll loop never sleeping.
-const readIntervalMs = (raw: string | undefined, fallback: number): number => {
+const readNonNegativeNumber = (raw: string | undefined, fallback: number): number => {
   if (raw === undefined || raw.trim() === '') return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
@@ -67,11 +69,7 @@ export const parseRunnerCliArgs = (
   }
 
   const rawCoordinatorUrl =
-    args.url ||
-    args['coordinator-url'] ||
-    env.COORDINATOR_URL ||
-    env.AGYLITY_COORDINATOR_URL ||
-    'http://127.0.0.1:8484';
+    args.url || args['coordinator-url'] || env.COORDINATOR_URL || 'http://127.0.0.1:8484';
   let coordinatorUrl: string;
   try {
     coordinatorUrl = normalizeCoordinatorUrl(rawCoordinatorUrl);
@@ -83,16 +81,10 @@ export const parseRunnerCliArgs = (
     args.token ||
     args['registration-token'] ||
     env.REGISTRATION_TOKEN ||
-    env.AGYLITY_REGISTRATION_TOKEN ||
     ''
   ).trim();
 
-  const rawRunnerToken = (
-    args['runner-token'] ||
-    env.RUNNER_TOKEN ||
-    env.AGYLITY_RUNNER_TOKEN ||
-    ''
-  ).trim();
+  const rawRunnerToken = (args['runner-token'] || env.RUNNER_TOKEN || '').trim();
 
   // One variable can carry either credential, so the prefix decides which one was supplied.
   const registrationToken = rawToken.startsWith('agyr_reg_')
@@ -131,8 +123,9 @@ export const parseRunnerCliArgs = (
     repositories: repoList.length > 0 ? repoList : undefined,
     runnerStatePath,
     agyBinPath,
-    pollTimeoutMs: readIntervalMs(env.RUNNER_POLL_TIMEOUT_MS, 25000),
-    idlePollIntervalMs: readIntervalMs(env.RUNNER_IDLE_INTERVAL_MS, 2000),
+    pollTimeoutMs: readNonNegativeNumber(env.RUNNER_POLL_TIMEOUT_MS, 25000),
+    idlePollIntervalMs: readNonNegativeNumber(env.RUNNER_IDLE_INTERVAL_MS, 2000),
+    agyUpdateIntervalHours: readNonNegativeNumber(env.AGY_UPDATE_INTERVAL_HOURS, 24),
     // An unrecognised policy must not reach the bot guards as "anything goes"; unknown inherits.
     prPolicy: normalizePrPolicy(args['pr-policy'] || env.PR_POLICY) ?? undefined,
   };
@@ -146,6 +139,7 @@ export const runRunnerCli = async (): Promise<void> => {
   const log = logger.child('runner-cli');
   const opts = parseRunnerCliArgs();
 
+  warnDeprecatedEnvVars(process.env, log);
   log.info(
     '[Notice] Starting Agylity Swarm Runner "%s" (coordinator=%s, state=%s)',
     opts.runnerName ?? 'runner',
@@ -166,6 +160,7 @@ export const runRunnerCli = async (): Promise<void> => {
     agyBinPath: opts.agyBinPath,
     pollTimeoutMs: opts.pollTimeoutMs,
     idlePollIntervalMs: opts.idlePollIntervalMs,
+    agyUpdateIntervalHours: opts.agyUpdateIntervalHours,
     prPolicy: opts.prPolicy,
     logger: log,
   });
@@ -177,6 +172,7 @@ export const runRunnerCli = async (): Promise<void> => {
       process.exit(0);
     }
     shuttingDown = true;
+    warnDeprecatedEnvVars(process.env, log);
     log.info('[Notice] Received %s, stopping Agylity Swarm Runner...', signal);
     runner.stop();
     // Docker sends SIGKILL 10s after SIGTERM, so a wedged subprocess must not hold the container open.

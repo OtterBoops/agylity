@@ -1,7 +1,11 @@
 import type { ConfigData } from '../../types';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
-import { NETWORK_SECURITY_FIELDS, TELEMETRY_OVERRIDE_FIELDS } from '../../config/fields';
+import {
+  NETWORK_SECURITY_FIELDS,
+  RUNTIME_FIELDS,
+  TELEMETRY_OVERRIDE_FIELDS,
+} from '../../config/fields';
 
 interface AdvancedViewProps {
   config: ConfigData;
@@ -24,6 +28,15 @@ export const AdvancedView = ({ config, onChanged, searchQuery }: AdvancedViewPro
       title="Language Server Telemetry"
       description="Point the sentry at a custom Antigravity Language Server Connect-RPC endpoint."
       fields={TELEMETRY_OVERRIDE_FIELDS}
+      config={config}
+      onSaved={onChanged}
+      searchQuery={searchQuery}
+    />
+
+    <SettingsForm
+      title="Daemon Runtime"
+      description="Background Antigravity CLI maintenance and the verbosity of the daemon log stream."
+      fields={RUNTIME_FIELDS}
       config={config}
       onSaved={onChanged}
       searchQuery={searchQuery}
