@@ -62,7 +62,7 @@ describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
 
         assert.equal(result.success, true);
         assert.equal(result.noChanges, true);
-        assert.ok(result.branchName.startsWith('agy/'));
+        assert.equal(result.branchName, undefined);
         assert.deepEqual(
           {
             numTurns: result.numTurns,

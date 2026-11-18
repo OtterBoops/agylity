@@ -474,8 +474,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         const result = await executor.execute(task);
         assert.equal(result.success, true);
-        assert.ok(result.branchName.startsWith('agy/'));
+        assert.ok(result.branchName?.startsWith('agy/'));
         assert.notEqual(result.branchName, 'main');
+        const branchName = result.branchName!;
 
         // 1a. Stashes a dirty tree, then switches back to the default base branch ('main')
         assert.equal(invocations[0]?.file, 'git');
@@ -495,7 +496,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         // 1b. Then checks out isolated continuation branch
         assert.equal(invocations[4]?.file, 'git');
-        assert.deepEqual(invocations[4]?.args, ['checkout', '-B', result.branchName]);
+        assert.deepEqual(invocations[4]?.args, ['checkout', '-B', branchName]);
 
         // 2. Next command must be official agy CLI with explicit --model and --effort
         assert.equal(invocations[5]?.file, 'agy');
@@ -516,8 +517,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // 3. Subsequent commands stage, commit, and push the isolated branch
         assert.ok(
           invocations.some(
-            (inv) =>
-              inv.file === 'git' && inv.args[0] === 'push' && inv.args.includes(result.branchName)
+            (inv) => inv.file === 'git' && inv.args[0] === 'push' && inv.args.includes(branchName)
           )
         );
       } finally {
