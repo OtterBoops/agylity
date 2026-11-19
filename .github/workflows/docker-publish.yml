@@ -107,6 +107,9 @@ jobs:
       - name: TypeScript Typecheck
         run: npm run typecheck
 
+      - name: Build Client Bundle for Web UI Tests
+        run: npm run build:client
+
       - name: Run Full Deterministic Test Suite
         run: npm test
 
