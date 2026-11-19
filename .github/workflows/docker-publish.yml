@@ -17,6 +17,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+  RUNNER_IMAGE: ghcr.io/${{ github.repository }}-runner
+
 jobs:
   test:
     name: Typecheck & Test (Node 26)
@@ -54,6 +58,15 @@ jobs:
       - name: Run Full Deterministic Test Suite
         run: npm test
 
+      # The container build consumes this bundle instead of recompiling in CI.
+      - name: Upload Compiled Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
   verify-docker:
     name: Verify Docker Build (Dry Run)
     needs: test
@@ -66,24 +79,25 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build Coordinator (Dry Run)
-        uses: docker/build-push-action@v6
+      - name: Download Compiled Bundle
+        uses: actions/download-artifact@v4
         with:
-          context: .
-          target: coordinator
-          push: false
-          cache-from: type=gha,scope=coordinator
+          name: dist
+          path: .dist-ctx/app/dist
 
-      - name: Build Runner (Dry Run)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: runner
-          push: false
-          cache-from: type=gha,scope=runner
+      # Both targets build in one bake session, so the shared stages resolve once.
+      # The context lives inside the workspace: buildx refuses to read a named
+      # context from outside it without an explicit --allow=fs.read entitlement.
+      - name: Bake Both Images (No Push)
+        env:
+          DIST_CONTEXT: .dist-ctx
+        run: |
+          docker buildx bake -f docker-bake.hcl \
+            --set '*.output=type=cacheonly' \
+            --provenance=false --sbom=false
 
   publish:
-    name: Build & Publish Container Image (GHCR)
+    name: Build & Publish Container Images (GHCR)
     needs: test
     if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
@@ -106,57 +120,102 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Coordinator Docker Metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          flavor: |
-            latest=false
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-beta') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') }}
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short
+      # Tag matrix mirrors the metadata-action config this replaced: main/edge on
+      # branch pushes, semver + latest on tags, and a sha tag on both.
+      - name: Resolve Image Tags
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          coord=("${IMAGE}:sha-${short}")
+          runner=("${RUNNER_IMAGE}:sha-${short}")
+          version=""
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            candidate="${GITHUB_REF_NAME#v}"
+            if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+              version="$candidate"
+            fi
+          else
+            coord+=("${IMAGE}:main" "${IMAGE}:edge")
+            runner+=("${RUNNER_IMAGE}:main" "${RUNNER_IMAGE}:edge")
+          fi
+          if [[ -n "$version" ]]; then
+            minor="${version%%-*}"
+            minor="${minor%.*}"
+            coord+=("${IMAGE}:${version}" "${IMAGE}:${minor}")
+            runner+=("${RUNNER_IMAGE}:${version}" "${RUNNER_IMAGE}:${minor}")
+            if [[ ! "$GITHUB_REF_NAME" =~ -(beta|rc|alpha) ]]; then
+              coord+=("${IMAGE}:latest")
+              runner+=("${RUNNER_IMAGE}:latest")
+            fi
+          fi
+          {
+            echo "COORDINATOR_TAGS=$(IFS=,; echo "${coord[*]}")"
+            echo "RUNNER_TAGS=$(IFS=,; echo "${runner[*]}")"
+            echo "VERSION=${version}"
+            echo "REVISION=${GITHUB_SHA}"
+            echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_ENV"
 
-      - name: Build and Push Coordinator Image (agylity)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: coordinator
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha,scope=coordinator
-          cache-to: type=gha,mode=min,scope=coordinator
+      # A tag on a commit whose images were already pushed by the branch run only
+      # needs retagging; rebuilding identical layers is wasted time.
+      - name: Check for a Reusable sha Image
+        id: reuse
+        run: |
+          set -euo pipefail
+          short="${GITHUB_SHA::7}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]] \
+            && docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1 \
+            && docker buildx imagetools inspect "${RUNNER_IMAGE}:sha-${short}" >/dev/null 2>&1; then
+            echo "reusable=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "reusable=false" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Extract Swarm Runner Docker Metadata
-        id: meta_runner
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}-runner
-          flavor: |
-            latest=false
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/') && !contains(github.ref, '-beta') && !contains(github.ref, '-rc') && !contains(github.ref, '-alpha') }}
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=branch,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=short
+      - name: Retag Coordinator From sha Image
+        if: steps.reuse.outputs.reusable == 'true'
+        run: |
+          set -euo pipefail
+          source="${IMAGE}:sha-${GITHUB_SHA::7}"
+          args=()
+          IFS=',' read -ra tags <<< "$COORDINATOR_TAGS"
+          for tag in "${tags[@]}"; do
+            [[ "$tag" == "$source" ]] || args+=(--tag "$tag")
+          done
+          if [[ ${#args[@]} -eq 0 ]]; then
+            echo "No additional tags resolved; nothing to retag."
+            exit 0
+          fi
+          docker buildx imagetools create "${args[@]}" "$source"
 
-      - name: Build and Push Swarm Runner Image (agylity-runner)
-        uses: docker/build-push-action@v6
+      - name: Retag Runner From sha Image
+        if: steps.reuse.outputs.reusable == 'true'
+        run: |
+          set -euo pipefail
+          source="${RUNNER_IMAGE}:sha-${GITHUB_SHA::7}"
+          args=()
+          IFS=',' read -ra tags <<< "$RUNNER_TAGS"
+          for tag in "${tags[@]}"; do
+            [[ "$tag" == "$source" ]] || args+=(--tag "$tag")
+          done
+          if [[ ${#args[@]} -eq 0 ]]; then
+            echo "No additional tags resolved; nothing to retag."
+            exit 0
+          fi
+          docker buildx imagetools create "${args[@]}" "$source"
+
+      - name: Download Compiled Bundle
+        if: steps.reuse.outputs.reusable != 'true'
+        uses: actions/download-artifact@v4
         with:
-          context: .
-          target: runner
-          push: true
-          tags: ${{ steps.meta_runner.outputs.tags }}
-          labels: ${{ steps.meta_runner.outputs.labels }}
-          cache-from: type=gha,scope=runner
-          cache-to: type=gha,mode=min,scope=runner
+          name: dist
+          path: .dist-ctx/app/dist
+
+      - name: Bake and Push Both Images
+        if: steps.reuse.outputs.reusable != 'true'
+        env:
+          DIST_CONTEXT: .dist-ctx
+          PUSH: 'true'
+        run: docker buildx bake -f docker-bake.hcl --provenance=false --sbom=false
 
       # The annotated tag message (or commit subject) becomes the ### <slug> at the top of the release body.
       - name: Resolve Release Slug

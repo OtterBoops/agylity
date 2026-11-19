@@ -480,6 +480,7 @@ agylity/
 │   ├── e2e/                    # Opaque-box E2E suites & shared mock harness
 │   └── unit/                   # Focused unit tests
 ├── Dockerfile                  # Multi-stage production container (node:26-slim)
+├── docker-bake.hcl             # CI build graph: both targets in one session, shared cache scope
 ├── docker-compose.yaml         # Container deployment definition (ports: 8484:8484)
 ├── docker/entrypoint.sh        # Boot-time agy refresh, then exec the container command
 ├── LICENSE                     # PolyForm Noncommercial License 1.0.0
