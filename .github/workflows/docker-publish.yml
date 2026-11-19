@@ -125,6 +125,8 @@ jobs:
       - name: Resolve Image Tags
         run: |
           set -euo pipefail
+          IMAGE="${IMAGE,,}"
+          RUNNER_IMAGE="${RUNNER_IMAGE,,}"
           short="${GITHUB_SHA::7}"
           coord=("${IMAGE}:sha-${short}")
           runner=("${RUNNER_IMAGE}:sha-${short}")
@@ -149,6 +151,8 @@ jobs:
             fi
           fi
           {
+            echo "IMAGE=${IMAGE}"
+            echo "RUNNER_IMAGE=${RUNNER_IMAGE}"
             echo "COORDINATOR_TAGS=$(IFS=,; echo "${coord[*]}")"
             echo "RUNNER_TAGS=$(IFS=,; echo "${runner[*]}")"
             echo "VERSION=${version}"
@@ -162,6 +166,8 @@ jobs:
         id: reuse
         run: |
           set -euo pipefail
+          IMAGE="${IMAGE,,}"
+          RUNNER_IMAGE="${RUNNER_IMAGE,,}"
           short="${GITHUB_SHA::7}"
           if [[ "$GITHUB_REF" == refs/tags/* ]] \
             && docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1 \
