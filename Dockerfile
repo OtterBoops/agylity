@@ -3,6 +3,10 @@
 # Base: node:26-slim with zero-CVE minimal footprint
 # ==============================================================================
 
+# Global default keeps `docker build --target coordinator|runner` self-contained
+# using the local `base` stage; CI overrides this to a prebuilt registry image.
+ARG BASE_IMAGE=base
+
 # ------------------------------------------------------------------------------
 # Stage 1: Production Dependencies (Built in parallel with builder)
 # ------------------------------------------------------------------------------
@@ -61,15 +65,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates procps curl && \
-    mkdir -p /home/node/.local/bin && \
-    (curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /home/node/.local/bin) && \
+    mkdir -p /home/node/.local/bin /home/node/.gemini /app/data && \
+    chown -R node:node /home/node /app && \
+    su -s /bin/sh node -c "curl -fsSL https://antigravity.google/cli/install.sh | bash -s -- --dir /home/node/.local/bin" && \
     rm -rf /var/lib/apt/lists/*
+
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/agylity-entrypoint.sh
 
 # ------------------------------------------------------------------------------
 # Stage 5: Swarm Runner Runtime (Target: runner -> ghcr.io/otterboops/agylity-runner)
 # Adds the git/ssh/gh toolchain the task executor needs on top of the shared base
 # ------------------------------------------------------------------------------
-FROM base AS runner
+FROM ${BASE_IMAGE} AS runner
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
@@ -79,17 +86,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
     && apt-get update && apt-get install -y --no-install-recommends gh)) && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /repos /data && \
+    chown node:node /repos /data
 
-COPY package*.json ./
-COPY --from=prod-deps /app/node_modules ./node_modules
-COPY --from=dist /app/dist ./dist
-
-RUN mkdir -p /home/node/.gemini /repos /data && \
-    chown -R node:node /home/node /repos /data /app
-
-COPY docker/entrypoint.sh /usr/local/bin/agylity-entrypoint.sh
-RUN chmod +x /usr/local/bin/agylity-entrypoint.sh
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
+COPY --chown=node:node --from=dist /app/dist ./dist
 
 USER node
 
@@ -107,21 +110,14 @@ CMD ["node", "--no-warnings", "dist/runner-cli.js"]
 # Stage 6: Coordinator & Sentry Runtime (Default Target: coordinator -> ghcr.io/otterboops/agylity)
 # Lean control plane + Quota Sentry + baked agy CLI for authoritative /usage polling
 # ------------------------------------------------------------------------------
-FROM base AS coordinator
+FROM ${BASE_IMAGE} AS coordinator
 
 # Copy package manifests and production dependencies directly from prod-deps stage (instant)
-COPY package*.json ./
-COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --chown=node:node package*.json ./
+COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
 
 # Copy compiled JavaScript and static assets from the dist stage
-COPY --from=dist /app/dist ./dist
-
-# Create persistent state directory for SQLite database (agylity.db)
-RUN mkdir -p /app/data /home/node/.gemini && \
-    chown -R node:node /app/data /home/node /app
-
-COPY docker/entrypoint.sh /usr/local/bin/agylity-entrypoint.sh
-RUN chmod +x /usr/local/bin/agylity-entrypoint.sh
+COPY --chown=node:node --from=dist /app/dist ./dist
 
 # Switch to non-root node user
 USER node

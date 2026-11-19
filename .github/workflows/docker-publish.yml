@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'skills/**'
+      - '.agents/**'
     tags:
       - 'v*.*.*'
       - 'v*'
@@ -11,6 +16,11 @@ on:
   pull_request:
     branches:
       - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'skills/**'
+      - '.agents/**'
   workflow_dispatch:
 
 concurrency:
@@ -22,8 +32,9 @@ env:
   RUNNER_IMAGE: ghcr.io/${{ github.repository }}-runner
 
 jobs:
-  test:
-    name: Typecheck & Test (Node 26)
+  bundle:
+    name: Build Bundles (Node 26)
+    if: "!startsWith(github.ref, 'refs/tags/')"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -40,36 +51,68 @@ jobs:
 
       - name: Install Root & Client Dependencies
         run: |
-          npm ci
-          npm --prefix frontend ci
-
-      - name: Audit Production Dependencies
-        run: npm audit --omit=dev
-
-      - name: Lint & Tailwind Canonicalization Check
-        run: npm run lint
-
-      - name: TypeScript Typecheck
-        run: npm run typecheck
+          npm ci --no-audit --no-fund &
+          p1=$!
+          npm --prefix frontend ci --no-audit --no-fund &
+          p2=$!
+          wait "$p1" && wait "$p2"
 
       - name: Build Bundles
         run: npm run build
 
-      - name: Run Full Deterministic Test Suite
-        run: npm test
-
-      # The container build consumes this bundle instead of recompiling in CI.
       - name: Upload Compiled Bundle
         uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
-          if-no-files-found: error
           retention-days: 1
+
+  verify:
+    name: Lint, Typecheck & Test (Node 26)
+    if: "!startsWith(github.ref, 'refs/tags/')"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js 26
+        uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: 'npm'
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+
+      - name: Install Root & Client Dependencies
+        run: |
+          npm ci --no-audit --no-fund &
+          p1=$!
+          npm --prefix frontend ci --no-audit --no-fund &
+          p2=$!
+          wait "$p1" && wait "$p2"
+
+      - name: Audit Production Dependencies
+        if: github.event_name == 'pull_request'
+        run: npm audit --omit=dev
+
+      - name: Lint & Tailwind Canonicalization Check
+        run: |
+          npx prettier --check . &
+          p1=$!
+          npx eslint frontend/src &
+          p2=$!
+          wait "$p1" && wait "$p2"
+
+      - name: TypeScript Typecheck
+        run: npm run typecheck
+
+      - name: Run Full Deterministic Test Suite
+        run: npm test
 
   verify-docker:
     name: Verify Docker Build (Dry Run)
-    needs: test
+    needs: bundle
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -85,21 +128,18 @@ jobs:
           name: dist
           path: .dist-ctx/app/dist
 
-      # Both targets build in one bake session, so the shared stages resolve once.
-      # The context lives inside the workspace: buildx refuses to read a named
-      # context from outside it without an explicit --allow=fs.read entitlement.
-      - name: Bake Both Images (No Push)
+      - name: Bake Coordinator (Dry Run)
         env:
           DIST_CONTEXT: .dist-ctx
         run: |
-          docker buildx bake -f docker-bake.hcl \
+          docker buildx bake -f docker-bake.hcl coordinator \
             --set '*.output=type=cacheonly' \
             --provenance=false --sbom=false
 
   publish:
     name: Build & Publish Container Images (GHCR)
-    needs: test
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    needs: bundle
+    if: always() && (needs.bundle.result == 'success' || (startsWith(github.ref, 'refs/tags/') && needs.bundle.result == 'skipped')) && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -120,13 +160,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Tag matrix mirrors the metadata-action config this replaced: main/edge on
-      # branch pushes, semver + latest on tags, and a sha tag on both.
-      - name: Resolve Image Tags
+      # Branch pushes publish only :sha-<short> here; `promote` tags :main/:edge after `verify` passes.
+      - name: Resolve Image Tags & Base Image
         run: |
           set -euo pipefail
           IMAGE="${IMAGE,,}"
           RUNNER_IMAGE="${RUNNER_IMAGE,,}"
+          repo="${GITHUB_REPOSITORY,,}"
           short="${GITHUB_SHA::7}"
           coord=("${IMAGE}:sha-${short}")
           runner=("${RUNNER_IMAGE}:sha-${short}")
@@ -136,9 +176,6 @@ jobs:
             if [[ "$candidate" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
               version="$candidate"
             fi
-          else
-            coord+=("${IMAGE}:main" "${IMAGE}:edge")
-            runner+=("${RUNNER_IMAGE}:main" "${RUNNER_IMAGE}:edge")
           fi
           if [[ -n "$version" ]]; then
             minor="${version%%-*}"
@@ -150,9 +187,16 @@ jobs:
               runner+=("${RUNNER_IMAGE}:latest")
             fi
           fi
+          base_ref="ghcr.io/${repo}-base:latest"
+          if docker buildx imagetools inspect "$base_ref" >/dev/null 2>&1; then
+            base_image="$base_ref"
+          else
+            base_image="base"
+          fi
           {
             echo "IMAGE=${IMAGE}"
             echo "RUNNER_IMAGE=${RUNNER_IMAGE}"
+            echo "BASE_IMAGE=${base_image}"
             echo "COORDINATOR_TAGS=$(IFS=,; echo "${coord[*]}")"
             echo "RUNNER_TAGS=$(IFS=,; echo "${runner[*]}")"
             echo "VERSION=${version}"
@@ -166,8 +210,6 @@ jobs:
         id: reuse
         run: |
           set -euo pipefail
-          IMAGE="${IMAGE,,}"
-          RUNNER_IMAGE="${RUNNER_IMAGE,,}"
           short="${GITHUB_SHA::7}"
           if [[ "$GITHUB_REF" == refs/tags/* ]] \
             && docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1 \
@@ -182,10 +224,10 @@ jobs:
         run: |
           set -euo pipefail
           source="${IMAGE}:sha-${GITHUB_SHA::7}"
-          args=()
           IFS=',' read -ra tags <<< "$COORDINATOR_TAGS"
-          for tag in "${tags[@]}"; do
-            [[ "$tag" == "$source" ]] || args+=(--tag "$tag")
+          args=()
+          for t in "${tags[@]}"; do
+            [[ "$t" == "$source" ]] || args+=(--tag "$t")
           done
           if [[ ${#args[@]} -eq 0 ]]; then
             echo "No additional tags resolved; nothing to retag."
@@ -198,10 +240,10 @@ jobs:
         run: |
           set -euo pipefail
           source="${RUNNER_IMAGE}:sha-${GITHUB_SHA::7}"
-          args=()
           IFS=',' read -ra tags <<< "$RUNNER_TAGS"
-          for tag in "${tags[@]}"; do
-            [[ "$tag" == "$source" ]] || args+=(--tag "$tag")
+          args=()
+          for t in "${tags[@]}"; do
+            [[ "$t" == "$source" ]] || args+=(--tag "$t")
           done
           if [[ ${#args[@]} -eq 0 ]]; then
             echo "No additional tags resolved; nothing to retag."
@@ -210,7 +252,7 @@ jobs:
           docker buildx imagetools create "${args[@]}" "$source"
 
       - name: Download Compiled Bundle
-        if: steps.reuse.outputs.reusable != 'true'
+        if: steps.reuse.outputs.reusable != 'true' && needs.bundle.result == 'success'
         uses: actions/download-artifact@v8
         with:
           name: dist
@@ -219,7 +261,7 @@ jobs:
       - name: Bake and Push Both Images
         if: steps.reuse.outputs.reusable != 'true'
         env:
-          DIST_CONTEXT: .dist-ctx
+          DIST_CONTEXT: ${{ needs.bundle.result == 'success' && '.dist-ctx' || '' }}
           PUSH: 'true'
         run: docker buildx bake -f docker-bake.hcl --provenance=false --sbom=false
 
@@ -249,3 +291,30 @@ jobs:
           name: ${{ github.ref_name }}
           body: ${{ steps.release_slug.outputs.body }}
           generate_release_notes: true
+
+  promote:
+    name: Promote Main & Edge Tags (GHCR)
+    needs: [verify, publish]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Promote sha Image to main and edge
+        run: |
+          set -euo pipefail
+          IMAGE="${IMAGE,,}"
+          RUNNER_IMAGE="${RUNNER_IMAGE,,}"
+          short="${GITHUB_SHA::7}"
+          docker buildx imagetools create --tag "${IMAGE}:main" --tag "${IMAGE}:edge" "${IMAGE}:sha-${short}"
+          docker buildx imagetools create --tag "${RUNNER_IMAGE}:main" --tag "${RUNNER_IMAGE}:edge" "${RUNNER_IMAGE}:sha-${short}"

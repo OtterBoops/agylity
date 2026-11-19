@@ -42,6 +42,10 @@ variable "CREATED" {
   default = ""
 }
 
+variable "BASE_IMAGE" {
+  default = "base"
+}
+
 group "default" {
   targets = ["coordinator", "runner"]
 }
@@ -50,6 +54,9 @@ target "_common" {
   context    = "."
   dockerfile = "Dockerfile"
   contexts   = DIST_CONTEXT == "" ? {} : { dist = DIST_CONTEXT }
+  args = {
+    BASE_IMAGE = BASE_IMAGE
+  }
   output     = ["type=image,push=${PUSH},compression=zstd,oci-mediatypes=true"]
   labels = {
     "org.opencontainers.image.source"   = "https://github.com/${REPOSITORY}"
