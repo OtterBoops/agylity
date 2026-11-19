@@ -52,6 +52,13 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     defaultForFamily: true,
   },
   {
+    id: 'gemini-4-neon',
+    label: 'Gemini 4 Neon',
+    family: 'gemini-hydrogen',
+    defaultEffort: 'medium',
+    supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
+  },
+  {
     id: 'gemini-4-argon',
     label: 'Gemini 4 Argon',
     family: 'gemini-argon',
@@ -84,7 +91,8 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
 ] as const;
 
 // Orchestrator routes expose no effort variants, so `agy` rejects `--effort` for them.
-const EFFORTLESS_MODEL_ID_RE = /orchestrator/i;
+export const isOrchestratorModelId = (modelId: string | undefined): boolean =>
+  /orchestrator/i.test((modelId ?? '').trim());
 
 // False means the flag must be omitted: a guessed `--effort` fails the whole agy invocation.
 export const modelSupportsEffort = (
@@ -92,7 +100,7 @@ export const modelSupportsEffort = (
   supportedEfforts?: readonly ReasoningEffort[] | null
 ): boolean => {
   const id = (modelId ?? '').trim().toLowerCase();
-  if (EFFORTLESS_MODEL_ID_RE.test(id)) return false;
+  if (isOrchestratorModelId(id)) return false;
   if (supportedEfforts) return supportedEfforts.length > 0;
   const declared = CANONICAL_AGY_MODELS.find((entry) => entry.id === id)?.supportedEfforts;
   return declared ? declared.length > 0 : true;

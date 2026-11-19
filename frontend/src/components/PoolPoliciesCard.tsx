@@ -21,7 +21,7 @@ const POOLS: PoolDef[] = [
     key: 'gemini-hydrogen',
     name: 'Gemini Hydrogen',
     description:
-      'High-speed standard Gemini models (Gemini 4 Hydrogen, 3.8 Flash) with shared weekly and 5-hour limits.',
+      'High-speed standard Gemini models (Gemini 4 Hydrogen, Gemini 4 Neon, 3.8 Flash) with shared weekly and 5-hour limits.',
   },
   {
     key: 'gemini-argon',

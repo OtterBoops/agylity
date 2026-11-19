@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { QuotaBurnProjection, QuotaSnapshot } from '../types';
 import { useModelCatalog } from '../state/modelCatalogStore';
+import { isOrchestratorModelId } from '../../../src/shared/models.ts';
 
 interface QuotaGridProps {
   quota: QuotaSnapshot[];
@@ -56,11 +57,12 @@ export const QuotaGrid = ({
   const [now, setNow] = useState(Date.now());
   const catalog = useModelCatalog();
 
-  const catalogLabelsByFamily = new Map<string, string[]>();
+  const catalogLabelsByFamily = new Map<string, { models: string[]; routes: string[] }>();
   for (const entry of catalog.models) {
-    const labels = catalogLabelsByFamily.get(entry.family) ?? [];
-    labels.push(entry.label);
-    catalogLabelsByFamily.set(entry.family, labels);
+    const bucket = catalogLabelsByFamily.get(entry.family) ?? { models: [], routes: [] };
+    // Orchestration routes are dispatch targets, not models, so they are listed apart.
+    (isOrchestratorModelId(entry.id) ? bucket.routes : bucket.models).push(entry.label);
+    catalogLabelsByFamily.set(entry.family, bucket);
   }
 
   useEffect(() => {
@@ -142,9 +144,16 @@ export const QuotaGrid = ({
           shortTerm !== undefined && shortTerm.disabled !== true && shortTermPct !== null;
 
         const catalogModels = catalogLabelsByFamily.get(pool.family);
-        const poolModels =
-          catalogModels && catalogModels.length > 0 ? catalogModels : (pool.models ?? []);
-        const poolModelsLabel = poolModels.join(', ') || 'N/A';
+        const hasCatalogModels =
+          catalogModels !== undefined &&
+          catalogModels.models.length + catalogModels.routes.length > 0;
+        const poolModelLabels = hasCatalogModels ? catalogModels.models : (pool.models ?? []);
+        const poolRouteLabels = hasCatalogModels ? catalogModels.routes : [];
+        const poolModelsLabel = [...poolModelLabels, ...poolRouteLabels].join(', ') || 'N/A';
+        const poolHeaderLines = [
+          ...(poolModelLabels.length > 0 ? [poolModelLabels.join(', ')] : []),
+          ...(poolRouteLabels.length > 0 ? [poolRouteLabels.join(', ')] : []),
+        ];
 
         const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
         let statusTone = 'text-pine-iris';
@@ -216,25 +225,32 @@ export const QuotaGrid = ({
             key={pool.poolId}
             class="flex h-full flex-col justify-start gap-4 bg-pine-surface p-4 sm:p-5"
           >
-            {/* Fixed header height keeps the Weekly Limit bars on one line across cards. */}
-            <div class="flex h-17 items-start justify-between gap-3">
-              <div class="min-w-0 flex-1">
+            {/* Minimum header height keeps the Weekly Limit bars aligned while allowing 2-line titles + routes to expand. */}
+            <div class="flex min-h-17 flex-col">
+              <div class="flex items-start justify-between gap-3">
                 <h2
-                  class="line-clamp-2 text-base/snug font-semibold text-pine-text"
+                  class="line-clamp-2 min-w-0 flex-1 text-base/snug font-semibold text-pine-text"
                   title={poolDisplayName}
                 >
                   {poolDisplayName}
                 </h2>
-                <p class="mt-0.5 truncate text-xs text-pine-subtle" title={poolModelsLabel}>
-                  {poolModelsLabel}
-                </p>
-              </div>
-              <span class={`flex shrink-0 items-center gap-1.5 ${statusTone}`}>
-                <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
-                <span class="font-mono text-xs tracking-wider whitespace-nowrap uppercase">
-                  {statusText}
+                <span class={`flex shrink-0 items-center gap-1.5 ${statusTone}`}>
+                  <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
+                  <span class="font-mono text-xs tracking-wider whitespace-nowrap uppercase">
+                    {statusText}
+                  </span>
                 </span>
-              </span>
+              </div>
+              {/* Full width: beside the status chip the member list lost half its space to truncation. */}
+              {(poolHeaderLines.length > 0 ? poolHeaderLines : ['N/A']).map((line) => (
+                <p
+                  key={line}
+                  class="mt-0.5 truncate text-xs text-pine-subtle"
+                  title={poolModelsLabel}
+                >
+                  {line}
+                </p>
+              ))}
             </div>
 
             <div class="flex flex-col gap-2 border-t border-pine-highlight/40 pt-2">

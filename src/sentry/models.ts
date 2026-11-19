@@ -267,7 +267,7 @@ export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
 };
 
 export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
-  'gemini-hydrogen': ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash'],
+  'gemini-hydrogen': ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Gemini 3.8 Flash'],
   'gemini-argon': ['Gemini 4 Argon'],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
 };
@@ -325,8 +325,13 @@ export const resolveModelFamily = (config: {
     return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
   }
 
-  // Carbon runs on Hydrogen and matches before the orchestrator prefix, which spans both pools.
-  if (mid.includes('carbon') || lbl.includes('carbon')) {
+  // Carbon and Neon run on Hydrogen and match before the orchestrator prefix, which spans both pools.
+  if (
+    mid.includes('carbon') ||
+    lbl.includes('carbon') ||
+    mid.includes('neon') ||
+    lbl.includes('neon')
+  ) {
     return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
   }
 

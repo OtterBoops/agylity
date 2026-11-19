@@ -15,6 +15,7 @@ import {
 import {
   CANONICAL_AGY_MODELS,
   DEFAULT_MODEL_BY_FAMILY,
+  isOrchestratorModelId,
   modelSupportsEffort,
   resolveReasoningEffortForModel,
 } from '../../src/coordinator/models.js';
@@ -177,6 +178,25 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       );
       assert.equal(grouped.models[0]?.family, 'gemini-hydrogen');
       assert.ok(!CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-4-carbon'));
+    });
+
+    it('groups Gemini 4 Neon and Orchestrator (Neon) with Hydrogen', () => {
+      const grouped = groupAgyModels([
+        { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
+        { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
+        { id: 'gemini-4-neon-high', label: 'Gemini 4 Neon (High)' },
+        { id: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' },
+        { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)' },
+      ]);
+
+      const neon = grouped.models.find((m) => m.id === 'gemini-4-neon');
+      const orch = grouped.models.find((m) => m.id === 'gemini-pro-orchestrator-neon');
+      assert.equal(neon?.family, 'gemini-hydrogen');
+      assert.deepEqual(neon?.supportedEfforts, ['low', 'medium', 'high', 'xhigh']);
+      assert.equal(orch?.family, 'gemini-hydrogen');
+      assert.deepEqual(orch?.supportedEfforts, []);
+      assert.deepEqual(grouped.unattributed, []);
+      assert.equal(resolveReasoningEffortForModel('gemini-4-neon', 'xhigh'), 'xhigh');
     });
 
     it('reports a pool-less codename as unattributed rather than guessing', () => {
@@ -344,9 +364,13 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
     it('reports effort support for an orchestrator route as false', () => {
       assert.equal(modelSupportsEffort('gemini-pro-orchestrator-g1-pro'), false);
       assert.equal(modelSupportsEffort('gemini-pro-orchestrator'), false);
+      assert.equal(modelSupportsEffort('gemini-pro-orchestrator-neon'), false);
       assert.equal(modelSupportsEffort('gemini-4-carbon', []), false);
       assert.equal(modelSupportsEffort('gemini-4-hydrogen'), true);
       assert.equal(modelSupportsEffort('gemini-4-carbon', ['low', 'high']), true);
+      // The pool card splits its member list on this predicate, so a route must not read as a model.
+      assert.equal(isOrchestratorModelId('gemini-pro-orchestrator-neon'), true);
+      assert.equal(isOrchestratorModelId('gemini-4-neon'), false);
     });
   });
 });

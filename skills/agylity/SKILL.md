@@ -246,14 +246,14 @@ Three tiers, and only the first is human-initiated per run:
 
 Antigravity models do not consume a single monolithic quota counter; they are partitioned into distinct groups with **dual sliding windows**:
 
-| Group Display Name        | Member Models                       | Tracked Buckets              | Reset Window Behaviors                                                      |
-| :------------------------ | :---------------------------------- | :--------------------------- | :-------------------------------------------------------------------------- |
-| **Gemini Models**         | Gemini Flash, Gemini Pro, Carbon    | `gemini-weekly`, `gemini-5h` | 5h limit smooths aggregate demand; weekly limit reflects subscription tier. |
-| **Claude and GPT models** | Claude Opus, Claude Sonnet, GPT-OSS | `3p-weekly`, `3p-5h`         | Separate 3P bucket with independent 5h and weekly limits.                   |
-| **Gemini 4 Argon**        | Gemini 4 Argon                      | `gemini-argon-wtu-weekly`    | Dedicated weekly Work-Through-Unit (WTU) budget on Pro plans.               |
+| Group Display Name        | Member Models                        | Tracked Buckets              | Reset Window Behaviors                                                      |
+| :------------------------ | :----------------------------------- | :--------------------------- | :-------------------------------------------------------------------------- |
+| **Gemini Models**         | Gemini Flash, Hydrogen, Neon, Carbon | `gemini-weekly`, `gemini-5h` | 5h limit smooths aggregate demand; weekly limit reflects subscription tier. |
+| **Claude and GPT models** | Claude Opus, Claude Sonnet, GPT-OSS  | `3p-weekly`, `3p-5h`         | Separate 3P bucket with independent 5h and weekly limits.                   |
+| **Gemini 4 Argon**        | Gemini 4 Argon                       | `gemini-argon-wtu-weekly`    | Dedicated weekly Work-Through-Unit (WTU) budget on Pro plans.               |
 
-- **Internal family keys:** `claude`, `gemini-argon`, `gemini-hydrogen`. Gemini 3.8 Flash, Gemini 4 Hydrogen and Gemini 4 Carbon share the `gemini-hydrogen` pool; `gemini-flash` is the pre-rename key and stays accepted as a legacy alias in state files and pool policy overrides. Stored pool ids are `family` or `family:slug`, so migration v4 rewrites only the prefix.
-- **Orchestrator codenames span both Gemini pools.** The bare `gemini-pro-orchestrator` id and the `Orchestrator (Carbon)` label bill Hydrogen; only the `g1-pro` route (`gemini-pro-orchestrator-g1-pro`) and any `argon` token bill Argon. Carbon is deliberately absent from `CANONICAL_AGY_MODELS` — it is a Ultra-only model, so the bundled Discord pickers must not offer it; `DynamicModelCatalog` discovers it from the live probe instead.
+- **Internal family keys:** `claude`, `gemini-argon`, `gemini-hydrogen`. Gemini 3.8 Flash, Gemini 4 Hydrogen, Gemini 4 Neon, and Gemini 4 Carbon share the `gemini-hydrogen` pool; `gemini-flash` is the pre-rename key and stays accepted as a legacy alias in state files and pool policy overrides. Stored pool ids are `family` or `family:slug`, so migration v4 rewrites only the prefix.
+- **Orchestrator codenames span both Gemini pools.** The bare `gemini-pro-orchestrator` id (`Orchestrator (Carbon)`) and `gemini-pro-orchestrator-neon` (`Orchestrator (Neon)`) bill Hydrogen; only the `g1-pro` route (`gemini-pro-orchestrator-g1-pro`) and any `argon` token bill Argon. Carbon is deliberately absent from `CANONICAL_AGY_MODELS` — it is a Ultra-only model, so the bundled Discord pickers must not offer it; `DynamicModelCatalog` discovers it from the live probe instead.
 - **Listed-but-unavailable models are skipped, not rejected.** The cascade endpoint lists placeholders with `disabled: true` or an empty `quotaInfo: {}`; a `-disabled` id resolves to no pool, an empty `quotaInfo` parses as absent telemetry, and neither may fail the whole probe.
 - **Effective Headroom Calculation:** When evaluating whether a task can dispatch safely, Agylity takes the most constrained window:
   $$\text{effectiveHeadroom} = \min(\text{weeklyRemaining}, \text{fiveHourRemaining})$$

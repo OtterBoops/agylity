@@ -18,6 +18,7 @@ import {
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
   resolveConcreteModelId,
+  resolvePoolFamilyForModelOrNull,
   TaskQueue,
   TaskExecutor,
   Coordinator,
@@ -56,6 +57,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
       // A shorthand with no pool default still resolves through the family alias table.
       assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
+      // Neon bills Hydrogen, so a dispatch against it draws that pool's headroom.
+      assert.equal(resolvePoolFamilyForModelOrNull('gemini-4-neon'), 'gemini-hydrogen');
     });
 
     it('ignores a disabled short-term bucket and floors the effective headroom', () => {
@@ -740,7 +743,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // 1. GET /api/models returns annotated model catalog
         const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
         assert.equal(modelsRes.defaultModel, 'gemini-4-hydrogen');
-        assert.equal(modelsRes.models.length, 6);
+        assert.equal(modelsRes.models.length, 7);
         const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
         assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
         assert.equal(hydrogen.family, 'gemini-hydrogen');

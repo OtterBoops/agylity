@@ -298,7 +298,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.deepEqual(pools[0]?.models, ['Gemini 4 Carbon', 'Gemini 4 Hydrogen']);
     });
 
-    it('separates the Carbon orchestrator route from the Argon one', () => {
+    it('separates the Carbon and Neon orchestrator routes from the Argon one', () => {
       assert.equal(
         resolveModelFamily({ modelId: 'gemini-pro-orchestrator' })?.family,
         'gemini-hydrogen'
@@ -308,6 +308,21 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
           ?.family,
         'gemini-hydrogen'
       );
+      assert.equal(
+        resolveModelFamily({
+          modelId: 'gemini-pro-orchestrator-neon',
+          label: 'Orchestrator (Neon)',
+        })?.family,
+        'gemini-hydrogen'
+      );
+      assert.equal(
+        resolveModelFamily({ modelId: 'gemini-4-neon-xhigh', label: 'Gemini 4 Neon (XHigh)' })
+          ?.family,
+        'gemini-hydrogen'
+      );
+      // A cascade entry may carry only one of the two signals, so each must resolve on its own.
+      assert.equal(resolveModelFamily({ modelId: 'gemini-4-neon' })?.family, 'gemini-hydrogen');
+      assert.equal(resolveModelFamily({ label: 'Gemini 4 Neon' })?.family, 'gemini-hydrogen');
       assert.equal(
         resolveModelFamily({
           modelId: 'gemini-pro-orchestrator-g1-pro',
@@ -1662,7 +1677,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
 
       assert.ok(flash);
       assert.ok(claude);
-      assert.deepEqual(flash.models, ['Gemini 4 Hydrogen', 'Gemini 3.8 Flash']);
+      assert.deepEqual(flash.models, ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Gemini 3.8 Flash']);
       assert.deepEqual(claude.models, ['Claude Opus', 'Claude Sonnet', 'GPT-OSS']);
     });
 
@@ -1688,6 +1703,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const byFamily = new Map(snapshots.map((snapshot) => [snapshot.family, snapshot]));
       assert.deepEqual(byFamily.get('gemini-hydrogen')?.models, [
         'Gemini 4 Hydrogen',
+        'Gemini 4 Neon',
         'Gemini 3.8 Flash',
       ]);
       assert.deepEqual(byFamily.get('gemini-argon')?.models, ['Gemini 4 Argon']);
