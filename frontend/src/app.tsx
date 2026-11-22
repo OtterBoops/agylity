@@ -5,6 +5,7 @@ import { TopBar } from './components/TopBar';
 import { ControlPlaneGate } from './components/ControlPlaneGate';
 import { SessionModal } from './components/SessionModal';
 import { CommandPalette } from './components/CommandPalette';
+import { ToastStack } from './components/ToastStack';
 import { TasksView } from './components/TasksView';
 import { AlertsView } from './views/AlertsView';
 import { OverviewView } from './views/OverviewView';
@@ -433,6 +434,8 @@ export const App = () => {
         onOpenDispatch={() => setComposer({})}
         coordinatorEnabled={isCoordinatorEnabled}
       />
+
+      <ToastStack />
     </div>
   );
 };

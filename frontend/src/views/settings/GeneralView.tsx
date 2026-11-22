@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import { pushErrorToast } from '../../state/toastStore';
 import { faGlobe, faNetworkWired } from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData, ToastState } from '../../types';
 import { updateConfig, deleteConfigOverride } from '../../api';
@@ -19,7 +20,6 @@ interface GeneralViewProps {
 export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps) => {
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
   const [isTogglingCoordinator, setIsTogglingCoordinator] = useState(false);
-  const [coordinatorError, setCoordinatorError] = useState<string | null>(null);
   const serverBaseUrl = String(config.resolved?.baseUrl || '');
   const [baseUrl, setBaseUrl] = useState(serverBaseUrl);
   const [isSaving, setIsSaving] = useState(false);
@@ -31,12 +31,12 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
 
   const handleToggleCoordinator = async () => {
     setIsTogglingCoordinator(true);
-    setCoordinatorError(null);
     try {
       await updateConfig({ coordinatorEnabled: !isCoordinatorEnabled });
       onChanged();
     } catch (err: any) {
-      setCoordinatorError(err?.message || 'Failed to update the Task Coordinator state');
+      const message = err?.message || 'Failed to update the Task Coordinator state';
+      pushErrorToast('Could not update the Task Coordinator', message);
     } finally {
       setIsTogglingCoordinator(false);
     }
@@ -164,15 +164,6 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
             />
           </div>
         </div>
-
-        {coordinatorError && (
-          <p
-            role="alert"
-            class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
-          >
-            {coordinatorError}
-          </p>
-        )}
       </div>
 
       <SettingsForm
