@@ -167,7 +167,7 @@ export class WebhookNotifier implements Notifier {
     );
     const embed = buildQuotaAlertEmbed(alert, {
       ownerUserId: this.config.discordOwnerUserId,
-      pingOwner: this.config.discordPingOwner !== false,
+      pingOwner: this.config.webhookPingOwner !== false,
       baseUrl: this.config.baseUrl,
     });
 
@@ -284,7 +284,7 @@ export class WebhookNotifier implements Notifier {
       '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
     const embed = buildTestAlertEmbed(undefined, {
       ownerUserId: this.config.discordOwnerUserId,
-      pingOwner: this.config.discordPingOwner !== false,
+      pingOwner: this.config.webhookPingOwner !== false,
       baseUrl: this.config.baseUrl,
     });
 
@@ -356,7 +356,7 @@ export class WebhookNotifier implements Notifier {
     const hasEmbeds = Array.isArray(outgoingPayload.embeds) && outgoingPayload.embeds.length > 0;
     if (isDiscordWebhook(url) && hasEmbeds) {
       const ownerId = this.config.discordOwnerUserId?.trim();
-      if (isOwnerAlertEvent && this.config.discordPingOwner !== false && ownerId) {
+      if (isOwnerAlertEvent && this.config.webhookPingOwner !== false && ownerId) {
         outgoingPayload.content = `<@${ownerId}>`;
         outgoingPayload.allowed_mentions = {
           users: [ownerId],

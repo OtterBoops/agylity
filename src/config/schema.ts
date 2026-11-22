@@ -211,6 +211,8 @@ export interface AppConfig {
   discordNotificationChannelId?: string;
   discordOwnerUserId?: string;
   discordPingOwner: boolean;
+  /** Discord-webhook URLs only: mentions the owner on quota alerts and test pings. */
+  webhookPingOwner: boolean;
 
   antigravityEndpointUrl?: string;
   antigravityCsrfToken?: string;
@@ -329,6 +331,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   discordNotificationChannelId: undefined,
   discordOwnerUserId: undefined,
   discordPingOwner: true,
+  webhookPingOwner: true,
 
   antigravityEndpointUrl: undefined,
   antigravityCsrfToken: undefined,
@@ -572,6 +575,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   discordNotificationChannelId: z.string().optional(),
   discordOwnerUserId: z.string().optional(),
   discordPingOwner: z.boolean(),
+  webhookPingOwner: z.boolean(),
   antigravityEndpointUrl: z.string().url().or(z.literal('')).optional(),
   antigravityCsrfToken: z.string().optional(),
   agyUpdateIntervalHours: z.number().min(0),

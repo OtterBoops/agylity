@@ -105,6 +105,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [discordGuildId, setDiscordGuildId] = useState(serverDiscordGuildId);
   const [discordOwnerUserId, setDiscordOwnerUserId] = useState(serverDiscordOwnerUserId);
   const [discordPingOwner, setDiscordPingOwner] = useState(serverDiscordPingOwner);
+  const serverWebhookPingOwner = resolved.webhookPingOwner !== false;
+  const [webhookPingOwner, setWebhookPingOwner] = useState(serverWebhookPingOwner);
 
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSecret, setWebhookSecret] = useState('');
@@ -190,6 +192,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     if (discordGuildId !== serverDiscordGuildId) return true;
     if (discordOwnerUserId !== serverDiscordOwnerUserId) return true;
     if (discordPingOwner !== serverDiscordPingOwner) return true;
+    if (webhookPingOwner !== serverWebhookPingOwner) return true;
     if (webhookUrl.trim().length > 0) return true;
     if (webhookSecret.trim().length > 0) return true;
     return false;
@@ -270,6 +273,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     if (discordPingOwner !== serverDiscordPingOwner) {
       payload.discordPingOwner = discordPingOwner;
     }
+    if (webhookPingOwner !== serverWebhookPingOwner) {
+      payload.webhookPingOwner = webhookPingOwner;
+    }
 
     if (webhookUrl.trim() && webhookUrl.trim() !== '••••••••' && webhookUrl.trim() !== '********') {
       payload.notificationWebhookUrl = webhookUrl.trim();
@@ -326,6 +332,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       if (discordPingOwner !== serverDiscordPingOwner) {
         overrides.discordPingOwner = discordPingOwner;
       }
+      if (webhookPingOwner !== serverWebhookPingOwner) {
+        overrides.webhookPingOwner = webhookPingOwner;
+      }
     } else if (channel === 'discord') {
       if (discordToken.trim()) {
         overrides.discordToken = discordToken.trim();
@@ -338,6 +347,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       }
       if (discordPingOwner !== serverDiscordPingOwner) {
         overrides.discordPingOwner = discordPingOwner;
+      }
+      if (webhookPingOwner !== serverWebhookPingOwner) {
+        overrides.webhookPingOwner = webhookPingOwner;
       }
     }
 
@@ -532,6 +544,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                   }}
                   isSecretSet={isWebhookSecretSet}
                   onClearSecret={handleClearWebhookSecret}
+                  pingOwner={webhookPingOwner}
+                  onPingOwnerChange={setWebhookPingOwner}
                   diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
                 />
               )}

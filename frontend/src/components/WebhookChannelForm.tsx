@@ -1,4 +1,5 @@
 import { useState } from 'preact/hooks';
+import { ToggleSwitch } from './ToggleSwitch';
 
 interface WebhookChannelFormProps {
   url: string;
@@ -9,6 +10,8 @@ interface WebhookChannelFormProps {
   onSecretChange: (val: string) => void;
   isSecretSet: boolean;
   onClearSecret: () => Promise<void>;
+  pingOwner: boolean;
+  onPingOwnerChange: (val: boolean) => void;
   diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
@@ -21,6 +24,8 @@ export const WebhookChannelForm = ({
   onSecretChange,
   isSecretSet,
   onClearSecret,
+  pingOwner,
+  onPingOwnerChange,
   diagnostics,
 }: WebhookChannelFormProps) => {
   const [showSecret, setShowSecret] = useState(false);
@@ -132,6 +137,25 @@ export const WebhookChannelForm = ({
           When specified, Agylity signs each payload with HMAC-SHA256 in the x-agylity-signature
           header.
         </span>
+      </div>
+
+      <div class="flex items-center justify-between gap-4 border-t border-pine-highlight/40 pt-3">
+        <div class="flex flex-col gap-0.5">
+          <span class="text-xs font-semibold text-pine-text">Ping Owner</span>
+          <span class="text-xs text-pine-subtle">
+            Mentions your Discord user ID on quota alerts and test pings. Applies to Discord webhook
+            URLs only; other endpoints receive the payload untouched.
+          </span>
+        </div>
+        <ToggleSwitch
+          checked={pingOwner}
+          onChange={onPingOwnerChange}
+          label={
+            pingOwner
+              ? 'Disable owner mention for this webhook'
+              : 'Enable owner mention for this webhook'
+          }
+        />
       </div>
     </div>
   );

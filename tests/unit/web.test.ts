@@ -150,8 +150,9 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const scriptBody = await scriptRes.text();
         // The retired DispatchModal left this marker behind; the palette id proves the shell ships.
         assert.ok(scriptBody.includes('command-palette-dialog'));
-        assert.ok(scriptBody.includes('settings-search'));
         assert.ok(scriptBody.includes('quotaGrid'));
+        // Settings search moved into the palette, so the field catalogue must ship with the shell.
+        assert.ok(scriptBody.includes('Polling interval (seconds)'));
 
         // Invariant: Zero external CDN links
         assert.equal(body.includes('https://cdnjs'), false);
