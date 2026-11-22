@@ -20,6 +20,7 @@ import { Icon } from './Icon';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
+import { dialogBackdropClickHandler } from '../utils/dialog';
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
 interface SidebarProps {
@@ -46,27 +47,46 @@ export const Sidebar = ({
 }: SidebarProps) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const mobileNavRef = useRef<HTMLDivElement>(null);
+  const mobileNavRef = useRef<HTMLDialogElement>(null);
   const mobileToggleRef = useRef<HTMLButtonElement>(null);
 
-  // Closing returns the caret to the control that opened the drawer.
+  const openMobileNav = useCallback(() => {
+    const dialog = mobileNavRef.current;
+    if (dialog && !dialog.open) dialog.showModal();
+    setMobileOpen(true);
+  }, []);
+
   const closeMobileNav = useCallback(() => {
-    setMobileOpen(false);
-    mobileToggleRef.current?.focus();
+    const dialog = mobileNavRef.current;
+    if (dialog?.open) dialog.close();
   }, []);
 
   useEffect(() => {
+    // A modal dialog blocks pointer input but not page scroll.
     if (!mobileOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      // A native dialog on top owns Escape; closing both would discard its work.
-      if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
-      event.preventDefault();
-      closeMobileNav();
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
     };
-    document.addEventListener('keydown', onKeyDown);
-    mobileNavRef.current?.querySelector<HTMLElement>('a[href]')?.focus();
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mobileOpen, closeMobileNav]);
+  }, [mobileOpen]);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const frame = requestAnimationFrame(() => {
+      mobileNavRef.current?.querySelector<HTMLElement>('a[href]')?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [mobileOpen]);
+
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 768px)');
+    const sync = () => {
+      if (query.matches) closeMobileNav();
+    };
+    query.addEventListener('change', sync);
+    return () => query.removeEventListener('change', sync);
+  }, [closeMobileNav]);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -247,7 +267,7 @@ export const Sidebar = ({
         <button
           ref={mobileToggleRef}
           type="button"
-          onClick={() => (mobileOpen ? closeMobileNav() : setMobileOpen(true))}
+          onClick={() => (mobileOpen ? closeMobileNav() : openMobileNav())}
           class="flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
           aria-label="Toggle navigation menu"
           aria-expanded={mobileOpen}
@@ -257,92 +277,87 @@ export const Sidebar = ({
         </button>
       </div>
 
-      {mobileOpen && (
-        <>
-          <div
-            class="fixed inset-0 z-50 bg-black/60 md:hidden"
-            aria-hidden="true"
-            onClick={closeMobileNav}
-          />
-          <div
-            id="mobile-nav"
-            ref={mobileNavRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Navigation"
-            class="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col gap-4 overflow-y-auto border-r border-pine-highlight bg-pine-surface p-4 md:hidden"
-          >
-            <div class="flex items-center justify-between gap-2">
-              <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">
-                Navigation
-              </span>
-              <button
-                type="button"
-                onClick={closeMobileNav}
-                aria-label="Close navigation menu"
-                class="flex size-11 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-              >
-                <Icon icon={faXmark} class="size-4" />
-              </button>
-            </div>
-            <nav class="flex flex-col gap-3">
-              {renderNavSection('Monitor', monitorItems, false, closeMobileNav)}
-              {renderNavSection('Settings', settingsItems, false, closeMobileNav)}
-            </nav>
+      <dialog
+        id="mobile-nav"
+        ref={mobileNavRef}
+        aria-label="Navigation"
+        onClose={() => {
+          setMobileOpen(false);
+          mobileToggleRef.current?.focus();
+        }}
+        class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-r border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 md:hidden"
+        onClick={dialogBackdropClickHandler(mobileNavRef, closeMobileNav)}
+      >
+        <div class="flex size-full flex-col gap-4 overflow-y-auto p-4">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">
+              Navigation
+            </span>
+            <button
+              type="button"
+              onClick={closeMobileNav}
+              aria-label="Close navigation menu"
+              class="flex size-11 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            >
+              <Icon icon={faXmark} class="size-4" />
+            </button>
+          </div>
+          <nav class="flex flex-col gap-3">
+            {renderNavSection('Monitor', monitorItems, false, closeMobileNav)}
+            {renderNavSection('Settings', settingsItems, false, closeMobileNav)}
+          </nav>
 
-            <div class="mt-4 flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs">
-              <button
-                type="button"
-                onClick={() => setInspectorOpen(true)}
-                aria-label="Connection telemetry"
-                class="flex cursor-pointer items-center justify-between gap-2 text-left transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-              >
-                <span class="flex items-center gap-2">
-                  <span class="relative flex size-2 shrink-0">
-                    <span
-                      class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-                    />
-                    <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
-                  </span>
-                  <span class="font-medium text-pine-text">{probeStatus}</span>
+          <div class="mt-4 flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs">
+            <button
+              type="button"
+              onClick={() => setInspectorOpen(true)}
+              aria-label="Connection telemetry"
+              class="flex cursor-pointer items-center justify-between gap-2 text-left transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            >
+              <span class="flex items-center gap-2">
+                <span class="relative flex size-2 shrink-0">
+                  <span
+                    class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
+                  />
+                  <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                 </span>
-                {lastProbeAt && (
-                  <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
-                    {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
-                  </span>
-                )}
-              </button>
+                <span class="font-medium text-pine-text">{probeStatus}</span>
+              </span>
+              {lastProbeAt && (
+                <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
+                  {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
+                </span>
+              )}
+            </button>
 
-              <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted">
+            <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted">
+              <a
+                href="https://github.com/OtterBoops/agylity/releases"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="hover:text-pine-text"
+              >
+                v{APP_VERSION}
+              </a>
+              {updateInfo.hasUpdate ? (
                 <a
-                  href="https://github.com/OtterBoops/agylity/releases"
+                  href={
+                    updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
+                  }
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="hover:text-pine-text"
+                  class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
-                  v{APP_VERSION}
+                  <span>Update v{updateInfo.latestVersion}</span>
+                  <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
                 </a>
-                {updateInfo.hasUpdate ? (
-                  <a
-                    href={
-                      updateInfo.releaseUrl ||
-                      'https://github.com/OtterBoops/agylity/releases/latest'
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
-                  >
-                    <span>Update v{updateInfo.latestVersion}</span>
-                    <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
-                  </a>
-                ) : (
-                  <span class="text-xs text-pine-muted/70">Up to date</span>
-                )}
-              </div>
+              ) : (
+                <span class="text-xs text-pine-muted/70">Up to date</span>
+              )}
             </div>
           </div>
-        </>
-      )}
+        </div>
+      </dialog>
 
       <aside
         class={`hidden md:flex md:h-full md:shrink-0 md:flex-col md:justify-between md:overflow-y-auto md:border-r md:border-pine-highlight md:bg-pine-surface/95 ${
@@ -401,22 +416,14 @@ export const Sidebar = ({
 
         <div class={railActive ? 'p-2' : 'p-3 pt-0'}>
           {!railActive ? (
-            <div
-              role="button"
-              tabIndex={0}
-              aria-label="Connection telemetry"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  setInspectorOpen(true);
-                }
-              }}
-              onClick={() => setInspectorOpen(true)}
-              class="flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 transition-colors hover:border-pine-iris/60"
-              title="Click to view detailed system telemetry"
-            >
-              <div class="flex items-center justify-between text-xs">
-                <div class="flex min-w-0 items-center gap-2">
+            <div class="flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 transition-colors hover:border-pine-iris/60">
+              <button
+                type="button"
+                onClick={() => setInspectorOpen(true)}
+                class="flex w-full cursor-pointer items-center justify-between gap-2 text-left text-xs focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+                title="Click to view detailed system telemetry"
+              >
+                <span class="flex min-w-0 items-center gap-2">
                   <span class="relative flex size-2 shrink-0">
                     <span
                       class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
@@ -424,18 +431,15 @@ export const Sidebar = ({
                     <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
                   </span>
                   <span class="truncate font-medium text-pine-text">{probeStatus}</span>
-                </div>
+                </span>
                 {lastProbeAt && (
                   <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
                     {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
                   </span>
                 )}
-              </div>
+              </button>
 
-              <div
-                class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle"
-                onClick={(e) => e.stopPropagation()}
-              >
+              <div class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle">
                 <a
                   href="https://github.com/OtterBoops/agylity/releases"
                   target="_blank"

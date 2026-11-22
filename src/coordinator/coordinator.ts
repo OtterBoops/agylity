@@ -338,19 +338,38 @@ export class Coordinator {
           resolvePoolGroupForModel(this.resolveDispatchModel(hop.model, defaultDispatchModel))
         )
       );
-      const hit = earlyResets.some(
-        (pool) =>
-          poolGroups.has(poolGroupOfPoolId(pool.poolId)) &&
-          (pool.previousResetTime === rt.lastTriggeredResetTime ||
-            pool.resetTime === rt.lastTriggeredResetTime)
-      );
-      if (hit) {
-        // Re-arming the reset alone leaves per-pool cycle stamps that would suppress the retry.
-        this.queue.updateRoutineTask(rt.id, {
-          lastTriggeredResetTime: null,
-          lastTriggeredCycles: {},
-        });
+
+      // A cycle stamp outlives its reset time, so either one identifies the replenished cycle.
+      const matchedGroups = new Set<string>();
+      let resetTimeMatched = false;
+      for (const pool of earlyResets) {
+        const group = poolGroupOfPoolId(pool.poolId);
+        if (!poolGroups.has(group)) continue;
+        const timeMatched =
+          pool.previousResetTime === rt.lastTriggeredResetTime ||
+          pool.resetTime === rt.lastTriggeredResetTime;
+        const cycleMatched = Object.keys(rt.lastTriggeredCycles ?? {}).some(
+          (cycleKey) => poolGroupOfPoolId(cycleKey) === group
+        );
+        if (!timeMatched && !cycleMatched) continue;
+        matchedGroups.add(group);
+        if (timeMatched) resetTimeMatched = true;
       }
+      if (matchedGroups.size === 0) continue;
+
+      // Only the replenished groups forget their cycle; a sibling pool's stamp must survive.
+      const survivingCycles = Object.fromEntries(
+        Object.entries(rt.lastTriggeredCycles ?? {}).filter(
+          ([cycleKey]) => !matchedGroups.has(poolGroupOfPoolId(cycleKey))
+        )
+      );
+      this.queue.updateRoutineTask(rt.id, {
+        lastTriggeredResetTime:
+          resetTimeMatched || Object.keys(survivingCycles).length === 0
+            ? null
+            : (rt.lastTriggeredResetTime ?? null),
+        lastTriggeredCycles: survivingCycles,
+      });
     }
   }
 

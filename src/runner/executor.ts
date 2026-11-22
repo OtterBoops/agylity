@@ -801,6 +801,8 @@ export class TaskExecutor {
     const attemptedModels = new Set<string>([context.primaryHop.model]);
     let attemptHop = context.primaryHop;
     let attemptPrompt = prompt;
+    // The hop that actually ran, with the effort its model reports rather than the configured one.
+    let executedHop: CascadeHop = context.primaryHop;
     let output = '';
     let lastStdout = '';
     let failure: unknown = null;
@@ -808,6 +810,7 @@ export class TaskExecutor {
     for (;;) {
       const attemptModel = attemptHop.model;
       const attemptEffort = resolveReasoningEffortForModel(attemptHop.model, attemptHop.effort);
+      executedHop = { model: attemptModel, effort: attemptEffort };
       // A model with no effort variants rejects `--effort`, so the flag is absent, not defaulted.
       const supportsEffort = modelSupportsEffort(attemptModel);
       // Unprivileged containers reject agy's nested Linux namespace sandbox with EPERM on fork/exec.
@@ -898,7 +901,7 @@ export class TaskExecutor {
       lastStdout,
       telemetry: sumAgyTelemetry(attemptTelemetry),
       failure,
-      executedHop: attemptHop,
+      executedHop,
     };
   }
 

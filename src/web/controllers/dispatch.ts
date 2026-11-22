@@ -12,6 +12,8 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
+import { extractClientIp } from '../ip.js';
+import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { Coordinator } from '../../coordinator/coordinator.js';
@@ -129,6 +131,20 @@ const extractRunnerToken = (req: http.IncomingMessage): string | undefined => {
     if (token !== '') return token;
   }
   return undefined;
+};
+
+/** A runner 401 and a 200 are recorded synchronously, so the counter never lags the verdict. */
+const noteRunnerAuth = (
+  req: http.IncomingMessage,
+  options: WebServerOptions,
+  authenticated: boolean
+): void => {
+  const clientIp = extractClientIp(
+    req,
+    options.configStore?.resolveConfig()?.trustedProxies ?? false
+  );
+  if (authenticated) clearAuthFailures(clientIp, 'runner');
+  else recordAuthFailure(clientIp, 'runner');
 };
 
 export const handleGetModels = async (
@@ -318,8 +334,10 @@ export const handlePollTasks = async (
   const coordinator = resolveCoordinator(options);
   const auth = coordinator.authenticateRunner(extractRunnerToken(req));
   if (!auth.authenticated) {
+    noteRunnerAuth(req, options, false);
     return sendJson(res, 401, { error: 'Unauthorized runner token' });
   }
+  noteRunnerAuth(req, options, true);
 
   if (!resolved.coordinatorEnabled) {
     return sendJson(res, 200, { task: null, coordinatorEnabled: false });
@@ -403,8 +421,10 @@ export const handleRunnerHeartbeat = async (
   const coordinator = resolveCoordinator(options);
   const auth = coordinator.authenticateRunner(extractRunnerToken(req));
   if (!auth.authenticated) {
+    noteRunnerAuth(req, options, false);
     return sendJson(res, 401, { error: 'Unauthorized runner token' });
   }
+  noteRunnerAuth(req, options, true);
 
   const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
   if (!parsed.ok) return;
@@ -440,8 +460,10 @@ export const handleTaskStatus = async (
   const coordinator = resolveCoordinator(options);
   const auth = coordinator.authenticateRunner(extractRunnerToken(req));
   if (!auth.authenticated) {
+    noteRunnerAuth(req, options, false);
     return sendJson(res, 401, { error: 'Unauthorized runner token' });
   }
+  noteRunnerAuth(req, options, true);
 
   const match = /^\/api\/tasks\/([^/]+)\/status$/.exec(pathname);
   const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
@@ -623,11 +645,13 @@ export const handleRegisterRunner = async (
     });
 
     if (!registered) {
+      noteRunnerAuth(req, options, false);
       return sendJson(res, 401, {
         error: 'Invalid, expired, or already-consumed registration token',
       });
     }
 
+    noteRunnerAuth(req, options, true);
     return sendJson(
       res,
       200,
@@ -640,6 +664,7 @@ export const handleRegisterRunner = async (
     );
   } catch (err: any) {
     if (err instanceof RegistrationTokenError) {
+      noteRunnerAuth(req, options, false);
       return sendJson(res, 401, { error: err.message });
     }
     logger.child('web').error('Runner registration failed: %s', err?.stack ?? err);

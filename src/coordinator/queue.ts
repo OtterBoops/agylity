@@ -1348,12 +1348,15 @@ export class TaskQueue {
       const registeredRepos = existingRunner?.repositories ?? [];
       const effectiveRepos =
         registeredRepos.length > 0 ? registeredRepos : (options.repositories ?? []);
+      // A registered runner keeps its stored identity; only an ad-hoc runner adopts the poll payload.
+      const persistedLabels = existingRunner ? registeredLabels : effectiveLabels;
+      const persistedRepos = existingRunner ? registeredRepos : effectiveRepos;
       if (existingRunner && !existingRunner.enabled) {
         this.registerRunnerHeartbeat({
           runnerId: options.runnerId,
           name: options.runnerName,
-          labels: effectiveLabels,
-          repositories: effectiveRepos,
+          labels: persistedLabels,
+          repositories: persistedRepos,
           systemInfo: options.systemInfo,
           status: 'idle',
         });
@@ -1372,8 +1375,8 @@ export class TaskQueue {
         this.registerRunnerHeartbeat({
           runnerId: options.runnerId,
           name: options.runnerName,
-          labels: effectiveLabels,
-          repositories: effectiveRepos,
+          labels: persistedLabels,
+          repositories: persistedRepos,
           systemInfo: options.systemInfo,
           status: 'idle',
         });
@@ -1479,8 +1482,8 @@ export class TaskQueue {
           this.registerRunnerHeartbeat({
             runnerId: options.runnerId,
             name: options.runnerName,
-            labels: effectiveLabels,
-            repositories: effectiveRepos,
+            labels: persistedLabels,
+            repositories: persistedRepos,
             systemInfo: options.systemInfo,
             activeTaskId: task.id,
             status: 'busy',
@@ -1492,8 +1495,8 @@ export class TaskQueue {
       this.registerRunnerHeartbeat({
         runnerId: options.runnerId,
         name: options.runnerName,
-        labels: effectiveLabels,
-        repositories: effectiveRepos,
+        labels: persistedLabels,
+        repositories: persistedRepos,
         systemInfo: options.systemInfo,
         status: 'idle',
       });

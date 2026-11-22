@@ -8,6 +8,7 @@ import { makeTempDir } from '../e2e/harness/index.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
+import { clearAuthFailures } from '../../src/web/routes.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
 
@@ -1665,6 +1666,89 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         });
         assert.equal(legit.status, 200);
       } finally {
+        clearAuthFailures('198.51.100.42', 'runner');
+        clearAuthFailures('198.51.100.43', 'runner');
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('isolates the runner and control-plane brute-force counters', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_domain_isolation_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'runner-shared-secret-888',
+        webUiAuthToken: 'control-token-888',
+        webUiAuthExemptLocalhost: false,
+        trustedProxies: true,
+      });
+      let server: http.Server | undefined;
+      const runnerIp = '198.51.100.51';
+      const controlIp = '198.51.100.52';
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        // A runner brute-force locks the runner domain only.
+        for (let i = 0; i < 10; i++) {
+          const res = await ky.post(`${base}/api/tasks/poll`, {
+            headers: { 'x-forwarded-for': runnerIp, 'x-agylity-runner-token': 'wrong' },
+            json: {},
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 401);
+        }
+        const runnerBlocked = await ky.post(`${base}/api/tasks/poll`, {
+          headers: { 'x-forwarded-for': runnerIp, 'x-agylity-runner-token': 'wrong' },
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(runnerBlocked.status, 429);
+
+        // The same peer's control-plane token must still be accepted.
+        const controlOk = await ky.get(`${base}/api/quota`, {
+          headers: { 'x-forwarded-for': runnerIp, Authorization: 'Bearer control-token-888' },
+          throwHttpErrors: false,
+        });
+        assert.equal(controlOk.status, 200);
+
+        // Mirror: a control-plane brute-force locks the control domain only.
+        for (let i = 0; i < 10; i++) {
+          await ky.get(`${base}/api/quota`, {
+            headers: { 'x-forwarded-for': controlIp, Authorization: 'Bearer wrong' },
+            throwHttpErrors: false,
+          });
+        }
+        const controlBlocked = await ky.get(`${base}/api/quota`, {
+          headers: { 'x-forwarded-for': controlIp, Authorization: 'Bearer control-token-888' },
+          throwHttpErrors: false,
+        });
+        assert.equal(controlBlocked.status, 429);
+
+        const runnerOk = await ky.post(`${base}/api/tasks/poll`, {
+          headers: {
+            'x-forwarded-for': controlIp,
+            'x-agylity-runner-token': 'runner-shared-secret-888',
+          },
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(runnerOk.status, 200);
+      } finally {
+        for (const ip of [runnerIp, controlIp]) {
+          clearAuthFailures(ip, 'runner');
+          clearAuthFailures(ip, 'control');
+        }
         if (server) await closeWebServer(server);
         store.close();
         cleanup();

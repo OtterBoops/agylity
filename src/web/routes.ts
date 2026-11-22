@@ -39,6 +39,7 @@ import {
   handleSyncGithubBacklog,
 } from './controllers/backlog.js';
 import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
+import { clearAuthFailures, isIpRateLimited, recordAuthFailure } from './authFailures.js';
 
 export type { WebServerOptions };
 
@@ -54,72 +55,8 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
   return crypto.timingSafeEqual(tokenDigest, expectedDigest);
 };
 
-interface AuthFailureRecord {
-  failures: number;
-  blockedUntilMs: number;
-  lastFailureMs: number;
-}
-
-const authFailuresByIp = new Map<string, AuthFailureRecord>();
-
-const AUTH_FAILURE_WINDOW_MS = 60_000;
-const AUTH_FAILURE_MAX_ENTRIES = 10_000;
-
-const pruneAuthFailures = (now: number): void => {
-  for (const [ip, record] of authFailuresByIp) {
-    if (record.blockedUntilMs <= now && now - record.lastFailureMs > AUTH_FAILURE_WINDOW_MS) {
-      authFailuresByIp.delete(ip);
-    }
-  }
-
-  while (authFailuresByIp.size > AUTH_FAILURE_MAX_ENTRIES) {
-    let oldestIp: string | null = null;
-    let oldestMs = Number.POSITIVE_INFINITY;
-    for (const [ip, record] of authFailuresByIp) {
-      if (record.lastFailureMs < oldestMs) {
-        oldestMs = record.lastFailureMs;
-        oldestIp = ip;
-      }
-    }
-    if (oldestIp === null) break;
-    authFailuresByIp.delete(oldestIp);
-  }
-};
-
-export const recordAuthFailure = (clientIp: string): boolean => {
-  const now = Date.now();
-  const record = authFailuresByIp.get(clientIp) ?? {
-    failures: 0,
-    blockedUntilMs: 0,
-    lastFailureMs: now,
-  };
-
-  if (now - record.lastFailureMs > AUTH_FAILURE_WINDOW_MS) {
-    record.failures = 0;
-    record.blockedUntilMs = 0;
-  }
-
-  record.failures++;
-  record.lastFailureMs = now;
-
-  if (record.failures >= 10) {
-    record.blockedUntilMs = now + AUTH_FAILURE_WINDOW_MS;
-  }
-
-  authFailuresByIp.set(clientIp, record);
-  pruneAuthFailures(now);
-  return record.blockedUntilMs > now;
-};
-
-export const isIpRateLimited = (clientIp: string): boolean => {
-  const record = authFailuresByIp.get(clientIp);
-  if (!record) return false;
-  return record.blockedUntilMs > Date.now();
-};
-
-export const clearAuthFailures = (clientIp: string): void => {
-  authFailuresByIp.delete(clientIp);
-};
+export { clearAuthFailures, isIpRateLimited, recordAuthFailure };
+export type { AuthDomain, AuthFailureRecord } from './authFailures.js';
 
 const sendRateLimited = (res: http.ServerResponse): void => {
   sendJson(
@@ -181,21 +118,13 @@ export const handleRequest = async (
     const exemptLocalhost = resolvedConfig?.webUiAuthExemptLocalhost ?? true;
     const authRequired = Boolean(expectedToken) && !(isLocalhost && exemptLocalhost);
 
-    // A runner credential is brute-forceable too, so these routes share the peer lockout.
+    // A runner credential is brute-forceable too, so it keeps its own lockout counter.
     if (isRunnerAuthRoute(pathname)) {
-      if (isIpRateLimited(clientIp)) return sendRateLimited(res);
-      // The handler owns the verdict: a 401 is a rejected credential, a 2xx clears the counter.
-      res.once('finish', () => {
-        if (res.statusCode === 401) {
-          recordAuthFailure(clientIp);
-        } else if (res.statusCode < 400) {
-          clearAuthFailures(clientIp);
-        }
-      });
+      if (isIpRateLimited(clientIp, 'runner')) return sendRateLimited(res);
     }
 
     if (authRequired && expectedToken && isControlPlaneRoute(pathname)) {
-      if (isIpRateLimited(clientIp)) {
+      if (isIpRateLimited(clientIp, 'control')) {
         logger
           .child('security')
           .warn(
@@ -207,7 +136,7 @@ export const handleRequest = async (
       }
 
       if (!isAuthorized(req, expectedToken)) {
-        const isBlocked = recordAuthFailure(clientIp);
+        const isBlocked = recordAuthFailure(clientIp, 'control');
         if (isBlocked) {
           logger
             .child('security')
@@ -217,7 +146,7 @@ export const handleRequest = async (
         return sendJson(res, 401, { error: 'Unauthorized: Invalid or missing Bearer token' });
       }
 
-      clearAuthFailures(clientIp);
+      clearAuthFailures(clientIp, 'control');
     }
 
     if (pathname === '/favicon.ico') {

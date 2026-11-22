@@ -255,6 +255,30 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('keeps the stored identity of an unrestricted registered runner across a claim', () => {
+      const { dir, cleanup } = makeTempDir('orch_runner_identity_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        queue.registerRunnerHeartbeat({ runnerId: 'runner-open', labels: [], repositories: [] });
+
+        // The poll payload only narrows matching for an ad-hoc runner, never the stored record.
+        queue.claimNext({
+          runnerId: 'runner-open',
+          labels: ['gpu'],
+          repositories: ['repo-a'],
+        });
+
+        const runner = queue.getRunner('runner-open');
+        assert.deepEqual(runner?.labels, []);
+        assert.deepEqual(runner?.repositories, []);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('floors a fractional listTasks limit and falls back to the default on NaN', () => {
       const { dir, cleanup } = makeTempDir('orch_list_limit_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -1656,9 +1680,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             remainingFraction: 0.9,
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             hoursUntilReset: 1,
-            models: ['Claude Sonnet'],
           },
-        ] as any,
+        ],
         allowOverage: true,
       });
 
@@ -4235,6 +4258,56 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           coordinator.queue.getRoutineTask(nextCycle.id)?.lastTriggeredResetTime,
           staleCycle
         );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('clears only the replenished pool cycle on a routine spanning two pools', () => {
+      const { dir, cleanup } = makeTempDir('coord_early_reset_multi_pool_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'gemini-4-hydrogen',
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const routine = coordinator.queue.createRoutineTask({
+          title: 'Two-pool cascade',
+          prompt: 'Burn whichever pool is open',
+          repositoryId: 'agylity',
+          cascade: [
+            { model: 'claude-sonnet-5-5', effort: 'high' },
+            { model: 'gemini-4-hydrogen', effort: 'medium' },
+          ],
+          triggerBeforeResetHours: 12,
+        });
+        const claudeCycle = '2026-11-08T01:30:44Z';
+        const hydrogenCycle = '2026-11-08T01:30:44Z';
+        coordinator.queue.updateRoutineTask(routine.id, {
+          lastTriggeredResetTime: claudeCycle,
+          lastTriggeredCycles: { claude: claudeCycle, 'gemini-hydrogen': hydrogenCycle },
+        });
+
+        // An early reset whose reported times never match the stamp, only the pooled cycle key.
+        coordinator.onEarlyQuotaReset([
+          {
+            poolId: 'claude:claude-sonnet-5-5',
+            displayName: 'Claude and GPT models',
+            previousRemainingFraction: 0.1,
+            remainingFraction: 0.9,
+            previousResetTime: '2026-11-07T01:30:44Z',
+            resetTime: '2026-11-09T01:30:44Z',
+          },
+        ]);
+
+        const updated = coordinator.queue.getRoutineTask(routine.id);
+        assert.deepEqual(updated?.lastTriggeredCycles, { 'gemini-hydrogen': hydrogenCycle });
+        // A surviving cycle from the other pool keeps the reset stamp in place.
+        assert.equal(updated?.lastTriggeredResetTime, claudeCycle);
       } finally {
         db.close();
         cleanup();

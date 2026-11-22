@@ -1265,4 +1265,116 @@ describe('Daemon: robustness under hostile timers and overlapping work', () => {
       cleanup();
     }
   });
+
+  it('ignores a config change that lands after shutdown was requested', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_shutdown_config_');
+    let applied = 0;
+
+    class CountingNotifier extends NotifierStub {
+      async updateConfig(): Promise<void> {
+        applied++;
+      }
+    }
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      notifier: new CountingNotifier(),
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      applied = 0;
+
+      // shutdown() runs its synchronous prologue before yielding, so this save lands mid-shutdown.
+      const shutdown = daemon.shutdown();
+      daemon.configStore.setOverride('logLevel', 'debug');
+      await shutdown;
+
+      assert.equal(applied, 0, 'a save during shutdown must not reach the notifier');
+      assert.equal((daemon as any).timer, null, 'and must not re-arm the sentry timer');
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('bounds shutdown when a config sync hangs and still closes the database', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_shutdown_sync_hang_');
+    const gate = deferred<void>();
+    const notifier = new GatedNotifier(gate.promise);
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      notifier,
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      daemon.configStore.setOverride('quotaCheckIntervalSeconds', 60);
+      await settle();
+      assert.equal(notifier.active, 1, 'the sync must be in flight before shutdown starts');
+
+      const startedAt = Date.now();
+      await daemon.shutdown();
+      const elapsedMs = Date.now() - startedAt;
+
+      assert.equal(daemon.isDbClosed, true);
+      assert.ok(elapsedMs < 10_000, `shutdown must not wait on a hung sync (took ${elapsedMs}ms)`);
+    } finally {
+      gate.resolve();
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('clamps an oversized sentry interval so the timer never fires immediately', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_sentry_clamp_');
+    let checks = 0;
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          checks++;
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false, quotaCheckIntervalSeconds: 3_000_000 },
+    });
+
+    try {
+      await daemon.start();
+      // 3,000,000s overflows setInterval's 2^31-1 ms ceiling, which Node turns into an instant tick.
+      assert.equal((daemon as any).timer._idleTimeout, 2_147_483_647);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(checks, 0);
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
 });

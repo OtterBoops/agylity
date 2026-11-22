@@ -181,17 +181,20 @@ export const UnifiedTaskComposer = ({
     triggerHours,
     minHeadroom,
   ]);
-  const seedFingerprint = JSON.stringify([
-    seedRepo || singleRepoId,
-    seedTitle,
-    seedPrompt,
-    seedCascade,
-    seedPrPolicy,
-    seedVerify,
-    String(seedPriority),
-    seedTriggerHours,
-    seedMinHeadroom,
-  ]);
+  // Frozen on mount: draft state is seeded once, so late catalog/repo arrival is not an edit.
+  const [seedFingerprint] = useState(() =>
+    JSON.stringify([
+      seedRepo || singleRepoId,
+      seedTitle,
+      seedPrompt,
+      seedCascade,
+      seedPrPolicy,
+      seedVerify,
+      String(seedPriority),
+      seedTriggerHours,
+      seedMinHeadroom,
+    ])
+  );
   const draftDirty = draftFingerprint !== seedFingerprint;
 
   useEffect(() => {

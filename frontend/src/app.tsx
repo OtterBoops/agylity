@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'preact/hooks';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import Router, { type RouterOnChangeArgs } from 'preact-router';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
@@ -11,7 +11,7 @@ import { AlertsView } from './views/AlertsView';
 import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
 import { UnifiedSettingsView } from './views/settings/UnifiedSettingsView';
-import { SlideOverDrawer } from './components/SlideOverDrawer';
+import { SlideOverDrawer, type SlideOverDrawerHandle } from './components/SlideOverDrawer';
 import { UnifiedTaskComposer, type ComposerPayload } from './components/tasks/UnifiedTaskComposer';
 import {
   createBacklogTask,
@@ -123,6 +123,13 @@ export const App = () => {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   // The keymap reads the refresh handler through a ref; depending on cooldown re-bound the listener per refresh.
   const manualRefreshRef = useRef<() => void>(() => {});
+  const composerDrawerApi = useRef<SlideOverDrawerHandle | null>(null);
+
+  const openComposer = useCallback((initial: { backlog?: any; routine?: any } = {}) => {
+    setComposerError(null);
+    setComposerDirty(false);
+    setComposer(initial);
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -177,7 +184,7 @@ export const App = () => {
 
       if (e.altKey && e.key.toLowerCase() === 'd') {
         e.preventDefault();
-        if (!anyDialogOpen) setComposer({});
+        if (!anyDialogOpen) openComposer({});
         return;
       }
 
@@ -195,7 +202,7 @@ export const App = () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [commandPaletteOpen, sessionModalOpen]);
+  }, [commandPaletteOpen, openComposer]);
 
   const fetchAll = (force = false) =>
     Promise.all([
@@ -233,11 +240,6 @@ export const App = () => {
   }, [refreshCooldown]);
 
   const onSettings = currentUrl.startsWith('/settings');
-  const openComposer = (initial: { backlog?: any; routine?: any } = {}) => {
-    setComposerError(null);
-    setComposerDirty(false);
-    setComposer(initial);
-  };
 
   const submitComposer = async (payload: ComposerPayload) => {
     setComposerBusy(true);
@@ -283,6 +285,7 @@ export const App = () => {
         if (payload.id) await updateRoutine(payload.id, body as any);
         else await createRoutine(body as any);
       }
+      setComposerDirty(false);
       setComposer(null);
       await fetchAll(true);
     } catch (err: any) {
@@ -395,6 +398,7 @@ export const App = () => {
           ariaLabel="Task composer"
           width="composer"
           dirty={composerDirty}
+          api={composerDrawerApi}
           onClosed={() => {
             setComposer(null);
             setComposerError(null);
@@ -418,7 +422,7 @@ export const App = () => {
             submitting={composerBusy}
             error={composerError}
             onSubmit={submitComposer}
-            onCancel={() => setComposer(null)}
+            onCancel={() => composerDrawerApi.current?.requestClose()}
             onDirtyChange={setComposerDirty}
           />
         </SlideOverDrawer>
@@ -438,7 +442,7 @@ export const App = () => {
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onRefresh={handleManualRefresh}
-        onOpenDispatch={() => setComposer({})}
+        onOpenDispatch={() => openComposer({})}
         coordinatorEnabled={isCoordinatorEnabled}
       />
 

@@ -34,7 +34,7 @@ export const TopBar = ({
           <button
             type="button"
             onClick={onOpenCommandPalette}
-            class="flex size-9 w-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:w-full sm:justify-start sm:gap-2 sm:px-3 sm:text-sm"
+            class="flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-surface text-xs text-pine-subtle transition-colors hover:border-pine-iris hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:w-full sm:justify-start sm:gap-2 sm:px-3 sm:text-sm"
             title="Search commands and navigate views (Ctrl+K)"
             aria-label="Search commands, views, tasks (Ctrl+K)"
           >

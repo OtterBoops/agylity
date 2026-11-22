@@ -19,7 +19,7 @@ const isSecretSet = (value: unknown): boolean => {
 const isWritableConfigKey = (key: string): boolean => {
   // Own-property lookup only: `ENV_TO_CONFIG_KEY['__proto__']` would answer with Object.prototype.
   const alias = Object.hasOwn(ENV_TO_CONFIG_KEY, key) ? ENV_TO_CONFIG_KEY[key] : undefined;
-  if (FORBIDDEN_CONFIG_KEYS.has(key)) return Boolean(alias) && !FORBIDDEN_CONFIG_KEYS.has(alias!);
+  if (FORBIDDEN_CONFIG_KEYS.has(key)) return false;
   if (Object.hasOwn(BUILTIN_DEFAULTS, key)) return true;
   return Boolean(alias) && !FORBIDDEN_CONFIG_KEYS.has(alias!);
 };

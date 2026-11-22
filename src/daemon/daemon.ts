@@ -153,6 +153,7 @@ export class AgylityDaemon {
     }
 
     this.configStore.on('change', ({ key, resolvedConfig }) => {
+      if (this.shutdownRequested) return;
       // Rapid saves must not interleave, so each sync runs after the previous one settles.
       this.configSyncChain = this.configSyncChain
         .then(async () => {
@@ -535,18 +536,20 @@ export class AgylityDaemon {
   }
 
   private scheduleSentryTimer(intervalSeconds: number): void {
-    // Shutdown clears timers last, so a scheduling call after the request must never re-arm one.
+    // Shutdown clears timers early, so a scheduling call after the request must never re-arm one.
     if (this.shutdownRequested) return;
     if (this.timer) clearInterval(this.timer);
+    // setInterval overflows above 2^31-1 ms and fires immediately, so the delay is clamped.
+    const intervalMs = Math.min(intervalSeconds * 1000, 2_147_483_647);
     this.timer = setInterval(() => {
       void this.checkQuota().catch((err) => {
         this.logger.warn('Scheduled quota evaluation warning: %s', err?.message ?? err);
       });
-    }, intervalSeconds * 1000);
+    }, intervalMs);
   }
 
   private scheduleAgyUpdateTimer(intervalHours: number): void {
-    // Shutdown clears timers last, so a scheduling call after the request must never re-arm one.
+    // Shutdown clears timers early, so a scheduling call after the request must never re-arm one.
     if (this.shutdownRequested) return;
     if (this.agyUpdateTimer) {
       clearInterval(this.agyUpdateTimer);
@@ -719,6 +722,20 @@ export class AgylityDaemon {
     }
   }
 
+  /** A wait that must never outlive the shutdown budget. */
+  private async settleWithin(promise: Promise<unknown>): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 5000);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([promise.catch(() => undefined), deadline]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /** A probe writing to SQLite must finish before the connection closes; the wait is bounded. */
   private async settleInFlight(): Promise<void> {
     const pending: Promise<unknown>[] = [];
@@ -726,19 +743,7 @@ export class AgylityDaemon {
     if (this.agyUpdateInFlightPromise) pending.push(this.agyUpdateInFlightPromise);
     if (pending.length === 0) return;
 
-    let timer: NodeJS.Timeout | undefined;
-    const deadline = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, 5000);
-      timer.unref?.();
-    });
-    try {
-      await Promise.race([
-        Promise.all(pending.map((promise) => promise.catch(() => undefined))),
-        deadline,
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
+    await this.settleWithin(Promise.all(pending.map((promise) => promise.catch(() => undefined))));
   }
 
   public shutdown(): Promise<void> {
@@ -754,10 +759,7 @@ export class AgylityDaemon {
 
     this.logger.info('Initiating graceful daemon shutdown...');
 
-    // A queued config sync can re-arm timers, so it must settle before they are cleared.
-    await this.configSyncChain;
-
-    // Order matters: the timer stops first and the database closes last.
+    // Timers stop before any await: a queued sync must not be able to re-arm them.
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
@@ -767,6 +769,9 @@ export class AgylityDaemon {
       this.agyUpdateTimer = null;
     }
     this.isSentryStopped = true;
+
+    // A queued config sync may still append work, so it drains under the shutdown deadline.
+    await this.settleWithin(this.configSyncChain);
 
     // An in-flight probe still writes through the live connection.
     await this.settleInFlight();

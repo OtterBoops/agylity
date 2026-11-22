@@ -60,6 +60,8 @@ export const SlideOverDrawer = ({
       finishClose();
       return;
     }
+    // A second close request must not stack timers and fire onClosed twice.
+    if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
     setClosing(true);
     closeTimerRef.current = window.setTimeout(finishClose, 220);
   }, [closing, finishClose]);
@@ -149,23 +151,29 @@ export const SlideOverDrawer = ({
         closing ? 'translate-x-full backdrop:opacity-0' : 'translate-x-0'
       } ${width === 'composer' ? 'md:max-w-2xl' : 'md:max-w-3xl'}`}
     >
-      <div ref={bodyRef} tabIndex={-1} class="flex h-full flex-col overflow-y-auto outline-hidden">
-        <header class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-pine-highlight bg-pine-surface px-4 py-3">
-          <h2 class="font-mono text-xs tracking-wider text-pine-subtle uppercase">{label}</h2>
-          <button
-            type="button"
-            onClick={requestClose}
-            aria-label={`Close ${label.toLowerCase()}`}
-            class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-          >
-            <Icon icon={faTimes} class="size-4" />
-          </button>
-        </header>
+      <div class="flex h-full flex-col overflow-hidden">
+        <div
+          ref={bodyRef}
+          tabIndex={-1}
+          class="flex min-h-0 flex-1 flex-col overflow-y-auto outline-hidden"
+        >
+          <header class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-pine-highlight bg-pine-surface px-4 py-3">
+            <h2 class="font-mono text-xs tracking-wider text-pine-subtle uppercase">{label}</h2>
+            <button
+              type="button"
+              onClick={requestClose}
+              aria-label={`Close ${label.toLowerCase()}`}
+              class="inline-flex min-h-11 min-w-11 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            >
+              <Icon icon={faTimes} class="size-4" />
+            </button>
+          </header>
 
-        <div class="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>
+          <div class="flex min-w-0 flex-1 flex-col gap-4 p-4">{children}</div>
+        </div>
 
         {(footer || discardArmed) && (
-          <footer class="sticky bottom-0 z-10 mt-auto flex flex-col gap-2 border-t border-pine-highlight bg-pine-surface px-4 py-3">
+          <footer class="flex shrink-0 flex-col gap-2 border-t border-pine-highlight bg-pine-surface px-4 py-3">
             {footer}
             {discardArmed && (
               <DiscardStrip onConfirm={close} onCancel={() => setDiscardArmed(false)} />
