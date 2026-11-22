@@ -546,6 +546,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                   onClearSecret={handleClearWebhookSecret}
                   pingOwner={webhookPingOwner}
                   onPingOwnerChange={setWebhookPingOwner}
+                  ownerUserId={discordOwnerUserId.trim()}
                   diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
                 />
               )}

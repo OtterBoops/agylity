@@ -12,6 +12,8 @@ interface WebhookChannelFormProps {
   onClearSecret: () => Promise<void>;
   pingOwner: boolean;
   onPingOwnerChange: (val: boolean) => void;
+  /** Set on the Discord destination; a webhook ping has nowhere else to read it from. */
+  ownerUserId?: string;
   diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
@@ -26,6 +28,7 @@ export const WebhookChannelForm = ({
   onClearSecret,
   pingOwner,
   onPingOwnerChange,
+  ownerUserId = '',
   diagnostics,
 }: WebhookChannelFormProps) => {
   const [showSecret, setShowSecret] = useState(false);
@@ -142,10 +145,18 @@ export const WebhookChannelForm = ({
       <div class="flex items-center justify-between gap-4 border-t border-pine-highlight/40 pt-3">
         <div class="flex flex-col gap-0.5">
           <span class="text-xs font-semibold text-pine-text">Ping Owner</span>
-          <span class="text-xs text-pine-subtle">
-            Mentions your Discord user ID on quota alerts and test pings. Applies to Discord webhook
-            URLs only; other endpoints receive the payload untouched.
-          </span>
+          {ownerUserId ? (
+            <span class="text-xs text-pine-subtle">
+              Mentions <code class="font-mono text-pine-foam">&lt;@{ownerUserId}&gt;</code> on quota
+              alerts and test pings, using the id set on the Discord destination. Discord webhook
+              URLs only; other endpoints receive the payload untouched.
+            </span>
+          ) : (
+            <span class="text-xs text-pine-gold">
+              No owner id is configured, so this toggle sends no mention. Set one on the Discord
+              destination above.
+            </span>
+          )}
         </div>
         <ToggleSwitch
           checked={pingOwner}
