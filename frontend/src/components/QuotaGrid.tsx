@@ -62,6 +62,7 @@ export const QuotaGrid = ({
   onRetry,
 }: QuotaGridProps) => {
   const [now, setNow] = useState(Date.now());
+  const [barsRevealed, setBarsRevealed] = useState(false);
   const catalog = useModelCatalog();
 
   const catalogLabelsByPoolGroup = new Map<string, { models: string[]; routes: string[] }>();
@@ -91,6 +92,11 @@ export const QuotaGrid = ({
   const absentPoolGroups =
     quota.length > 0 ? POOL_GROUPS.filter((poolGroup) => !presentPoolGroups.has(poolGroup)) : [];
   const cellCount = quota.length + absentPoolGroups.length;
+
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setBarsRevealed(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   useEffect(() => {
     const tick = () => {
@@ -303,18 +309,20 @@ export const QuotaGrid = ({
                 class="relative h-1 bg-pine-sunken"
               >
                 <div
-                  class={`h-full transition-all duration-500 ease-out ${barColor}`}
-                  style={{ width: `${Math.min(100, Math.max(0, weeklyPct))}%` }}
+                  class={`h-full transition-[width,background-color] duration-700 ease-out ${barColor}`}
+                  style={{
+                    width: `${barsRevealed ? Math.min(100, Math.max(0, weeklyPct)) : 0}%`,
+                  }}
                 />
                 {projection && projection.projectedRemainingAtResetPercent < weeklyPct && (
                   <div
-                    class="absolute inset-y-0"
+                    class="absolute inset-y-0 transition-opacity duration-700 ease-out"
                     style={{
                       left: `${Math.min(100, Math.max(0, projection.projectedRemainingAtResetPercent))}%`,
                       width: `${Math.min(100, weeklyPct) - Math.max(0, projection.projectedRemainingAtResetPercent)}%`,
                       backgroundImage:
                         'repeating-linear-gradient(45deg, var(--accent-amber) 0 1px, transparent 1px 5px)',
-                      opacity: 0.55,
+                      opacity: barsRevealed ? 0.55 : 0,
                     }}
                     aria-hidden="true"
                   />
@@ -377,8 +385,10 @@ export const QuotaGrid = ({
                   class="h-1 overflow-hidden bg-pine-sunken"
                 >
                   <div
-                    class="h-full bg-pine-iris/75 transition-all duration-500 ease-out"
-                    style={{ width: `${Math.min(100, Math.max(0, shortTermPct))}%` }}
+                    class="h-full bg-pine-iris/75 transition-[width] duration-700 ease-out"
+                    style={{
+                      width: `${barsRevealed ? Math.min(100, Math.max(0, shortTermPct)) : 0}%`,
+                    }}
                   />
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">

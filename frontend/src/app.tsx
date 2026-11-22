@@ -38,6 +38,7 @@ import {
   refreshConfig,
   startQuotaPolling,
   loadModelCatalog,
+  clearOverviewUiCache,
 } from './state';
 
 // Every legacy /settings/* path renders the same page; the hash picks the section.
@@ -157,6 +158,7 @@ export const App = () => {
 
   useEffect(() => {
     const handleUnauthorized = () => {
+      clearOverviewUiCache();
       setIsLocked(true);
       setSessionModalOpen(false);
     };
@@ -432,6 +434,7 @@ export const App = () => {
         isOpen={sessionModalOpen}
         onClose={() => setSessionModalOpen(false)}
         onLock={() => {
+          clearOverviewUiCache();
           setIsLocked(true);
           setSessionModalOpen(false);
         }}

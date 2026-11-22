@@ -11,6 +11,7 @@ import { Icon } from '../components/Icon';
 import { VerdictBar } from '../components/VerdictBar';
 import { SwarmRunnersStrip } from '../components/SwarmRunnersStrip';
 import { dismissEarlyReset, getRunners } from '../api';
+import { readUiCache, RUNNERS_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 
 interface OverviewViewProps {
   quota: QuotaSnapshot[];
@@ -113,7 +114,9 @@ export const OverviewView = ({
   onAlertsChanged,
   coordinatorEnabled = false,
 }: OverviewViewProps) => {
-  const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
+  const [runners, setRunners] = useState<SwarmRunnerRecord[]>(
+    () => readUiCache<SwarmRunnerRecord[]>(RUNNERS_CACHE_KEY) ?? []
+  );
   const [runnersError, setRunnersError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -124,6 +127,7 @@ export const OverviewView = ({
         .then((next) => {
           if (cancelled) return;
           setRunners(next);
+          writeUiCache(RUNNERS_CACHE_KEY, next);
           setRunnersError(null);
         })
         .catch((err: any) => {

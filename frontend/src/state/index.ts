@@ -4,6 +4,7 @@ export {
   refreshQuota,
   refreshAlerts,
   startQuotaPolling,
+  clearOverviewUiCache,
   type QuotaState,
 } from './quotaStore';
 export {

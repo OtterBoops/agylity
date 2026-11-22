@@ -3,6 +3,7 @@ import type { ComponentChildren } from 'preact';
 import type { DispatchEligibility, ModelCatalogEntry } from '../types';
 import { getDispatchEligibility } from '../api';
 import { useModelCatalog } from '../state/modelCatalogStore';
+import { readUiCache, VERDICT_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 import { CANONICAL_AGY_MODELS } from '../../../src/shared/models.ts';
 import { dialogBackdropClickHandler } from '../utils/dialog';
 import { formatDateTime, useTimeFormat } from '../utils/time';
@@ -101,7 +102,9 @@ const DetailRow = ({
 
 /** Renders the server's verdict verbatim; re-deriving eligibility would disagree with the gate. */
 export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
-  const [verdict, setVerdict] = useState<DispatchEligibility | null>(null);
+  const [verdict, setVerdict] = useState<DispatchEligibility | null>(() =>
+    readUiCache<DispatchEligibility>(VERDICT_CACHE_KEY)
+  );
   const [failed, setFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [timeFormat] = useTimeFormat();
@@ -117,6 +120,7 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
         .then((next) => {
           if (cancelled) return;
           setVerdict(next);
+          writeUiCache(VERDICT_CACHE_KEY, next);
           setFailed(false);
         })
         .catch(() => {
@@ -143,7 +147,9 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
   const refresh = async () => {
     setRefreshing(true);
     try {
-      setVerdict(await getDispatchEligibility());
+      const next = await getDispatchEligibility();
+      setVerdict(next);
+      writeUiCache(VERDICT_CACHE_KEY, next);
       setFailed(false);
     } catch {
       setFailed(true);
