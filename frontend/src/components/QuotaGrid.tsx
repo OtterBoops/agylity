@@ -316,13 +316,11 @@ export const QuotaGrid = ({
                 />
                 {projection && projection.projectedRemainingAtResetPercent < weeklyPct && (
                   <div
-                    class="absolute inset-y-0 transition-opacity duration-700 ease-out"
+                    class="absolute inset-y-0 bg-pine-sunken/55 transition-opacity duration-700 ease-out"
                     style={{
                       left: `${Math.min(100, Math.max(0, projection.projectedRemainingAtResetPercent))}%`,
                       width: `${Math.min(100, weeklyPct) - Math.max(0, projection.projectedRemainingAtResetPercent)}%`,
-                      backgroundImage:
-                        'repeating-linear-gradient(45deg, var(--accent-amber) 0 1px, transparent 1px 5px)',
-                      opacity: barsRevealed ? 0.55 : 0,
+                      opacity: barsRevealed ? 1 : 0,
                     }}
                     aria-hidden="true"
                   />
