@@ -78,10 +78,11 @@ Frontier models in Antigravity are governed by two distinct limits:
    agy --output-format json models
    ```
    Validated against `CliModelsResponseSchema`, preserving previously cached reset deadlines while monitoring available models.
-5. **Listed-but-unavailable models**: a cascade entry carrying `disabled: true` or an empty `quotaInfo: {}`
+5. **CLI Quota Fallback**: The same fallback path runs `agy --output-format json -p /usage`, whose `command.data.groups` carry the quota buckets (`remaining_fraction`, `reset_time`) the RPC would have returned. This is what makes a containerised coordinator viable: it has no `language_server` to discover, but it does carry the shared authenticated `agylity-gemini` volume, so the CLI answers with probe source `cli` and the sentry keeps working.
+6. **Listed-but-unavailable models**: a cascade entry carrying `disabled: true` or an empty `quotaInfo: {}`
    is skipped, and a `-disabled` model id resolves to no pool. One placeholder the account cannot use must
    not fail the whole probe, and it never contributes a pool.
-6. **Tier-withheld models**: the live `agy models` listing is the authority on what the account may run. A
+7. **Tier-withheld models**: the live `agy models` listing is the authority on what the account may run. A
    configured model missing from it — `gemini-4-hydrogen` on an AI Plus account — resolves to the newest
    model the same pool group still serves (`gemini-3.8-flash`), never to another group's, so the
    dispatch stays charged to the pool it was budgeted against. A group with no live pool stays refused.
