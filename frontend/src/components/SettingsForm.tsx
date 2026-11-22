@@ -104,7 +104,7 @@ export const SettingsForm = ({
     // A stored id the catalog no longer offers must still render, or the select goes blank.
     const current = valueOf(field);
     if (current !== '' && !options.some((o) => o.value === current)) {
-      return [...options, { value: current, label: `${current} (not offered by agy)` }];
+      return [...options, { value: current, label: `${current} (not on this plan)` }];
     }
     return options;
   };

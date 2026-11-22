@@ -18,6 +18,7 @@ import { Coordinator } from '../../coordinator/coordinator.js';
 import { RegistrationTokenError } from '../../coordinator/queue.js';
 import {
   annotateModelsWithQuota,
+  resolveDefaultDispatchModel,
   CANONICAL_AGY_MODELS,
   isTerminalTaskStatus,
   normalizeCascade,
@@ -160,7 +161,10 @@ export const handleGetModels = async (
     res,
     200,
     {
-      defaultModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
+      defaultModel: resolveDefaultDispatchModel(
+        resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
+        catalog
+      ),
       defaultEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
       models,
       unattributedModels: options.modelCatalog?.getUnattributedModels() ?? [],

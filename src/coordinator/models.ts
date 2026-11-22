@@ -1,16 +1,17 @@
 import { z } from 'zod';
 import {
   calculateHoursUntilReset,
-  FAMILY_ALIASES,
-  resolveModelFamily,
+  POOL_GROUP_ALIASES,
+  poolGroupForModelConfig,
   type QuotaBucket,
-  type QuotaFamily,
+  type PoolGroup,
   type QuotaSnapshot,
 } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import {
   ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
+  isOrchestratorModelId,
   type AgyModelCatalogEntry,
   type ReasoningEffort,
 } from '../shared/models.js';
@@ -88,16 +89,16 @@ export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]))
 export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> =
   Object.fromEntries(CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS]));
 
-const defaultModelFor = (family: QuotaFamily): string => {
-  const entry = CANONICAL_AGY_MODELS.find((m) => m.family === family && m.defaultForFamily);
-  if (!entry) throw new Error(`No default model declared for pool family '${family}'`);
+const defaultModelForPoolGroup = (poolGroup: PoolGroup): string => {
+  const entry = CANONICAL_AGY_MODELS.find((m) => m.poolGroup === poolGroup && m.defaultForGroup);
+  if (!entry) throw new Error(`No default model declared for pool group '${poolGroup}'`);
   return entry.id;
 };
 
-export const DEFAULT_MODEL_BY_FAMILY: Record<QuotaFamily, string> = {
-  'gemini-argon': defaultModelFor('gemini-argon'),
-  'gemini-hydrogen': defaultModelFor('gemini-hydrogen'),
-  claude: defaultModelFor('claude'),
+export const DEFAULT_MODEL_BY_POOL_GROUP: Record<PoolGroup, string> = {
+  'gemini-argon': defaultModelForPoolGroup('gemini-argon'),
+  'gemini-hydrogen': defaultModelForPoolGroup('gemini-hydrogen'),
+  claude: defaultModelForPoolGroup('claude'),
 };
 
 export const resolveReasoningEffortForModel = (
@@ -114,40 +115,40 @@ export const resolveReasoningEffortForModel = (
   return supported.includes(normalized) ? normalized : defaultEffort;
 };
 
-export const resolvePoolFamilyForModelOrNull = (modelOrFamily?: string): QuotaFamily | null => {
-  if (!modelOrFamily) return null;
-  const normalized = modelOrFamily.trim().toLowerCase();
-  const alias = FAMILY_ALIASES[normalized];
+export const resolvePoolGroupForModelOrNull = (modelOrPoolGroup?: string): PoolGroup | null => {
+  if (!modelOrPoolGroup) return null;
+  const normalized = modelOrPoolGroup.trim().toLowerCase();
+  const alias = POOL_GROUP_ALIASES[normalized];
   if (alias) return alias;
 
-  const resolved = resolveModelFamily({ modelId: normalized, label: normalized });
-  return resolved?.family ?? null;
+  const resolved = poolGroupForModelConfig({ modelId: normalized, label: normalized });
+  return resolved?.poolGroup ?? null;
 };
 
 // Display/bookkeeping default only — never use this to authorise a dispatch.
-export const resolvePoolFamilyForModel = (modelOrFamily?: string): QuotaFamily =>
-  resolvePoolFamilyForModelOrNull(modelOrFamily) ?? 'gemini-argon';
+export const resolvePoolGroupForModel = (modelOrPoolGroup?: string): PoolGroup =>
+  resolvePoolGroupForModelOrNull(modelOrPoolGroup) ?? 'gemini-argon';
 
 // Pool shorthands that name one canonical model, so no caller invents its own table.
 const resolveShorthandModelId = (lowercased: string): string | undefined => {
-  // A literal catalog id must not be routed through the family default, or the operator's
-  // chosen model silently retargets when that family's default changes.
+  // A literal catalog id must not be routed through the group default, or the operator's chosen
+  // model silently retargets when that group's default changes.
   if (CATALOG_BY_ID.has(lowercased)) return lowercased;
 
   if (lowercased === 'gemini-argon' || lowercased === 'argon') {
-    return DEFAULT_MODEL_BY_FAMILY['gemini-argon'];
+    return DEFAULT_MODEL_BY_POOL_GROUP['gemini-argon'];
   }
-  // `gemini-flash` is the pre-rename family key; a stored default model must keep resolving.
+  // `gemini-flash` is the pre-rename pool group key; a stored default model must keep resolving.
   if (
     lowercased === 'gemini-hydrogen' ||
     lowercased === 'gemini-flash' ||
     lowercased === 'hydrogen' ||
     lowercased === 'flash'
   ) {
-    return DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'];
+    return DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'];
   }
   if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
-    return DEFAULT_MODEL_BY_FAMILY.claude;
+    return DEFAULT_MODEL_BY_POOL_GROUP.claude;
   }
   if (lowercased === 'opus') {
     return 'claude-opus-5-5';
@@ -176,6 +177,36 @@ export const resolveConcreteModelId = (
 
   return resolveShorthandModelId(requested.toLowerCase()) ?? stripEffortSuffix(requested);
 };
+
+/** Highest available = last entry for the pool group in catalog order: agy lists models oldest first. */
+export const highestAvailableModelForPoolGroup = (
+  poolGroup: PoolGroup,
+  catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
+): string | undefined => {
+  const candidates = catalog.filter((entry) => entry.poolGroup === poolGroup);
+  const concrete = candidates.filter((entry) => !isOrchestratorModelId(entry.id));
+  const ordered = concrete.length > 0 ? concrete : candidates;
+  return ordered[ordered.length - 1]?.id;
+};
+
+// An account tier withholds models the build still knows about, so a withheld id lands on the
+// newest model its own pool group offers rather than a model that cannot run.
+export const resolveAvailableModelId = (
+  model: string,
+  catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
+): string => {
+  if (catalog.length === 0) return model;
+  if (catalog.some((entry) => entry.id === model)) return model;
+  if (isOrchestratorModelId(model)) return model;
+  const poolGroup = resolvePoolGroupForModelOrNull(model);
+  if (poolGroup === null) return model;
+  return highestAvailableModelForPoolGroup(poolGroup, catalog) ?? model;
+};
+
+export const resolveDefaultDispatchModel = (
+  configured: string | undefined,
+  catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
+): string => resolveAvailableModelId(resolveConcreteModelId(configured), catalog);
 
 export interface CascadeHop {
   model: string;
@@ -216,7 +247,7 @@ export const normalizeCascade = (input: unknown, fallbackModel?: string): Cascad
 
   if (hops.length > 0) return hops;
 
-  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'];
+  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'];
   const resolvedFallback = resolveConcreteModelId(fallback);
   return [
     {
@@ -260,7 +291,7 @@ export interface ModelEligibilityOptions {
     Pick<
       QuotaSnapshot,
       | 'poolId'
-      | 'family'
+      | 'poolGroup'
       | 'displayName'
       | 'remainingFraction'
       | 'resetTime'
@@ -275,12 +306,13 @@ export interface ModelEligibilityOptions {
   quotaBurnMaxHours?: number;
   quotaBurnMinHeadroomPercent?: number;
   nowMs?: number;
+  catalog?: readonly AgyModelCatalogEntry[];
 }
 
 export interface ModelEligibilityResult {
   allowed: boolean;
   resolvedModel: string;
-  family: QuotaFamily | null;
+  poolGroup: PoolGroup | null;
   effectiveHeadroomPercent: number;
   hoursUntilReset: number | null;
   code?: 'OVERAGE_PROTECTION_TRIGGERED' | 'QUOTA_BURN_CONDITIONS_NOT_MET' | 'TELEMETRY_UNAVAILABLE';
@@ -290,8 +322,11 @@ export interface ModelEligibilityResult {
 export const evaluateModelDispatchEligibility = (
   options: ModelEligibilityOptions
 ): ModelEligibilityResult => {
-  const resolvedModel = resolveConcreteModelId(options.requestedModel, options.defaultModel);
-  const family = resolvePoolFamilyForModelOrNull(resolvedModel);
+  const resolvedModel = resolveAvailableModelId(
+    resolveConcreteModelId(options.requestedModel, options.defaultModel),
+    options.catalog
+  );
+  const poolGroup = resolvePoolGroupForModelOrNull(resolvedModel);
   const scheduleMode: ScheduleMode = options.scheduleMode ?? 'immediate';
   const minHeadroom = options.minDispatchHeadroomPercent ?? 10;
   const allowOverage = Boolean(options.allowOverage);
@@ -299,11 +334,11 @@ export const evaluateModelDispatchEligibility = (
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
 
-  if (family === null) {
+  if (poolGroup === null) {
     return {
       allowed: false,
       resolvedModel,
-      family,
+      poolGroup,
       effectiveHeadroomPercent: 0,
       hoursUntilReset: null,
       code: 'TELEMETRY_UNAVAILABLE',
@@ -316,7 +351,7 @@ export const evaluateModelDispatchEligibility = (
       return {
         allowed: false,
         resolvedModel,
-        family,
+        poolGroup,
         effectiveHeadroomPercent: 100,
         hoursUntilReset: null,
         code: 'QUOTA_BURN_CONDITIONS_NOT_MET',
@@ -327,7 +362,7 @@ export const evaluateModelDispatchEligibility = (
       return {
         allowed: true,
         resolvedModel,
-        family,
+        poolGroup,
         effectiveHeadroomPercent: 100,
         hoursUntilReset: null,
       };
@@ -335,19 +370,19 @@ export const evaluateModelDispatchEligibility = (
     return {
       allowed: false,
       resolvedModel,
-      family,
+      poolGroup,
       effectiveHeadroomPercent: 0,
       hoursUntilReset: null,
       code: 'TELEMETRY_UNAVAILABLE',
-      reason: `Overage Protection: quota telemetry for ${family} could not be read, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
+      reason: `Overage Protection: quota telemetry for ${poolGroup} could not be read, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
     };
   }
 
   const targetPool = pools.find(
     (p) =>
-      p.family === family ||
-      p.poolId === family ||
-      resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
+      p.poolGroup === poolGroup ||
+      p.poolId === poolGroup ||
+      resolvePoolGroupForModelOrNull(p.poolId || p.displayName) === poolGroup
   );
 
   const effectiveHeadroomPercent = targetPool
@@ -357,11 +392,11 @@ export const evaluateModelDispatchEligibility = (
     return {
       allowed: false,
       resolvedModel,
-      family,
+      poolGroup,
       effectiveHeadroomPercent: 0,
       hoursUntilReset: null,
       code: 'TELEMETRY_UNAVAILABLE',
-      reason: `Overage Protection: no usable quota telemetry for ${family}, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
+      reason: `Overage Protection: no usable quota telemetry for ${poolGroup}, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
     };
   }
   const hoursUntilReset = targetPool
@@ -374,11 +409,11 @@ export const evaluateModelDispatchEligibility = (
     return {
       allowed: false,
       resolvedModel,
-      family,
+      poolGroup,
       effectiveHeadroomPercent,
       hoursUntilReset,
       code: 'OVERAGE_PROTECTION_TRIGGERED',
-      reason: `Overage Protection: Remaining quota for ${family} (${effectiveHeadroomPercent}%) is below the safety floor (${minHeadroom}%). Dispatch locked to prevent paid AI overages or credit consumption. Pass allowOverage: true to override.`,
+      reason: `Overage Protection: Remaining quota for ${poolGroup} (${effectiveHeadroomPercent}%) is below the safety floor (${minHeadroom}%). Dispatch locked to prevent paid AI overages or credit consumption. Pass allowOverage: true to override.`,
     };
   }
 
@@ -396,11 +431,11 @@ export const evaluateModelDispatchEligibility = (
       return {
         allowed: false,
         resolvedModel,
-        family,
+        poolGroup,
         effectiveHeadroomPercent,
         hoursUntilReset,
         code: 'QUOTA_BURN_CONDITIONS_NOT_MET',
-        reason: `Pre-Reset Quota-Burn conditions not yet met for ${family} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${burnMinHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
+        reason: `Pre-Reset Quota-Burn conditions not yet met for ${poolGroup} (headroom: ${effectiveHeadroomPercent}%, reset in: ${hoursUntilReset !== null ? `${hoursUntilReset}h` : 'unknown'}; requires >=${burnMinHeadroom}% and <=${quotaBurnMaxHours}h). Task remains queued.`,
       };
     }
   }
@@ -408,7 +443,7 @@ export const evaluateModelDispatchEligibility = (
   return {
     allowed: true,
     resolvedModel,
-    family,
+    poolGroup,
     effectiveHeadroomPercent,
     hoursUntilReset,
   };
@@ -421,7 +456,7 @@ export const annotateModelsWithQuota = (
   catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
 ): AnnotatedModelCatalogEntry[] => {
   return catalog.map((entry) => {
-    const pool = pools.find((p) => p.family === entry.family || p.poolId === entry.family);
+    const pool = pools.find((p) => p.poolGroup === entry.poolGroup || p.poolId === entry.poolGroup);
     if (!pool) {
       return {
         ...entry,
@@ -463,7 +498,7 @@ export interface ModelPreferenceEvaluationResult {
   selectedModel?: string;
   selectedEffort?: ReasoningEffort;
   selectedHopIndex?: number;
-  family?: QuotaFamily;
+  poolGroup?: PoolGroup;
   effectiveHeadroomPercent?: number;
   weeklyHeadroomPercent?: number;
   shortTermHeadroomPercent?: number | null;
@@ -479,38 +514,45 @@ export const evaluateModelPreferenceChain = (options: {
   pools: QuotaSnapshot[];
   minHeadroomPercent: number;
   maxHoursUntilReset?: number;
-  isPoolDispatchEnabled?: (family: QuotaFamily) => boolean;
+  isPoolDispatchEnabled?: (poolGroup: PoolGroup) => boolean;
   nowMs?: number;
+  catalog?: readonly AgyModelCatalogEntry[];
 }): ModelPreferenceEvaluationResult => {
   const hops =
     options.cascade.length > 0
       ? options.cascade
-      : normalizeCascade([], options.defaultModel || DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen']);
+      : normalizeCascade(
+          [],
+          options.defaultModel || DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen']
+        );
   const nowMs = options.nowMs ?? Date.now();
   const rejectionReasons: string[] = [];
 
   for (const [hopIndex, hop] of hops.entries()) {
-    const resolvedModel = resolveConcreteModelId(hop.model, options.defaultModel);
+    const resolvedModel = resolveAvailableModelId(
+      resolveConcreteModelId(hop.model, options.defaultModel),
+      options.catalog
+    );
     const effort = resolveReasoningEffortForModel(resolvedModel, hop.effort);
-    const family = resolvePoolFamilyForModelOrNull(resolvedModel);
-    if (family === null) {
+    const poolGroup = resolvePoolGroupForModelOrNull(resolvedModel);
+    if (poolGroup === null) {
       rejectionReasons.push(`${resolvedModel}: unknown model id, no quota pool`);
       continue;
     }
 
-    if (options.isPoolDispatchEnabled && !options.isPoolDispatchEnabled(family)) {
-      rejectionReasons.push(`${resolvedModel} (${family}): pool dispatch disabled`);
+    if (options.isPoolDispatchEnabled && !options.isPoolDispatchEnabled(poolGroup)) {
+      rejectionReasons.push(`${resolvedModel} (${poolGroup}): pool dispatch disabled`);
       continue;
     }
 
     const targetPool = options.pools.find(
       (p) =>
-        p.family === family ||
-        p.poolId === family ||
-        resolvePoolFamilyForModelOrNull(p.poolId || p.displayName) === family
+        p.poolGroup === poolGroup ||
+        p.poolId === poolGroup ||
+        resolvePoolGroupForModelOrNull(p.poolId || p.displayName) === poolGroup
     );
     if (!targetPool) {
-      rejectionReasons.push(`${resolvedModel} (${family}): no telemetry pool`);
+      rejectionReasons.push(`${resolvedModel} (${poolGroup}): no telemetry pool`);
       continue;
     }
 
@@ -583,7 +625,7 @@ export const evaluateModelPreferenceChain = (options: {
       selectedModel: resolvedModel,
       selectedEffort: effort,
       selectedHopIndex: hopIndex,
-      family,
+      poolGroup,
       effectiveHeadroomPercent,
       weeklyHeadroomPercent,
       shortTermHeadroomPercent,

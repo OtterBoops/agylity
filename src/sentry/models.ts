@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { upgradePoolFamilyId, type QuotaFamily } from '../shared/models.js';
+import { POOL_GROUP_LABELS, upgradePoolGroupId, type PoolGroup } from '../shared/models.js';
 
 export const QuotaInfoSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
@@ -51,7 +51,7 @@ export const LanguageServerResponseSchema = z.object({
   defaultOverrideModelConfig: z.record(z.string(), z.unknown()).optional(),
 });
 
-export type { QuotaFamily };
+export type { PoolGroup };
 
 export const QuotaBucketSchema = z.object({
   bucketId: z.string(),
@@ -68,7 +68,7 @@ export type QuotaBucket = z.infer<typeof QuotaBucketSchema>;
 
 export const QuotaSnapshotSchema = z.object({
   poolId: z.string(),
-  family: z.enum(['claude', 'gemini-argon', 'gemini-hydrogen']),
+  poolGroup: z.enum(['claude', 'gemini-argon', 'gemini-hydrogen']),
   displayName: z.string(),
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
@@ -240,33 +240,29 @@ export const computeBurnProjection = (input: {
   };
 };
 
-export const FAMILY_ORDER: Record<QuotaFamily, number> = {
+export const POOL_GROUP_ORDER: Record<PoolGroup, number> = {
   'gemini-hydrogen': 0,
   'gemini-argon': 1,
   claude: 2,
 };
 
 // Prototype-free table: an arbitrary state-file key such as `constructor` must not resolve to an inherited member.
-export const FAMILY_ALIASES: Record<string, QuotaFamily> = Object.assign(Object.create(null), {
+export const POOL_GROUP_ALIASES: Record<string, PoolGroup> = Object.assign(Object.create(null), {
   'gemini-argon': 'gemini-argon',
   argon: 'gemini-argon',
   'gemini-hydrogen': 'gemini-hydrogen',
   hydrogen: 'gemini-hydrogen',
-  // Legacy key from state files and pool ids written before the family was renamed.
+  // Legacy key from state files and pool ids written before the pool group was renamed.
   'gemini-flash': 'gemini-hydrogen',
   flash: 'gemini-hydrogen',
   claude: 'claude',
   sonnet: 'claude',
   '3p': 'claude',
-} as Record<string, QuotaFamily>);
+} as Record<string, PoolGroup>);
 
-export const FAMILY_DISPLAY_NAMES: Record<QuotaFamily, string> = {
-  'gemini-hydrogen': 'Gemini Hydrogen',
-  'gemini-argon': 'Gemini Argon',
-  claude: 'Claude and GPT models',
-};
+export const POOL_GROUP_DISPLAY_NAMES: Record<PoolGroup, string> = POOL_GROUP_LABELS;
 
-export const FAMILY_DEFAULT_MODELS: Record<QuotaFamily, string[]> = {
+export const POOL_GROUP_DEFAULT_MODELS: Record<PoolGroup, string[]> = {
   'gemini-hydrogen': ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Gemini 3.8 Flash'],
   'gemini-argon': ['Gemini 4 Argon'],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
@@ -281,7 +277,7 @@ const resolveCredits = (
 });
 
 export const toSnapshot = (input: {
-  family: QuotaFamily;
+  poolGroup: PoolGroup;
   remainingFraction: number;
   resetTime: string;
   hoursUntilReset: number;
@@ -294,9 +290,9 @@ export const toSnapshot = (input: {
   poolId?: string;
   displayName?: string;
 }): QuotaSnapshot => ({
-  poolId: input.poolId ?? input.family,
-  family: input.family,
-  displayName: input.displayName ?? FAMILY_DISPLAY_NAMES[input.family],
+  poolId: input.poolId ?? input.poolGroup,
+  poolGroup: input.poolGroup,
+  displayName: input.displayName ?? POOL_GROUP_DISPLAY_NAMES[input.poolGroup],
   remainingFraction: input.remainingFraction,
   resetTime: input.resetTime,
   hoursUntilReset: input.hoursUntilReset,
@@ -308,11 +304,11 @@ export const toSnapshot = (input: {
   buckets: input.buckets,
 });
 
-export const resolveModelFamily = (config: {
+export const poolGroupForModelConfig = (config: {
   modelId?: string;
   label?: string;
 }): {
-  family: QuotaFamily;
+  poolGroup: PoolGroup;
   displayName: string;
 } | null => {
   const mid = (config.modelId || '').toLowerCase();
@@ -322,7 +318,7 @@ export const resolveModelFamily = (config: {
   if (mid.endsWith('-disabled')) return null;
 
   if (mid.includes('argon') || lbl.includes('argon')) {
-    return { family: 'gemini-argon', displayName: FAMILY_DISPLAY_NAMES['gemini-argon'] };
+    return { poolGroup: 'gemini-argon', displayName: POOL_GROUP_DISPLAY_NAMES['gemini-argon'] };
   }
 
   // Carbon and Neon run on Hydrogen and match before the orchestrator prefix, which spans both pools.
@@ -332,23 +328,32 @@ export const resolveModelFamily = (config: {
     mid.includes('neon') ||
     lbl.includes('neon')
   ) {
-    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
+    return {
+      poolGroup: 'gemini-hydrogen',
+      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
+    };
   }
 
   // Only the G1 Pro route bills Argon; a bare `gemini-pro-orchestrator` is the Carbon route.
   if (mid.includes('orchestrator') || lbl.includes('orchestrator')) {
-    const family: QuotaFamily = mid.includes('g1-pro') ? 'gemini-argon' : 'gemini-hydrogen';
-    return { family, displayName: FAMILY_DISPLAY_NAMES[family] };
+    const poolGroup: PoolGroup = mid.includes('g1-pro') ? 'gemini-argon' : 'gemini-hydrogen';
+    return { poolGroup, displayName: POOL_GROUP_DISPLAY_NAMES[poolGroup] };
   }
 
   // Hydrogen shares the Flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
   if (mid.includes('hydrogen') || lbl.includes('hydrogen')) {
-    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
+    return {
+      poolGroup: 'gemini-hydrogen',
+      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
+    };
   }
 
   // No bare 'pro' branch: `gemini-pro-orchestrator-g1-pro` is not a Flash model, so a substring match would charge the wrong pool.
   if (mid.includes('flash') || lbl.includes('flash')) {
-    return { family: 'gemini-hydrogen', displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'] };
+    return {
+      poolGroup: 'gemini-hydrogen',
+      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
+    };
   }
 
   if (
@@ -361,7 +366,7 @@ export const resolveModelFamily = (config: {
     lbl.includes('sonnet') ||
     lbl.includes('gpt-oss')
   ) {
-    return { family: 'claude', displayName: FAMILY_DISPLAY_NAMES.claude };
+    return { poolGroup: 'claude', displayName: POOL_GROUP_DISPLAY_NAMES.claude };
   }
 
   return null;
@@ -375,33 +380,33 @@ const poolIdSlug = (name: string): string => {
   return slug || 'pool';
 };
 
-export const resolveGroupFamily = (
+export const resolvePoolGroupForQuotaGroup = (
   groupName: string
 ): {
-  family: QuotaFamily;
+  poolGroup: PoolGroup;
   displayName: string;
   defaultModels: string[];
 } | null => {
   const name = groupName.toLowerCase();
   if (name.includes('argon')) {
     return {
-      family: 'gemini-argon',
-      displayName: FAMILY_DISPLAY_NAMES['gemini-argon'],
-      defaultModels: FAMILY_DEFAULT_MODELS['gemini-argon'],
+      poolGroup: 'gemini-argon',
+      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-argon'],
+      defaultModels: POOL_GROUP_DEFAULT_MODELS['gemini-argon'],
     };
   }
   if (name.includes('claude') || name.includes('gpt')) {
     return {
-      family: 'claude',
-      displayName: FAMILY_DISPLAY_NAMES.claude,
-      defaultModels: FAMILY_DEFAULT_MODELS.claude,
+      poolGroup: 'claude',
+      displayName: POOL_GROUP_DISPLAY_NAMES.claude,
+      defaultModels: POOL_GROUP_DEFAULT_MODELS.claude,
     };
   }
   if (name.includes('gemini')) {
     return {
-      family: 'gemini-hydrogen',
-      displayName: FAMILY_DISPLAY_NAMES['gemini-hydrogen'],
-      defaultModels: FAMILY_DEFAULT_MODELS['gemini-hydrogen'],
+      poolGroup: 'gemini-hydrogen',
+      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
+      defaultModels: POOL_GROUP_DEFAULT_MODELS['gemini-hydrogen'],
     };
   }
   return null;
@@ -413,7 +418,8 @@ export const aggregateUserQuotaSummary = (
   extraCredits?: { remainingCredits?: number | null; overageEnabled?: boolean }
 ): QuotaSnapshot[] => {
   const result: QuotaSnapshot[] = [];
-  // A family arriving as several quota groups needs one pool id per group, or the stored reset deadline flip-flops between them.
+  // A pool group arriving as several quota groups needs one pool id per group, or the stored reset
+  // deadline flip-flops between them.
   const usedPoolIds = new Set<string>();
   // Overage stays undefined when no signal is available, so "unknown" is not reported as "disabled".
   const { remainingCredits, overageEnabled } = resolveCredits(
@@ -422,7 +428,7 @@ export const aggregateUserQuotaSummary = (
   );
 
   for (const group of summary.response.groups) {
-    const resolved = resolveGroupFamily(group.displayName);
+    const resolved = resolvePoolGroupForQuotaGroup(group.displayName);
     if (!resolved) continue;
 
     const rawWeekly =
@@ -470,7 +476,7 @@ export const aggregateUserQuotaSummary = (
     const groupModels = resolved.defaultModels;
 
     if (weeklyBucket) {
-      const basePoolId: string = resolved.family;
+      const basePoolId: string = resolved.poolGroup;
       let poolId: string = basePoolId;
       if (usedPoolIds.has(poolId)) {
         const slug = poolIdSlug(group.displayName);
@@ -484,7 +490,7 @@ export const aggregateUserQuotaSummary = (
 
       result.push(
         toSnapshot({
-          family: resolved.family,
+          poolGroup: resolved.poolGroup,
           poolId,
           displayName: poolId === basePoolId ? undefined : group.displayName,
           remainingFraction: weeklyBucket.remainingFraction,
@@ -501,20 +507,20 @@ export const aggregateUserQuotaSummary = (
     }
   }
 
-  return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
+  return result.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
 };
 
-const inferFamilyFromQuotaInfo = (
+const inferPoolGroupFromQuotaInfo = (
   quotaInfo: { remainingFraction: number; resetTime: string },
-  pools: Iterable<{ family: QuotaFamily; remainingFraction: number; resetTime: string }>
-): QuotaFamily | null => {
-  const matches: QuotaFamily[] = [];
+  pools: Iterable<{ poolGroup: PoolGroup; remainingFraction: number; resetTime: string }>
+): PoolGroup | null => {
+  const matches: PoolGroup[] = [];
   for (const pool of pools) {
     if (
       pool.remainingFraction === quotaInfo.remainingFraction &&
       pool.resetTime === quotaInfo.resetTime
     ) {
-      matches.push(pool.family);
+      matches.push(pool.poolGroup);
     }
   }
   return matches.length === 1 ? matches[0]! : null;
@@ -526,9 +532,9 @@ export const aggregateQuotaPools = (
   extraCredits?: { remainingCredits?: number | null; overageEnabled?: boolean }
 ): QuotaSnapshot[] => {
   const poolMap = new Map<
-    QuotaFamily,
+    PoolGroup,
     {
-      family: QuotaFamily;
+      poolGroup: PoolGroup;
       displayName: string;
       remainingFraction: number;
       resetTime: string;
@@ -542,25 +548,25 @@ export const aggregateQuotaPools = (
     // A disabled entry keeps the pool's numbers but is not a usable model for that pool.
     if (config.disabled) continue;
     if (!config.quotaInfo) continue;
-    const resolved = resolveModelFamily(config);
+    const resolved = poolGroupForModelConfig(config);
     if (!resolved) {
       orphans.push(config);
       continue;
     }
 
-    const { family, displayName } = resolved;
+    const { poolGroup, displayName } = resolved;
     const modelLabel = config.label || config.modelId;
 
-    if (!poolMap.has(family)) {
-      poolMap.set(family, {
-        family,
+    if (!poolMap.has(poolGroup)) {
+      poolMap.set(poolGroup, {
+        poolGroup,
         displayName,
         remainingFraction: config.quotaInfo.remainingFraction,
         resetTime: config.quotaInfo.resetTime,
         models: new Set([modelLabel]),
       });
     } else {
-      const existing = poolMap.get(family)!;
+      const existing = poolMap.get(poolGroup)!;
       existing.models.add(modelLabel);
       if (
         config.quotaInfo.resetTime &&
@@ -580,7 +586,7 @@ export const aggregateQuotaPools = (
   const { remainingCredits, overageEnabled } = resolveCredits(extraCredits, false);
 
   for (const orphan of orphans) {
-    const inferred = inferFamilyFromQuotaInfo(orphan.quotaInfo!, poolMap.values());
+    const inferred = inferPoolGroupFromQuotaInfo(orphan.quotaInfo!, poolMap.values());
     if (!inferred) continue;
     poolMap.get(inferred)!.models.add(orphan.label || orphan.modelId);
   }
@@ -589,7 +595,7 @@ export const aggregateQuotaPools = (
   for (const entry of poolMap.values()) {
     const hoursUntilReset = calculateHoursUntilReset(entry.resetTime, nowMs);
     const weeklyBucket: QuotaBucket = {
-      bucketId: `${entry.family}-weekly`,
+      bucketId: `${entry.poolGroup}-weekly`,
       displayName: 'Weekly Limit',
       window: 'weekly',
       remainingFraction: entry.remainingFraction,
@@ -598,7 +604,7 @@ export const aggregateQuotaPools = (
     };
     result.push(
       toSnapshot({
-        family: entry.family,
+        poolGroup: entry.poolGroup,
         remainingFraction: entry.remainingFraction,
         resetTime: entry.resetTime,
         hoursUntilReset,
@@ -611,7 +617,7 @@ export const aggregateQuotaPools = (
     );
   }
 
-  return result.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
+  return result.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
 };
 
 export interface QuotaStatePoolLike {
@@ -633,12 +639,12 @@ export const snapshotsFromSentryState = (
   const snapshots: QuotaSnapshot[] = [];
   for (const [poolId, pool] of Object.entries(state.pools ?? {})) {
     const rawId = poolId.toLowerCase().trim();
-    const family = FAMILY_ALIASES[rawId] ?? FAMILY_ALIASES[rawId.split(':')[0] ?? ''];
-    if (!family) continue;
+    const poolGroup = POOL_GROUP_ALIASES[rawId] ?? POOL_GROUP_ALIASES[rawId.split(':')[0] ?? ''];
+    if (!poolGroup) continue;
 
     const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
     const weeklyBucket: QuotaBucket = {
-      bucketId: `${family}-weekly`,
+      bucketId: `${poolGroup}-weekly`,
       displayName: 'Weekly Limit',
       window: 'weekly',
       remainingFraction: pool.remainingFraction,
@@ -647,12 +653,12 @@ export const snapshotsFromSentryState = (
     };
 
     const snapshot = toSnapshot({
-      poolId: upgradePoolFamilyId(poolId),
-      family,
+      poolId: upgradePoolGroupId(poolId),
+      poolGroup,
       remainingFraction: pool.remainingFraction,
       resetTime: pool.resetTime,
       hoursUntilReset,
-      models: [...FAMILY_DEFAULT_MODELS[family]],
+      models: [...POOL_GROUP_DEFAULT_MODELS[poolGroup]],
       weekly: weeklyBucket,
       buckets: [weeklyBucket],
     });
@@ -667,5 +673,5 @@ export const snapshotsFromSentryState = (
     snapshots.push(snapshot);
   }
 
-  return snapshots.sort((a, b) => FAMILY_ORDER[a.family] - FAMILY_ORDER[b.family]);
+  return snapshots.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
 };

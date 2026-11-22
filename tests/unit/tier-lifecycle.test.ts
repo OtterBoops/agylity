@@ -14,13 +14,13 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
 const pool = (
-  family: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
+  poolGroup: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
   fraction: number
 ): QuotaSnapshot =>
   ({
-    poolId: family,
-    family,
-    displayName: family,
+    poolId: poolGroup,
+    poolGroup,
+    displayName: poolGroup,
     remainingFraction: fraction,
     resetTime: new Date(Date.now() + 5 * 3600_000).toISOString(),
     hoursUntilReset: 5,
@@ -31,7 +31,7 @@ const makeCoordinator = (dir: string) => {
   const configStore = new ConfigStore(db, {
     coordinatorEnabled: true,
     repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
-    poolPolicies: {
+    poolGroupPolicies: {
       claude: { alertsEnabled: true, dispatchEnabled: true },
       'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
       'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -175,7 +175,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     });
     assert.equal(result.allowed, false);
     assert.equal(result.code, 'TELEMETRY_UNAVAILABLE');
-    assert.equal(result.family, null);
+    assert.equal(result.poolGroup, null);
   });
 
   it('burns a routine cycle per pool, so another pool cannot re-arm it', async () => {
@@ -261,7 +261,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
       assert.equal(res.success, true);
       assert.equal(res.model, 'gemini-4-hydrogen');
-      assert.equal(res.poolFamily, 'gemini-hydrogen');
+      assert.equal(res.poolGroup, 'gemini-hydrogen');
 
       const queued = coordinator.queue.getTask(res.taskId!);
       assert.equal(queued?.model, 'gemini-4-hydrogen');
@@ -319,7 +319,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const configStore = new ConfigStore(db, {
       coordinatorEnabled: true,
       repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
-      poolPolicies: {
+      poolGroupPolicies: {
         claude: { alertsEnabled: true, dispatchEnabled: false },
         'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
         'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },

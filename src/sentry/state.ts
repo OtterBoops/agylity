@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../storage/db.js';
-import { upgradePoolFamilyId } from '../shared/models.js';
+import { upgradePoolGroupId } from '../shared/models.js';
 import type { BurnSample } from './models.js';
 import type { DeliveryChannelResult } from '../notify/types.js';
 import {
@@ -140,14 +140,14 @@ export const createInitialState = (): SentryState => ({
 
 type ResetKeyed = { resetTime?: unknown };
 
-// Pools are keyed by pool id, so an id written before the family rename must move onto its family
-// the moment it enters the manager; two ids collapsing onto one keep the newer quota cycle.
+// Pools are keyed by pool id, so an id written before the pool group rename must move onto its group
+// id the moment it enters the manager; two ids collapsing onto one keep the newer quota cycle.
 const upgradeLegacyPoolMap = <T extends ResetKeyed>(
   pools: Record<string, T>
 ): Record<string, T> => {
   const upgraded: Record<string, T> = {};
   for (const [poolId, pool] of Object.entries(pools)) {
-    const key = upgradePoolFamilyId(poolId);
+    const key = upgradePoolGroupId(poolId);
     const existing = upgraded[key];
     if (existing === undefined || String(pool.resetTime ?? '') > String(existing.resetTime ?? '')) {
       upgraded[key] = pool;
@@ -171,7 +171,7 @@ const upgradeLegacyState = (raw: unknown): unknown => {
       if (!entry || typeof entry !== 'object') return entry;
       const pool = entry as Record<string, unknown>;
       return typeof pool.poolId === 'string'
-        ? { ...pool, poolId: upgradePoolFamilyId(pool.poolId) }
+        ? { ...pool, poolId: upgradePoolGroupId(pool.poolId) }
         : entry;
     });
   }
@@ -391,6 +391,32 @@ export class SentryStateManager {
     existing.samples = appendSample(existing.samples, remainingFraction, effectiveResetTime, nowMs);
     this.store.writePool(poolId, existing);
     return { cycleRolled: false, earlyReset };
+  }
+
+  /** A pool the probe stopped reporting must not keep steering dispatch or the summary; an
+   *  empty probe proves nothing, so losing every pool is never read as losing all of them. */
+  reconcilePools(activePoolIds: Iterable<string>): string[] {
+    const active = new Set<string>();
+    for (const poolId of activePoolIds) active.add(upgradePoolGroupId(poolId));
+    if (active.size === 0) return [];
+
+    const removed = Object.keys(this.state.pools).filter((poolId) => !active.has(poolId));
+    for (const poolId of removed) {
+      delete this.state.pools[poolId];
+      this.store.deletePool(poolId);
+    }
+
+    const notice = this.state.earlyResetNotice;
+    if (removed.length > 0 && notice) {
+      const retired = new Set(removed);
+      const pools = notice.pools.filter((pool) => !retired.has(upgradePoolGroupId(pool.poolId)));
+      if (pools.length !== notice.pools.length) {
+        this.state.earlyResetNotice = { ...notice, pools };
+        this.store.writeEarlyResetNotice(this.state.earlyResetNotice);
+      }
+    }
+
+    return removed;
   }
 
   recordEarlyResetNotice(

@@ -385,6 +385,9 @@ export class RemoteSwarmRunner {
     const taskAbort = new AbortController();
     this.taskAbortController = taskAbort;
     let outputTail = '';
+    // Marked busy before the claim is announced: the idle gate and the status callback both key off
+    // this id, and an update must never run between the executing report and the executor starting.
+    this.currentExecutingTaskId = task.id;
 
     const acceptedClaim = await this.reportStatus(baseUrl, headers, task.id, {
       status: 'executing',
@@ -408,7 +411,6 @@ export class RemoteSwarmRunner {
     }, HEARTBEAT_INTERVAL_MS);
     heartbeatTimer.unref?.();
 
-    this.currentExecutingTaskId = task.id;
     let result: TaskExecutionResult;
     try {
       result = await this.executor.execute(task, {

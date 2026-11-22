@@ -2,13 +2,13 @@ import {
   ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
   CATALOG_BY_ID,
-  DEFAULT_MODEL_BY_FAMILY,
+  DEFAULT_MODEL_BY_POOL_GROUP,
   type AgyModelCatalogEntry,
   type ReasoningEffort,
 } from './models.js';
 import { extractCliJsonPayload } from '../sentry/client.js';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
-import { resolveModelFamily } from '../sentry/models.js';
+import { poolGroupForModelConfig } from '../sentry/models.js';
 import { logger, type Logger } from '../logs/logger.js';
 
 export interface AgyRawModel {
@@ -51,7 +51,11 @@ export interface GroupedModelCatalog {
 export const groupAgyModels = (raw: readonly AgyRawModel[]): GroupedModelCatalog => {
   const groups = new Map<
     string,
-    { label: string; family: ReturnType<typeof resolveModelFamily>; efforts: Set<ReasoningEffort> }
+    {
+      label: string;
+      poolGroup: ReturnType<typeof poolGroupForModelConfig>;
+      efforts: Set<ReasoningEffort>;
+    }
   >();
   const unattributed: string[] = [];
 
@@ -60,8 +64,11 @@ export const groupAgyModels = (raw: readonly AgyRawModel[]): GroupedModelCatalog
     if (id === '') continue;
 
     const base = baseModelId(id);
-    const family = resolveModelFamily({ modelId: base, label: baseModelLabel(item.label, id) });
-    if (!family) {
+    const poolGroup = poolGroupForModelConfig({
+      modelId: base,
+      label: baseModelLabel(item.label, id),
+    });
+    if (!poolGroup) {
       if (!unattributed.includes(base)) unattributed.push(base);
       continue;
     }
@@ -73,7 +80,7 @@ export const groupAgyModels = (raw: readonly AgyRawModel[]): GroupedModelCatalog
     } else {
       groups.set(base, {
         label: baseModelLabel(item.label, id),
-        family,
+        poolGroup,
         efforts: new Set(effort ? [effort] : []),
       });
     }
@@ -89,28 +96,28 @@ export const groupAgyModels = (raw: readonly AgyRawModel[]): GroupedModelCatalog
     models.push({
       id,
       label: group.label,
-      family: group.family!.family,
+      poolGroup: group.poolGroup!.poolGroup,
       defaultEffort: defaultEffortFor(id, supported),
       supportedEfforts: supported,
     });
   }
 
-  return { models: applyFamilyDefaults(models), unattributed };
+  return { models: applyPoolGroupDefaults(models), unattributed };
 };
 
-const applyFamilyDefaults = (models: AgyModelCatalogEntry[]): AgyModelCatalogEntry[] => {
-  const families = Object.keys(DEFAULT_MODEL_BY_FAMILY) as Array<
-    keyof typeof DEFAULT_MODEL_BY_FAMILY
+const applyPoolGroupDefaults = (models: AgyModelCatalogEntry[]): AgyModelCatalogEntry[] => {
+  const poolGroups = Object.keys(DEFAULT_MODEL_BY_POOL_GROUP) as Array<
+    keyof typeof DEFAULT_MODEL_BY_POOL_GROUP
   >;
 
-  for (const family of families) {
-    const candidates = models.filter((m) => m.family === family);
+  for (const poolGroup of poolGroups) {
+    const candidates = models.filter((m) => m.poolGroup === poolGroup);
     if (candidates.length === 0) continue;
-    const chosen = candidates.some((m) => m.id === DEFAULT_MODEL_BY_FAMILY[family])
-      ? DEFAULT_MODEL_BY_FAMILY[family]
+    const chosen = candidates.some((m) => m.id === DEFAULT_MODEL_BY_POOL_GROUP[poolGroup])
+      ? DEFAULT_MODEL_BY_POOL_GROUP[poolGroup]
       : candidates[0]!.id;
     for (const candidate of candidates) {
-      candidate.defaultForFamily = candidate.id === chosen;
+      candidate.defaultForGroup = candidate.id === chosen;
     }
   }
   return models;

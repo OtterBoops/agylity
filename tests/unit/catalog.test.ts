@@ -14,7 +14,7 @@ import {
 } from '../../src/coordinator/catalog.js';
 import {
   CANONICAL_AGY_MODELS,
-  DEFAULT_MODEL_BY_FAMILY,
+  DEFAULT_MODEL_BY_POOL_GROUP,
   isOrchestratorModelId,
   modelSupportsEffort,
   resolveReasoningEffortForModel,
@@ -141,13 +141,13 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 
     it('names gemini-4-hydrogen the gemini-hydrogen pool default', () => {
       const flashDefaults = grouped.models.filter(
-        (m) => m.family === 'gemini-hydrogen' && m.defaultForFamily
+        (m) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
       );
       assert.deepEqual(
         flashDefaults.map((m) => m.id),
         ['gemini-4-hydrogen']
       );
-      assert.equal(DEFAULT_MODEL_BY_FAMILY['gemini-hydrogen'], 'gemini-4-hydrogen');
+      assert.equal(DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'], 'gemini-4-hydrogen');
     });
 
     it('confines xhigh to models that advertise it', () => {
@@ -161,7 +161,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
     });
   });
 
-  describe('4. Family resolution for new codenames', () => {
+  describe('4. Pool group resolution for new codenames', () => {
     it('groups Gemini 4 Carbon with Hydrogen without bundling it', () => {
       const grouped = groupAgyModels(
         parseAgyModelsOutput(
@@ -176,7 +176,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
         grouped.models.map((m) => m.id),
         ['gemini-4-carbon']
       );
-      assert.equal(grouped.models[0]?.family, 'gemini-hydrogen');
+      assert.equal(grouped.models[0]?.poolGroup, 'gemini-hydrogen');
       assert.ok(!CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-4-carbon'));
     });
 
@@ -191,9 +191,9 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 
       const neon = grouped.models.find((m) => m.id === 'gemini-4-neon');
       const orch = grouped.models.find((m) => m.id === 'gemini-pro-orchestrator-neon');
-      assert.equal(neon?.family, 'gemini-hydrogen');
+      assert.equal(neon?.poolGroup, 'gemini-hydrogen');
       assert.deepEqual(neon?.supportedEfforts, ['low', 'medium', 'high', 'xhigh']);
-      assert.equal(orch?.family, 'gemini-hydrogen');
+      assert.equal(orch?.poolGroup, 'gemini-hydrogen');
       assert.deepEqual(orch?.supportedEfforts, []);
       assert.deepEqual(grouped.unattributed, []);
       assert.equal(resolveReasoningEffortForModel('gemini-4-neon', 'xhigh'), 'xhigh');
@@ -254,10 +254,10 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 
       const models = provider.getModels();
       const carbon = models.find((m) => m.id === 'gemini-4-carbon');
-      assert.equal(carbon?.family, 'gemini-hydrogen');
-      assert.equal(carbon?.defaultForFamily, false);
+      assert.equal(carbon?.poolGroup, 'gemini-hydrogen');
+      assert.equal(carbon?.defaultForGroup, false);
       // Hydrogen's bundled default still wins over a dynamically discovered sibling.
-      assert.equal(models.find((m) => m.id === 'gemini-4-hydrogen')?.defaultForFamily, true);
+      assert.equal(models.find((m) => m.id === 'gemini-4-hydrogen')?.defaultForGroup, true);
       assert.deepEqual(provider.getUnattributedModels(), []);
     });
 
@@ -408,7 +408,7 @@ describe('GET /api/models: dynamic catalog annotation', () => {
       const hydrogen = body.models.find((m: any) => m.id === 'gemini-4-hydrogen');
       assert.ok(hydrogen, 'dynamic catalog must expose Gemini 4 Hydrogen');
       assert.equal(hydrogen.label, 'Gemini 4 Hydrogen');
-      assert.equal(hydrogen.family, 'gemini-hydrogen');
+      assert.equal(hydrogen.poolGroup, 'gemini-hydrogen');
       assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
     });
   });
@@ -418,7 +418,7 @@ describe('GET /api/models: dynamic catalog annotation', () => {
       const body: any = await ky.get(`${baseUrl}/api/models`).json();
       assert.equal(body.defaultModel, 'gemini-4-hydrogen');
       const flashDefaults = body.models.filter(
-        (m: any) => m.family === 'gemini-hydrogen' && m.defaultForFamily
+        (m: any) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
       );
       assert.deepEqual(
         flashDefaults.map((m: any) => m.id),

@@ -9,8 +9,8 @@ import {
 import { AGYLITY_VERSION } from '../../version.js';
 import type { QuotaAlert, DispatchStatusUpdate, InfoNotice } from '../types.js';
 import {
-  FAMILY_DEFAULT_MODELS,
-  FAMILY_DISPLAY_NAMES,
+  POOL_GROUP_DEFAULT_MODELS,
+  POOL_GROUP_DISPLAY_NAMES,
   type QuotaSnapshot,
 } from '../../sentry/models.js';
 import { modelSupportsEffort } from '../../shared/models.js';
@@ -129,11 +129,11 @@ export const buildTestAlertEmbed = (
   samplePool?: Partial<QuotaSnapshot>,
   options?: EmbedBuildOptions
 ): StandardEmbed => {
-  const poolName = (samplePool?.displayName || FAMILY_DISPLAY_NAMES.claude).slice(0, 256);
+  const poolName = (samplePool?.displayName || POOL_GROUP_DISPLAY_NAMES.claude).slice(0, 256);
   const modelsList =
     samplePool?.models && samplePool.models.length > 0
       ? samplePool.models
-      : FAMILY_DEFAULT_MODELS.claude;
+      : POOL_GROUP_DEFAULT_MODELS.claude;
 
   const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
   const resetTimestamp = formatResetWindow(resetIso);

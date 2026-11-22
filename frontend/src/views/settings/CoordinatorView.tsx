@@ -6,7 +6,7 @@ import { getRunners, revokeRunner, setRunnerEnabled } from '../../api';
 import { Icon } from '../../components/Icon';
 import { RunnerRegistrationPanel } from '../../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../../components/SwarmRunnersGrid';
-import { PoolPoliciesCard } from '../../components/PoolPoliciesCard';
+import { PoolGroupPoliciesCard } from '../../components/PoolGroupPoliciesCard';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { COORDINATOR_FIELDS } from '../../config/fields';
@@ -128,7 +128,7 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
         />
       </div>
 
-      <PoolPoliciesCard config={config} onSaved={onChanged} />
+      <PoolGroupPoliciesCard config={config} onSaved={onChanged} />
 
       <SettingsForm
         title="Model Selection &amp; Dispatch Thresholds"

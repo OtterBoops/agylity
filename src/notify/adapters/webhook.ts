@@ -12,7 +12,7 @@ import type { ResolvedConfig } from '../../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 import { normalizeStep, isTerminalStep } from '../embeds/formatters.js';
-import { FAMILY_DEFAULT_MODELS, FAMILY_DISPLAY_NAMES } from '../../sentry/models.js';
+import { POOL_GROUP_DEFAULT_MODELS, POOL_GROUP_DISPLAY_NAMES } from '../../sentry/models.js';
 import {
   buildQuotaAlertEmbed,
   buildTestAlertEmbed,
@@ -184,7 +184,7 @@ export class WebhookNotifier implements Notifier {
       data: {
         poolId: alert.pool.poolId,
         displayName: alert.pool.displayName || alert.pool.poolId,
-        family: alert.pool.family,
+        poolGroup: alert.pool.poolGroup,
         remainingPercentage: alert.remainingPercentage,
         remainingFraction: alert.pool.remainingFraction,
         milestoneHours: alert.milestoneHours,
@@ -279,7 +279,7 @@ export class WebhookNotifier implements Notifier {
     }
 
     const resetIso = new Date(Date.now() + 3 * 3600 * 1000).toISOString();
-    const modelsList = FAMILY_DEFAULT_MODELS.claude;
+    const modelsList = POOL_GROUP_DEFAULT_MODELS.claude;
     const textMsg =
       '[Notice] Agylity Notification Test — Quota milestone simulation: Claude and GPT models is at 25% with 3h before reset.';
     const embed = buildTestAlertEmbed(undefined, {
@@ -300,8 +300,8 @@ export class WebhookNotifier implements Notifier {
       embeds: [embed],
       data: {
         poolId: 'claude',
-        displayName: FAMILY_DISPLAY_NAMES.claude,
-        family: 'claude',
+        displayName: POOL_GROUP_DISPLAY_NAMES.claude,
+        poolGroup: 'claude',
         remainingPercentage: 25,
         remainingFraction: 0.25,
         milestoneHours: 3,

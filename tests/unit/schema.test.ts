@@ -23,7 +23,7 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
         version: number;
       }>
     ).map((row) => row.version);
-    assert.deepEqual(versions, [1, 2, 3, 4], 'every migration must be applied, in order');
+    assert.deepEqual(versions, [1, 2, 3, 4, 5], 'every migration must be applied, in order');
 
     // pr_policy is a NOT NULL sentinel column on all three tiers.
     for (const table of ['swarm_tasks', 'backlog_tasks', 'routine_tasks']) {
@@ -45,7 +45,7 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
 });
 
 test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen', () => {
-  const { dir, cleanup } = makeTempDir('schema_v4_pool_family_');
+  const { dir, cleanup } = makeTempDir('schema_v4_pool_group_');
   const db = new AppDatabase(path.join(dir, 'test.db'));
   try {
     const queue = new TaskQueue(db);
@@ -54,7 +54,7 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
 
     queue.enqueue({
       repositoryName: 'agylity',
-      prompt: 'pre-rename pool family',
+      prompt: 'pre-rename pool group',
       cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
     });
 
@@ -114,15 +114,19 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
       )
       .run(JSON.stringify({ claude: 'cycle-a', 'gemini-flash': 'cycle-b' }));
 
+    // The queue column still carries its pre-v5 name here, which is what lets v4 rewrite the stored
+    // value and v5 rename the column on the same boot.
+    raw.exec('ALTER TABLE swarm_tasks RENAME COLUMN pool_group TO pool_family');
     raw.prepare("UPDATE swarm_tasks SET pool_family = 'gemini-flash'").run();
+    // Seeded under the pre-v5 key, because v4 is what normalizes the value inside it.
     db.set('poolPolicies', {
       claude: { alertsEnabled: false, dispatchEnabled: false },
       'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
       'gemini-flash': { alertsEnabled: false, dispatchEnabled: true },
     });
 
-    // Drop the record so the next boot replays only v4 against the seeded rows.
-    raw.prepare('DELETE FROM schema_migrations WHERE version = 4').run();
+    // Drop both records so the next boot replays v4 against the seeded rows and then v5's renames.
+    raw.prepare('DELETE FROM schema_migrations WHERE version IN (4, 5)').run();
     new TaskQueue(db);
 
     const poolIds = (
@@ -177,7 +181,7 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
     assert.equal(notice[0]?.poolId, 'gemini-hydrogen');
 
     const taskId = queue.listTasks({ limit: 1 })[0]!.id;
-    assert.equal(queue.getTask(taskId)?.poolFamily, 'gemini-hydrogen');
+    assert.equal(queue.getTask(taskId)?.poolGroup, 'gemini-hydrogen');
 
     const cycles = JSON.parse(
       (
@@ -188,13 +192,119 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
     ) as Record<string, string>;
     assert.deepEqual(cycles, { claude: 'cycle-a', 'gemini-hydrogen': 'cycle-b' });
 
-    const policies = db.get<Record<string, unknown>>('poolPolicies') ?? {};
+    const policies = db.get<Record<string, unknown>>('poolGroupPolicies') ?? {};
     assert.deepEqual(Object.keys(policies).sort(), ['claude', 'gemini-argon', 'gemini-hydrogen']);
     assert.deepEqual(policies['gemini-hydrogen'], { alertsEnabled: false, dispatchEnabled: true });
 
     // v4 is idempotent: a third boot over renamed rows leaves them alone.
     new TaskQueue(db);
     assert.equal((raw.prepare('SELECT COUNT(*) AS c FROM pool_state').get() as { c: number }).c, 2);
+  } finally {
+    db.close();
+    cleanup();
+  }
+});
+
+test('migration v5 renames the queue column and moves the policies key on a v4 database', () => {
+  const { dir, cleanup } = makeTempDir('schema_v5_pool_group_');
+  const db = new AppDatabase(path.join(dir, 'test.db'));
+  try {
+    const queue = new TaskQueue(db);
+    const raw = db.getRawDb();
+
+    queue.enqueue({
+      repositoryName: 'agylity',
+      prompt: 'first row written before v5',
+      cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+    });
+    queue.enqueue({
+      repositoryName: 'agylity',
+      prompt: 'second row written before v5',
+      cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+    });
+
+    const readRows = (): Array<{ id: string; poolGroup: string }> =>
+      (
+        raw
+          .prepare('SELECT id, pool_group AS poolGroup FROM swarm_tasks ORDER BY task_number')
+          .all() as Array<{
+          id: string;
+          poolGroup: string;
+        }>
+      ).map((row) => ({ id: String(row.id), poolGroup: String(row.poolGroup) }));
+
+    const before = readRows();
+    assert.equal(before.length, 2, 'both rows must exist before the upgrade');
+
+    // Reshape the database back to what a v4 install has on disk: the old column name and the old
+    // settings key, with v5 unrecorded so the next boot has to apply it.
+    raw.exec('ALTER TABLE swarm_tasks RENAME COLUMN pool_group TO pool_family');
+    raw.prepare('DELETE FROM schema_migrations WHERE version = 5').run();
+    const policyValue =
+      '{"claude":{"alertsEnabled":false,"dispatchEnabled":true},"gemini-argon":{"alertsEnabled":true,"dispatchEnabled":true}}';
+    raw
+      .prepare('DELETE FROM settings WHERE key IN (?, ?)')
+      .run('poolPolicies', 'poolGroupPolicies');
+    raw
+      .prepare(
+        "INSERT INTO settings (key, value, updated_at) VALUES ('poolPolicies', ?, datetime('now'))"
+      )
+      .run(policyValue);
+
+    new TaskQueue(db);
+
+    const columns = (
+      raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name: string }>
+    ).map((row) => String(row.name));
+    assert.ok(columns.includes('pool_group'), 'v5 must leave the new column in place');
+    assert.ok(!columns.includes('pool_family'), 'v5 must retire the old column');
+
+    assert.deepEqual(readRows(), before, 'the column rename must keep every task row');
+
+    assert.equal(db.getRaw('poolPolicies'), undefined, 'the old settings key must be gone');
+    assert.equal(
+      db.getRaw('poolGroupPolicies'),
+      policyValue,
+      'the policies value must move byte-identical'
+    );
+  } finally {
+    db.close();
+    cleanup();
+  }
+});
+
+test('re-running migrations on a v5 database is a no-op', () => {
+  const { dir, cleanup } = makeTempDir('schema_v5_noop_');
+  const db = new AppDatabase(path.join(dir, 'test.db'));
+  try {
+    const queue = new TaskQueue(db);
+    const raw = db.getRawDb();
+
+    queue.enqueue({
+      repositoryName: 'agylity',
+      prompt: 'row survives every boot',
+      cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+    });
+    db.set('poolGroupPolicies', { claude: { alertsEnabled: true, dispatchEnabled: false } });
+
+    const snapshot = (): Record<string, unknown> => ({
+      versions: (
+        raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{
+          version: number;
+        }>
+      ).map((row) => Number(row.version)),
+      columns: (raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name: string }>).map(
+        (row) => String(row.name)
+      ),
+      rows: raw.prepare('SELECT id, pool_group FROM swarm_tasks ORDER BY id').all(),
+      policies: db.getRaw('poolGroupPolicies'),
+    });
+
+    const before = snapshot();
+    new TaskQueue(db);
+    new TaskQueue(db);
+
+    assert.deepEqual(snapshot(), before, 'a second and third boot must change nothing');
   } finally {
     db.close();
     cleanup();

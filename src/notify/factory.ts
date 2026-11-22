@@ -1,7 +1,13 @@
 import type { Notifier, NotifierOptions } from './types.js';
 import type { ResolvedConfig } from '../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../config/schema.js';
+import { logger } from '../logs/logger.js';
 import { CompositeNotifier } from './adapters/composite.js';
+
+// Console output is logging now, not a destination: a stored 'console' must not silently become
+// "no channels at all", so it is dropped out loud.
+const RETIRED_CHANNELS: ReadonlySet<string> = new Set(['console']);
+let retiredAnnounced = false;
 
 export { CompositeNotifier } from './adapters/composite.js';
 
@@ -13,9 +19,18 @@ const resolveChannels = (config: ResolvedConfig): string[] => {
         ? [String(config.notificationChannel)]
         : [];
 
-  return Array.from(
-    new Set(raw.map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none'))
+  const named = new Set(
+    raw.map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none')
   );
+  const retired = [...named].filter((c) => RETIRED_CHANNELS.has(c));
+  if (retired.length > 0 && !retiredAnnounced) {
+    retiredAnnounced = true;
+    logger.warn(
+      "Notification channel '%s' is retired; console output is plain logging now.",
+      retired.join("', '")
+    );
+  }
+  return [...named].filter((c) => !RETIRED_CHANNELS.has(c));
 };
 
 const instantiateChannels = async (
@@ -28,11 +43,6 @@ const instantiateChannels = async (
 
   for (const ch of channels) {
     switch (ch) {
-      case 'console': {
-        const { ConsoleNotifier } = await import('./adapters/console.js');
-        notifiers.push(new ConsoleNotifier(config, options));
-        break;
-      }
       case 'webhook': {
         const { WebhookNotifier } = await import('./adapters/webhook.js');
         notifiers.push(new WebhookNotifier(config, options));

@@ -6,12 +6,34 @@ import http from 'node:http';
 import { createMemorySink, makeTempDir } from '../e2e/harness/index.js';
 import { SentryStateManager, type EarlyResetPool } from '../../src/sentry/state.js';
 import { ConnectRpcQuotaClient } from '../../src/sentry/client.js';
-import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
 import { buildInfoNoticeEmbed } from '../../src/notify/embeds/index.js';
-import type { QuotaAlert, DeliveryOutcome, InfoNotice } from '../../src/notify/types.js';
+import type {
+  QuotaAlert,
+  DeliveryOutcome,
+  DispatchStatusUpdate,
+  InfoNotice,
+  Notifier,
+} from '../../src/notify/types.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createLogger, logger, type Logger } from '../../src/logs/logger.js';
 import { createDaemon, startDaemon, stopDaemon } from '../../src/index.js';
+
+/** Console is logging now, so tests carry their own no-op notifier base. */
+class NotifierStub implements Notifier {
+  readonly channelName = 'stub';
+  public initialized = false;
+  async initialize(): Promise<void> {
+    this.initialized = true;
+  }
+  async notifyQuotaAlert(_alert: QuotaAlert): Promise<DeliveryOutcome> {
+    return { delivered: true, results: {} };
+  }
+  async notifyDispatchStatus(_status: DispatchStatusUpdate): Promise<void> {}
+  async notifyInfo(_notice: InfoNotice): Promise<DeliveryOutcome | void> {
+    return { delivered: true, results: {} };
+  }
+  async shutdown(): Promise<void> {}
+}
 
 describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
   /* ==================================================================== */
@@ -54,7 +76,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       const statePath = path.join(dir, 'state.json');
 
       const notifiedAlerts: QuotaAlert[] = [];
-      class MockNotifier extends ConsoleNotifier {
+      class MockNotifier extends NotifierStub {
         override async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
           notifiedAlerts.push(alert);
           return { delivered: true, results: {} };
@@ -70,7 +92,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
           return [
             {
               poolId: 'claude',
-              family: 'claude' as const,
+              poolGroup: 'claude' as const,
               displayName: 'Claude 3.5 Sonnet',
               remainingFraction: 0.6,
               resetTime: new Date(now + 10 * 3600 * 1000).toISOString(), // 10h remaining <= 12h milestone
@@ -223,7 +245,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       const statePath = path.join(dir, 'state.json');
 
       let notifierShutdownCalled = false;
-      class TrackedNotifier extends ConsoleNotifier {
+      class TrackedNotifier extends NotifierStub {
         override async shutdown(): Promise<void> {
           notifierShutdownCalled = true;
           await super.shutdown?.();
@@ -352,7 +374,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       const notices: InfoNotice[] = [];
       const alerts: QuotaAlert[] = [];
-      class RecordingNotifier extends ConsoleNotifier {
+      class RecordingNotifier extends NotifierStub {
         override async notifyInfo(notice: InfoNotice): Promise<void> {
           notices.push(notice);
         }
@@ -367,7 +389,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
           return [
             {
               poolId: 'claude',
-              family: 'claude' as const,
+              poolGroup: 'claude' as const,
               displayName: 'Claude Pool',
               remainingFraction: 0.98,
               resetTime,
@@ -440,7 +462,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
 
       let remainingFraction = 1;
       const notices: InfoNotice[] = [];
-      class RecordingNotifier extends ConsoleNotifier {
+      class RecordingNotifier extends NotifierStub {
         override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
           return { delivered: true, results: { discord: { success: true } } };
@@ -456,7 +478,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
             return [
               {
                 poolId: 'claude',
-                family: 'claude' as const,
+                poolGroup: 'claude' as const,
                 displayName: 'Claude Pool',
                 remainingFraction,
                 resetTime,
@@ -514,7 +536,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       const previousResetTime = new Date(now + 40 * 3600 * 1000).toISOString();
 
       const notices: InfoNotice[] = [];
-      class RecordingNotifier extends ConsoleNotifier {
+      class RecordingNotifier extends NotifierStub {
         override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
           return { delivered: true, results: { discord: { success: true } } };
@@ -602,7 +624,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       });
 
       const notices: InfoNotice[] = [];
-      class RecordingNotifier extends ConsoleNotifier {
+      class RecordingNotifier extends NotifierStub {
         override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
           notices.push(notice);
           return { delivered: true, results: { discord: { success: true } } };
@@ -614,7 +636,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
           return [
             {
               poolId: 'claude',
-              family: 'claude' as const,
+              poolGroup: 'claude' as const,
               displayName: 'Claude Pool',
               remainingFraction: 0.98,
               resetTime,
@@ -681,7 +703,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     const poolingSnapshot = (resetTime: string): QuotaSnapshot[] => [
       {
         poolId: 'claude',
-        family: 'claude' as const,
+        poolGroup: 'claude' as const,
         displayName: 'Claude Pool',
         remainingFraction: 0.6,
         resetTime,
@@ -690,7 +712,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       },
     ];
 
-    class ToggleNotifier extends ConsoleNotifier {
+    class ToggleNotifier extends NotifierStub {
       public delivered = true;
       public calls = 0;
       override async notifyQuotaAlert(_alert: QuotaAlert): Promise<DeliveryOutcome> {
@@ -838,7 +860,7 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
             return [
               {
                 poolId: 'claude',
-                family: 'claude' as const,
+                poolGroup: 'claude' as const,
                 displayName: 'Claude Pool',
                 remainingFraction: 0.98,
                 resetTime,

@@ -347,6 +347,14 @@ export class SentryStore {
       .run(poolId, resetTime, remainingFraction, new Date().toISOString());
   }
 
+  public deletePool(poolId: string): void {
+    this.inTransaction(() => {
+      for (const table of ['pool_state', 'pool_milestones', 'pool_samples']) {
+        this.db.prepare(`DELETE FROM ${table} WHERE pool_id = ?`).run(poolId);
+      }
+    });
+  }
+
   public writeEarlyResetNotice(notice: EarlyResetNotice | null): void {
     if (!notice) {
       this.db.prepare('DELETE FROM early_reset_notice WHERE id = 1').run();

@@ -7,7 +7,7 @@ import type { ComponentChildren } from 'preact';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
 
-export type ChannelId = 'discord' | 'webhook' | 'console';
+export type ChannelId = 'discord' | 'webhook';
 
 export interface ChannelDef {
   id: ChannelId;

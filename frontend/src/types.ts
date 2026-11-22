@@ -1,8 +1,8 @@
 import type * as preact from 'preact';
 
-import type { QuotaFamily, ReasoningEffort } from '../../src/shared/models.ts';
+import type { PoolGroup, ReasoningEffort } from '../../src/shared/models.ts';
 
-export type { QuotaFamily, ReasoningEffort };
+export type { PoolGroup, ReasoningEffort };
 
 declare module 'preact' {
   namespace JSX {
@@ -41,7 +41,7 @@ export interface QuotaBurnProjection {
 
 export interface QuotaSnapshot {
   poolId: string;
-  family: string;
+  poolGroup: string;
   displayName: string;
   remainingFraction: number; // Primary eval target (weekly)
   resetTime: string;
@@ -117,7 +117,7 @@ export interface CascadeHop {
 export interface ModelCatalogEntry {
   id: string;
   label: string;
-  family: QuotaFamily;
+  poolGroup: PoolGroup;
   defaultEffort: ReasoningEffort;
   supportedEfforts: ReasoningEffort[];
   effectiveHeadroomPercent: number | null;
@@ -297,7 +297,7 @@ export interface DispatchEligibility {
   code: string | null;
   reason: string | null;
   model: string;
-  family: string | null;
+  poolGroup: string | null;
   pool: DispatchPoolView | null;
   floorPercent: number;
   allowOverage: boolean;

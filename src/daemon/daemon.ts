@@ -24,6 +24,7 @@ interface MilestonePlan {
   alerts: QuotaAlert[];
   superseded?: Map<string, number[]> | Record<string, number[]>;
   earlyResets?: EarlyResetPool[];
+  retiredPools?: string[];
 }
 
 const formatPercent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
@@ -51,7 +52,7 @@ const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): Inf
       pools.length === 1 ? 'this pool' : 'these pools'
     } ahead of schedule.`,
     path: '/overview',
-    poolFamily: single?.poolId,
+    poolGroup: single?.poolId,
     poolName: single?.displayName,
     resetTime: single?.resetTime,
     hoursUntilReset: single
@@ -127,18 +128,21 @@ export class AgylityDaemon {
     this.autoCheckOnStart = autoCheckOnStart;
     this.logBuffer = logBuffer;
     this.logger = loggerInstance ?? logger.child('daemon');
+    this.modelCatalog = new DynamicModelCatalog({
+      logger: this.logger.child('catalog'),
+    });
     this.coordinator =
       coordinatorInstance ??
       new Coordinator({
         configStore,
         sentryState,
         notifier,
+        modelCatalog: this.modelCatalog,
         logger: this.logger.child('coordinator'),
       });
     this.coordinator.setNotifier(notifier);
-    this.modelCatalog = new DynamicModelCatalog({
-      logger: this.logger.child('catalog'),
-    });
+    // An injected coordinator arrives without a catalog, so the active one is handed over here.
+    this.coordinator.setModelCatalog?.(this.modelCatalog);
     const initialConfig = configStore.resolveConfig();
     if (initialConfig.logLevel) {
       this.applyLogLevel(initialConfig.logLevel);
@@ -414,25 +418,31 @@ export class AgylityDaemon {
       if (plan.earlyResets && plan.earlyResets.length > 0) {
         this.coordinator.onEarlyQuotaReset(plan.earlyResets);
       }
+      if (plan.retiredPools && plan.retiredPools.length > 0) {
+        this.logger.info(
+          'Probe no longer reports %s; dropped from pool state and offline fallbacks',
+          plan.retiredPools.join(', ')
+        );
+      }
       this.coordinator.onQuotaUpdated(snapshots);
       reaped = true;
 
       for (const s of snapshots) {
         const pct = Math.round(s.remainingFraction * 100);
         if (pct <= 10) {
-          const poolKey = s.poolId || s.family;
+          const poolKey = s.poolId || s.poolGroup;
           const resetKey = s.resetTime || 'no-reset';
           if (this.warnedLowQuotaPools.get(poolKey) !== resetKey) {
             this.warnedLowQuotaPools.set(poolKey, resetKey);
             if (pct === 0) {
               this.logger.info(
                 '%s quota exhausted (0%% remaining); model pool is currently unusable until reset',
-                s.displayName || s.family
+                s.displayName || s.poolGroup
               );
             } else {
               this.logger.info(
                 '%s approaching minimum headroom floor (%d%% remaining)',
-                s.displayName || s.family,
+                s.displayName || s.poolGroup,
                 pct
               );
             }
@@ -561,6 +571,7 @@ export class AgylityDaemon {
         alerts?: QuotaAlert[];
         supersededMilestones?: Map<string, number[]>;
         earlyResets?: EarlyResetPool[];
+        retiredPools?: string[];
       };
     };
     if (typeof evaluator.evaluateWithPlan === 'function') {
@@ -569,6 +580,7 @@ export class AgylityDaemon {
         alerts: plan.alerts ?? [],
         superseded: plan.supersededMilestones,
         earlyResets: plan.earlyResets ?? [],
+        retiredPools: plan.retiredPools ?? [],
       };
     }
     return { alerts: this.sentryEvaluator.evaluate(snapshots, this.sentryState) };

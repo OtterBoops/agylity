@@ -301,7 +301,7 @@ export class DiscordNotifier implements Notifier {
         pingOwner: this.config.discordPingOwner !== false,
         baseUrl: this.config.baseUrl,
       });
-      const actionRow = createRepoSelectMenu(this.config.repositories, alert.pool.family);
+      const actionRow = createRepoSelectMenu(this.config.repositories, alert.pool.poolGroup);
       const mention = this.resolveOwnerMention(ownerId);
 
       const sendPayload: any = {
@@ -464,7 +464,7 @@ export class DiscordNotifier implements Notifier {
         try {
           const pools = await this.options.onQuotaRequested();
           if (pools && pools.length > 0) {
-            samplePool = pools.find((p) => p.family === 'claude') || pools[0];
+            samplePool = pools.find((p) => p.poolGroup === 'claude') || pools[0];
           }
         } catch {}
       }

@@ -99,7 +99,7 @@ const normalizePoolPolicyKeys = (val: unknown): unknown => {
   return legacy === undefined ? val : { ...raw, 'gemini-hydrogen': legacy };
 };
 
-export const PoolPoliciesSchema = z.preprocess(
+export const PoolGroupPoliciesSchema = z.preprocess(
   normalizePoolPolicyKeys,
   z.object({
     claude: PoolPolicySchema,
@@ -108,9 +108,9 @@ export const PoolPoliciesSchema = z.preprocess(
   })
 );
 
-export type PoolPolicies = z.infer<typeof PoolPoliciesSchema>;
+export type PoolGroupPolicies = z.infer<typeof PoolGroupPoliciesSchema>;
 
-export const DEFAULT_POOL_POLICIES: PoolPolicies = {
+export const DEFAULT_POOL_GROUP_POLICIES: PoolGroupPolicies = {
   'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
   'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
   claude: { alertsEnabled: false, dispatchEnabled: false },
@@ -133,14 +133,14 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
 export const PrPolicyEnum = z.enum(['docs_only', 'issues_only', 'all', 'none']);
 export type PrPolicy = z.infer<typeof PrPolicyEnum>;
 
-export const NotificationChannelEnum = z.enum(['discord', 'console', 'webhook', 'none']);
+export const NotificationChannelEnum = z.enum(['discord', 'webhook', 'none']);
 export type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
 
 export const NotificationChannelsSchema = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val
       .map((v) => String(v).trim().toLowerCase())
-      .filter((v) => ['discord', 'webhook', 'console', 'none'].includes(v));
+      .filter((v) => ['discord', 'webhook', 'none'].includes(v));
   }
   if (typeof val === 'string') {
     const trimmed = val.trim();
@@ -148,7 +148,7 @@ export const NotificationChannelsSchema = z.preprocess((val) => {
     return trimmed
       .split(',')
       .map((s) => s.trim().toLowerCase())
-      .filter((s) => ['discord', 'webhook', 'console'].includes(s));
+      .filter((s) => ['discord', 'webhook'].includes(s));
   }
   return [];
 }, z.array(NotificationChannelEnum).default([]));
@@ -219,7 +219,7 @@ export interface AppConfig {
   quotaAlertThresholdPercent: number;
   quotaMilestoneHours: number[];
   minDispatchHeadroomPercent: number;
-  poolPolicies: PoolPolicies;
+  poolGroupPolicies: PoolGroupPolicies;
 
   repositories: RepositoryEntry[];
 
@@ -337,7 +337,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   quotaAlertThresholdPercent: 25, // 25% remaining quota triggers alert
   quotaMilestoneHours: DEFAULT_MILESTONE_HOURS,
   minDispatchHeadroomPercent: 10, // 10% safety floor preventing billable overages
-  poolPolicies: DEFAULT_POOL_POLICIES,
+  poolGroupPolicies: DEFAULT_POOL_GROUP_POLICIES,
 
   repositories: [],
 
@@ -579,7 +579,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   quotaAlertThresholdPercent: z.number().min(0).max(100),
   quotaMilestoneHours: z.array(z.number().positive()),
   minDispatchHeadroomPercent: z.number().min(0).max(100),
-  poolPolicies: PoolPoliciesSchema,
+  poolGroupPolicies: PoolGroupPoliciesSchema,
   repositories: z.array(RepositorySchema),
   coordinatorEnabled: z.boolean(),
   routinesEnabled: z.boolean(),

@@ -2,15 +2,15 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { renderColumns, type ColumnSpec } from '../storage/schema.js';
-import { LEGACY_POOL_FAMILY_IDS, upgradePoolFamilyId } from '../shared/models.js';
-import type { QuotaFamily } from '../sentry/models.js';
+import { LEGACY_POOL_GROUP_IDS, upgradePoolGroupId } from '../shared/models.js';
+import type { PoolGroup } from '../sentry/models.js';
 import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import {
   BacklogStatusSchema,
   CATALOG_BY_ID,
   normalizeCascade,
-  resolvePoolFamilyForModel,
+  resolvePoolGroupForModel,
   resolveReasoningEffortForModel,
   type BacklogStatus,
   type CascadeHop,
@@ -54,7 +54,7 @@ export interface SwarmTask {
   requiredLabels: string[];
   model: string;
   cascade: CascadeHop[];
-  poolFamily: QuotaFamily;
+  poolGroup: PoolGroup;
   effort: ReasoningEffort;
   allowOverage: boolean;
   pushBranch: boolean;
@@ -249,7 +249,7 @@ const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'required_labels_json', ddl: "required_labels_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'model', ddl: 'model TEXT NOT NULL' },
   { name: 'candidate_models_json', ddl: "candidate_models_json TEXT NOT NULL DEFAULT '[]'" },
-  { name: 'pool_family', ddl: 'pool_family TEXT NOT NULL' },
+  { name: 'pool_group', ddl: 'pool_group TEXT NOT NULL' },
   { name: 'effort', ddl: "effort TEXT NOT NULL DEFAULT 'high'" },
   { name: 'allow_overage', ddl: 'allow_overage INTEGER NOT NULL DEFAULT 0' },
   { name: 'push_branch', ddl: 'push_branch INTEGER NOT NULL DEFAULT 1' },
@@ -507,14 +507,14 @@ const tableExists = (db: DatabaseSync, table: string): boolean =>
   db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) !==
   undefined;
 
-// A pool id is the family or `family:slug`, so only the prefix carries the family name. The id is a
+// A pool id is the pool group or `<group>:<slug>`, so only the prefix carries the group name. The id is a
 // primary or unique key in every table it appears, so a row already carrying the new id wins and the
 // legacy duplicate is dropped instead of failing the boot.
 const renameLegacyPoolIds = (db: DatabaseSync, table: string, column = 'pool_id'): void => {
   if (!tableExists(db, table) || !tableHasColumn(db, table, column)) return;
   let renamed = 0;
-  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
-    const upgraded = upgradePoolFamilyId(legacy);
+  for (const legacy of LEGACY_POOL_GROUP_IDS) {
+    const upgraded = upgradePoolGroupId(legacy);
     const match = `${column} = ? OR ${column} LIKE ?`;
     const info = db
       .prepare(`UPDATE OR IGNORE ${table} SET ${column} = ? || substr(${column}, ?) WHERE ${match}`)
@@ -527,11 +527,11 @@ const renameLegacyPoolIds = (db: DatabaseSync, table: string, column = 'pool_id'
   }
 };
 
-const renameLegacyTaskPoolFamilies = (db: DatabaseSync): void => {
+const renameLegacyTaskPoolGroups = (db: DatabaseSync): void => {
   if (!tableExists(db, 'swarm_tasks') || !tableHasColumn(db, 'swarm_tasks', 'pool_family')) return;
-  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
+  for (const legacy of LEGACY_POOL_GROUP_IDS) {
     db.prepare('UPDATE swarm_tasks SET pool_family = ? WHERE pool_family = ?').run(
-      upgradePoolFamilyId(legacy),
+      upgradePoolGroupId(legacy),
       legacy
     );
   }
@@ -560,7 +560,7 @@ const renameLegacyRoutineCycleKeys = (db: DatabaseSync): void => {
     const cycles: Record<string, unknown> = {};
     let changed = false;
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      const upgraded = upgradePoolFamilyId(key);
+      const upgraded = upgradePoolGroupId(key);
       if (upgraded !== key) changed = true;
       cycles[upgraded] = value;
     }
@@ -585,7 +585,7 @@ const renameLegacyNoticePoolIds = (db: DatabaseSync): void => {
     if (!entry || typeof entry !== 'object') return entry;
     const pool = entry as Record<string, unknown>;
     if (typeof pool.poolId !== 'string') return entry;
-    const upgraded = upgradePoolFamilyId(pool.poolId);
+    const upgraded = upgradePoolGroupId(pool.poolId);
     if (upgraded === pool.poolId) return entry;
     changed = true;
     return { ...pool, poolId: upgraded };
@@ -611,9 +611,9 @@ const renameLegacyPoolPolicyKeys = (db: DatabaseSync): void => {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
   const policies = { ...(parsed as Record<string, unknown>) };
   let changed = false;
-  for (const legacy of LEGACY_POOL_FAMILY_IDS) {
+  for (const legacy of LEGACY_POOL_GROUP_IDS) {
     if (policies[legacy] === undefined) continue;
-    const upgraded = upgradePoolFamilyId(legacy);
+    const upgraded = upgradePoolGroupId(legacy);
     if (policies[upgraded] === undefined) policies[upgraded] = policies[legacy];
     delete policies[legacy];
     changed = true;
@@ -624,14 +624,42 @@ const renameLegacyPoolPolicyKeys = (db: DatabaseSync): void => {
   ).run(JSON.stringify(policies));
 };
 
-const migrateLegacyPoolFamily = (db: DatabaseSync): void => {
+const migrateLegacyPoolGroups = (db: DatabaseSync): void => {
   for (const table of ['pool_state', 'pool_milestones', 'pool_samples', 'alert_events']) {
     renameLegacyPoolIds(db, table);
   }
   renameLegacyNoticePoolIds(db);
-  renameLegacyTaskPoolFamilies(db);
+  renameLegacyTaskPoolGroups(db);
   renameLegacyRoutineCycleKeys(db);
   renameLegacyPoolPolicyKeys(db);
+};
+
+// v5 retires the `pool_family` spelling. The rename is forward-only: a database written before v5
+// still carries the old column and SQLite has no `RENAME COLUMN IF EXISTS`.
+const renameLegacyPoolColumn = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'swarm_tasks')) return;
+  if (!tableHasColumn(db, 'swarm_tasks', 'pool_family')) return;
+  if (tableHasColumn(db, 'swarm_tasks', 'pool_group')) return;
+  db.exec('ALTER TABLE swarm_tasks RENAME COLUMN pool_family TO pool_group');
+};
+
+// The policies value moves byte-identical and only the settings key changes. When both keys are
+// present the v5 spelling already wins, so the stale row is dropped rather than overwriting config.
+const movePoolGroupPoliciesKey = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'settings')) return;
+  const legacy = db.prepare("SELECT value FROM settings WHERE key = 'poolPolicies'").get();
+  if (legacy === undefined) return;
+  const current = db.prepare("SELECT 1 AS hit FROM settings WHERE key = 'poolGroupPolicies'").get();
+  if (current === undefined) {
+    db.prepare("UPDATE settings SET key = 'poolGroupPolicies' WHERE key = 'poolPolicies'").run();
+    return;
+  }
+  db.prepare("DELETE FROM settings WHERE key = 'poolPolicies'").run();
+};
+
+const migratePoolGroupVocabulary = (db: DatabaseSync): void => {
+  renameLegacyPoolColumn(db);
+  movePoolGroupPoliciesKey(db);
 };
 
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
@@ -686,7 +714,14 @@ const MIGRATIONS: readonly Migration[] = [
     version: 4,
     name: 'v4_pool_family_hydrogen',
     up: (db) => {
-      migrateLegacyPoolFamily(db);
+      migrateLegacyPoolGroups(db);
+    },
+  },
+  {
+    version: 5,
+    name: 'v5_pool_group',
+    up: (db) => {
+      migratePoolGroupVocabulary(db);
     },
   },
 ];
@@ -1095,7 +1130,7 @@ export class TaskQueue {
     const cascade = coerceCascade(input.cascade);
     const primaryHop = cascade[0]!;
     const model = primaryHop.model;
-    const poolFamily = resolvePoolFamilyForModel(model);
+    const poolGroup = resolvePoolGroupForModel(model);
     const effort: ReasoningEffort = primaryHop.effort;
     const allowOverage = Boolean(input.allowOverage);
     const pushBranch = input.pushBranch !== false;
@@ -1121,7 +1156,7 @@ export class TaskQueue {
           id, task_number, title, tier, origin_id, origin_number, origin_title,
           created_at, updated_at, repository_id, repository_name, repository_path,
           clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
-          required_labels_json, model, candidate_models_json, pool_family, effort, allow_overage,
+          required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
           push_branch, auto_create_pr, expires_at, verify_command, status
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
         )
@@ -1147,7 +1182,7 @@ export class TaskQueue {
           JSON.stringify(requiredLabels),
           model,
           JSON.stringify(cascade),
-          poolFamily,
+          poolGroup,
           effort,
           allowOverage ? 1 : 0,
           pushBranch ? 1 : 0,
@@ -1204,16 +1239,16 @@ export class TaskQueue {
     return row ? this.mapRowToTask(row) : undefined;
   }
 
-  public getLatestTaskForOrigin(originId: string, poolFamily?: string): SwarmTask | undefined {
-    const row = poolFamily
+  public getLatestTaskForOrigin(originId: string, poolGroup?: string): SwarmTask | undefined {
+    const row = poolGroup
       ? (this.rawDb
           .prepare(
             `SELECT * FROM swarm_tasks
-             WHERE origin_id = ? AND pool_family = ?
+             WHERE origin_id = ? AND pool_group = ?
              ORDER BY created_at DESC, rowid DESC
              LIMIT 1`
           )
-          .get(originId, poolFamily) as Record<string, any> | undefined)
+          .get(originId, poolGroup) as Record<string, any> | undefined)
       : (this.rawDb
           .prepare(
             `SELECT * FROM swarm_tasks
@@ -1420,7 +1455,7 @@ export class TaskQueue {
                  runner_id = ?,
                  model = ?,
                  candidate_models_json = ?,
-                 pool_family = ?,
+                 pool_group = ?,
                  effort = ?,
                  claimed_at = ?,
                  heartbeat_at = ?,
@@ -1431,7 +1466,7 @@ export class TaskQueue {
             options.runnerId,
             updatedModel,
             JSON.stringify(claimCascade),
-            resolvePoolFamilyForModel(updatedModel),
+            resolvePoolGroupForModel(updatedModel),
             updatedEffort,
             now,
             now,
@@ -1832,7 +1867,7 @@ export class TaskQueue {
       requiredLabels,
       model: String(row.model),
       cascade,
-      poolFamily: (row.pool_family as QuotaFamily) || 'gemini-argon',
+      poolGroup: (row.pool_group as PoolGroup) || 'gemini-argon',
       effort: primaryEffort,
       allowOverage: row.allow_overage === 1,
       pushBranch: row.push_branch === 1,

@@ -227,7 +227,7 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
             <DetailRow label="Model">
               <span title={verdict.model}>{label}</span>
             </DetailRow>
-            <DetailRow label="Family">{verdict.family ?? 'N/A'}</DetailRow>
+            <DetailRow label="Pool group">{verdict.poolGroup ?? 'N/A'}</DetailRow>
             <DetailRow label="Pool">{pool?.displayName ?? 'N/A'}</DetailRow>
             <DetailRow label="Limiting window">
               {pool ? (pool.limitingWindow === 'short_term' ? '5-hour' : 'weekly') : 'N/A'}

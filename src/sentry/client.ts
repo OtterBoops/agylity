@@ -16,9 +16,9 @@ import {
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
   RetrieveUserQuotaSummaryResponseSchema,
-  resolveModelFamily,
+  poolGroupForModelConfig,
   type QuotaClient as IQuotaClient,
-  type QuotaFamily,
+  type PoolGroup,
   type QuotaSnapshot,
 } from './models.js';
 
@@ -500,7 +500,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
 
   private logQuotaStatus(snapshots: QuotaSnapshot[]): void {
     const summary = snapshots
-      .map((s) => `${s.displayName || s.family}: ${(s.remainingFraction * 100).toFixed(1)}%`)
+      .map((s) => `${s.displayName || s.poolGroup}: ${(s.remainingFraction * 100).toFixed(1)}%`)
       .join(', ');
     const signature = snapshots
       .map((s) => `${s.poolId}=${Math.round(s.remainingFraction * 100)}@${s.resetTime}`)
@@ -729,13 +729,13 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     const cached = this.cachedSnapshotProvider?.() ?? this.lastKnownSnapshots;
     if (cached && cached.length > 0) {
       const now = Date.now();
-      const modelsByFamily = new Map<QuotaFamily, string[]>();
+      const modelsByPoolGroup = new Map<PoolGroup, string[]>();
       for (const m of rawModels) {
-        const resolved = resolveModelFamily({ modelId: m.id, label: m.label || m.id });
+        const resolved = poolGroupForModelConfig({ modelId: m.id, label: m.label || m.id });
         if (!resolved) continue;
-        const list = modelsByFamily.get(resolved.family) ?? [];
+        const list = modelsByPoolGroup.get(resolved.poolGroup) ?? [];
         list.push(m.label || m.id);
-        modelsByFamily.set(resolved.family, list);
+        modelsByPoolGroup.set(resolved.poolGroup, list);
       }
 
       let regeneratedReset = false;
@@ -747,7 +747,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
           hoursUntilReset = 24;
           regeneratedReset = true;
         }
-        const cliModels = modelsByFamily.get(s.family);
+        const cliModels = modelsByPoolGroup.get(s.poolGroup);
         const models =
           s.models && s.models.length > 0
             ? s.models
@@ -772,25 +772,25 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     }
 
     const poolsMap = new Map<
-      QuotaFamily,
-      { family: QuotaFamily; displayName: string; models: string[] }
+      PoolGroup,
+      { poolGroup: PoolGroup; displayName: string; models: string[] }
     >();
 
     for (const m of rawModels) {
-      const resolved = resolveModelFamily({ modelId: m.id, label: m.label || m.id });
+      const resolved = poolGroupForModelConfig({ modelId: m.id, label: m.label || m.id });
       if (!resolved) continue;
 
-      const { family, displayName } = resolved;
+      const { poolGroup, displayName } = resolved;
       const label = m.label || m.id;
 
-      if (!poolsMap.has(family)) {
-        poolsMap.set(family, {
-          family,
+      if (!poolsMap.has(poolGroup)) {
+        poolsMap.set(poolGroup, {
+          poolGroup,
           displayName,
           models: [label],
         });
       } else {
-        poolsMap.get(family)!.models.push(label);
+        poolsMap.get(poolGroup)!.models.push(label);
       }
     }
 

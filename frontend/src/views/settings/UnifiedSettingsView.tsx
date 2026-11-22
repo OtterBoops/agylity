@@ -73,7 +73,7 @@ const SECTIONS: Record<SettingsSectionId, SectionIndex> = {
   },
   notifications: {
     header: 'Notifications alert destinations channels delivery',
-    rows: 'Discord Bot Generic Webhook Local Console hmac signature alerts muted test delivery',
+    rows: 'Discord Bot Generic Webhook hmac signature alerts muted test delivery',
   },
   advanced: {
     header: 'Advanced network access control telemetry language server',

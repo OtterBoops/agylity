@@ -37,7 +37,7 @@ export interface DispatchRequest {
   requestedByUserId?: string;
   cascade?: { model: string; effort: 'low' | 'medium' | 'high' | 'xhigh' }[];
   runnerMode?: 'headless' | 'visible' | 'any';
-  poolFamily?: string;
+  poolGroup?: string;
   requiredLabels?: string[];
   allowOverage?: boolean;
   pushBranch?: boolean;
@@ -64,7 +64,7 @@ export interface InfoNotice {
   title: string;
   message: string;
   path?: string;
-  poolFamily?: string;
+  poolGroup?: string;
   poolName?: string;
   models?: string[];
   resetTime?: string;

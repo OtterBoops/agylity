@@ -158,46 +158,46 @@ describe('Zod Configuration Schema & Preprocessors', () => {
 
   it('parseRawEnv correctly maps raw env strings to typed Partial<AppConfig>', () => {
     const mapped = parseRawEnv({
-      NOTIFICATION_CHANNELS: 'console',
+      NOTIFICATION_CHANNELS: 'webhook',
       QUOTA_CHECK_INTERVAL_SECONDS: '300',
       QUOTA_MILESTONE_HOURS: '12,6,1',
       WEB_UI_ENABLED: 'false',
       MIN_DISPATCH_HEADROOM_PERCENT: '20',
     });
 
-    assert.equal(mapped.notificationChannel, 'console');
-    assert.deepEqual(mapped.notificationChannels, ['console']);
+    assert.equal(mapped.notificationChannel, 'webhook');
+    assert.deepEqual(mapped.notificationChannels, ['webhook']);
     assert.equal(mapped.quotaCheckIntervalSeconds, 300);
     assert.deepEqual(mapped.quotaMilestoneHours, [12, 6, 1]);
     assert.equal(mapped.webUiEnabled, false);
     assert.equal(mapped.minDispatchHeadroomPercent, 20);
   });
 
-  it('normalizes a pool policy set saved under the pre-rename family key', () => {
+  it('normalizes a pool policy set saved under the pre-rename pool group key', () => {
     const legacy = validateConfigOverridePatch({
-      poolPolicies: {
+      poolGroupPolicies: {
         claude: { alertsEnabled: false, dispatchEnabled: false },
         'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
         'gemini-flash': { alertsEnabled: false, dispatchEnabled: true },
       },
     }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
 
-    assert.deepEqual(legacy.poolPolicies?.['gemini-hydrogen'], {
+    assert.deepEqual(legacy.poolGroupPolicies?.['gemini-hydrogen'], {
       alertsEnabled: false,
       dispatchEnabled: true,
     });
-    assert.equal(legacy.poolPolicies?.['gemini-flash'], undefined);
+    assert.equal(legacy.poolGroupPolicies?.['gemini-flash'], undefined);
 
     // A current payload keeps the canonical key it was written with.
     const current = validateConfigOverridePatch({
-      poolPolicies: {
+      poolGroupPolicies: {
         claude: { alertsEnabled: true, dispatchEnabled: true },
         'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
         'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: false },
       },
     }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
 
-    assert.equal(current.poolPolicies?.['gemini-hydrogen']?.dispatchEnabled, false);
+    assert.equal(current.poolGroupPolicies?.['gemini-hydrogen']?.dispatchEnabled, false);
   });
 });
 
@@ -242,13 +242,13 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
   it('Level 1: SQLite UI Overrides take precedence over Environment Variables and Defaults', () => {
     const envOverrides = {
       quotaCheckIntervalSeconds: 1200,
-      notificationChannel: 'console' as const,
+      notificationChannel: 'webhook' as const,
     };
     const store = new ConfigStore(':memory:', envOverrides);
 
     // Initial state: Level 2 wins over Level 3
     assert.equal(store.get('quotaCheckIntervalSeconds'), 1200);
-    assert.equal(store.get('notificationChannel'), 'console');
+    assert.equal(store.get('notificationChannel'), 'webhook');
 
     // Apply SQLite UI override (Level 1)
     store.setOverride('quotaCheckIntervalSeconds', 300);
@@ -268,7 +268,7 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
 
     // Removing another override restores Level 2
     store.removeOverride('notificationChannel');
-    assert.equal(store.get('notificationChannel'), 'console');
+    assert.equal(store.get('notificationChannel'), 'webhook');
 
     store.close();
   });
@@ -387,12 +387,12 @@ describe('parseRawEnv malformed-value resilience', () => {
 describe('ConfigStore accessor agreement', () => {
   it('get() and resolveConfig() agree on notificationChannel when only the plural form is set', () => {
     const store = new ConfigStore(':memory:', {});
-    store.setOverride('notificationChannels', ['console']);
+    store.setOverride('notificationChannels', ['webhook']);
 
     const resolved = store.resolveConfig();
-    assert.equal(resolved.notificationChannel, 'console');
+    assert.equal(resolved.notificationChannel, 'webhook');
     // Reading the singular key raw would return the built-in 'none' instead.
-    assert.equal(store.get('notificationChannel'), 'console');
+    assert.equal(store.get('notificationChannel'), 'webhook');
 
     store.close();
   });

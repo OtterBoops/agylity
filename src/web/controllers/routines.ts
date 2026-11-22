@@ -180,7 +180,7 @@ export const handleRoutineTaskById = async (
     if (dispatchRes.success && dispatchRes.taskId) {
       const pool = coordinator
         .getActivePools()
-        .find((p) => p.family === dispatchRes.poolFamily || p.poolId === dispatchRes.poolFamily);
+        .find((p) => p.poolGroup === dispatchRes.poolGroup || p.poolId === dispatchRes.poolGroup);
       coordinator.queue.updateRoutineTask(rt.id, {
         lastTaskId: dispatchRes.taskId,
         ...(pool?.resetTime ? { lastTriggeredResetTime: pool.resetTime } : {}),

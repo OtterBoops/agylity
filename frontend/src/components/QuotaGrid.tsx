@@ -1,7 +1,14 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { QuotaBurnProjection, QuotaSnapshot } from '../types';
 import { useModelCatalog } from '../state/modelCatalogStore';
-import { isOrchestratorModelId } from '../../../src/shared/models.ts';
+import {
+  CANONICAL_AGY_MODELS,
+  POOL_GROUP_LABELS,
+  POOL_GROUPS,
+  isOrchestratorModelId,
+  type PoolGroup,
+} from '../../../src/shared/models.ts';
+import { QUOTA_GRID_COLUMNS, quotaGridPlaceholders } from '../../../src/shared/layout.ts';
 
 interface QuotaGridProps {
   quota: QuotaSnapshot[];
@@ -57,13 +64,28 @@ export const QuotaGrid = ({
   const [now, setNow] = useState(Date.now());
   const catalog = useModelCatalog();
 
-  const catalogLabelsByFamily = new Map<string, { models: string[]; routes: string[] }>();
+  const catalogLabelsByPoolGroup = new Map<string, { models: string[]; routes: string[] }>();
   for (const entry of catalog.models) {
-    const bucket = catalogLabelsByFamily.get(entry.family) ?? { models: [], routes: [] };
+    const bucket = catalogLabelsByPoolGroup.get(entry.poolGroup) ?? { models: [], routes: [] };
     // Orchestration routes are dispatch targets, not models, so they are listed apart.
     (isOrchestratorModelId(entry.id) ? bucket.routes : bucket.models).push(entry.label);
-    catalogLabelsByFamily.set(entry.family, bucket);
+    catalogLabelsByPoolGroup.set(entry.poolGroup, bucket);
   }
+
+  const absentModelsByPoolGroup = new Map<PoolGroup, string>(
+    POOL_GROUPS.map((poolGroup) => [
+      poolGroup,
+      CANONICAL_AGY_MODELS.filter((model) => model.poolGroup === poolGroup)
+        .map((model) => model.label)
+        .join(', '),
+    ])
+  );
+
+  // The grid shows one cell per pool group, so a pool this plan does not include still appears.
+  const presentPoolGroups = new Set<PoolGroup>(quota.map((pool) => pool.poolGroup as PoolGroup));
+  const absentPoolGroups =
+    quota.length > 0 ? POOL_GROUPS.filter((poolGroup) => !presentPoolGroups.has(poolGroup)) : [];
+  const cellCount = quota.length + absentPoolGroups.length;
 
   useEffect(() => {
     const tick = () => {
@@ -119,7 +141,7 @@ export const QuotaGrid = ({
       );
     }
     return (
-      <div id="quotaGrid" class="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-2 xl:grid-cols-3">
+      <div id="quotaGrid" class="grid grid-cols-1 gap-4 sm:gap-6">
         <div class="flex flex-col gap-4 rounded-xl border border-pine-highlight bg-pine-surface p-5 sm:p-6">
           <p class="text-sm text-pine-subtle">Probing Antigravity Language Server models...</p>
         </div>
@@ -130,10 +152,12 @@ export const QuotaGrid = ({
   return (
     <div
       id="quotaGrid"
-      class="grid grid-cols-1 gap-px overflow-hidden rounded-xl border border-pine-highlight bg-pine-highlight/70 md:grid-cols-2 xl:grid-cols-3"
+      class={`grid gap-px overflow-hidden rounded-xl border border-pine-highlight ${QUOTA_GRID_COLUMNS}`}
     >
       {quota.map((pool) => {
-        const poolDisplayName = pool.displayName || pool.family || pool.poolId;
+        const poolDisplayName = pool.displayName || pool.poolGroup || pool.poolId;
+        // The card is one bucket, so the title names the pool rather than the group alone.
+        const poolCardTitle = `${poolDisplayName} pool`;
         const weeklyFraction = pool.weekly?.remainingFraction ?? pool.remainingFraction;
         const weeklyHours = pool.weekly?.hoursUntilReset ?? pool.hoursUntilReset;
         const weeklyResetTime = pool.weekly?.resetTime ?? pool.resetTime;
@@ -143,7 +167,7 @@ export const QuotaGrid = ({
         const hasShortTermBar =
           shortTerm !== undefined && shortTerm.disabled !== true && shortTermPct !== null;
 
-        const catalogModels = catalogLabelsByFamily.get(pool.family);
+        const catalogModels = catalogLabelsByPoolGroup.get(pool.poolGroup);
         const hasCatalogModels =
           catalogModels !== undefined &&
           catalogModels.models.length + catalogModels.routes.length > 0;
@@ -223,16 +247,16 @@ export const QuotaGrid = ({
         return (
           <div
             key={pool.poolId}
-            class="flex h-full flex-col justify-start gap-4 bg-pine-surface p-4 sm:p-5"
+            class="flex h-full flex-col justify-start gap-4 bg-pine-surface p-4 ring-1 ring-pine-highlight/70 sm:p-5"
           >
             {/* Minimum header height keeps the Weekly Limit bars aligned while allowing 2-line titles + routes to expand. */}
             <div class="flex min-h-17 flex-col">
               <div class="flex items-start justify-between gap-3">
                 <h2
                   class="line-clamp-2 min-w-0 flex-1 text-base/snug font-semibold text-pine-text"
-                  title={poolDisplayName}
+                  title={poolCardTitle}
                 >
-                  {poolDisplayName}
+                  {poolCardTitle}
                 </h2>
                 <span class={`flex shrink-0 items-center gap-1.5 ${statusTone}`}>
                   <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
@@ -365,6 +389,48 @@ export const QuotaGrid = ({
           </div>
         );
       })}
+      {absentPoolGroups.map((poolGroup) => (
+        <div
+          key={`absent-${poolGroup}`}
+          class="flex h-full flex-col justify-start gap-4 bg-pine-surface p-4 ring-1 ring-pine-highlight/70 sm:p-5"
+        >
+          <div class="flex min-h-17 flex-col">
+            <div class="flex items-start justify-between gap-3">
+              <h2 class="line-clamp-2 min-w-0 flex-1 text-base/snug font-semibold text-pine-subtle">
+                {POOL_GROUP_LABELS[poolGroup]} pool
+              </h2>
+              <span class="flex shrink-0 items-center gap-1.5 text-pine-subtle">
+                <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
+                <span class="font-mono text-xs tracking-wider whitespace-nowrap uppercase">
+                  Not on plan
+                </span>
+              </span>
+            </div>
+            <p
+              class="mt-0.5 truncate text-xs text-pine-subtle"
+              title={absentModelsByPoolGroup.get(poolGroup)}
+            >
+              {absentModelsByPoolGroup.get(poolGroup) || 'No models catalogued'}
+            </p>
+          </div>
+          <div class="flex flex-1 flex-col justify-center gap-1 border-t border-pine-highlight/40 pt-2">
+            <p class="text-xs text-pine-subtle">No quota pool on this plan.</p>
+            <p class="text-xs text-pine-muted">
+              Its weekly and 5-hour limits appear when the plan includes it.
+            </p>
+          </div>
+        </div>
+      ))}
+      {/* A short last row keeps the bordered container from framing bare space. */}
+      {quotaGridPlaceholders(cellCount).map((slot) => (
+        <div
+          key={slot.key}
+          aria-hidden="true"
+          class={`${slot.className} items-center justify-center p-4 font-mono text-xs tracking-wider text-pine-subtle uppercase ring-1 ring-pine-highlight/70 sm:p-5`}
+        >
+          No pool
+        </div>
+      ))}
     </div>
   );
 };

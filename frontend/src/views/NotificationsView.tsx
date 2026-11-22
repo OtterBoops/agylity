@@ -1,10 +1,9 @@
-import { faLink, faRobot, faTerminal } from '@fortawesome/free-solid-svg-icons';
+import { faLink, faRobot } from '@fortawesome/free-solid-svg-icons';
 import { useState, useEffect, useMemo } from 'preact/hooks';
 import type { ConfigData, ToastState } from '../types';
 import { updateConfig, testNotification, deleteConfigOverride } from '../api';
 import { DiscordChannelForm } from '../components/DiscordChannelForm';
 import { WebhookChannelForm } from '../components/WebhookChannelForm';
-import { ConsoleChannelForm } from '../components/ConsoleChannelForm';
 import {
   NotificationChannelCard,
   type ChannelDef,
@@ -36,20 +35,13 @@ const CHANNELS: ChannelDef[] = [
     icon: faLink,
     iconColor: 'text-pine-foam',
   },
-  {
-    id: 'console',
-    label: 'Local Console',
-    description: 'Milestone summaries emitted to stdout and Live Logs.',
-    icon: faTerminal,
-    iconColor: 'text-pine-gold',
-  },
 ];
 
 const getInitialChannels = (resolved: Record<string, unknown>): ChannelId[] => {
   if (Array.isArray(resolved.notificationChannels)) {
     return resolved.notificationChannels
       .map((c) => String(c).trim().toLowerCase() as ChannelId)
-      .filter((c): c is ChannelId => c === 'discord' || c === 'webhook' || c === 'console');
+      .filter((c): c is ChannelId => c === 'discord' || c === 'webhook');
   }
   return [];
 };
@@ -96,7 +88,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     const initial: Record<ChannelId, boolean> = {
       discord: false,
       webhook: false,
-      console: false,
     };
     if (serverChannels.length > 0) {
       for (const ch of serverChannels) {
@@ -181,7 +172,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setExpandedChannels({
       discord: nextState,
       webhook: nextState,
-      console: nextState,
     });
   };
 
@@ -544,8 +534,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
                   diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
                 />
               )}
-
-              {ch.id === 'console' && <ConsoleChannelForm />}
             </NotificationChannelCard>
           );
         })}

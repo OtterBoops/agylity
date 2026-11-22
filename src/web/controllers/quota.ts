@@ -2,7 +2,7 @@ import type http from 'node:http';
 import { sendJson, methodNotAllowed } from '../http.js';
 import { logger } from '../../logs/logger.js';
 import type { WebServerOptions } from '../types.js';
-import type { QuotaFamily, QuotaSnapshot } from '../../sentry/models.js';
+import type { PoolGroup, QuotaSnapshot } from '../../sentry/models.js';
 import { computeBurnProjection, snapshotsFromSentryState } from '../../sentry/models.js';
 import type { SentryStateManager } from '../../sentry/state.js';
 
@@ -14,15 +14,15 @@ const withCatalogModels = (
   const catalog = options.modelCatalog.getModels();
   if (catalog.length === 0) return snapshots;
 
-  const labelsByFamily = new Map<QuotaFamily, string[]>();
+  const labelsByPoolGroup = new Map<PoolGroup, string[]>();
   for (const entry of catalog) {
-    const labels = labelsByFamily.get(entry.family) ?? [];
+    const labels = labelsByPoolGroup.get(entry.poolGroup) ?? [];
     labels.push(entry.label);
-    labelsByFamily.set(entry.family, labels);
+    labelsByPoolGroup.set(entry.poolGroup, labels);
   }
 
   return snapshots.map((snapshot) => {
-    const labels = labelsByFamily.get(snapshot.family);
+    const labels = labelsByPoolGroup.get(snapshot.poolGroup);
     return labels && labels.length > 0 ? { ...snapshot, models: labels } : snapshot;
   });
 };
@@ -85,8 +85,8 @@ export const handleGetSummary = (
   const snapshots = options.sentryState
     ? snapshotsFromSentryState(options.sentryState.getState())
     : [];
-  const percentFor = (family: QuotaFamily): number | null => {
-    const match = snapshots.find((s) => s.family === family || s.poolId === family);
+  const percentFor = (poolGroup: PoolGroup): number | null => {
+    const match = snapshots.find((s) => s.poolGroup === poolGroup || s.poolId === poolGroup);
     return match ? Math.round(match.remainingFraction * 100) : null;
   };
 

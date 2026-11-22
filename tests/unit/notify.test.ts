@@ -19,7 +19,6 @@ import {
   createDaemonNotifier,
   CompositeNotifier,
 } from '../../src/notify/factory.js';
-import { ConsoleNotifier } from '../../src/notify/adapters/console.js';
 import {
   WebhookNotifier,
   sanitizeWebhookUrl,
@@ -119,9 +118,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   /* 2. Dynamic Import Factory & Channel Isolation                        */
   /* ==================================================================== */
   describe('2. Dynamic Import Factory & Channel Isolation', () => {
-    it('creates the concrete notifier class that matches each simple channel', async () => {
+    it('creates the concrete notifier class that matches each remote channel', async () => {
       const channelCases = [
-        ['console', ConsoleNotifier],
         ['webhook', WebhookNotifier],
         ['discord', DiscordNotifier],
       ] as const;
@@ -136,10 +134,10 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     it('supports createNotifier(resolvedConfig) signature', async () => {
       const config = {
         ...BUILTIN_DEFAULTS,
-        notificationChannel: 'console' as const,
+        notificationChannel: 'webhook' as const,
       };
       const notifier = await createNotifier(config);
-      assert.equal(notifier.channelName, 'console');
+      assert.equal(notifier.channelName, 'webhook');
     });
 
     it('rejects unsupported channel with typed error', async () => {
@@ -153,32 +151,41 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     it('deduplicates channels case-insensitively instead of notifying twice', async () => {
       const composite = await createDaemonNotifier({
         ...BUILTIN_DEFAULTS,
-        notificationChannels: ['Console', 'console', 'CONSOLE'],
+        notificationChannels: ['Webhook', 'webhook', 'WEBHOOK'],
       } as any);
 
-      const printed: string[] = [];
-      const original = console.log;
-      console.log = (...args: unknown[]) => printed.push(args.map(String).join(' '));
-      try {
-        await composite.notifyInfo({ title: 'Dedupe check', message: 'Exactly one box.' });
-      } finally {
-        console.log = original;
-      }
-
-      // Three spellings of one channel must produce one delivery, not three.
-      assert.equal(printed.filter((line) => line.startsWith('┌')).length, 1);
+      // Three spellings of one channel must produce one adapter, not three.
+      assert.equal(composite.notifiers.length, 1);
+      assert.equal(composite.notifiers[0]?.channelName, 'webhook');
     });
 
-    it('channel isolation: creating console notifier does NOT evaluate discord.js in fresh process', async () => {
-      // In a separate Node process, load factory and create console notifier.
+    it('drops the retired console channel instead of leaving zero destinations', async () => {
+      const onlyConsole = await createDaemonNotifier({
+        ...BUILTIN_DEFAULTS,
+        notificationChannels: ['console'],
+      } as any);
+      assert.equal(onlyConsole.notifiers.length, 0);
+
+      const mixed = await createDaemonNotifier({
+        ...BUILTIN_DEFAULTS,
+        notificationChannels: ['console', 'webhook'],
+      } as any);
+      assert.deepEqual(
+        mixed.notifiers.map((n) => n.channelName),
+        ['webhook']
+      );
+    });
+
+    it('channel isolation: creating a webhook notifier does NOT evaluate discord.js in fresh process', async () => {
+      // In a separate Node process, load factory and create the webhook notifier.
       // Assert that discord.js is not loaded into memory cache.
       const testCode = `
         import { createRequire } from 'node:module';
         const req = createRequire(import.meta.url);
         import { createNotifier } from './src/notify/factory.js';
 
-        const notifier = await createNotifier('console');
-        if (notifier.channelName !== 'console') {
+        const notifier = await createNotifier('webhook');
+        if (notifier.channelName !== 'webhook') {
           process.exit(1);
         }
 
@@ -419,7 +426,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const snapshots: QuotaSnapshot[] = [
         {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 5.5 / Opus',
           remainingFraction: 0.494,
           resetTime: '2026-10-20T14:59:48Z',
@@ -428,7 +435,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         },
         {
           poolId: 'gemini-argon',
-          family: 'gemini-argon',
+          poolGroup: 'gemini-argon',
           displayName: 'Gemini 4 Argon',
           remainingFraction: 0.17,
           resetTime: '2026-10-26T09:17:32Z',
@@ -521,7 +528,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
           onQuotaRequested: async () => [
             {
               poolId: 'claude',
-              family: 'claude',
+              poolGroup: 'claude',
               displayName: 'Claude 5.5 / Opus',
               remainingFraction: 0.82,
               resetTime: '2026-10-20T12:00:00Z',
@@ -588,7 +595,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(preselected[0].value, 'repo-2');
     });
 
-    it('repo_select carrying a pool family preserves it through the universal modal submit', async () => {
+    it('repo_select carrying a pool group preserves it through the universal modal submit', async () => {
       let received: DispatchRequest | null = null;
 
       const select = createMockInteraction({
@@ -615,7 +622,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const modalData = (select.state.modalShown as any).toJSON();
       assert.equal(modalData.custom_id, 'modal_dispatch::claude');
 
-      // The operator re-picks the repository inside the modal; the alert's pool family rides along.
+      // The operator re-picks the repository inside the modal; the alert's pool group rides along.
       const submit = createMockInteraction({
         customId: modalData.custom_id,
         taskPrompt: 'Tune the pool',
@@ -626,7 +633,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       assert.equal((received as any)?.repositoryId, 'repo-2');
       assert.equal((received as any)?.repositoryName, 'Web UI');
-      assert.equal((received as any)?.poolFamily, 'claude');
+      assert.equal((received as any)?.poolGroup, 'claude');
     });
 
     it('defines every /dispatch option as optional so the modal can collect them', () => {
@@ -901,7 +908,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const snapshots: QuotaSnapshot[] = [
         {
           poolId: 'claude-super-long-id-'.repeat(20),
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude Model Name Super Long '.repeat(15),
           remainingFraction: 0.5,
           resetTime: '2026-10-20T12:00:00Z',
@@ -921,7 +928,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const alert: QuotaAlert = {
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'C'.repeat(400),
           remainingFraction: 0.2,
           resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),
@@ -949,119 +956,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
   /* ==================================================================== */
   /* 6. Console & Webhook Adapter Notifications                           */
   /* ==================================================================== */
-  describe('6. Console & Webhook Adapter Notifications', () => {
-    const captureBox = async (fn: () => Promise<unknown>): Promise<string[]> => {
-      const printed: string[] = [];
-      const original = console.log;
-      console.log = (...args: unknown[]) => printed.push(args.map(String).join(' '));
-      try {
-        await fn();
-      } finally {
-        console.log = original;
-      }
-      return printed;
-    };
-
-    it('ConsoleNotifier logs formatted quota alerts', async () => {
-      const notifier = new ConsoleNotifier();
-      await notifier.initialize();
-
-      const alert: QuotaAlert = {
-        pool: {
-          poolId: 'claude-5-5',
-          family: 'claude',
-          displayName: 'Claude 5.5 / Opus',
-          remainingFraction: 0.4944,
-          resetTime: '2026-10-20T14:59:48Z',
-          hoursUntilReset: 25.8,
-          models: ['Claude Sonnet 5.5'],
-        },
-        milestoneHours: 24,
-        remainingPercentage: 49.4,
-        triggeredAt: '2026-10-19T13:12:00.000Z',
-      };
-
-      const printed = await captureBox(() => notifier.notifyQuotaAlert(alert));
-      const text = printed.join('\n');
-
-      assert.ok(text.includes('[QUOTA ALERT] Claude 5.5 / Opus'));
-      assert.ok(text.includes('Headroom: 49.4% remaining | Milestone: 24h before reset'));
-      assert.ok(
-        text.includes('Reset Deadline: 2026-10-20T14:59:48Z | Triggered: 2026-10-19T13:12:00.000Z')
-      );
-      await notifier.shutdown();
-    });
-
-    it('ConsoleNotifier logs formatted dispatch status', async () => {
-      const notifier = new ConsoleNotifier();
-      await notifier.initialize();
-
-      const status1: DispatchStatusUpdate = {
-        status: 'waking',
-        repositoryName: 'agylity',
-        branchName: 'antigravity/continuation-1',
-        message: 'Waking worker node',
-      };
-      const status2: DispatchStatusUpdate = {
-        status: 'completed',
-        repositoryName: 'agylity',
-        branchName: 'antigravity/continuation-1',
-        message: 'Task completed in 42s',
-      };
-
-      const firstBox = (await captureBox(() => notifier.notifyDispatchStatus(status1))).join('\n');
-      const secondBox = (await captureBox(() => notifier.notifyDispatchStatus(status2))).join('\n');
-
-      assert.ok(firstBox.includes('[DISPATCH STATUS] Step: WAKING'));
-      assert.ok(firstBox.includes('Repo: agylity | Branch: antigravity/continuation-1'));
-      assert.ok(firstBox.includes('Message: Waking worker node'));
-      assert.ok(secondBox.includes('[DISPATCH STATUS] Step: COMPLETED'));
-      assert.ok(secondBox.includes('Message: Task completed in 42s'));
-      await notifier.shutdown();
-    });
-
-    it('ConsoleNotifier logs info notices as their own message type', async () => {
-      const notifier = new ConsoleNotifier();
-      await notifier.initialize();
-
-      const printed = await captureBox(() =>
-        notifier.notifyInfo({ title: 'Pre-reset burn started', message: 'Looping now.' })
-      );
-      const text = printed.join('\n');
-
-      assert.ok(text.includes('[NOTICE] Pre-reset burn started'));
-      assert.ok(text.includes('Looping now.'));
-      // A notice is neither an alert nor a status update, so it must not borrow their headers.
-      assert.ok(!text.includes('[QUOTA ALERT]'));
-      assert.ok(!text.includes('[DISPATCH STATUS]'));
-      await notifier.shutdown();
-    });
-
-    it('ConsoleNotifier sizes the ASCII box to its widest line, with a 70-char floor', async () => {
-      const notifier = new ConsoleNotifier();
-
-      const shortBox = await captureBox(() =>
-        notifier.notifyInfo({ title: 'Pre-reset burn', message: 'short' })
-      );
-      assert.equal((shortBox[0]?.match(/─/g) ?? []).length, 70, 'short notices keep the floor');
-      assert.ok(shortBox.every((line) => line.length === 72));
-      assert.ok(
-        shortBox.slice(1, -1).every((line) => line.startsWith('│ ') && line.endsWith('│')),
-        'every content row closes on the border'
-      );
-
-      const longMessage = 'x'.repeat(120);
-      const longBox = await captureBox(() =>
-        notifier.notifyInfo({ title: 'Pre-reset burn', message: longMessage })
-      );
-      assert.equal((longBox[0]?.match(/─/g) ?? []).length, longMessage.length + 2);
-      assert.ok(
-        longBox.every((line) => line.length === longMessage.length + 4),
-        'a wide line widens the border instead of overflowing it'
-      );
-      assert.equal(longBox[2], `│ ${longMessage} │`);
-    });
-
+  describe('6. Webhook Adapter Notifications', () => {
     it('posts webhook JSON with x-agylity-signature when webhook URL and secret are configured', async () => {
       let receivedHeaders: http.IncomingHttpHeaders = {};
       let receivedBody: any = null;
@@ -1092,7 +987,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         const alert: QuotaAlert = {
           pool: {
             poolId: 'gemini-argon',
-            family: 'gemini-argon',
+            poolGroup: 'gemini-argon',
             displayName: 'Gemini 4 Argon',
             remainingFraction: 0.17,
             resetTime: '2026-10-26T09:17:32Z',
@@ -1151,7 +1046,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         const alert: QuotaAlert = {
           pool: {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude',
             remainingFraction: 0.2,
             resetTime: '2026-10-20T12:00:00Z',
@@ -1203,7 +1098,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await notifier.notifyInfo({
           title: 'Pre-reset burn started',
           message: 'Routine #1 entered the pre-reset window.',
-          poolFamily: 'claude',
+          poolGroup: 'claude',
           poolName: 'Claude and GPT models',
           models: ['claude-sonnet-5-5'],
           resetTime: '2026-11-08T01:30:44Z',
@@ -1237,7 +1132,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         const outcome = await notifier.notifyQuotaAlert({
           pool: {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude',
             remainingFraction: 0.2,
             resetTime: '2026-10-20T12:00:00Z',
@@ -1414,7 +1309,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const outcome = await notifier.notifyQuotaAlert({
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude',
           remainingFraction: 0.2,
           resetTime: '2026-10-20T12:00:00Z',
@@ -1826,7 +1721,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.notifyQuotaAlert({
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 3.5 Sonnet',
           remainingFraction: 0.15,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1867,7 +1762,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const sampleAlert: QuotaAlert = {
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 3.5 Sonnet',
           remainingFraction: 0.15,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1911,7 +1806,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.notifyInfo({
         title: 'Pre-reset burn started',
         message: 'Routine #1 entered the pre-reset window.',
-        poolFamily: 'claude',
+        poolGroup: 'claude',
         poolName: 'Claude and GPT models',
       });
 
@@ -1943,7 +1838,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       const sampleAlert: QuotaAlert = {
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 3.5 Sonnet',
           remainingFraction: 0.15,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1981,7 +1876,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     const sampleAlert: QuotaAlert = {
       pool: {
         poolId: 'claude',
-        family: 'claude',
+        poolGroup: 'claude',
         displayName: 'Claude',
         remainingFraction: 0.2,
         resetTime: '2026-10-20T12:00:00Z',
@@ -2049,7 +1944,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     const sampleAlert: QuotaAlert = {
       pool: {
         poolId: 'claude',
-        family: 'claude',
+        poolGroup: 'claude',
         displayName: 'Claude',
         remainingFraction: 0.2,
         resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),

@@ -116,7 +116,7 @@ export const handleTestNotify = async (
     const sampleAlert = {
       pool: {
         poolId: 'test-pool',
-        family: 'claude' as const,
+        poolGroup: 'claude' as const,
         displayName: 'Test Notification — Claude',
         remainingFraction: 0.45,
         resetTime: new Date(Date.now() + 3 * 3600 * 1000).toISOString(),

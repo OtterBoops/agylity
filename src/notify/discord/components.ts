@@ -15,9 +15,9 @@ import {
 
 export const createRepoSelectMenu = (
   repositories: Array<{ id: string; name: string; path?: string; description?: string }>,
-  poolFamily?: string
+  poolGroup?: string
 ): ActionRowBuilder<StringSelectMenuBuilder> => {
-  const customId = poolFamily ? `repo_select:${poolFamily}` : 'repo_select';
+  const customId = poolGroup ? `repo_select:${poolGroup}` : 'repo_select';
   const select = new StringSelectMenuBuilder().setCustomId(customId);
   const list = repositories ?? [];
 
@@ -63,7 +63,7 @@ export interface CreateDispatchModalOptions {
   includeModelInput?: boolean;
   defaultModel?: string;
   defaultEffort?: string;
-  poolFamily?: string;
+  poolGroup?: string;
   repositories?: DispatchRepositoryOption[];
   selectedRepoId?: string;
 }
@@ -115,7 +115,7 @@ export const createDispatchModal = (
 ): ModalBuilder => {
   const boundRepoId = (repoId ?? '').trim();
   const boundRepoName = (repoName ?? '').trim();
-  // An unbound modal carries an empty repo slot in its customId (`modal_dispatch[::family]`):
+  // An unbound modal carries an empty repo slot in its customId (`modal_dispatch[::poolGroup]`):
   // the submit handler reads the repository out of the task_repository select instead.
   const unbound = boundRepoId.length === 0;
 
@@ -123,11 +123,11 @@ export const createDispatchModal = (
     unbound ? 'Dispatch Task' : `Dispatch Task: ${boundRepoName || boundRepoId}`
   ).slice(0, 45);
   const rawCustomId = unbound
-    ? options?.poolFamily
-      ? `modal_dispatch::${options.poolFamily}`
+    ? options?.poolGroup
+      ? `modal_dispatch::${options.poolGroup}`
       : 'modal_dispatch'
-    : options?.poolFamily
-      ? `modal_dispatch:${boundRepoId}:${options.poolFamily}`
+    : options?.poolGroup
+      ? `modal_dispatch:${boundRepoId}:${options.poolGroup}`
       : `modal_dispatch:${boundRepoId}`;
   const safeCustomId = rawCustomId.slice(0, 100);
   const modal = new ModalBuilder().setCustomId(safeCustomId).setTitle(title);
@@ -157,12 +157,12 @@ export const createDispatchModal = (
   if (options?.includeModelInput || unbound) {
     const opts = options ?? {};
     const initialModel = resolveConcreteModelId(
-      opts.poolFamily,
+      opts.poolGroup,
       opts.defaultModel || 'gemini-4-argon'
     );
 
     const scoped = CANONICAL_AGY_MODELS.filter(
-      (m) => !opts.poolFamily || m.family === opts.poolFamily
+      (m) => !opts.poolGroup || m.poolGroup === opts.poolGroup
     );
     const offered = (scoped.length > 0 ? scoped : CANONICAL_AGY_MODELS).slice(0, 25);
     const initialEffort = resolveReasoningEffortForModel(initialModel, opts.defaultEffort);

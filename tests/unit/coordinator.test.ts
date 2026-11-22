@@ -18,7 +18,7 @@ import {
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
   resolveConcreteModelId,
-  resolvePoolFamilyForModelOrNull,
+  resolvePoolGroupForModelOrNull,
   TaskQueue,
   TaskExecutor,
   Coordinator,
@@ -38,7 +38,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
   /* 1. Explicit Model Selection & Pool-Targeted Quota Math               */
   /* ==================================================================== */
   describe('1. Explicit Model Selection & Pool-Targeted Quota Math', () => {
-    it('resolves explicit model IDs and pool family shorthands without magic auto-routing', () => {
+    it('resolves explicit model IDs and pool group shorthands without magic auto-routing', () => {
       assert.equal(resolveConcreteModelId(undefined, 'gemini-4-argon'), 'gemini-4-argon');
       assert.equal(resolveConcreteModelId('auto', 'gemini-4-argon'), 'gemini-4-argon');
       assert.equal(resolveConcreteModelId('claude-opus-5-5', 'gemini-4-argon'), 'claude-opus-5-5');
@@ -55,10 +55,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       // The configured default is user input too: `agy --model claude` is not a model id.
       assert.equal(resolveConcreteModelId(undefined, 'gemini-hydrogen'), 'gemini-4-hydrogen');
       assert.equal(resolveConcreteModelId(undefined, 'claude'), 'claude-sonnet-5-5');
-      // A shorthand with no pool default still resolves through the family alias table.
+      // A shorthand with no pool default still resolves through the group alias table.
       assert.equal(resolveConcreteModelId('3p'), 'claude-sonnet-5-5');
       // Neon bills Hydrogen, so a dispatch against it draws that pool's headroom.
-      assert.equal(resolvePoolFamilyForModelOrNull('gemini-4-neon'), 'gemini-hydrogen');
+      assert.equal(resolvePoolGroupForModelOrNull('gemini-4-neon'), 'gemini-hydrogen');
     });
 
     it('ignores a disabled short-term bucket and floors the effective headroom', () => {
@@ -81,7 +81,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     it('calculates effectiveHeadroomPercent as min(weekly, 5h shortTerm)', () => {
       const pool: QuotaSnapshot = {
         poolId: 'claude',
-        family: 'claude',
+        poolGroup: 'claude',
         displayName: 'Claude 5.5 / Opus',
         remainingFraction: 0.75,
         resetTime: new Date(Date.now() + 86400000).toISOString(),
@@ -110,7 +110,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const pools: QuotaSnapshot[] = [
         {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 5.5',
           remainingFraction: 0.04, // 4% remaining (below 10% floor)
           resetTime: new Date(Date.now() + 14400000).toISOString(),
@@ -119,7 +119,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         },
         {
           poolId: 'gemini-argon',
-          family: 'gemini-argon',
+          poolGroup: 'gemini-argon',
           displayName: 'Gemini 4 Argon',
           remainingFraction: 0.85, // 85% remaining (healthy)
           resetTime: new Date(Date.now() + 86400000).toISOString(),
@@ -136,7 +136,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       });
       assert.equal(claudeCheck.allowed, false);
       assert.equal(claudeCheck.code, 'OVERAGE_PROTECTION_TRIGGERED');
-      assert.equal(claudeCheck.family, 'claude');
+      assert.equal(claudeCheck.poolGroup, 'claude');
       assert.equal(claudeCheck.effectiveHeadroomPercent, 4);
 
       // 2. Dispatching Gemini 4 Argon is allowed because Argon pool is at 85%
@@ -146,7 +146,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         minDispatchHeadroomPercent: 10,
       });
       assert.equal(argonCheck.allowed, true);
-      assert.equal(argonCheck.family, 'gemini-argon');
+      assert.equal(argonCheck.poolGroup, 'gemini-argon');
       assert.equal(argonCheck.effectiveHeadroomPercent, 85);
     });
 
@@ -154,7 +154,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const buildPools = (hoursUntilReset: number): QuotaSnapshot[] => [
         {
           poolId: 'gemini-argon',
-          family: 'gemini-argon',
+          poolGroup: 'gemini-argon',
           displayName: 'Gemini 4 Argon',
           remainingFraction: 0.65,
           resetTime: new Date(Date.now() + hoursUntilReset * 3600000).toISOString(),
@@ -746,7 +746,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(modelsRes.models.length, 7);
         const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
         assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
-        assert.equal(hydrogen.family, 'gemini-hydrogen');
+        assert.equal(hydrogen.poolGroup, 'gemini-hydrogen');
         assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
 
         // 2. Unauthenticated poll is rejected with 401
@@ -1090,7 +1090,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const modal = createDispatchModal('agylity', 'Agylity', {
         includeModelInput: true,
         defaultModel: 'gemini-4-argon',
-        poolFamily: 'claude',
+        poolGroup: 'claude',
       });
       const data = modal.toJSON() as any;
       assert.equal(data.custom_id, 'modal_dispatch:agylity:claude');
@@ -1167,7 +1167,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const sampleAlert: any = {
         pool: {
           poolId: 'claude',
-          family: 'claude',
+          poolGroup: 'claude',
           displayName: 'Claude 5.5 Sonnet',
           remainingFraction: 0.2,
           resetTime: new Date(Date.now() + 3600_000).toISOString(),
@@ -1486,14 +1486,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       // An omitted model must use the default model's pool (claude), whose built-in policy disables dispatch
       const omitted = coordinator.evaluateEligibility({});
       assert.equal(omitted.allowed, false);
-      assert.equal(omitted.family, 'claude');
+      assert.equal(omitted.poolGroup, 'claude');
       assert.equal(omitted.code, 'OVERAGE_PROTECTION_TRIGGERED');
 
       // Aliases without a literal 'claude' must still be governed by the claude policy
       for (const alias of ['sonnet', 'opus', 'gpt-oss', 'gpt-oss-120b']) {
         const check = coordinator.evaluateEligibility({ model: alias });
         assert.equal(check.allowed, false, `alias ${alias} should be blocked`);
-        assert.equal(check.family, 'claude', `alias ${alias} should map to the claude pool`);
+        assert.equal(check.poolGroup, 'claude', `alias ${alias} should map to the claude pool`);
         assert.equal(check.code, 'OVERAGE_PROTECTION_TRIGGERED');
       }
 
@@ -1505,7 +1505,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const { dir, cleanup } = makeTempDir('coord_policy_default_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
         defaultDispatchModel: 'gemini-4-hydrogen',
-        poolPolicies: {
+        poolGroupPolicies: {
           claude: { alertsEnabled: true, dispatchEnabled: true },
           'gemini-argon': { alertsEnabled: true, dispatchEnabled: false },
           'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -1515,7 +1515,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       coordinator.onQuotaUpdated([
         {
           poolId: 'gemini-hydrogen',
-          family: 'gemini-hydrogen',
+          poolGroup: 'gemini-hydrogen',
           displayName: 'Gemini Flash',
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1527,7 +1527,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       // The disabled gemini-argon policy must not be consulted for the flash default model
       const omitted = coordinator.evaluateEligibility({});
       assert.equal(omitted.allowed, true);
-      assert.equal(omitted.family, 'gemini-hydrogen');
+      assert.equal(omitted.poolGroup, 'gemini-hydrogen');
 
       store.close();
       cleanup();
@@ -1561,10 +1561,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(preReset.code, 'QUOTA_BURN_CONDITIONS_NOT_MET');
     });
 
-    it('fails closed when the family has no pool, or its fractions are unusable', () => {
+    it('fails closed when the pool group has no pool, or its fractions are unusable', () => {
       const pool = (over: Record<string, unknown>) => ({
         poolId: 'gemini-argon',
-        family: 'gemini-argon',
+        poolGroup: 'gemini-argon',
         displayName: 'Gemini Argon',
         remainingFraction: 0.9,
         resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1573,13 +1573,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         ...over,
       });
 
-      // A healthy pool for a DIFFERENT family must not lend its headroom to this dispatch.
-      const otherFamily = evaluateModelDispatchEligibility({
+      // A healthy pool for a DIFFERENT group must not lend its headroom to this dispatch.
+      const otherPoolGroup = evaluateModelDispatchEligibility({
         requestedModel: 'claude-sonnet-5-5',
         pools: [pool({})] as any,
       });
-      assert.equal(otherFamily.allowed, false);
-      assert.equal(otherFamily.code, 'TELEMETRY_UNAVAILABLE');
+      assert.equal(otherPoolGroup.allowed, false);
+      assert.equal(otherPoolGroup.code, 'TELEMETRY_UNAVAILABLE');
 
       // A pool whose fractions are unusable is unknown, not full headroom.
       const noFraction = evaluateModelDispatchEligibility({
@@ -1597,7 +1597,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         pools: [
           {
             poolId: 'gemini-argon',
-            family: 'gemini-argon',
+            poolGroup: 'gemini-argon',
             displayName: 'Gemini Argon',
             remainingFraction: 0.095, // 9.5% must not round to 10 and clear a 10% floor
             resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -1649,7 +1649,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       coordinator.onQuotaUpdated([
         {
           poolId: 'gemini-hydrogen',
-          family: 'gemini-hydrogen',
+          poolGroup: 'gemini-hydrogen',
           displayName: 'Gemini Flash',
           remainingFraction: 0.8,
           resetTime: new Date(Date.now() + 3600000).toISOString(),
@@ -2485,7 +2485,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2536,7 +2536,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.6,
             resetTime: '2026-11-08T01:30:44Z',
@@ -2570,7 +2570,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2601,7 +2601,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime: '2026-11-08T01:30:44Z',
@@ -2631,7 +2631,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2662,7 +2662,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const farSnapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5, // 50%
             resetTime,
@@ -2678,7 +2678,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const imminentSnapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5, // 50%
             resetTime,
@@ -2716,7 +2716,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2745,7 +2745,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime,
@@ -2790,7 +2790,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2833,7 +2833,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime,
@@ -2846,7 +2846,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(first.length, 1);
         assert.equal(notices.length, 1);
         assert.match(notices[0]!.title, /Pre-reset burn started/);
-        assert.equal(notices[0]!.poolFamily, 'claude');
+        assert.equal(notices[0]!.poolGroup, 'claude');
         assert.equal(notices[0]!.resetTime, resetTime);
         assert.match(notices[0]!.message, /Routine #1/);
 
@@ -2881,7 +2881,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2900,7 +2900,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             // A pre_reset dispatch expires with its window, so the fixture deadline must be live.
@@ -2942,7 +2942,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
           defaultDispatchModel: 'claude-sonnet-5-5',
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -2954,7 +2954,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime,
@@ -3019,7 +3019,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       try {
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { dispatchEnabled: false, alertsEnabled: true },
             'gemini-argon': { dispatchEnabled: true, alertsEnabled: true },
             'gemini-hydrogen': { dispatchEnabled: true, alertsEnabled: true },
@@ -3039,7 +3039,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime: '2026-11-08T01:30:44Z',
@@ -3063,7 +3063,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const configStore = new ConfigStore(db, {
         coordinatorEnabled: true,
         defaultDispatchModel: 'claude-sonnet-5-5',
-        poolPolicies: {
+        poolGroupPolicies: {
           claude: { alertsEnabled: true, dispatchEnabled: true },
           'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
           'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -3082,20 +3082,20 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     };
 
     const poolSnapshot = (
-      family: 'claude' | 'gemini-argon' | 'gemini-hydrogen',
+      poolGroup: 'claude' | 'gemini-argon' | 'gemini-hydrogen',
       hoursUntilReset: number,
       remainingFraction: number
     ): QuotaSnapshot => ({
-      poolId: family,
-      family,
-      displayName: `${family} models`,
+      poolId: poolGroup,
+      poolGroup,
+      displayName: `${poolGroup} models`,
       remainingFraction,
       resetTime: '2026-11-08T01:30:44Z',
       hoursUntilReset,
       models: [],
     });
 
-    it('dispatches one routine per pool family inside a single autonomous tick', async () => {
+    it('dispatches one routine per pool group inside a single autonomous tick', async () => {
       const { db, cleanup, coordinator } = routineFixture();
       try {
         const claudeRoutine = coordinator.queue.createRoutineTask({
@@ -3118,12 +3118,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           poolSnapshot('gemini-argon', 8, 0.6),
         ]);
 
-        // One slot per family: both pools inside their window must both fire, not just the first.
+        // One slot per group: both pools inside their window must both fire, not just the first.
         assert.equal(spawned.length, 2);
-        assert.deepEqual(
-          spawned.map((t) => t.poolFamily).sort(),
-          ['claude', 'gemini-argon'].sort()
-        );
+        assert.deepEqual(spawned.map((t) => t.poolGroup).sort(), ['claude', 'gemini-argon'].sort());
         assert.deepEqual(
           spawned.map((t) => t.originId).sort(),
           [claudeRoutine.id, argonRoutine.id].sort()
@@ -3195,7 +3192,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           'disabled'
         );
 
-        // Its own pool family, so the 10h claude snapshot below cannot make it dispatchable.
+        // Its own pool group, so the 10h claude snapshot below cannot make it dispatchable.
         const waiting = coordinator.queue.createRoutineTask({
           title: 'Waiting Routine',
           prompt: 'Waits for the window',
@@ -3635,7 +3632,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     ): QuotaSnapshot[] => [
       {
         poolId: 'gemini-hydrogen',
-        family: 'gemini-hydrogen',
+        poolGroup: 'gemini-hydrogen',
         displayName: 'Gemini Flash',
         remainingFraction: 0.8,
         resetTime,
@@ -3786,7 +3783,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       try {
         const configStore = new ConfigStore(db, {
           coordinatorEnabled: true,
-          poolPolicies: {
+          poolGroupPolicies: {
             claude: { alertsEnabled: true, dispatchEnabled: true },
             'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
             'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
@@ -3830,7 +3827,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const snapshots: QuotaSnapshot[] = [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude and GPT models',
             remainingFraction: 0.5,
             resetTime,
@@ -3839,7 +3836,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           },
           {
             poolId: 'gemini-hydrogen',
-            family: 'gemini-hydrogen',
+            poolGroup: 'gemini-hydrogen',
             displayName: 'Gemini Flash',
             remainingFraction: 0.5,
             resetTime,
@@ -3851,15 +3848,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // Both pools are inside their window, so both routines burn and both announce the kick.
         const first = await coordinator.triggerEligibleRoutines(snapshots);
         assert.equal(first.length, 2);
-        assert.deepEqual(notices.map((n) => n.poolFamily).sort(), ['claude', 'gemini-hydrogen']);
+        assert.deepEqual(notices.map((n) => n.poolGroup).sort(), ['claude', 'gemini-hydrogen']);
 
         for (const task of first) {
           await coordinator.reportTaskStatus(task.id, { status: 'completed' });
         }
 
-        const claudeKicks = () => notices.filter((n) => n.poolFamily === 'claude').length;
-        const hydrogenKicks = () =>
-          notices.filter((n) => n.poolFamily === 'gemini-hydrogen').length;
+        const claudeKicks = () => notices.filter((n) => n.poolGroup === 'claude').length;
+        const hydrogenKicks = () => notices.filter((n) => n.poolGroup === 'gemini-hydrogen').length;
 
         // Only the claude pool replenishes early; the flash pool's cycle is untouched.
         coordinator.onEarlyQuotaReset([
@@ -3876,7 +3872,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const afterReset = await coordinator.triggerEligibleRoutines(snapshots);
         // The replenished pool reopens its announcement window...
         assert.equal(claudeKicks(), 2);
-        assert.ok(afterReset.some((t) => t.tier === 'routine' && t.poolFamily === 'claude'));
+        assert.ok(afterReset.some((t) => t.tier === 'routine' && t.poolGroup === 'claude'));
         // ...while a still-burning pool in the same cycle is not announced twice.
         assert.equal(hydrogenKicks(), 1);
         assert.equal(notices.length, 3);

@@ -40,9 +40,9 @@ const resolveLimitingWindow = (pool: QuotaSnapshot): 'weekly' | 'short_term' => 
   return min.window;
 };
 
-const findPool = (pools: QuotaSnapshot[], family: string | null): QuotaSnapshot | undefined => {
-  if (!family) return undefined;
-  return pools.find((pool) => pool.poolId === family || pool.family === family);
+const findPool = (pools: QuotaSnapshot[], poolGroup: string | null): QuotaSnapshot | undefined => {
+  if (!poolGroup) return undefined;
+  return pools.find((pool) => pool.poolId === poolGroup || pool.poolGroup === poolGroup);
 };
 
 export const handleDispatchEligibility = (
@@ -72,7 +72,7 @@ export const handleDispatchEligibility = (
       allowOverage,
     });
 
-    const pool = findPool(coordinator.getActivePools(), eligibility.family);
+    const pool = findPool(coordinator.getActivePools(), eligibility.poolGroup);
     const nowMs = Date.now();
 
     const onlineRunners = coordinator
@@ -118,7 +118,7 @@ export const handleDispatchEligibility = (
         code,
         reason,
         model: eligibility.resolvedModel,
-        family: eligibility.family,
+        poolGroup: eligibility.poolGroup,
         pool: pool
           ? {
               poolId: pool.poolId,

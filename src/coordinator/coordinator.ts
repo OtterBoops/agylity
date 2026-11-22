@@ -6,22 +6,26 @@ import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
   snapshotsFromSentryState,
-  type QuotaFamily,
+  type PoolGroup,
   type QuotaSnapshot,
 } from '../sentry/models.js';
 import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';
 import { logger, type Logger } from '../logs/logger.js';
 import {
+  CANONICAL_AGY_MODELS,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
   evaluateModelPreferenceChain,
   normalizeCascade,
+  resolveAvailableModelId,
   resolveConcreteModelId,
-  resolvePoolFamilyForModel,
+  resolveDefaultDispatchModel,
+  resolvePoolGroupForModel,
   isTerminalTaskStatus,
   resolveReasoningEffortForModel,
   modelSupportsEffort,
   ROUTINE_CYCLE_REARM_STATUSES,
+  type AgyModelCatalogEntry,
   type CascadeHop,
   type ModelEligibilityResult,
   type ReasoningEffort,
@@ -42,6 +46,7 @@ import {
   type TaskStatusPatch,
 } from './queue.js';
 import { buildContinuationBranchName } from '../runner/policy.js';
+import type { ModelCatalogProvider } from './catalog.js';
 
 const BURN_KICK_CYCLES_KEY = 'burnKickAnnouncedCycles';
 
@@ -78,7 +83,7 @@ export interface DispatchTaskResponse {
   repo: string;
   branchName?: string;
   model?: string;
-  poolFamily?: string;
+  poolGroup?: string;
   scheduleMode?: ScheduleMode;
   requiredLabels?: string[];
   output?: string;
@@ -108,12 +113,14 @@ export interface CoordinatorOptions {
   sentryState?: SentryStateManager;
   notifier?: Notifier;
   logger?: Logger;
+  modelCatalog?: ModelCatalogProvider;
 }
 
 export class Coordinator {
   public readonly queue: TaskQueue;
   private readonly configStore: ConfigStore;
   private readonly sentryState?: SentryStateManager;
+  private modelCatalog?: ModelCatalogProvider;
   private notifier?: Notifier;
   private readonly log: Logger;
   private readonly bus = new EventEmitter();
@@ -125,6 +132,7 @@ export class Coordinator {
     this.configStore = options.configStore;
     this.queue = new TaskQueue(options.configStore.getDatabase());
     this.sentryState = options.sentryState;
+    this.modelCatalog = options.modelCatalog;
     this.notifier = options.notifier;
     this.log = options.logger ?? logger.child('coordinator');
     this.bus.setMaxListeners(100);
@@ -134,6 +142,23 @@ export class Coordinator {
 
   public setNotifier(notifier: Notifier): void {
     this.notifier = notifier;
+  }
+
+  public setModelCatalog(catalog: ModelCatalogProvider): void {
+    this.modelCatalog = catalog;
+  }
+
+  private activeModelCatalog(): readonly AgyModelCatalogEntry[] {
+    const models = this.modelCatalog?.getModels() ?? [];
+    return models.length > 0 ? models : CANONICAL_AGY_MODELS;
+  }
+
+  // The configured default can name a model this account tier withholds; resolve it to the newest
+  // model the same pool group still serves, so a downgraded tier never dispatches an absent id.
+  private resolveDispatchModel(model: string | undefined, configuredDefault: string): string {
+    const catalog = this.activeModelCatalog();
+    const fallback = resolveDefaultDispatchModel(configuredDefault, catalog);
+    return resolveAvailableModelId(resolveConcreteModelId(model, fallback), catalog);
   }
 
   private async notifyBestEffort(update: DispatchStatusUpdate): Promise<void> {
@@ -167,13 +192,13 @@ export class Coordinator {
     this.queue.setRuntimeValue(BURN_KICK_CYCLES_KEY, JSON.stringify(cycles));
   }
 
-  private hasAnnouncedBurnKick(family: string, resetTime: string): boolean {
-    return this.readBurnKickCycles()[family] === resetTime;
+  private hasAnnouncedBurnKick(poolGroup: string, resetTime: string): boolean {
+    return this.readBurnKickCycles()[poolGroup] === resetTime;
   }
 
-  private recordBurnKick(family: string, resetTime: string): void {
+  private recordBurnKick(poolGroup: string, resetTime: string): void {
     const cycles = this.readBurnKickCycles();
-    cycles[family] = resetTime;
+    cycles[poolGroup] = resetTime;
     this.writeBurnKickCycles(cycles);
   }
 
@@ -184,10 +209,18 @@ export class Coordinator {
     headroomPercent: number | null;
     triggerHours: number;
   }): Promise<void> {
-    const family = params.pool.family;
+    const poolGroup = params.pool.poolGroup;
     const resetTime = params.pool.resetTime;
-    if (!resetTime || this.hasAnnouncedBurnKick(family, resetTime)) return;
-    this.recordBurnKick(family, resetTime);
+    if (!resetTime || this.hasAnnouncedBurnKick(poolGroup, resetTime)) return;
+    this.recordBurnKick(poolGroup, resetTime);
+
+    this.log.info(
+      'Pre-reset window open on %s (<=%dh, %d%% headroom); quota-burn looping until %s',
+      params.pool.displayName || poolGroup,
+      params.triggerHours,
+      params.headroomPercent ?? 0,
+      resetTime
+    );
 
     await this.notifier?.notifyInfo({
       title: 'Pre-reset burn started',
@@ -195,7 +228,7 @@ export class Coordinator {
         `${params.label} entered the pre-reset window (<=${params.triggerHours}h) with ` +
         `${params.headroomPercent ?? 0}% headroom. Quota-burn looping is now active for this pool ` +
         `until the reset at ${resetTime}.`,
-      poolFamily: family,
+      poolGroup: poolGroup,
       poolName: params.pool.displayName || params.pool.poolId,
       models: params.models,
       resetTime,
@@ -205,8 +238,10 @@ export class Coordinator {
 
   private async announceOpportunisticBurnKick(task: SwarmTask): Promise<void> {
     if (task.scheduleMode !== 'pre_reset') return;
-    const family = resolvePoolFamilyForModel(task.model);
-    const pool = this.getActivePools().find((p) => p.family === family || p.poolId === family);
+    const poolGroup = resolvePoolGroupForModel(task.model);
+    const pool = this.getActivePools().find(
+      (p) => p.poolGroup === poolGroup || p.poolId === poolGroup
+    );
     if (!pool) return;
 
     const resolved = this.configStore.resolveConfig();
@@ -287,14 +322,14 @@ export class Coordinator {
 
     const { defaultDispatchModel } = this.configStore.resolveConfig();
     for (const rt of routines) {
-      const families = new Set<string>(
+      const poolGroups = new Set<string>(
         rt.cascade.map((hop) =>
-          resolvePoolFamilyForModel(resolveConcreteModelId(hop.model, defaultDispatchModel))
+          resolvePoolGroupForModel(this.resolveDispatchModel(hop.model, defaultDispatchModel))
         )
       );
       const hit = earlyResets.some(
         (pool) =>
-          families.has(pool.poolId) &&
+          poolGroups.has(pool.poolId) &&
           (pool.previousResetTime === rt.lastTriggeredResetTime ||
             pool.resetTime === rt.lastTriggeredResetTime)
       );
@@ -311,8 +346,9 @@ export class Coordinator {
     selectedEffort: ReasoningEffort;
     pools: QuotaSnapshot[];
     minHeadroomPercent: number;
-    isPoolDispatchEnabled: (family: QuotaFamily) => boolean;
+    isPoolDispatchEnabled: (poolGroup: PoolGroup) => boolean;
     defaultModel?: string;
+    catalog?: readonly AgyModelCatalogEntry[];
   }): CascadeHop[] {
     const hops: CascadeHop[] = [{ model: params.selectedModel, effort: params.selectedEffort }];
     for (const hop of params.cascade) {
@@ -323,6 +359,7 @@ export class Coordinator {
         pools: params.pools,
         minHeadroomPercent: params.minHeadroomPercent,
         isPoolDispatchEnabled: params.isPoolDispatchEnabled,
+        catalog: params.catalog,
       });
       if (!evaluation.allowed || !evaluation.selectedModel) continue;
       if (hops.some((chosen) => chosen.model === evaluation.selectedModel)) continue;
@@ -367,7 +404,9 @@ export class Coordinator {
           defaultModel: resolved.defaultDispatchModel,
           pools: snapshots,
           minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
-          isPoolDispatchEnabled: (fam) => resolved.poolPolicies?.[fam]?.dispatchEnabled !== false,
+          isPoolDispatchEnabled: (poolGroup) =>
+            resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
+          catalog: this.activeModelCatalog(),
         });
 
         if (
@@ -402,7 +441,7 @@ export class Coordinator {
             expiresAt: this.preResetExpiry(
               snapshots.find(
                 (pool) =>
-                  pool.family === resolvePoolFamilyForModel(modelChoice.selectedModel!) ||
+                  pool.poolGroup === resolvePoolGroupForModel(modelChoice.selectedModel!) ||
                   pool.poolId === modelChoice.selectedModel
               )
             ),
@@ -412,9 +451,10 @@ export class Coordinator {
               selectedEffort: modelChoice.selectedEffort,
               pools: snapshots,
               minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
-              isPoolDispatchEnabled: (family) =>
-                resolved.poolPolicies?.[family]?.dispatchEnabled !== false,
+              isPoolDispatchEnabled: (poolGroup) =>
+                resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
               defaultModel: resolved.defaultDispatchModel,
+              catalog: this.activeModelCatalog(),
             }),
             autoCreatePr: nextBacklog.autoCreatePr,
             verifyCommand: nextBacklog.verifyCommand,
@@ -432,7 +472,7 @@ export class Coordinator {
             nextBacklog.taskNumber,
             nextBacklog.title,
             modelChoice.selectedModel,
-            modelChoice.family,
+            modelChoice.poolGroup,
             nextBacklog.attemptCount + 1,
             nextBacklog.maxAttempts
           );
@@ -519,21 +559,21 @@ export class Coordinator {
         resolved.minDispatchHeadroomPercent ?? 0
       );
 
-      const passing: Array<{ hop: CascadeHop; family: string; pool: QuotaSnapshot }> = [];
+      const passing: Array<{ hop: CascadeHop; poolGroup: string; pool: QuotaSnapshot }> = [];
       for (const hop of rt.cascade) {
-        const concreteModel = resolveConcreteModelId(hop.model, resolved.defaultDispatchModel);
-        const family = resolvePoolFamilyForModel(concreteModel);
+        const concreteModel = this.resolveDispatchModel(hop.model, resolved.defaultDispatchModel);
+        const poolGroup = resolvePoolGroupForModel(concreteModel);
 
-        const policy = resolved.poolPolicies?.[family];
+        const policy = resolved.poolGroupPolicies?.[poolGroup];
         if (policy && !policy.dispatchEnabled) {
           continue;
         }
 
         const pool = snapshots.find(
           (p) =>
-            p.family === family ||
-            p.poolId === family ||
-            resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+            p.poolGroup === poolGroup ||
+            p.poolId === poolGroup ||
+            resolvePoolGroupForModel(p.poolId || p.displayName) === poolGroup
         );
         if (!pool) continue;
 
@@ -548,7 +588,7 @@ export class Coordinator {
         }
 
         // Looping inside a cycle is allowed, but only after the cycle's previous run succeeded.
-        if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.family, resetTime)) {
+        if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.poolGroup, resetTime)) {
           continue;
         }
 
@@ -566,12 +606,12 @@ export class Coordinator {
             model: concreteModel,
             effort: resolveReasoningEffortForModel(concreteModel, hop.effort),
           },
-          family,
+          poolGroup,
           pool,
         });
       }
 
-      const choice = passing.find((candidate) => !dispatchedPools.has(candidate.family));
+      const choice = passing.find((candidate) => !dispatchedPools.has(candidate.poolGroup));
       if (!choice) {
         continue;
       }
@@ -584,13 +624,13 @@ export class Coordinator {
         if (cascade.some((hop) => hop.model === candidate.hop.model)) continue;
         cascade.push(candidate.hop);
       }
-      dispatchedPools.add(choice.family);
+      dispatchedPools.add(choice.poolGroup);
 
       this.log.info(
         'Auto-triggering routine task #%d ("%s") for pool %s with model %s (reset in %sh, headroom=%d%%)',
         rt.taskNumber,
         rt.title,
-        targetPool.family,
+        targetPool.poolGroup,
         selectedModel,
         (targetPool.hoursUntilReset ?? 0).toFixed(1),
         calculateEffectiveHeadroomPercent(targetPool) ?? 0
@@ -626,7 +666,7 @@ export class Coordinator {
         requestedBy: `routine:${rt.id}`,
       });
 
-      const burnedPoolKey = targetPool.poolId || targetPool.family;
+      const burnedPoolKey = targetPool.poolId || targetPool.poolGroup;
       this.queue.updateRoutineTask(rt.id, {
         lastTriggeredResetTime: targetPool.resetTime,
         lastTriggeredCycles: {
@@ -643,7 +683,7 @@ export class Coordinator {
         headroomPercent: calculateEffectiveHeadroomPercent(targetPool),
         triggerHours,
       }).catch((kickErr) =>
-        this.log.warn('Burn-kick announcement failed for %s: %s', targetPool.family, kickErr)
+        this.log.warn('Burn-kick announcement failed for %s: %s', targetPool.poolGroup, kickErr)
       );
 
       spawned.push(task);
@@ -694,19 +734,21 @@ export class Coordinator {
     );
 
     const targets = rt.cascade.map((hop) => {
-      const model = resolveConcreteModelId(hop.model, resolved.defaultDispatchModel);
-      return { model, family: resolvePoolFamilyForModel(model) };
+      const model = this.resolveDispatchModel(hop.model, resolved.defaultDispatchModel);
+      return { model, poolGroup: resolvePoolGroupForModel(model) };
     });
-    const families = Array.from(new Set(targets.map((t) => t.family)));
+    const poolGroups = Array.from(new Set(targets.map((t) => t.poolGroup)));
 
-    const enabledFamilies = new Set(
-      families.filter((family) => resolved.poolPolicies?.[family]?.dispatchEnabled !== false)
+    const enabledPoolGroups = new Set(
+      poolGroups.filter(
+        (poolGroup) => resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false
+      )
     );
-    if (enabledFamilies.size === 0) {
+    if (enabledPoolGroups.size === 0) {
       return {
         state: 'pool_disabled',
         label: 'Pool Disabled',
-        detail: `Dispatching is disabled for every pool this routine targets (${families.join(', ')}).`,
+        detail: `Dispatching is disabled for every pool this routine targets (${poolGroups.join(', ')}).`,
       };
     }
 
@@ -716,14 +758,14 @@ export class Coordinator {
     let waitingWindow: string | undefined;
     let lowHeadroom: string | undefined;
 
-    for (const { model, family } of targets) {
-      if (!enabledFamilies.has(family)) continue;
+    for (const { model, poolGroup } of targets) {
+      if (!enabledPoolGroups.has(poolGroup)) continue;
 
       const pool = pools.find(
         (p) =>
-          p.family === family ||
-          p.poolId === family ||
-          resolvePoolFamilyForModel(p.poolId || p.displayName) === family
+          p.poolGroup === poolGroup ||
+          p.poolId === poolGroup ||
+          resolvePoolGroupForModel(p.poolId || p.displayName) === poolGroup
       );
       if (!pool) continue;
       sawPool = true;
@@ -739,9 +781,9 @@ export class Coordinator {
         continue;
       }
 
-      if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.family, pool.resetTime)) {
+      if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.poolGroup, pool.resetTime)) {
         const previous =
-          this.queue.getLatestTaskForOrigin(rt.id, pool.poolId || pool.family) ??
+          this.queue.getLatestTaskForOrigin(rt.id, pool.poolId || pool.poolGroup) ??
           (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined);
         const detail =
           `Cycle for ${poolLabel} is already burned for the reset at ${pool.resetTime}` +
@@ -791,7 +833,7 @@ export class Coordinator {
       label: 'No Telemetry',
       detail: sawPool
         ? 'No pending dispatch condition is satisfied yet.'
-        : `No quota pool matches ${families.join(', ')}.`,
+        : `No quota pool matches ${poolGroups.join(', ')}.`,
     };
   }
 
@@ -812,19 +854,19 @@ export class Coordinator {
     allowOverage?: boolean;
   }): ModelEligibilityResult {
     const resolved = this.configStore.resolveConfig();
-    const concreteModel = resolveConcreteModelId(params.model, resolved.defaultDispatchModel);
+    const concreteModel = this.resolveDispatchModel(params.model, resolved.defaultDispatchModel);
 
-    const poolFamily = resolvePoolFamilyForModel(concreteModel);
-    const policy = resolved.poolPolicies?.[poolFamily];
+    const poolGroup = resolvePoolGroupForModel(concreteModel);
+    const policy = resolved.poolGroupPolicies?.[poolGroup];
     if (policy && !policy.dispatchEnabled && !params.allowOverage) {
       return {
         allowed: false,
         resolvedModel: concreteModel,
-        family: poolFamily,
+        poolGroup: poolGroup,
         effectiveHeadroomPercent: 0,
         hoursUntilReset: null,
         code: 'OVERAGE_PROTECTION_TRIGGERED',
-        reason: `Dispatch Disabled: Pool policy for ${poolFamily} disables task dispatching.`,
+        reason: `Dispatch Disabled: Pool policy for ${poolGroup} disables task dispatching.`,
       };
     }
 
@@ -837,6 +879,7 @@ export class Coordinator {
       allowOverage: params.allowOverage,
       quotaBurnMaxHours: resolved.quotaBurnMaxHours,
       quotaBurnMinHeadroomPercent: resolved.quotaBurnMinHeadroomPercent,
+      catalog: this.activeModelCatalog(),
     });
   }
 
@@ -871,11 +914,10 @@ export class Coordinator {
       };
     }
 
+    const configuredDefault = this.resolveDispatchModel(undefined, resolved.defaultDispatchModel);
     const requestedCascade: CascadeHop[] = normalizeCascade(
-      req.cascade ?? [
-        { model: resolved.defaultDispatchModel, effort: resolved.defaultDispatchEffort },
-      ],
-      resolved.defaultDispatchModel
+      req.cascade ?? [{ model: configuredDefault, effort: resolved.defaultDispatchEffort }],
+      configuredDefault
     );
     let eligibility = this.evaluateEligibility({
       model: requestedCascade[0]?.model,
@@ -913,14 +955,14 @@ export class Coordinator {
         'Task dispatch blocked for "%s" (model=%s, pool=%s): %s',
         repositoryName,
         eligibility.resolvedModel,
-        eligibility.family,
+        eligibility.poolGroup,
         eligibility.reason
       );
       return {
         success: false,
         repo: repositoryName,
         model: eligibility.resolvedModel,
-        poolFamily: eligibility.family ?? undefined,
+        poolGroup: eligibility.poolGroup ?? undefined,
         error: eligibility.reason,
         code: 'OVERAGE_PROTECTION_TRIGGERED',
         minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
@@ -944,14 +986,14 @@ export class Coordinator {
         'Task dispatch blocked for "%s" (model=%s, pool=%s): %s',
         repositoryName,
         eligibility.resolvedModel,
-        eligibility.family,
+        eligibility.poolGroup,
         eligibility.reason
       );
       return {
         success: false,
         repo: repositoryName,
         model: eligibility.resolvedModel,
-        poolFamily: eligibility.family ?? undefined,
+        poolGroup: eligibility.poolGroup ?? undefined,
         error: eligibility.reason,
         code: 'TELEMETRY_UNAVAILABLE',
         minDispatchHeadroomPercent: resolved.minDispatchHeadroomPercent,
@@ -979,18 +1021,16 @@ export class Coordinator {
       chosenHop.model,
       chosenHop.effort
     );
-    const dispatchCascade: CascadeHop[] = [
-      { model: concreteModel, effort },
-      ...requestedCascade
-        .filter(
-          (hop) =>
-            resolveConcreteModelId(hop.model, resolved.defaultDispatchModel) !== concreteModel
-        )
-        .map((hop) => ({
-          model: resolveConcreteModelId(hop.model, resolved.defaultDispatchModel),
-          effort: resolveReasoningEffortForModel(hop.model, hop.effort),
-        })),
-    ];
+    // Failover hops are stored resolved: a raw id the tier withholds would make the runner retry it.
+    const seenHops = new Set<string>([concreteModel]);
+    const failoverHops: CascadeHop[] = [];
+    for (const hop of requestedCascade) {
+      const model = this.resolveDispatchModel(hop.model, configuredDefault);
+      if (seenHops.has(model)) continue;
+      seenHops.add(model);
+      failoverHops.push({ model, effort: resolveReasoningEffortForModel(model, hop.effort) });
+    }
+    const dispatchCascade: CascadeHop[] = [{ model: concreteModel, effort }, ...failoverHops];
     const requiredLabels = req.requiredLabels ?? [];
 
     const tier: TaskTier = req.tier ?? 'immediate';
@@ -1064,7 +1104,7 @@ export class Coordinator {
         repo: repoDisplayName,
         branchName: plannedBranch,
         model: concreteModel,
-        poolFamily: task.poolFamily,
+        poolGroup: task.poolGroup,
         scheduleMode,
         requiredLabels: task.requiredLabels,
         code: 'QUOTA_BURN_QUEUED',
@@ -1079,7 +1119,7 @@ export class Coordinator {
       repo: repoDisplayName,
       branchName: plannedBranch,
       model: concreteModel,
-      poolFamily: task.poolFamily,
+      poolGroup: task.poolGroup,
       scheduleMode,
       requiredLabels: task.requiredLabels,
     };

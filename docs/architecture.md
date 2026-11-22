@@ -81,6 +81,10 @@ Frontier models in Antigravity are governed by two distinct limits:
 5. **Listed-but-unavailable models**: a cascade entry carrying `disabled: true` or an empty `quotaInfo: {}`
    is skipped, and a `-disabled` model id resolves to no pool. One placeholder the account cannot use must
    not fail the whole probe, and it never contributes a pool.
+6. **Tier-withheld models**: the live `agy models` listing is the authority on what the account may run. A
+   configured model missing from it — `gemini-4-hydrogen` on an AI Plus account — resolves to the newest
+   model the same pool group still serves (`gemini-3.8-flash`), never to another group's, so the
+   dispatch stays charged to the pool it was budgeted against. A group with no live pool stays refused.
 
 ---
 
@@ -106,7 +110,7 @@ Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secre
 
 A task is blocked from dispatch when the headroom of its chosen pool is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), protecting against billable AI overages.
 
-The check **fails closed**: headroom is also treated as below the floor when it cannot be established — no readable pool for the requested family, stale telemetry, or an unparseable fraction. An unknown quota is never assumed to be full. The refusal reaches the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`.
+The check **fails closed**: headroom is also treated as below the floor when it cannot be established — no readable pool for the requested group, stale telemetry, or an unparseable fraction. An unknown quota is never assumed to be full. The refusal reaches the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`.
 
 `allowOverage: true` is the override, and it is the honest record of your billing posture: the language server does not report whether overages are enabled, so Agylity cannot detect it for you. Note that setting the floor to `0` disables the check entirely — with overages enabled on your account that is an unbounded spend path, so only do it for flat-tier or non-metered accounts.
 
@@ -311,7 +315,7 @@ Coordinator (Homelab / Cloud)
      runner can never settle a task it was not handed. A `queued` task (`runner_id IS NULL`) is settled
      only by the coordinator itself: the reaper, a cancel, or the backlog reconciler.
 6. **Safety Floor Rule**:
-   - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested family, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
+   - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested group, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 7. **Alerting-First Operational Mode**:
    - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
 
@@ -345,7 +349,8 @@ lets the dashboard link a run back to the item that produced it.
   so looping inside the same cycle does not repeat it and a redeploy does not re-announce it.
 - **Model preference chains**: both autonomous tiers store an ordered `models[]` and dispatch the
   first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
-  to no pool is refused rather than charged to another family's headroom.
+  to no pool is refused rather than charged to another group's headroom; an id the active catalog
+  withholds is first substituted by the newest model of its own group.
 - **Origin settlement**: a backlog item closes on `completed`/`no_changes`, returns to `pending` while
   `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
   from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
@@ -405,25 +410,38 @@ task after a container restart pays for one cold clone to rebuild it.
 ## 8. Persistent Schema (`node:sqlite`)
 
 The coordinator's queue schema is declared as column specs in `src/coordinator/queue.ts` and applied
-through forward-only migrations recorded in `schema_migrations` (current head: `v4_pool_family_hydrogen`).
+through forward-only migrations recorded in `schema_migrations` (current head: `v5_pool_group`).
 A fresh database is built from the current specs; an existing one is upgraded with idempotent
 `ALTER TABLE ... ADD COLUMN` repairs, so a restart never re-creates a table or drops a row.
 
-Migration v4 renamed the `gemini-flash` pool family to `gemini-hydrogen` everywhere a pool id or family
+Every successful probe reconciles `pool_state` against the pools it actually reported: an entry the probe no
+longer lists (`gemini-argon` on a tier without that pool) is deleted along with its `pool_milestones` and
+`pool_samples` rows and its early-reset notice entry, so a retired pool cannot keep appearing in the offline
+fallback (`snapshotsFromSentryState`), the dashboard quota grid or the `/api/summary` percentages. A probe
+that reports nothing is not evidence of anything, so it retires nothing.
+
+Migration v4 (`v4_pool_family_hydrogen`, kept under its historical name because it must still read
+pre-v5 databases) renamed the `gemini-flash` pool group to `gemini-hydrogen` everywhere a pool id or group
 key is stored: the sentry tables (`pool_state`, `pool_milestones`, `pool_samples`, `alert_events`), the
 early-reset notice, `swarm_tasks.pool_family`, the routine cycle stamps and the stored `poolPolicies`
 override. A row already carrying the new id wins over the legacy duplicate, so the migration is safe to
 replay, and `gemini-flash` is still accepted as a legacy alias by the state importer and the config
 schema.
 
-| Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| :--------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `swarm_tasks`                | `id`, `task_number`, `title`, `tier`, `origin_id`, `origin_number`, `origin_title`, `created_at`, `updated_at`, `repository_id`, `repository_name`, `repository_path`, `clone_url`, `default_branch`, `prompt`, `requested_by`, `pr_policy`, `schedule_mode`, `required_labels_json`, `model`, `candidate_models_json`, `pool_family`, `effort`, `allow_overage`, `push_branch`, `auto_create_pr`, `pr_url`, `expires_at`, `verify_command`, `status`, `runner_id`, `claimed_at`, `heartbeat_at`, `completed_at`, `branch_name`, `output`, `error`, `duration_ms`, `num_turns`, `total_tokens`, `thinking_tokens` |
-| `backlog_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `priority_order`, `status`, `attempt_count`, `max_attempts`, `last_error`, `swarm_task_id`, `github_issue_number`, `github_issue_url`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                        |
-| `routine_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `enabled`, `sort_order`, `trigger_before_reset_hours`, `min_headroom_percent`, `last_triggered_reset_time`, `last_triggered_cycles_json`, `last_task_id`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                     |
-| `swarm_runners`              | `runner_id`, `name`, `token_hash`, `labels_json`, `repositories_json`, `system_info_json`, `enabled`, `active_task_id`, `status`, `registered_at`, `last_seen_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `swarm_runner_registrations` | `id`, `token_hash`, `name_hint`, `labels_json`, `repositories_json`, `expires_at`, `created_at`, `consumed_by_runner_id`, `consumed_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `runtime_state`              | `key`, `value`, `updated_at` — quench timestamps, announced burn cycles and other cross-restart bookkeeping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+Migration v5 (`v5_pool_group`) retires the `pool_family` spelling. It renames `swarm_tasks.pool_family` to
+`pool_group` when the old column is present and the new one is not, then moves the settings row
+`poolPolicies` to `poolGroupPolicies` with its value byte-identical. Both steps are idempotent — a
+database that already carries `pool_group`, or only the new settings key, is left untouched — and they
+run inside the migration's single transaction, so a failure leaves neither half applied.
+
+| Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| :--------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swarm_tasks`                | `id`, `task_number`, `title`, `tier`, `origin_id`, `origin_number`, `origin_title`, `created_at`, `updated_at`, `repository_id`, `repository_name`, `repository_path`, `clone_url`, `default_branch`, `prompt`, `requested_by`, `pr_policy`, `schedule_mode`, `required_labels_json`, `model`, `candidate_models_json`, `pool_group`, `effort`, `allow_overage`, `push_branch`, `auto_create_pr`, `pr_url`, `expires_at`, `verify_command`, `status`, `runner_id`, `claimed_at`, `heartbeat_at`, `completed_at`, `branch_name`, `output`, `error`, `duration_ms`, `num_turns`, `total_tokens`, `thinking_tokens` |
+| `backlog_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `priority_order`, `status`, `attempt_count`, `max_attempts`, `last_error`, `swarm_task_id`, `github_issue_number`, `github_issue_url`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                       |
+| `routine_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `enabled`, `sort_order`, `trigger_before_reset_hours`, `min_headroom_percent`, `last_triggered_reset_time`, `last_triggered_cycles_json`, `last_task_id`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                    |
+| `swarm_runners`              | `runner_id`, `name`, `token_hash`, `labels_json`, `repositories_json`, `system_info_json`, `enabled`, `active_task_id`, `status`, `registered_at`, `last_seen_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `swarm_runner_registrations` | `id`, `token_hash`, `name_hint`, `labels_json`, `repositories_json`, `expires_at`, `created_at`, `consumed_by_runner_id`, `consumed_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `runtime_state`              | `key`, `value`, `updated_at` — quench timestamps, announced burn cycles and other cross-restart bookkeeping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 Defaults worth knowing about: `swarm_tasks.tier` is `immediate`, `schedule_mode` is `immediate`,
 `pr_policy` is `inherit`, `effort` is `high`, `push_branch` and `auto_create_pr` are `1`,

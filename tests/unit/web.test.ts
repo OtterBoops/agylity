@@ -179,7 +179,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         fetchQuota: async (): Promise<QuotaSnapshot[]> => [
           {
             poolId: 'claude',
-            family: 'claude',
+            poolGroup: 'claude',
             displayName: 'Claude 3.5 Sonnet',
             remainingFraction: 0.75,
             resetTime: new Date(Date.now() + 18 * 3600 * 1000).toISOString(),
@@ -279,7 +279,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         fetchQuota: async (): Promise<QuotaSnapshot[]> => [
           {
             poolId: 'gemini-hydrogen',
-            family: 'gemini-hydrogen',
+            poolGroup: 'gemini-hydrogen',
             displayName: 'Gemini Flash',
             remainingFraction: 0.7,
             resetTime: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
@@ -1079,7 +1079,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     it('POST /api/notify/test sends test notification through active notifier', async () => {
       const { dir, cleanup } = makeTempDir('web_test_notify_test_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
-        notificationChannel: 'console',
+        notificationChannel: 'webhook',
       });
 
       let alertReceived = false;
@@ -1105,7 +1105,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           .post(`http://127.0.0.1:${port}/api/notify/test`, { retry: 0 })
           .json<any>();
         assert.equal(res.success, true);
-        assert.equal(res.channel, 'console');
+        assert.equal(res.channel, 'webhook');
         assert.equal(alertReceived, true);
       } finally {
         await closeWebServer(server);
@@ -3306,7 +3306,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(blocked.code, 'OVERAGE_PROTECTION_TRIGGERED');
         assert.ok(blocked.reason);
         assert.equal(blocked.model, 'gemini-4-hydrogen');
-        assert.equal(blocked.family, 'gemini-hydrogen');
+        assert.equal(blocked.poolGroup, 'gemini-hydrogen');
         assert.equal(blocked.floorPercent, 10);
         assert.equal(blocked.allowOverage, false);
         assert.equal(blocked.willRunNow, true);

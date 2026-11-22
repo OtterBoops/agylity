@@ -313,7 +313,7 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
     return;
   }
 
-  const poolFamily =
+  const poolGroup =
     typeof interaction.customId === 'string' && interaction.customId.startsWith('repo_select:')
       ? interaction.customId.slice('repo_select:'.length)
       : undefined;
@@ -323,7 +323,7 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
     includeModelInput: true,
     defaultModel: deps.config.defaultDispatchModel,
     defaultEffort: deps.config.defaultDispatchEffort,
-    poolFamily,
+    poolGroup,
     repositories: deps.config.repositories,
     selectedRepoId,
   });
@@ -354,9 +354,10 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
 
   const lastColonIdx = rawCustomSuffix.lastIndexOf(':');
   let rawRepoId = lastColonIdx !== -1 ? rawCustomSuffix.slice(0, lastColonIdx) : rawCustomSuffix;
-  const alertPoolFamily = lastColonIdx !== -1 ? rawCustomSuffix.slice(lastColonIdx + 1) : undefined;
+  const alertPoolPoolGroup =
+    lastColonIdx !== -1 ? rawCustomSuffix.slice(lastColonIdx + 1) : undefined;
 
-  // An empty repo slot (`modal_dispatch`, `modal_dispatch::<family>`) means the universal modal,
+  // An empty repo slot (`modal_dispatch`, `modal_dispatch::<poolGroup>`) means the universal modal,
   // whose repository arrives as a select field.
   if (!rawRepoId) {
     rawRepoId = readStringSelect(interaction, 'task_repository');
@@ -423,8 +424,8 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
           { model: concrete, effort: resolveReasoningEffortForModel(concrete, selectedEffort) },
         ];
       }
-      if (alertPoolFamily) {
-        dispatchPayload.poolFamily = alertPoolFamily;
+      if (alertPoolPoolGroup) {
+        dispatchPayload.poolGroup = alertPoolPoolGroup;
       }
 
       result = await deps.options.onDispatchRequested(dispatchPayload);

@@ -1,4 +1,6 @@
 @import 'tailwindcss';
+/* Class names live in the shared helpers the client bundles, outside this project's tree. */
+@source '../../src/shared';
 
 @theme {
   /* Telemetry faces: Space Mono ships 400/700 only, so mono text never asks for a 500 weight. */

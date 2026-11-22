@@ -5,7 +5,7 @@ import { updateConfig } from '../api';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
 
-interface PoolPoliciesCardProps {
+interface PoolGroupPoliciesCardProps {
   config: ConfigData;
   onSaved: () => void;
 }
@@ -36,11 +36,11 @@ const POOLS: PoolDef[] = [
   },
 ];
 
-export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => {
+export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCardProps) => {
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const rawPolicies = config.resolved?.poolPolicies || {};
+  const rawPolicies = config.resolved?.poolGroupPolicies || {};
   const currentPolicies = {
     'gemini-argon': {
       alertsEnabled: rawPolicies['gemini-argon']?.alertsEnabled ?? true,
@@ -71,7 +71,7 @@ export const PoolPoliciesCard = ({ config, onSaved }: PoolPoliciesCardProps) => 
           [field]: !currentPolicies[poolKey][field],
         },
       };
-      await updateConfig({ poolPolicies: updated });
+      await updateConfig({ poolGroupPolicies: updated });
       onSaved();
     } catch (err: any) {
       // The switch reflects server state, so a failed write silently snaps back without this.

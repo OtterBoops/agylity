@@ -13,6 +13,7 @@ export interface EvaluationPlan {
   pendingMilestones: Map<string, number[]>;
   supersededMilestones: Map<string, number[]>;
   earlyResets: EarlyResetPool[];
+  retiredPools: string[];
 }
 
 export class QuotaEvaluator {
@@ -154,7 +155,14 @@ export class QuotaEvaluator {
       }
     }
 
-    return { alerts, pendingMilestones, supersededMilestones, earlyResets };
+    // A plan is a probe: pools it did not report are retired here, so nothing offline keeps
+    // offering a pool this account no longer holds.
+    const retiredPools =
+      stateManager && snapshots.length > 0
+        ? stateManager.reconcilePools(snapshots.map((snapshot) => snapshot.poolId))
+        : [];
+
+    return { alerts, pendingMilestones, supersededMilestones, earlyResets, retiredPools };
   }
 
   evaluate(
