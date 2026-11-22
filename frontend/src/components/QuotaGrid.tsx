@@ -314,23 +314,16 @@ export const QuotaGrid = ({
                     width: `${barsRevealed ? Math.min(100, Math.max(0, weeklyPct)) : 0}%`,
                   }}
                 />
-                {projection && projection.projectedRemainingAtResetPercent < weeklyPct && (
+                {minHeadroomPercent > 0 && (
                   <div
-                    class="absolute inset-y-0 bg-pine-sunken/55 transition-opacity duration-700 ease-out"
+                    class="absolute inset-y-0 left-0 bg-pine-love/70 transition-[width] duration-700 ease-out"
                     style={{
-                      left: `${Math.min(100, Math.max(0, projection.projectedRemainingAtResetPercent))}%`,
-                      width: `${Math.min(100, weeklyPct) - Math.max(0, projection.projectedRemainingAtResetPercent)}%`,
-                      opacity: barsRevealed ? 1 : 0,
+                      width: `${barsRevealed ? Math.min(weeklyPct, Math.max(0, minHeadroomPercent)) : 0}%`,
                     }}
+                    title={`Dispatching stops below ${minHeadroomPercent}%`}
                     aria-hidden="true"
                   />
                 )}
-                <div
-                  class="absolute inset-y-0 w-px bg-pine-text/70"
-                  style={{ left: `${Math.min(100, Math.max(0, minHeadroomPercent))}%` }}
-                  title={`Dispatching stops below ${minHeadroomPercent}%`}
-                  aria-hidden="true"
-                />
               </div>
               <div class="mt-0.5 flex flex-col gap-0.5 text-xs text-pine-subtle">
                 <div class="flex items-center justify-between gap-2">
