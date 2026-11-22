@@ -3,8 +3,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../../src/storage/db.js';
+import { ensureTableSchema } from '../../src/storage/schema.js';
+import { ensureSentryStateSchema } from '../../src/sentry/store.js';
+import { logger } from '../../src/logs/logger.js';
 import { TaskQueue } from '../../src/coordinator/queue.js';
+import { createMemorySink } from '../e2e/harness/index.js';
 
 const makeTempDir = (prefix: string): { dir: string; cleanup: () => void } => {
   const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -308,5 +313,101 @@ test('re-running migrations on a v5 database is a no-op', () => {
   } finally {
     db.close();
     cleanup();
+  }
+});
+
+test('opening AppDatabase alone applies v1..v5 and creates the coordinator and sentry tables', () => {
+  const { dir, cleanup } = makeTempDir('schema_db_owner_');
+  const db = new AppDatabase(path.join(dir, 'test.db'));
+  try {
+    const raw = db.getRawDb();
+
+    const versions = (
+      raw.prepare('SELECT version FROM schema_migrations ORDER BY version').all() as Array<{
+        version: number;
+      }>
+    ).map((row) => Number(row.version));
+    assert.deepEqual(versions, [1, 2, 3, 4, 5], 'AppDatabase must take the database to v5 on open');
+
+    const tables = new Set(
+      (
+        raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
+          name: string;
+        }>
+      ).map((row) => String(row.name))
+    );
+    for (const table of [
+      'settings',
+      'swarm_tasks',
+      'backlog_tasks',
+      'routine_tasks',
+      'swarm_runners',
+      'swarm_runner_registrations',
+      'runtime_state',
+      'pool_state',
+      'pool_milestones',
+      'pool_samples',
+      'probe_state',
+      'early_reset_notice',
+      'alert_events',
+    ]) {
+      assert.ok(tables.has(table), `${table} must exist without a TaskQueue or SentryStateManager`);
+    }
+  } finally {
+    db.close();
+    cleanup();
+  }
+});
+
+test('additive schema repairs add the missing column and stay silent on table-level constraints', () => {
+  const raw = new DatabaseSync(':memory:');
+  const memory = createMemorySink();
+  const previousLevel = logger.getLevel();
+  logger.setLevel('debug');
+  const detach = logger.addSink(memory.sink);
+  try {
+    // A sentry table written before `channels_json` existed, constraints and all.
+    raw.exec(`
+      CREATE TABLE alert_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pool_id TEXT NOT NULL,
+        reset_time TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        milestone_hours INTEGER,
+        headroom_percent REAL,
+        fired_at TEXT NOT NULL,
+        UNIQUE (pool_id, reset_time, kind, milestone_hours)
+      )
+    `);
+    ensureSentryStateSchema(raw);
+
+    raw.exec('CREATE TABLE legacy_widgets (id TEXT PRIMARY KEY)');
+    ensureTableSchema(raw, 'legacy_widgets', [
+      { name: 'id', ddl: 'id TEXT PRIMARY KEY' },
+      { name: 'label', ddl: 'label TEXT' },
+      { name: 'pk_legacy_widgets', ddl: 'PRIMARY KEY (id)' },
+      { name: 'uq_legacy_widgets', ddl: 'UNIQUE (label)' },
+      { name: 'fk_legacy_widgets', ddl: 'FOREIGN KEY (id) REFERENCES legacy_widgets (id)' },
+      { name: 'ck_legacy_widgets', ddl: 'CHECK (length(label) > 0)' },
+    ]);
+
+    const columnsOf = (table: string): string[] =>
+      (raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) =>
+        String(row.name)
+      );
+    assert.ok(
+      columnsOf('alert_events').includes('channels_json'),
+      'the addable column must be added'
+    );
+    assert.ok(columnsOf('legacy_widgets').includes('label'), 'the addable column must be added');
+
+    const warnings = memory.records
+      .filter((record) => record.level === 'warn')
+      .map((record) => record.formatted);
+    assert.deepEqual(warnings, [], 'a table-level constraint is not a missing column');
+  } finally {
+    detach();
+    logger.setLevel(previousLevel);
+    raw.close();
   }
 });

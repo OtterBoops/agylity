@@ -202,12 +202,17 @@ export class SentryStateManager {
     if (typeof source === 'string') {
       const databasePath = deriveDatabasePath(path.resolve(source));
       this.ownsDatabase = new AppDatabase(databasePath);
-      ensureSentryStateSchema(this.ownsDatabase.getRawDb());
       this.store = new SentryStore(this.ownsDatabase.getRawDb());
       this.legacyStatePath = path.resolve(source);
     } else {
-      const raw = isAppDatabase(source.db) ? source.db.getRawDb() : source.db;
-      ensureSentryStateSchema(raw);
+      let raw: DatabaseSync;
+      if (isAppDatabase(source.db)) {
+        raw = source.db.getRawDb();
+      } else {
+        // AppDatabase opens at the schema head; a bare handle still needs the sentry DDL.
+        ensureSentryStateSchema(source.db);
+        raw = source.db;
+      }
       this.store = new SentryStore(raw);
       this.legacyStatePath = source.legacyStatePath
         ? path.resolve(source.legacyStatePath)

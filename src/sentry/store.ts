@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import { renderColumns, type ColumnSpec } from '../storage/schema.js';
+import { ensureTableSchema, type ColumnSpec } from '../storage/schema.js';
 import type { DeliveryChannelResult } from '../notify/types.js';
 import type { EarlyResetNotice, PoolState } from './state.js';
 
@@ -83,7 +83,7 @@ const SENTRY_STATE_INDEXES = `
 
 export const ensureSentryStateSchema = (db: DatabaseSync): void => {
   for (const table of SENTRY_STATE_TABLES) {
-    db.exec(`CREATE TABLE IF NOT EXISTS ${table.name} (\n${renderColumns(table.columns)}\n      )`);
+    ensureTableSchema(db, table.name, table.columns);
   }
   db.exec(SENTRY_STATE_INDEXES);
 };

@@ -411,10 +411,16 @@ task after a container restart pays for one cold clone to rebuild it.
 
 ## 8. Persistent Schema (`node:sqlite`)
 
-The coordinator's queue schema is declared as column specs in `src/coordinator/queue.ts` and applied
-through forward-only migrations recorded in `schema_migrations` (current head: `v5_pool_group`).
-A fresh database is built from the current specs; an existing one is upgraded with idempotent
-`ALTER TABLE ... ADD COLUMN` repairs, so a restart never re-creates a table or drops a row.
+The whole persistent schema — `settings`, the coordinator tables and the sentry tables — is declared as
+column specs and applied through one forward-only registry in `src/storage/migrations.ts`, recorded in
+`schema_migrations` (current head: `v5_pool_group`). `AppDatabase` owns it: opening the database creates
+`settings` and runs `applyMigrations()`, so every table reaches the head version in one place and
+`TaskQueue`/`SentryStateManager` only reuse what is already there. Each table is built with
+`ensureTableSchema()` (`CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that
+`ALTER TABLE ... ADD COLUMN`s anything missing), so a restart never re-creates a table or drops a row and
+an existing database is upgraded in place. Table-level constraint specs (`PRIMARY KEY (...)`,
+`UNIQUE (...)`, `FOREIGN KEY (...)`, `CHECK (...)`) share the spec list but are skipped by the additive
+repair, which only speaks up when a genuinely un-addable column is missing.
 
 Every successful probe reconciles `pool_state` against the pools it actually reported: an entry the probe no
 longer lists (`gemini-argon` on a tier without that pool) is deleted along with its `pool_milestones` and

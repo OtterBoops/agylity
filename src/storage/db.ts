@@ -9,7 +9,8 @@ import {
   ENCRYPTION_PREFIX,
   SECRET_JSON_MARKER,
 } from './crypto.js';
-import { migrateColumns, type ColumnSpec } from './schema.js';
+import { ensureTableSchema, type ColumnSpec } from './schema.js';
+import { applyMigrations } from './migrations.js';
 
 export interface SettingRecord {
   key: string;
@@ -100,15 +101,8 @@ export class AppDatabase {
   }
 
   private runMigrations(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-    `);
-
-    migrateColumns(this.db, 'settings', SETTINGS_COLUMNS);
+    ensureTableSchema(this.db, 'settings', SETTINGS_COLUMNS);
+    applyMigrations(this.db);
   }
 
   public getRawDb(): DatabaseSync {
