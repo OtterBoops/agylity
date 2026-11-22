@@ -158,11 +158,13 @@ export const DiscordChannelForm = ({
       </div>
 
       <div class="flex flex-col gap-4 border-t border-pine-highlight/60 pt-4">
-        <div class="flex items-center justify-between border-b border-pine-highlight/60 pb-2">
+        <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-pine-highlight/60 pb-2">
           <h4 class="text-xs font-semibold tracking-wider text-pine-text uppercase">
             Step 2: Delivery Target &amp; Server Routing
           </h4>
-          <span class="text-xs text-pine-subtle">Discord Server &amp; Channels</span>
+          <span class="hidden text-xs text-pine-subtle sm:inline">
+            Discord Server &amp; Channels
+          </span>
         </div>
 
         <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -212,11 +214,11 @@ export const DiscordChannelForm = ({
 
           <div class="flex flex-col gap-1.5 md:col-span-2">
             <label
-              class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+              class="flex flex-col items-start gap-1 text-xs font-medium text-pine-subtle sm:flex-row sm:items-center sm:justify-between"
               for="discord-owner-id"
             >
               <span>Owner Discord User ID (Single-User Binding)</span>
-              <span class="font-mono text-xs text-pine-foam">
+              <span class="font-mono text-xs whitespace-nowrap text-pine-foam">
                 {ownerUserId.trim() ? 'Explicitly Bound' : 'Session Auto-Pinned (TOFU)'}
               </span>
             </label>

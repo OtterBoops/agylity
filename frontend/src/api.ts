@@ -1,4 +1,5 @@
 import ky, { isHTTPError } from 'ky';
+import { DEFAULT_DISPATCH_EFFORT, DEFAULT_DISPATCH_MODEL } from '../../src/shared/models.ts';
 import type {
   QuotaSnapshot,
   SentryAlertState,
@@ -268,7 +269,11 @@ export const getModels = (): Promise<ModelsResponse> =>
   api
     .get('models')
     .json<ModelsResponse>()
-    .catch(() => ({ defaultModel: 'gemini-4-argon', defaultEffort: 'high', models: [] }));
+    .catch(() => ({
+      defaultModel: DEFAULT_DISPATCH_MODEL,
+      defaultEffort: DEFAULT_DISPATCH_EFFORT,
+      models: [],
+    }));
 
 export const getRunners = (): Promise<SwarmRunnerRecord[]> =>
   api

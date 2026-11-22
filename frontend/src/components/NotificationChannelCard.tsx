@@ -63,14 +63,14 @@ export const NotificationChannelCard = ({
           <div class="flex min-w-0 items-center gap-3">
             <Icon icon={channel.icon} class={`size-4 shrink-0 ${channel.iconColor}`} />
             <div class="min-w-0">
-              <div class="flex items-center gap-2">
+              <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                 <h3 class="text-sm font-semibold text-pine-text">{channel.label}</h3>
                 {isEnabled ? (
-                  <span class="rounded-sm bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold text-pine-iris uppercase">
+                  <span class="rounded-sm bg-pine-iris/15 px-2 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-iris uppercase">
                     Enabled
                   </span>
                 ) : (
-                  <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-subtle uppercase">
+                  <span class="rounded-sm bg-pine-overlay px-2 py-0.5 text-xs font-medium whitespace-nowrap text-pine-subtle uppercase">
                     Off
                   </span>
                 )}
@@ -93,7 +93,7 @@ export const NotificationChannelCard = ({
           <ToggleSwitch
             checked={isEnabled}
             onChange={onToggleChannel}
-            label={isEnabled ? `Disable ${channel.label}` : `Enable ${channel.label}`}
+            label={`${channel.label} notifications`}
           />
         </div>
       </div>

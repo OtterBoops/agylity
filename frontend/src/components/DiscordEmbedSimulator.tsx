@@ -1,6 +1,7 @@
 /* impeccable-disable side-tab -- Discord webhook embeds require a 4px left accent border */
 import { faEye } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
+import { APP_VERSION } from '../utils/version';
 import { POOL_GROUP_SHORT_LABELS } from '../../../src/shared/models.ts';
 
 interface DiscordEmbedSimulatorProps {
@@ -126,7 +127,7 @@ export const DiscordEmbedSimulator = ({
               <span>•</span>
               <span class="rounded-sm bg-[#1e1f22] px-1 font-mono">GPT-OSS</span>
             </div>
-            <span class="text-xs">Agylity v0.4.2</span>
+            <span class="text-xs">Agylity v{APP_VERSION}</span>
           </div>
         </div>
       </div>

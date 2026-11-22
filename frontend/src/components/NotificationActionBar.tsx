@@ -32,7 +32,7 @@ export const NotificationActionBar = ({
         <button
           type="submit"
           disabled={!isDirty || isSaving}
-          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
         >
           {isSaving ? 'Saving...' : 'Save changes'}
         </button>

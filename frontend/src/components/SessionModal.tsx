@@ -186,7 +186,7 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
             <button
               type="submit"
               disabled={isUpdating || !token.trim()}
-              class="flex cursor-pointer items-center gap-1.5 rounded-xl bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              class="flex cursor-pointer items-center gap-1.5 rounded-xl bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
             >
               {isUpdating && <Icon icon={faRotate} class="size-3 animate-spin" />}
               <span>Update Token</span>

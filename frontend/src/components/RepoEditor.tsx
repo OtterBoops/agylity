@@ -171,7 +171,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
         <button
           type="submit"
           disabled={isSaving || !newRepoInput.trim()}
-          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:opacity-50"
+          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
         >
           {isSaving ? 'Adding...' : 'Add Repository'}
         </button>
@@ -229,7 +229,7 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
                   <button
                     type="submit"
                     disabled={isSaving}
-                    class="cursor-pointer rounded-lg bg-pine-iris px-3 py-1.5 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:opacity-50"
+                    class="cursor-pointer rounded-lg bg-pine-iris px-3 py-1.5 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
                   >
                     {isSaving ? 'Saving...' : 'Save'}
                   </button>

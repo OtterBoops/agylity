@@ -105,7 +105,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [discordGuildId, setDiscordGuildId] = useState(serverDiscordGuildId);
   const [discordOwnerUserId, setDiscordOwnerUserId] = useState(serverDiscordOwnerUserId);
   const [discordPingOwner, setDiscordPingOwner] = useState(serverDiscordPingOwner);
-  const serverWebhookPingOwner = resolved.webhookPingOwner !== false;
+  const serverWebhookPingOwner = useMemo(
+    () => resolved.webhookPingOwner !== false,
+    [resolved.webhookPingOwner]
+  );
   const [webhookPingOwner, setWebhookPingOwner] = useState(serverWebhookPingOwner);
 
   const [webhookUrl, setWebhookUrl] = useState('');
@@ -128,6 +131,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordGuildId(serverDiscordGuildId);
     setDiscordOwnerUserId(serverDiscordOwnerUserId);
     setDiscordPingOwner(serverDiscordPingOwner);
+    setWebhookPingOwner(serverWebhookPingOwner);
     setWebhookUrl('');
     setDiscordToken('');
     setWebhookSecret('');
@@ -138,6 +142,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     serverDiscordGuildId,
     serverDiscordOwnerUserId,
     serverDiscordPingOwner,
+    serverWebhookPingOwner,
   ]);
 
   const ensureChannelEnabled = (id: ChannelId) => {
@@ -209,6 +214,8 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     serverDiscordOwnerUserId,
     discordPingOwner,
     serverDiscordPingOwner,
+    webhookPingOwner,
+    serverWebhookPingOwner,
     webhookUrl,
     webhookSecret,
   ]);
@@ -221,6 +228,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setDiscordGuildId(serverDiscordGuildId);
     setDiscordOwnerUserId(serverDiscordOwnerUserId);
     setDiscordPingOwner(serverDiscordPingOwner);
+    setWebhookPingOwner(serverWebhookPingOwner);
     setWebhookUrl('');
     setWebhookSecret('');
     setToast(null);
@@ -348,9 +356,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       if (discordPingOwner !== serverDiscordPingOwner) {
         overrides.discordPingOwner = discordPingOwner;
       }
-      if (webhookPingOwner !== serverWebhookPingOwner) {
-        overrides.webhookPingOwner = webhookPingOwner;
-      }
     }
 
     testNotification(channel, overrides)
@@ -384,7 +389,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const handleClearWebhook = async () => {
     try {
       await deleteConfigOverride('notificationWebhookUrl');
-      await deleteConfigOverride('webhookUrl');
       setToast({
         type: 'success',
         message: 'Saved webhook URL override removed successfully.',

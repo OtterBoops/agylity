@@ -12,6 +12,7 @@ import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { COORDINATOR_FIELDS } from '../../config/fields';
 import { toModelOptions, useModelCatalog } from '../../state/modelCatalogStore';
+import { pushErrorToast } from '../../state/toastStore';
 
 interface CoordinatorViewProps {
   config: ConfigData;
@@ -33,17 +34,45 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
   useEffect(() => {
     if (!isCoordinatorEnabled) return;
     refreshRunners();
-    const timer = setInterval(refreshRunners, 8000);
-    return () => clearInterval(timer);
+    // A hidden tab has nothing to look at; it refreshes once when it comes back instead.
+    const timer = setInterval(() => {
+      if (document.hidden) return;
+      refreshRunners();
+    }, 8000);
+    const onVisibilityChange = () => {
+      if (!document.hidden) refreshRunners();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [isCoordinatorEnabled, refreshRunners]);
 
+  // A refused write must say so: the grid would otherwise keep showing the old state as success.
   const handleToggleRunnerEnabled = async (runner: SwarmRunnerRecord) => {
-    await setRunnerEnabled(runner.runnerId, !runner.enabled);
+    try {
+      await setRunnerEnabled(runner.runnerId, !runner.enabled);
+    } catch (err) {
+      pushErrorToast(
+        runner.enabled ? 'Could not disable runner' : 'Could not enable runner',
+        err instanceof Error ? err.message : 'The control plane refused the request.'
+      );
+      return;
+    }
     refreshRunners();
   };
 
   const handleRevokeRunner = async (runner: SwarmRunnerRecord) => {
-    await revokeRunner(runner.runnerId);
+    try {
+      await revokeRunner(runner.runnerId);
+    } catch (err) {
+      pushErrorToast(
+        'Could not revoke runner',
+        err instanceof Error ? err.message : 'The control plane refused the request.'
+      );
+      return;
+    }
     refreshRunners();
   };
 

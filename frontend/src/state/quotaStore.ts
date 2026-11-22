@@ -51,12 +51,12 @@ export const refreshAlerts = async (): Promise<void> => {
 
 let activePollingId: ReturnType<typeof setInterval> | null = null;
 
-export const startQuotaPolling = (intervalMs = 60000): (() => void) => {
+export const startQuotaPolling = (intervalMs = 60000, refreshOnStart = true): (() => void) => {
   if (activePollingId) {
     clearInterval(activePollingId);
     activePollingId = null;
   }
-  refreshQuota();
+  if (refreshOnStart) refreshQuota();
   const id = setInterval(refreshQuota, intervalMs);
   activePollingId = id;
 

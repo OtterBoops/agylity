@@ -47,11 +47,11 @@ export const ActiveRunCard = ({
 
       {run.status === 'queued' && noRunnerOnline && (
         <a
-          href="/settings/coordinator"
+          href="/settings#coordinator"
           onClick={(e) => {
             e.preventDefault();
             e.stopPropagation();
-            void route('/settings/coordinator');
+            void route('/settings#coordinator');
           }}
           class="flex items-center gap-1.5 rounded-lg border border-pine-gold/40 bg-pine-gold/10 px-2 py-1 text-xs font-semibold text-pine-gold transition-colors hover:bg-pine-gold/20"
         >

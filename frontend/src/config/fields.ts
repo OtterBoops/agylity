@@ -179,7 +179,7 @@ export const NETWORK_SECURITY_FIELDS: FieldDef[] = [
     key: 'allowedIpRanges',
     label: 'Allowed IP Ranges / CIDRs (Whitelist)',
     type: 'list',
-    placeholder: '127.0.0.1, 192.168.0.0/16, 176.12.32.119',
+    placeholder: '127.0.0.1, 192.168.0.0/16, 198.51.100.42',
     hint: 'Leave empty to allow all incoming traffic (off by default). When entries are added, all non-whitelisted IPs receive HTTP 403 Forbidden.',
   },
   {

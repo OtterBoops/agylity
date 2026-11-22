@@ -136,8 +136,16 @@ export const SlideOverDrawer = ({
         event.preventDefault();
         requestClose();
       }}
+      onKeyDown={(event) => {
+        // A dialog's cancel event is not cancelable in current Chrome; the keydown is.
+        if (event.key !== 'Escape') return;
+        if ((event.target as Element | null)?.closest('dialog') !== dialogRef.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+        requestClose();
+      }}
       onClick={dialogBackdropClickHandler(dialogRef, requestClose)}
-      class={`fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full overflow-hidden rounded-none border-l border-pine-highlight bg-pine-surface p-0 text-pine-text transition-transform duration-200 ease-out backdrop:bg-black/50 backdrop:transition-opacity backdrop:duration-200 motion-reduce:transition-none motion-reduce:backdrop:duration-0 starting:translate-x-full backdrop:starting:opacity-0 ${
+      class={`fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-none overflow-hidden rounded-none border-l border-pine-highlight bg-pine-surface p-0 text-pine-text transition-transform duration-200 ease-out backdrop:bg-black/50 backdrop:transition-opacity backdrop:duration-200 motion-reduce:transition-none motion-reduce:backdrop:duration-0 starting:translate-x-full backdrop:starting:opacity-0 ${
         closing ? 'translate-x-full backdrop:opacity-0' : 'translate-x-0'
       } ${width === 'composer' ? 'md:max-w-2xl' : 'md:max-w-3xl'}`}
     >

@@ -27,6 +27,7 @@ import {
   type SettingsSectionId,
 } from './utils/settingsHash';
 import { NotFoundView } from './views/NotFoundView';
+import { DEFAULT_DISPATCH_MODEL } from '../../src/shared/models.ts';
 import { checkHealth, getAuthToken } from './api';
 import {
   useStore,
@@ -79,9 +80,9 @@ export const App = () => {
   });
   const [currentUrl, setCurrentUrl] = useState(() => {
     if (typeof window === 'undefined') return '/';
-    if (window.location.pathname === '/settings') {
-      window.history.replaceState(null, '', '/settings/general');
-      return '/settings/general';
+    // Only a bare /settings needs the hash; rewriting would stomp a section the nav chose.
+    if (window.location.pathname === '/settings' && !readSettingsSection()) {
+      window.history.replaceState(null, '', '/settings#general');
     }
     return window.location.pathname;
   });
@@ -114,6 +115,7 @@ export const App = () => {
   // One composer for every create/edit entry point: TopBar, Alt+D, the palette and TasksView.
   const [composer, setComposer] = useState<{ backlog?: any; routine?: any } | null>(null);
   const [composerBusy, setComposerBusy] = useState(false);
+  const [composerDirty, setComposerDirty] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [sessionModalOpen, setSessionModalOpen] = useState(false);
@@ -209,7 +211,8 @@ export const App = () => {
 
   useEffect(() => {
     if (isLocked || isCheckingAuth) return;
-    const stopPolling = startQuotaPolling(checkIntervalMs);
+    // The mount fetch already filled the store; polling only owns the interval.
+    const stopPolling = startQuotaPolling(checkIntervalMs, false);
     return () => stopPolling();
   }, [checkIntervalMs, isLocked, isCheckingAuth]);
 
@@ -232,6 +235,7 @@ export const App = () => {
   const onSettings = currentUrl.startsWith('/settings');
   const openComposer = (initial: { backlog?: any; routine?: any } = {}) => {
     setComposerError(null);
+    setComposerDirty(false);
     setComposer(initial);
   };
 
@@ -390,9 +394,11 @@ export const App = () => {
           label="Task"
           ariaLabel="Task composer"
           width="composer"
+          dirty={composerDirty}
           onClosed={() => {
             setComposer(null);
             setComposerError(null);
+            setComposerDirty(false);
           }}
         >
           <UnifiedTaskComposer
@@ -407,12 +413,13 @@ export const App = () => {
               id: repo.id,
               name: repo.name,
             }))}
-            defaultModel={config.resolved?.defaultDispatchModel || 'gemini-4-hydrogen'}
+            defaultModel={config.resolved?.defaultDispatchModel || DEFAULT_DISPATCH_MODEL}
             headroomPercent={null}
             submitting={composerBusy}
             error={composerError}
             onSubmit={submitComposer}
             onCancel={() => setComposer(null)}
+            onDirtyChange={setComposerDirty}
           />
         </SlideOverDrawer>
       )}

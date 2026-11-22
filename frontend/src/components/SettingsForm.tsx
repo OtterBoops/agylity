@@ -321,7 +321,7 @@ export const SettingsForm = ({
 
           <button
             type="submit"
-            class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
             disabled={saving || formDirtyKeys.length === 0}
           >
             {saving ? 'Saving...' : 'Save changes'}

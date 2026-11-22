@@ -142,7 +142,7 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
             <button
               type="submit"
               disabled={isGeneratingToken}
-              class="cursor-pointer rounded-lg bg-pine-iris px-3.5 py-2 text-xs font-semibold whitespace-nowrap text-pine-base transition-opacity hover:opacity-90 disabled:opacity-50"
+              class="cursor-pointer rounded-lg bg-pine-iris px-3.5 py-2 text-xs font-semibold whitespace-nowrap text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
             >
               {isGeneratingToken ? 'Generating...' : 'Generate Token'}
             </button>

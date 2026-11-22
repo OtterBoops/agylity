@@ -41,23 +41,11 @@ export const BacklogCard = ({
 }: BacklogCardProps) => {
   const dispatchable = item.status === 'pending' || item.status === 'failed';
 
-  // The card body opens the editor; a control inside it keeps its own press and its own key.
-  const handleCardKeyDown = (event: KeyboardEvent) => {
-    if (!onEdit) return;
-    if (event.target !== event.currentTarget) return;
-    if (event.key !== 'Enter' && event.key !== ' ') return;
-    event.preventDefault();
-    onEdit();
-  };
-
   return (
     <article
       id={`task-row-${item.id}`}
-      role="button"
-      tabIndex={0}
       onClick={onEdit}
-      onKeyDown={handleCardKeyDown}
-      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden ${
+      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
         highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
       }`}
     >
@@ -78,7 +66,19 @@ export const BacklogCard = ({
         </span>
       </div>
 
-      <h3 class="text-sm font-semibold wrap-break-word text-pine-text">{item.title}</h3>
+      <h3 class="text-sm font-semibold text-pine-text">
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit?.();
+          }}
+          aria-label={`Edit ${item.title}`}
+          class="w-full cursor-pointer rounded-sm text-left wrap-break-word focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+        >
+          {item.title}
+        </button>
+      </h3>
       <p class="line-clamp-2 text-xs text-pine-subtle" title={item.prompt}>
         {item.prompt}
       </p>

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
 import { Link } from 'preact-router/match';
 import {
   faAnglesLeft,
@@ -46,6 +46,27 @@ export const Sidebar = ({
 }: SidebarProps) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const mobileNavRef = useRef<HTMLDivElement>(null);
+  const mobileToggleRef = useRef<HTMLButtonElement>(null);
+
+  // Closing returns the caret to the control that opened the drawer.
+  const closeMobileNav = useCallback(() => {
+    setMobileOpen(false);
+    mobileToggleRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!mobileOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      // A native dialog on top owns Escape; closing both would discard its work.
+      if (event.key !== 'Escape' || document.querySelector('dialog[open]')) return;
+      event.preventDefault();
+      closeMobileNav();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    mobileNavRef.current?.querySelector<HTMLElement>('a[href]')?.focus();
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [mobileOpen, closeMobileNav]);
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       try {
@@ -224,83 +245,103 @@ export const Sidebar = ({
           </span>
         </Link>
         <button
+          ref={mobileToggleRef}
           type="button"
-          onClick={() => setMobileOpen(!mobileOpen)}
+          onClick={() => (mobileOpen ? closeMobileNav() : setMobileOpen(true))}
           class="flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
           aria-label="Toggle navigation menu"
           aria-expanded={mobileOpen}
+          aria-controls="mobile-nav"
         >
           <Icon icon={mobileOpen ? faXmark : faBars} class="size-4" />
         </button>
       </div>
 
       {mobileOpen && (
-        <div class="border-b border-pine-highlight bg-pine-surface p-4 md:hidden">
-          <nav class="flex flex-col gap-3">
-            {renderNavSection('Monitor', monitorItems, false, () => setMobileOpen(false))}
-            {renderNavSection('Settings', settingsItems, false, () => setMobileOpen(false))}
-          </nav>
-
+        <>
           <div
-            role="button"
-            tabIndex={0}
-            aria-label="Connection telemetry"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setInspectorOpen(true);
-              }
-            }}
-            onClick={() => setInspectorOpen(true)}
-            class="mt-4 flex cursor-pointer flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs transition-colors hover:border-pine-iris/50"
+            class="fixed inset-0 z-50 bg-black/60 md:hidden"
+            aria-hidden="true"
+            onClick={closeMobileNav}
+          />
+          <div
+            id="mobile-nav"
+            ref={mobileNavRef}
+            role="dialog"
+            aria-modal="true"
+            aria-label="Navigation"
+            class="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col gap-4 overflow-y-auto border-r border-pine-highlight bg-pine-surface p-4 md:hidden"
           >
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <span class="relative flex size-2 shrink-0">
-                  <span
-                    class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-                  />
-                  <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
-                </span>
-                <span class="font-medium text-pine-text">{probeStatus}</span>
-              </div>
-              {lastProbeAt && (
-                <span class="font-mono text-xs text-pine-subtle" title={lastProbeAt}>
-                  {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
-                </span>
-              )}
-            </div>
-
-            <div
-              class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <a
-                href="https://github.com/OtterBoops/agylity/releases"
-                target="_blank"
-                rel="noopener noreferrer"
-                class="hover:text-pine-text"
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">
+                Navigation
+              </span>
+              <button
+                type="button"
+                onClick={closeMobileNav}
+                aria-label="Close navigation menu"
+                class="flex size-11 cursor-pointer items-center justify-center rounded-lg text-pine-muted transition-colors hover:bg-pine-overlay hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
               >
-                v{APP_VERSION}
-              </a>
-              {updateInfo.hasUpdate ? (
+                <Icon icon={faXmark} class="size-4" />
+              </button>
+            </div>
+            <nav class="flex flex-col gap-3">
+              {renderNavSection('Monitor', monitorItems, false, closeMobileNav)}
+              {renderNavSection('Settings', settingsItems, false, closeMobileNav)}
+            </nav>
+
+            <div class="mt-4 flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs">
+              <button
+                type="button"
+                onClick={() => setInspectorOpen(true)}
+                aria-label="Connection telemetry"
+                class="flex cursor-pointer items-center justify-between gap-2 text-left transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+              >
+                <span class="flex items-center gap-2">
+                  <span class="relative flex size-2 shrink-0">
+                    <span
+                      class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
+                    />
+                    <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
+                  </span>
+                  <span class="font-medium text-pine-text">{probeStatus}</span>
+                </span>
+                {lastProbeAt && (
+                  <span class="shrink-0 font-mono text-xs text-pine-subtle" title={lastProbeAt}>
+                    {formatTime(lastProbeAt, { includeSeconds: false, timeFormat })}
+                  </span>
+                )}
+              </button>
+
+              <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted">
                 <a
-                  href={
-                    updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
-                  }
+                  href="https://github.com/OtterBoops/agylity/releases"
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  class="hover:text-pine-text"
                 >
-                  <span>Update v{updateInfo.latestVersion}</span>
-                  <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                  v{APP_VERSION}
                 </a>
-              ) : (
-                <span class="text-xs text-pine-muted/70">Up to date</span>
-              )}
+                {updateInfo.hasUpdate ? (
+                  <a
+                    href={
+                      updateInfo.releaseUrl ||
+                      'https://github.com/OtterBoops/agylity/releases/latest'
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
+                  >
+                    <span>Update v{updateInfo.latestVersion}</span>
+                    <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                  </a>
+                ) : (
+                  <span class="text-xs text-pine-muted/70">Up to date</span>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
 
       <aside

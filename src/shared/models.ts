@@ -26,6 +26,8 @@ export const POOL_GROUP_SHORT_LABELS: Record<PoolGroup, string> = {
 
 export const DEFAULT_DISPATCH_MODEL = 'gemini-4-hydrogen';
 
+export const DEFAULT_DISPATCH_EFFORT: ReasoningEffort = 'medium';
+
 // Pool groups that were renamed after shipping. A pool id is either the group id or `<group>:<slug>`,
 // so only the prefix carries the group name and only the prefix may be rewritten.
 export const LEGACY_POOL_GROUPS: Readonly<Record<string, PoolGroup>> = {

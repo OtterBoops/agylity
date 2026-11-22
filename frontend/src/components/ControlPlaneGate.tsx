@@ -122,7 +122,7 @@ export const ControlPlaneGate = ({ onAuthenticated }: ControlPlaneGateProps) => 
           <button
             type="submit"
             disabled={isVerifying || !token.trim()}
-            class="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-pine-iris px-4 py-2.5 text-sm font-semibold text-pine-base transition-colors hover:brightness-110 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:ring-offset-2 focus-visible:ring-offset-pine-surface focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
+            class="flex min-h-11 w-full cursor-pointer items-center justify-center gap-2 rounded-lg bg-pine-iris px-4 py-2.5 text-sm font-semibold text-pine-base transition-colors hover:brightness-110 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:ring-offset-2 focus-visible:ring-offset-pine-surface focus-visible:outline-hidden disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
           >
             {isVerifying ? (
               <>

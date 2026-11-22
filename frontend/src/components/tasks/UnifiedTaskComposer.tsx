@@ -1,5 +1,5 @@
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { PR_POLICY_OPTIONS, resolveModelEffort } from '../../config/fields';
 import { useModelCatalog } from '../../state/modelCatalogStore';
 import type {
@@ -36,7 +36,7 @@ export type ComposerPayload =
       prompt: string;
       cascade: CascadeHop[];
       autoCreatePr: boolean;
-      verifyCommand?: string;
+      verifyCommand?: string | null;
       priorityOrder: number;
     }
   | {
@@ -48,7 +48,7 @@ export type ComposerPayload =
       cascade: CascadeHop[];
       prPolicy: PrPolicy;
       autoCreatePr: boolean;
-      verifyCommand?: string;
+      verifyCommand?: string | null;
       triggerBeforeResetHours: number;
       minHeadroomPercent: number;
     };
@@ -69,6 +69,8 @@ interface UnifiedTaskComposerProps {
   error: string | null;
   onSubmit: (payload: ComposerPayload) => void;
   onCancel: () => void;
+  /** Lets the drawer arm its discard guard: Esc must not silently drop a draft. */
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 const MODE_LABELS: Record<ComposerMode, string> = {
@@ -108,6 +110,7 @@ export const UnifiedTaskComposer = ({
   error,
   onSubmit,
   onCancel,
+  onDirtyChange,
 }: UnifiedTaskComposerProps) => {
   const catalog = useModelCatalog();
   const { task, backlog, routine } = initial ?? {};
@@ -134,29 +137,66 @@ export const UnifiedTaskComposer = ({
                 effort: resolveModelEffort(catalog.models, defaultModel).defaultEffort,
               },
             ];
-  const seedPrPolicy: PrPolicy = routine?.prPolicy ?? task?.prPolicy ?? 'docs_only';
+  // A backlog row has no PR policy column: its stored autoCreatePr is the whole intent.
+  const seedPrPolicy: PrPolicy =
+    routine?.prPolicy ??
+    task?.prPolicy ??
+    (backlog ? (backlog.autoCreatePr === false ? 'none' : 'docs_only') : 'docs_only');
   const seedVerify = (backlog?.verifyCommand ?? routine?.verifyCommand ?? task?.verifyCommand ?? '')
     .toString()
     .trim();
   const seedPriority = backlog?.priorityOrder ?? 0;
   const seedRepo = backlog?.repositoryId ?? routine?.repositoryId ?? task?.repositoryId ?? '';
+  const seedTitle = backlog?.title ?? routine?.title ?? task?.title ?? '';
+  const seedPrompt = backlog?.prompt ?? routine?.prompt ?? task?.prompt ?? '';
+  const seedTriggerHours = String(routine?.triggerBeforeResetHours ?? 4);
+  const seedMinHeadroom = String(routine?.minHeadroomPercent ?? 10);
 
   const [mode, setMode] = useState<ComposerMode>(lockedMode ?? initial?.mode ?? 'run');
   const [repositoryId, setRepositoryId] = useState(seedRepo || singleRepoId);
-  const [title, setTitle] = useState(backlog?.title ?? routine?.title ?? task?.title ?? '');
-  const [prompt, setPrompt] = useState(backlog?.prompt ?? routine?.prompt ?? task?.prompt ?? '');
+  const [title, setTitle] = useState(seedTitle);
+  const [prompt, setPrompt] = useState(seedPrompt);
   const [cascade, setCascade] = useState<CascadeHop[]>(seedCascade);
   const [prPolicy, setPrPolicy] = useState<PrPolicy>(seedPrPolicy);
   const [verifyCommand, setVerifyCommand] = useState(seedVerify);
   const [priority, setPriority] = useState(String(seedPriority));
-  const [triggerHours, setTriggerHours] = useState(String(routine?.triggerBeforeResetHours ?? 4));
-  const [minHeadroom, setMinHeadroom] = useState(String(routine?.minHeadroomPercent ?? 10));
+  const [triggerHours, setTriggerHours] = useState(seedTriggerHours);
+  const [minHeadroom, setMinHeadroom] = useState(seedMinHeadroom);
   const [advancedOpen, setAdvancedOpen] = useState(
     Boolean(initial && (seedVerify !== '' || seedPriority !== 0))
   );
 
   const isLocked = lockedMode !== null;
   const isEditing = Boolean(backlog || routine);
+
+  // Compared as a fingerprint so a re-created cascade array does not read as an edit.
+  const draftFingerprint = JSON.stringify([
+    repositoryId,
+    title,
+    prompt,
+    cascade,
+    prPolicy,
+    verifyCommand,
+    priority,
+    triggerHours,
+    minHeadroom,
+  ]);
+  const seedFingerprint = JSON.stringify([
+    seedRepo || singleRepoId,
+    seedTitle,
+    seedPrompt,
+    seedCascade,
+    seedPrPolicy,
+    seedVerify,
+    String(seedPriority),
+    seedTriggerHours,
+    seedMinHeadroom,
+  ]);
+  const draftDirty = draftFingerprint !== seedFingerprint;
+
+  useEffect(() => {
+    onDirtyChange?.(draftDirty);
+  }, [draftDirty, onDirtyChange]);
   const repoOptions =
     repositoryId === '' || repositories.some((repo) => repo.id === repositoryId)
       ? repositories
@@ -183,7 +223,11 @@ export const UnifiedTaskComposer = ({
     if (submitDisabled) return;
     const cleanTitle = title.trim();
     const cleanPrompt = prompt.trim();
-    const cleanVerify = verifyCommand.trim() || undefined;
+    const trimmedVerify = verifyCommand.trim();
+    // undefined keeps a stored command on PATCH; null is the value that clears it.
+    const cleanVerify: string | undefined = trimmedVerify || undefined;
+    const verifyPatch: string | null | undefined =
+      trimmedVerify === '' && isEditing && seedVerify !== '' ? null : cleanVerify;
     const chain: CascadeHop[] =
       cascade.length > 0
         ? cascade
@@ -221,7 +265,7 @@ export const UnifiedTaskComposer = ({
         prompt: cleanPrompt,
         cascade: chain,
         autoCreatePr: prPolicy !== 'none',
-        verifyCommand: cleanVerify,
+        verifyCommand: verifyPatch,
         priorityOrder: parseBounded(priority, 0, 9999) ?? 0,
       });
       return;
@@ -236,14 +280,14 @@ export const UnifiedTaskComposer = ({
       cascade: chain,
       prPolicy,
       autoCreatePr: prPolicy !== 'none',
-      verifyCommand: cleanVerify,
+      verifyCommand: verifyPatch,
       triggerBeforeResetHours: triggerHoursValue ?? 4,
       minHeadroomPercent: minHeadroomValue ?? 10,
     });
   };
 
   return (
-    <form class="flex flex-col gap-4" onSubmit={handleSubmit}>
+    <form class="flex min-h-full flex-col gap-4" onSubmit={handleSubmit}>
       <div class="flex flex-wrap items-center gap-3">
         <div
           role="group"
@@ -481,7 +525,7 @@ export const UnifiedTaskComposer = ({
         </p>
       )}
 
-      <div class="flex items-center justify-end gap-3 border-t border-pine-highlight pt-3">
+      <div class="sticky bottom-0 z-10 -mx-4 mt-auto -mb-4 flex items-center justify-end gap-3 border-t border-pine-highlight bg-pine-surface px-4 py-3">
         <button
           type="button"
           class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-4 py-2 text-sm font-medium text-pine-text transition-colors hover:bg-pine-highlight/50 disabled:opacity-50"
@@ -492,7 +536,7 @@ export const UnifiedTaskComposer = ({
         </button>
         <button
           type="submit"
-          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-sm font-semibold text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:bg-pine-overlay disabled:text-pine-subtle"
           disabled={submitDisabled}
         >
           {submitLabel}
