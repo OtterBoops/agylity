@@ -4,6 +4,13 @@ import { logger } from '../logs/logger.js';
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
 
+// A custom header map is flat and string-valued, so a nested or numeric entry is a rejection, not a coercion.
+export const isPlainStringRecord = (val: unknown): val is Record<string, string> =>
+  typeof val === 'object' &&
+  val !== null &&
+  !Array.isArray(val) &&
+  Object.values(val as Record<string, unknown>).every((v) => typeof v === 'string');
+
 export const booleanEnv = z.preprocess((val) => {
   if (typeof val === 'boolean') return val;
   if (typeof val === 'string') {
@@ -38,6 +45,7 @@ export const RepositorySchema = z.preprocess(
     if (typeof val === 'object' && val !== null) {
       const raw = val as Record<string, unknown>;
       const cloneUrl = typeof raw.cloneUrl === 'string' ? raw.cloneUrl.trim() : undefined;
+      const description = typeof raw.description === 'string' ? raw.description.trim() : '';
       let derivedId = typeof raw.id === 'string' ? raw.id.trim() : '';
       let derivedName = typeof raw.name === 'string' ? raw.name.trim() : '';
       let derivedPath = typeof raw.path === 'string' ? raw.path.trim() : '';
@@ -65,6 +73,7 @@ export const RepositorySchema = z.preprocess(
         name: derivedName,
         path: derivedPath,
         cloneUrl,
+        ...(description !== '' ? { description } : {}),
         defaultBranch:
           typeof raw.defaultBranch === 'string' && raw.defaultBranch.trim() !== ''
             ? raw.defaultBranch.trim()
@@ -410,8 +419,13 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   }
   if (parsed.WEBHOOK_CUSTOM_HEADERS) {
     try {
-      result.webhookCustomHeaders = JSON.parse(parsed.WEBHOOK_CUSTOM_HEADERS);
-    } catch {}
+      const decoded: unknown = JSON.parse(parsed.WEBHOOK_CUSTOM_HEADERS);
+      if (isPlainStringRecord(decoded)) result.webhookCustomHeaders = decoded;
+      else
+        warnEnvFallback('WEBHOOK_CUSTOM_HEADERS', 'expected a flat object of string header values');
+    } catch {
+      warnEnvFallback('WEBHOOK_CUSTOM_HEADERS', 'invalid JSON syntax');
+    }
   }
 
   if (parsed.DISCORD_TOKEN && !isTemplatePlaceholder(parsed.DISCORD_TOKEN)) {

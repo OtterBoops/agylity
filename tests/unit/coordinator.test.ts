@@ -1052,6 +1052,60 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('claims on a dispatchable fallback hop when the primary pool is blocked', async () => {
+      const { dir, cleanup } = makeTempDir('orch_poll_cascade_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: false,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolGroupPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: false },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            { id: 'agylity', name: 'OtterBoops/agylity', path: dir, defaultBranch: 'main' },
+          ],
+        });
+        const sentryState = new SentryStateManager({ db });
+        const coordinator = new Coordinator({ configStore, sentryState });
+
+        coordinator.onQuotaUpdated([
+          {
+            poolId: 'gemini-argon',
+            poolGroup: 'gemini-argon',
+            displayName: 'Gemini Argon',
+            remainingFraction: 0.8,
+            resetTime: new Date(Date.now() + 6 * 3600_000).toISOString(),
+            hoursUntilReset: 6,
+            models: ['Gemini 4 Argon'],
+          },
+        ]);
+
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Primary pool is paused, the fallback is not',
+          cascade: [
+            { model: 'claude-sonnet-5-5', effort: 'high' },
+            { model: 'gemini-4-argon', effort: 'high' },
+          ],
+        });
+
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-cascade',
+          timeoutMs: 0,
+        });
+        // Skipping the task would strand it while its fallback pool sits idle.
+        assert.equal(claimed?.id, task.id);
+        assert.equal(claimed?.model, 'gemini-4-argon');
+        assert.equal(claimed?.poolGroup, 'gemini-argon');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('parses worker-cli flags and environment variables accurately', () => {
       const opts = parseRunnerCliArgs(
         [
@@ -1591,6 +1645,29 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       assert.equal(noFraction.code, 'TELEMETRY_UNAVAILABLE');
     });
 
+    it('honours allowOverage when the target pool has no usable telemetry', () => {
+      const overridden = evaluateModelDispatchEligibility({
+        requestedModel: 'gemini-4-argon',
+        pools: [
+          {
+            poolId: 'claude',
+            poolGroup: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.9,
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            hoursUntilReset: 1,
+            models: ['Claude Sonnet'],
+          },
+        ] as any,
+        allowOverage: true,
+      });
+
+      // Overage is the operator's override; an unknown pool must not lock dispatch when it is set.
+      assert.equal(overridden.allowed, true);
+      assert.equal(overridden.effectiveHeadroomPercent, 100);
+      assert.equal(overridden.code, undefined);
+    });
+
     it('does not let a fraction just below the floor round up over it', () => {
       const justUnder = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-argon',
@@ -1707,6 +1784,141 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       } finally {
         db.close();
         cleanup();
+      }
+    });
+
+    it('reads an empty registered label or repository list as no restriction', () => {
+      const { dir, cleanup } = makeTempDir('orch_scope_empty_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        queue.registerRunnerHeartbeat({
+          runnerId: 'runner-open',
+          name: 'open',
+          labels: [],
+          repositories: [],
+          status: 'idle',
+        });
+
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Open registration claims on poll scope',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+          requiredLabels: ['linux'],
+        });
+
+        // An empty registered array must not veto the poll payload that declares the real scope.
+        const claimed = queue.claimNext({
+          runnerId: 'runner-open',
+          labels: ['linux'],
+          repositories: ['agylity'],
+        });
+        assert.equal(claimed?.id, task.id);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('allocates backlog and routine numbers inside the insert transaction', () => {
+      const { dir, cleanup } = makeTempDir('orch_number_tx_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const raw = db.getRawDb() as any;
+        const order: string[] = [];
+        const originalExec = raw.exec.bind(raw);
+        const originalPrepare = raw.prepare.bind(raw);
+        raw.exec = (sql: string) => {
+          if (/BEGIN IMMEDIATE/i.test(sql)) order.push('begin');
+          else if (/^\s*COMMIT/i.test(sql)) order.push('commit');
+          return originalExec(sql);
+        };
+        raw.prepare = (sql: string) => {
+          if (/MAX\(task_number\).*backlog_tasks/i.test(sql)) order.push('backlog-max');
+          else if (/MAX\(task_number\).*routine_tasks/i.test(sql)) order.push('routine-max');
+          return originalPrepare(sql);
+        };
+
+        const backlog = queue.createBacklogTask({
+          title: 'Backlog',
+          prompt: 'number must be unique',
+          repositoryId: 'agylity',
+        });
+        const routine = queue.createRoutineTask({
+          title: 'Routine',
+          prompt: 'number must be unique',
+          repositoryId: 'agylity',
+        });
+
+        assert.equal(backlog.taskNumber, 1);
+        assert.equal(routine.taskNumber, 1);
+        // A max read outside the write transaction is the race that collides on the unique index.
+        assert.deepEqual(order, [
+          'begin',
+          'backlog-max',
+          'commit',
+          'begin',
+          'routine-max',
+          'commit',
+        ]);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('never surfaces a legacy null runner_id as the string "undefined"', () => {
+      const { dir, cleanup } = makeTempDir('orch_runner_legacy_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        db.getRawDb()
+          .prepare(
+            `INSERT INTO swarm_runners
+               (runner_id, name, labels_json, repositories_json, system_info_json)
+             VALUES (NULL, 'legacy-runner', '["docker"]', '[]', '{}')`
+          )
+          .run();
+
+        const runner = queue.listRunners()[0];
+        assert.equal(runner?.name, 'legacy-runner');
+        assert.equal(runner?.runnerId, '');
+        assert.notEqual(runner?.runnerId, 'undefined');
+        assert.notEqual(runner?.runnerId, 'null');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('clamps an oversized runner agy update interval instead of firing immediately', async () => {
+      let updates = 0;
+      const runner = new RemoteSwarmRunner({
+        coordinatorUrl: 'http://127.0.0.1:9',
+        repositories: [],
+        agyUpdateIntervalHours: 10_000,
+        agyUpdater: {
+          getVersion: async () => null,
+          getCachedVersion: () => null,
+          invalidate: () => {},
+          update: async () => {
+            updates++;
+            return { before: null, after: null, updated: false };
+          },
+        },
+      });
+
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (runner as any).scheduleAgyUpdateTimer();
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        assert.equal(updates, 0);
+      } finally {
+        runner.stop();
       }
     });
 
@@ -2869,6 +3081,87 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(third.length, 1);
         assert.equal(notices.length, 2);
         assert.equal(notices[1]!.resetTime, '2026-11-09T01:30:44Z');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('re-arms the routine and its burn kick when an early reset names a suffixed pool id', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_early_reset_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolGroupPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
+            'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [
+            { id: 'agylity', name: 'OtterBoops/agylity', path: dir, defaultBranch: 'main' },
+          ],
+        });
+
+        const notices: InfoNotice[] = [];
+        const coordinator = new Coordinator({
+          configStore,
+          notifier: {
+            channelName: 'test',
+            initialize: async () => {},
+            notifyQuotaAlert: async () => ({ delivered: true, results: {} }),
+            notifyDispatchStatus: async () => {},
+            notifyInfo: async (notice) => {
+              notices.push(notice);
+            },
+            shutdown: async () => {},
+          },
+        });
+
+        coordinator.queue.createRoutineTask({
+          title: 'Claude Pre-Reset Loop',
+          prompt: 'Keep burning quota',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'claude-sonnet-5-5', effort: 'high' }],
+          triggerBeforeResetHours: 12,
+          minHeadroomPercent: 10,
+        });
+
+        const resetTime = '2026-11-08T01:30:44Z';
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'claude',
+            poolGroup: 'claude',
+            displayName: 'Claude and GPT models',
+            remainingFraction: 0.5,
+            resetTime,
+            hoursUntilReset: 10,
+            models: ['Claude Sonnet'],
+          },
+        ];
+
+        const first = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(first.length, 1);
+        // A failed run burns the cycle, so the pool's stamp is what suppresses a retry.
+        await coordinator.reportTaskStatus(first[0]!.id, { status: 'failed', error: 'boom' });
+        assert.equal((await coordinator.triggerEligibleRoutines(snapshots)).length, 0);
+
+        // The probe reports the suffixed pool id, which must still map back to the group.
+        coordinator.onEarlyQuotaReset([
+          {
+            poolId: 'claude:claude-sonnet-5-5',
+            previousRemainingFraction: 0.1,
+            remainingFraction: 0.9,
+            previousResetTime: resetTime,
+            resetTime,
+          },
+        ]);
+
+        const rearmed = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(rearmed.length, 1);
+        // The cleared burn-kick cycle is what lets the same reset announce again.
+        assert.equal(notices.length, 2);
       } finally {
         db.close();
         cleanup();

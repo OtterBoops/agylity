@@ -22,6 +22,10 @@ const PATTERNS: RegExp[] = [
   // Discord bot tokens: <id>.<ts>.<hmac>
   /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6,7}\.[A-Za-z\d_-]{27,}/g,
   /((?:token|secret|password|csrf[_-]?token|x-codeium-csrf-token)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
+  // A proxy/fetch error keeps the header name, never the credential that rode on it.
+  /((?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:bearer\s+|basic\s+|token\s+)?)[^\s"',}]+/gi,
+  // A bare bearer credential outside a header line still names its scheme, so the scheme stays.
+  /\b(bearer\s+)[A-Za-z\d._~+/-]{8,}=*/gi,
 ];
 
 export const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
@@ -34,6 +38,8 @@ export const redact = (text: string, secrets: Iterable<string | undefined> = [])
   }
   out = out.replace(PATTERNS[0]!, '[redacted]');
   out = out.replace(PATTERNS[1]!, '$1[redacted]');
+  out = out.replace(PATTERNS[2]!, '$1[redacted]');
+  out = out.replace(PATTERNS[3]!, '$1[redacted]');
   return out;
 };
 

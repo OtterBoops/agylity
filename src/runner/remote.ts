@@ -499,7 +499,8 @@ export class RemoteSwarmRunner {
     }
     if (!(this.agyUpdateIntervalHours > 0)) return;
 
-    const intervalMs = this.agyUpdateIntervalHours * 3600 * 1000;
+    // setTimeout overflows above 2^31-1 ms and fires immediately, so the delay is clamped.
+    const intervalMs = Math.min(this.agyUpdateIntervalHours * 3600 * 1000, 2_147_483_647);
     const arm = (): void => {
       this.agyUpdateTimer = setTimeout(() => {
         void this.runScheduledAgyUpdate().finally(() => {

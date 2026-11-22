@@ -389,6 +389,16 @@ export const evaluateModelDispatchEligibility = (
     ? calculateEffectiveHeadroomPercent(targetPool)
     : null;
   if (effectiveHeadroomPercent === null) {
+    // Overage is the explicit override for unknown telemetry, matching the empty-pool branch.
+    if (allowOverage) {
+      return {
+        allowed: true,
+        resolvedModel,
+        poolGroup,
+        effectiveHeadroomPercent: 100,
+        hoursUntilReset: null,
+      };
+    }
     return {
       allowed: false,
       resolvedModel,

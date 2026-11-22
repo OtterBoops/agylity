@@ -411,7 +411,9 @@ export class SentryStateManager {
       const retired = new Set(removed);
       const pools = notice.pools.filter((pool) => !retired.has(upgradePoolGroupId(pool.poolId)));
       if (pools.length !== notice.pools.length) {
-        this.state.earlyResetNotice = { ...notice, pools };
+        // A notice naming only retired pools has nothing left to show; clear it instead of
+        // persisting an empty shell.
+        this.state.earlyResetNotice = pools.length > 0 ? { ...notice, pools } : null;
         this.store.writeEarlyResetNotice(this.state.earlyResetNotice);
       }
     }

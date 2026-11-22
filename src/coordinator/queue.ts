@@ -1339,15 +1339,15 @@ export class TaskQueue {
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
       const existingRunner = this.getRunner(options.runnerId);
-      // A registered runner's scope is its registration; the poll payload may only narrow it, never widen it.
+      // A non-empty registration narrows the poll payload; an empty one declares no restriction.
+      const registeredLabels = existingRunner?.labels ?? [];
       const effectiveLabels =
-        existingRunner?.labels ??
-        (options.labels && options.labels.length > 0 ? options.labels : []);
+        registeredLabels.length > 0 ? registeredLabels : (options.labels ?? []);
       const runnerLabelSet = new Set(effectiveLabels.map((l) => l.toLowerCase()));
 
+      const registeredRepos = existingRunner?.repositories ?? [];
       const effectiveRepos =
-        existingRunner?.repositories ??
-        (options.repositories && options.repositories.length > 0 ? options.repositories : []);
+        registeredRepos.length > 0 ? registeredRepos : (options.repositories ?? []);
       if (existingRunner && !existingRunner.enabled) {
         this.registerRunnerHeartbeat({
           runnerId: options.runnerId,
@@ -1800,7 +1800,7 @@ export class TaskQueue {
     } catch {}
 
     return {
-      runnerId: String(r.runner_id || r.worker_id),
+      runnerId: String(r.runner_id ?? ''),
       name: String(r.name),
       labels,
       repositories,
@@ -1953,40 +1953,45 @@ export class TaskQueue {
   }): BacklogTaskRecord {
     const id = input.id ?? `backlog-${Date.now()}-${randomBytes(3).toString('hex')}`;
     const now = new Date().toISOString();
-    const maxNumberRow = this.rawDb
-      .prepare('SELECT MAX(task_number) as max_num FROM backlog_tasks')
-      .get() as { max_num?: number } | undefined;
-    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
     const cascade = coerceCascade(input.cascade);
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const priorityOrder = coerceNumber(input.priorityOrder, 0);
     const maxAttempts = coerceNumber(input.maxAttempts, 2);
 
-    this.rawDb
-      .prepare(
-        `INSERT INTO backlog_tasks (
+    // Two concurrent creates must never pick the same number, so the max read and insert share one
+    // write transaction.
+    this.inTransaction(() => {
+      const maxNumberRow = this.rawDb
+        .prepare('SELECT MAX(task_number) as max_num FROM backlog_tasks')
+        .get() as { max_num?: number } | undefined;
+      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+
+      this.rawDb
+        .prepare(
+          `INSERT INTO backlog_tasks (
           id, task_number, title, prompt, repository_id, models_json,
           verify_command, auto_create_pr, priority_order, status,
           attempt_count, max_attempts, github_issue_number, github_issue_url,
           created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        taskNumber,
-        input.title.trim(),
-        input.prompt.trim(),
-        input.repositoryId.trim(),
-        JSON.stringify(cascade),
-        input.verifyCommand ?? null,
-        autoCreatePr,
-        priorityOrder,
-        maxAttempts,
-        input.githubIssueNumber ?? null,
-        input.githubIssueUrl ?? null,
-        now,
-        now
-      );
+        )
+        .run(
+          id,
+          taskNumber,
+          input.title.trim(),
+          input.prompt.trim(),
+          input.repositoryId.trim(),
+          JSON.stringify(cascade),
+          input.verifyCommand ?? null,
+          autoCreatePr,
+          priorityOrder,
+          maxAttempts,
+          input.githubIssueNumber ?? null,
+          input.githubIssueUrl ?? null,
+          now,
+          now
+        );
+    });
 
     return this.getBacklogTask(id)!;
   }
@@ -2159,10 +2164,6 @@ export class TaskQueue {
   }): RoutineTaskRecord {
     const id = input.id ?? `routine-${Date.now()}-${randomBytes(3).toString('hex')}`;
     const now = new Date().toISOString();
-    const maxNumberRow = this.rawDb
-      .prepare('SELECT MAX(task_number) as max_num FROM routine_tasks')
-      .get() as { max_num?: number } | undefined;
-    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
     const cascade = coerceCascade(input.cascade);
     const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
     const prPolicy =
@@ -2177,31 +2178,40 @@ export class TaskQueue {
     const triggerHours = coerceNumber(input.triggerBeforeResetHours, DEFAULT_QUOTA_BURN_MAX_HOURS);
     const minHeadroom = coerceNumber(input.minHeadroomPercent, 10);
 
-    this.rawDb
-      .prepare(
-        `INSERT INTO routine_tasks (
+    // Two concurrent creates must never pick the same number, so the max read and insert share one
+    // write transaction.
+    this.inTransaction(() => {
+      const maxNumberRow = this.rawDb
+        .prepare('SELECT MAX(task_number) as max_num FROM routine_tasks')
+        .get() as { max_num?: number } | undefined;
+      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+
+      this.rawDb
+        .prepare(
+          `INSERT INTO routine_tasks (
           id, task_number, title, prompt, repository_id, models_json,
           verify_command, auto_create_pr, pr_policy, enabled, sort_order,
           trigger_before_reset_hours, min_headroom_percent, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      )
-      .run(
-        id,
-        taskNumber,
-        input.title.trim(),
-        input.prompt.trim(),
-        input.repositoryId.trim(),
-        JSON.stringify(cascade),
-        input.verifyCommand ?? null,
-        autoCreatePr,
-        prPolicy,
-        enabled,
-        sortOrder,
-        triggerHours,
-        minHeadroom,
-        now,
-        now
-      );
+        )
+        .run(
+          id,
+          taskNumber,
+          input.title.trim(),
+          input.prompt.trim(),
+          input.repositoryId.trim(),
+          JSON.stringify(cascade),
+          input.verifyCommand ?? null,
+          autoCreatePr,
+          prPolicy,
+          enabled,
+          sortOrder,
+          triggerHours,
+          minHeadroom,
+          now,
+          now
+        );
+    });
 
     return this.getRoutineTask(id)!;
   }

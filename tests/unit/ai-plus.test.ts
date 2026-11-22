@@ -231,7 +231,7 @@ describe('AI Plus edge cases', () => {
       }
     });
 
-    it('drops a retired pool from a stored early-reset notice', () => {
+    it('clears a stored early-reset notice once every pool it names is retired', () => {
       const { dir, cleanup } = makeTempDir('ai_plus_pools_notice_');
       const db = new AppDatabase(join(dir, 'pools.db'));
       const manager = new SentryStateManager({ db });
@@ -249,7 +249,7 @@ describe('AI Plus edge cases', () => {
 
         manager.reconcilePools(['gemini-hydrogen']);
 
-        assert.deepEqual(manager.getEarlyResetNotice()?.pools, []);
+        assert.equal(manager.getEarlyResetNotice(), null);
       } finally {
         db.close();
         cleanup();

@@ -660,6 +660,40 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       );
     });
 
+    it('clears the early-reset notice when every pool it names is retired', async () => {
+      const manager = openState(stateFile);
+      await manager.load();
+
+      const resetTime = '2026-11-20T00:00:00Z';
+      manager.updatePoolQuota('claude', 0.9, resetTime);
+      manager.updatePoolQuota('gemini-hydrogen', 0.9, resetTime);
+      manager.recordEarlyResetNotice([
+        {
+          poolId: 'claude',
+          previousRemainingFraction: 0.1,
+          remainingFraction: 0.9,
+          previousResetTime: '2026-11-10T00:00:00Z',
+          resetTime,
+        },
+        {
+          poolId: 'gemini-hydrogen',
+          previousRemainingFraction: 0.1,
+          remainingFraction: 0.9,
+          previousResetTime: '2026-11-10T00:00:00Z',
+          resetTime,
+        },
+      ]);
+
+      const removed = manager.reconcilePools(['gemini-argon']);
+      assert.deepEqual(removed.sort(), ['claude', 'gemini-hydrogen']);
+      // An empty notice is not a notice: it must be dropped, not rendered as a shell.
+      assert.equal(manager.getEarlyResetNotice(), null);
+
+      const reopened = openState(stateFile);
+      await reopened.load();
+      assert.equal(reopened.getEarlyResetNotice(), null);
+    });
+
     it('leaves a valid state file alone when the read fails for a reason other than its content', async () => {
       // A directory at the state path makes the read throw EISDIR, not a parse or validation error.
       const dirAsStatePath = join(testDir, 'state-as-dir');

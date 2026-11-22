@@ -396,10 +396,12 @@ export class TaskExecutor {
         flushOutput();
         const stdout = stdoutChunks.join('');
         const stderr = stderrChunks.join('');
-        void ensureKilled().then(() => {
-          if (error) reject(error);
-          else resolve({ stdout, stderr });
-        });
+        // A child that exited on its own owns no live tree, so only a forced stop needs the kill.
+        if (!error) {
+          resolve({ stdout, stderr });
+          return;
+        }
+        void ensureKilled().then(() => reject(error));
       };
 
       const appendChunk = (chunk: unknown, sink: string[]): void => {
@@ -534,7 +536,11 @@ export class TaskExecutor {
   ): Promise<void> {
     if (existsSync(path.join(mirrorPath, 'HEAD'))) {
       try {
-        await this.execFileFn('git', ['fetch', '--prune'], { cwd: mirrorPath, timeout: 120000 });
+        // The mirror is a private remote too, so its refresh carries the same credentials as the clone.
+        await this.execFileFn('git', [...authArgs, 'fetch', '--prune'], {
+          cwd: mirrorPath,
+          timeout: 120000,
+        });
       } catch (fetchErr: any) {
         this.log.debug(
           'Mirror fetch failed for %s; using the existing mirror: %s',
@@ -787,6 +793,8 @@ export class TaskExecutor {
     lastStdout: string;
     telemetry: TaskExecutionTelemetry;
     failure: unknown;
+    /** The hop whose attempt produced `output`, which a failover can move off the primary. */
+    executedHop: CascadeHop;
   }> {
     const { cwd, branchName, baseBranch, prompt, policySuffix, attributionSuffix } = context;
     const attemptTelemetry: TaskExecutionTelemetry[] = [];
@@ -885,7 +893,13 @@ export class TaskExecutor {
       }
     }
 
-    return { output, lastStdout, telemetry: sumAgyTelemetry(attemptTelemetry), failure };
+    return {
+      output,
+      lastStdout,
+      telemetry: sumAgyTelemetry(attemptTelemetry),
+      failure,
+      executedHop: attemptHop,
+    };
   }
 
   /** Runs the task's verification command, which must be a bare invocation of an approved runner. */
@@ -1011,16 +1025,17 @@ export class TaskExecutor {
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
-    effort: string | undefined
+    hop: CascadeHop
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
-      const effortNote = effort ? ` (${effort} reasoning)` : '';
+      // A failover hop is the model that actually wrote the branch, so the footer names that one.
+      const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
       const prBody = [
         task.prompt,
         '',
         '---',
-        `*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*`,
+        `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
       ].join('\n');
 
       const { stdout: prOut } = await this.execFileFn(
@@ -1121,6 +1136,12 @@ export class TaskExecutor {
         'Failed to inspect commit diff for bot policy check on %s: %s',
         branchName,
         diffErr?.message ?? diffErr
+      );
+      // An uninspectable diff cannot prove the branch is docs-only, so the gate stays shut.
+      return suppress(
+        `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only' and the commit diff could not be inspected (${redactGitSecrets(
+          diffErr?.message ?? String(diffErr)
+        )}).`
       );
     }
 
@@ -1247,12 +1268,7 @@ export class TaskExecutor {
         }
 
         if (task.autoCreatePr) {
-          prUrl = await this.openPullRequest(
-            task,
-            branchName,
-            baseBranch,
-            modelSupportsEffort(task.model) ? task.effort || primaryHop.effort : undefined
-          );
+          prUrl = await this.openPullRequest(task, branchName, baseBranch, agent.executedHop);
         }
       }
 
@@ -1266,10 +1282,13 @@ export class TaskExecutor {
       };
     } catch (err: any) {
       const durationMs = Date.now() - startMs;
-      const errMessage = err?.stderr?.trim() || err?.message || String(err);
+      // Git stderr can carry a remote URL with an embedded credential, so it is redacted before any sink.
+      const errMessage = redactGitSecrets(err?.stderr?.trim() || err?.message || String(err));
       this.log.error('Task %s execution failed: %s', task.id, errMessage);
       if (err?.stdout || err?.stderr) {
-        const extra = [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n');
+        const extra = redactGitSecrets(
+          [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n')
+        );
         if (extra && !capturedOutput.includes(extra)) {
           capturedOutput = capturedOutput ? `${capturedOutput}\n\n${extra}` : extra;
         }
@@ -1277,10 +1296,11 @@ export class TaskExecutor {
       const failureTelemetry = hasTelemetryValues(telemetry)
         ? telemetry
         : parseAgyTelemetry(capturedTelemetryRaw || err?.stdout);
+      const failureOutput = redactGitSecrets(capturedOutput || String(err?.stdout ?? '').trim());
       return {
         success: false,
         branchName,
-        output: capturedOutput || err?.stdout?.trim() || '',
+        output: failureOutput,
         error: errMessage,
         durationMs,
         numTurns: failureTelemetry.numTurns,

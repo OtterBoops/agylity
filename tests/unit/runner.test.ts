@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
@@ -338,6 +339,74 @@ describe('Runner: process-group subprocess control', () => {
       assert.equal(result.success, false);
       assert.match(String(result.error), /boom: agent crashed/);
     } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('does not kill the tree of a child that already exited cleanly', async () => {
+    const { dir, cleanup } = makeTempDir('runner_clean_exit_');
+    const { task, db } = enqueueTask(dir);
+
+    try {
+      const killedPids: number[] = [];
+      const { spawnFn } = recordSpawn((call) => {
+        finishChild(call.child, 0, 'done\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async (pid) => {
+          killedPids.push(pid);
+        },
+        execFileFn: createGitExecFile({ status: () => '', revList: () => '0\n' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, true);
+      assert.deepEqual(killedPids, [], 'a finished child owns no live tree to kill');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('redacts a credential that surfaces on the failure path before it is logged or returned', async () => {
+    const { dir, cleanup } = makeTempDir('runner_failure_redact_');
+    const { task, db } = enqueueTask(dir);
+    const previousToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'ghp_failurepathsecret123';
+
+    try {
+      const { spawnFn } = recordSpawn((call) => {
+        finishChild(
+          call.child,
+          1,
+          '',
+          'fatal: https://x-access-token:ghp_failurepathsecret123@github.com/OtterBoops/agylity.git'
+        );
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createGitExecFile({ status: () => '' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, false);
+      assert.equal(String(result.error).includes('ghp_failurepathsecret123'), false);
+      assert.equal(String(result.output).includes('ghp_failurepathsecret123'), false);
+      assert.equal(String(result.error).includes('[redacted]'), true);
+    } finally {
+      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousToken;
       db.close();
       cleanup();
     }
@@ -716,6 +785,55 @@ describe('Runner: local bare mirror and reference clone', () => {
       assert.equal(cloneCalls[1]?.at(-2), CLONE_URL);
       assert.equal(cloneCalls[1]?.at(-1), repoPath);
     } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('carries the git credentials into the mirror fetch so a private remote stays fresh', async () => {
+    const { dir, cleanup } = makeTempDir('runner_mirror_auth_');
+    const mirrorRoot = path.join(dir, 'mirrors');
+    const mirrorPath = path.join(
+      mirrorRoot,
+      `${createHash('sha256').update(CLONE_URL).digest('hex')}.git`
+    );
+    mkdirSync(mirrorPath, { recursive: true });
+    writeFileSync(path.join(mirrorPath, 'HEAD'), 'ref: refs/heads/main\n');
+
+    const repoPath = path.join(dir, 'work', 'agylity');
+    const { task, db } = enqueueTask(dir, { repositoryPath: repoPath, cloneUrl: CLONE_URL });
+    const previousToken = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'ghp_mirrorauthtoken123456';
+
+    try {
+      const fetchCalls: string[][] = [];
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => false,
+        mirrorCacheDir: mirrorRoot,
+        spawnFn: recordSpawn((call) => finishChild(call.child, 0)).spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args) => {
+          if (file === 'git' && args.includes('fetch')) fetchCalls.push([...args]);
+          if (file === 'git' && args[0] === 'status') return { stdout: '', stderr: '' };
+          if (file === 'git' && args[0] === 'rev-list') return { stdout: '0\n', stderr: '' };
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, true);
+      assert.equal(fetchCalls.length, 1);
+      assert.equal(fetchCalls[0]?.includes('--prune'), true);
+      assert.equal(
+        fetchCalls[0]?.some((arg) => arg.includes('AUTHORIZATION: basic ')),
+        true,
+        'the mirror fetch ran without the credentials the clone uses'
+      );
+    } finally {
+      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousToken;
       db.close();
       cleanup();
     }
@@ -1229,6 +1347,68 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.noChanges, undefined);
     assert.equal(exec.pushed(), true);
+  });
+
+  it('suppresses a docs_only branch when the commit diff cannot be inspected', async () => {
+    const { result, exec } = await runWithWorkspace(
+      { tier: 'backlog', prPolicy: 'docs_only' },
+      {
+        diffNameOnly: () => {
+          throw new Error('fatal: bad object HEAD');
+        },
+      }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.match(String(result.output), /docs_only/);
+    assert.match(String(result.output), /could not be inspected/);
+    assert.equal(exec.pushed(), false);
+    assert.equal(exec.has('-D'), true);
+  });
+
+  it('footers the pull request with the cascade hop that actually executed', async () => {
+    const { dir, cleanup } = makeTempDir('runner_pr_footer_');
+    const { task, db } = enqueueTask(dir, {
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
+    });
+    const { spawnFn } = recordSpawn((call, index) => {
+      if (index === 0) finishChild(call.child, 1, 'MODEL_CAPACITY_EXHAUSTED\n');
+      else finishChild(call.child, 0, 'done\n');
+    });
+    const bodies: string[] = [];
+    const exec = createWorkspaceExecFile({
+      status: () => ' M src/a.ts\n',
+      revList: () => '1\n',
+      onGh: (args) => {
+        const bodyIndex = args.indexOf('--body');
+        if (bodyIndex !== -1) bodies.push(String(args[bodyIndex + 1] ?? ''));
+        return 'https://github.com/OtterBoops/agylity/pull/7\n';
+      },
+    });
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task);
+      const footer = bodies[0]?.split('\n').at(-1) ?? '';
+
+      assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/7');
+      assert.equal(footer.includes('`gemini-4-hydrogen`'), true, `footer was: ${footer}`);
+      assert.equal(footer.includes('(medium reasoning)'), true);
+      assert.equal(footer.includes('`gemini-4-argon`'), false);
+    } finally {
+      db.close();
+      cleanup();
+    }
   });
 
   it('suppresses an autonomous branch outright under the none policy', async () => {

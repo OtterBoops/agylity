@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { test } from 'node:test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import ky from 'ky';
@@ -12,12 +13,12 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../../src/sentry/dis
 
 const execFileAsync = promisify(execFile);
 
-async function runGit(args: string[], cwd: string): Promise<string> {
+const runGit = async (args: string[], cwd: string): Promise<string> => {
   const { stdout } = await execFileAsync('git', args, { cwd });
   return stdout.trim();
-}
+};
 
-async function main() {
+const runDispatchE2e = async (): Promise<void> => {
   console.log('[E2E Test] Starting Autonomous Worker & Dispatch Verification...');
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agylity_e2e_dispatch_'));
   const repoDir = path.join(tmpRoot, 'test-target-repo');
@@ -207,7 +208,7 @@ async function main() {
       .json<any>();
 
     console.log(
-      `[E2E Test] Task queued: id=${dispatchRes.taskId}, status=${dispatchRes.task?.status}`
+      `[E2E Test] Task queued: id=${dispatchRes.taskId}, status=${dispatchRes.status ?? dispatchRes.task?.status}`
     );
 
     // Verify task is queued in coordinator
@@ -324,9 +325,6 @@ async function main() {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     } catch {}
   }
-}
+};
 
-main().catch((err) => {
-  console.error('[Error] E2E Test Failed:', err);
-  process.exit(1);
-});
+test('dispatches a queued task end-to-end and lands it on an isolated branch', runDispatchE2e);

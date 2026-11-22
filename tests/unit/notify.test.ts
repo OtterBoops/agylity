@@ -972,6 +972,9 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         });
       });
 
+      const previousSecret = process.env.WEBHOOK_SECRET;
+      let notifier: WebhookNotifier | undefined;
+
       try {
         await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
         const port = (server.address() as { port: number }).port;
@@ -979,7 +982,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
         process.env.WEBHOOK_SECRET = 'super-secret-key-123';
 
-        const notifier = new WebhookNotifier({
+        notifier = new WebhookNotifier({
           notificationWebhookUrl: webhookUrl,
         });
         await notifier.initialize();
@@ -1006,10 +1009,11 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         assert.equal(receivedBody?.milestone, 12);
         assert.ok(receivedHeaders['x-agylity-signature']);
         assert.ok((receivedHeaders['x-agylity-signature'] as string).startsWith('sha256='));
-
-        delete process.env.WEBHOOK_SECRET;
-        await notifier.shutdown();
       } finally {
+        // The secret is restored here so a failed assertion cannot leak it into the rest of the file.
+        if (previousSecret === undefined) delete process.env.WEBHOOK_SECRET;
+        else process.env.WEBHOOK_SECRET = previousSecret;
+        await notifier?.shutdown();
         server.closeAllConnections?.();
         await new Promise<void>((r) => server.close(() => r()));
       }

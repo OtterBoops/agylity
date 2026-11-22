@@ -46,7 +46,15 @@ import {
   type TaskStatusPatch,
 } from './queue.js';
 import { buildContinuationBranchName } from '../runner/policy.js';
+import { upgradePoolGroupId } from '../shared/models.js';
 import type { ModelCatalogProvider } from './catalog.js';
+
+// A pool id is either the group id or `<group>:<slug>`; only the prefix names the group.
+const poolGroupOfPoolId = (poolId: string): string => {
+  const upgraded = upgradePoolGroupId(poolId);
+  const separator = upgraded.indexOf(':');
+  return separator >= 0 ? upgraded.slice(0, separator) : upgraded;
+};
 
 const BURN_KICK_CYCLES_KEY = 'burnKickAnnouncedCycles';
 
@@ -310,9 +318,12 @@ export class Coordinator {
     const cycles = this.readBurnKickCycles();
     let changed = false;
     for (const pool of earlyResets) {
-      if (Object.hasOwn(cycles, pool.poolId)) {
-        delete cycles[pool.poolId];
-        changed = true;
+      // Burn-kick cycles are keyed by pool group, so a `<group>:<slug>` id must clear its group.
+      for (const key of new Set([poolGroupOfPoolId(pool.poolId), pool.poolId])) {
+        if (Object.hasOwn(cycles, key)) {
+          delete cycles[key];
+          changed = true;
+        }
       }
     }
     if (changed) this.writeBurnKickCycles(cycles);
@@ -329,12 +340,16 @@ export class Coordinator {
       );
       const hit = earlyResets.some(
         (pool) =>
-          poolGroups.has(pool.poolId) &&
+          poolGroups.has(poolGroupOfPoolId(pool.poolId)) &&
           (pool.previousResetTime === rt.lastTriggeredResetTime ||
             pool.resetTime === rt.lastTriggeredResetTime)
       );
       if (hit) {
-        this.queue.updateRoutineTask(rt.id, { lastTriggeredResetTime: null });
+        // Re-arming the reset alone leaves per-pool cycle stamps that would suppress the retry.
+        this.queue.updateRoutineTask(rt.id, {
+          lastTriggeredResetTime: null,
+          lastTriggeredCycles: {},
+        });
       }
     }
   }
@@ -1253,15 +1268,25 @@ export class Coordinator {
         repositories: pollReq.repositories,
         systemInfo: pollReq.systemInfo,
         eligibilityCheck: (candidate) => {
-          const elig = this.evaluateEligibility({
-            model: candidate.model,
-            scheduleMode: candidate.scheduleMode,
-            allowOverage: candidate.allowOverage,
-          });
-          return {
-            allowed: elig.allowed,
-            resolvedModel: elig.resolvedModel,
-          };
+          const evaluate = (model?: string) =>
+            this.evaluateEligibility({
+              model,
+              scheduleMode: candidate.scheduleMode,
+              allowOverage: candidate.allowOverage,
+            });
+          const primary = evaluate(candidate.model);
+          if (primary.allowed) {
+            return { allowed: true, resolvedModel: primary.resolvedModel };
+          }
+          // A blocked primary hop must not park a task whose later hops are dispatchable.
+          for (const hop of candidate.cascade) {
+            if (hop.model === candidate.model) continue;
+            const fallback = evaluate(hop.model);
+            if (fallback.allowed) {
+              return { allowed: true, resolvedModel: fallback.resolvedModel };
+            }
+          }
+          return { allowed: false, resolvedModel: primary.resolvedModel };
         },
       });
     };

@@ -172,7 +172,6 @@ export const runRunnerCli = async (): Promise<void> => {
       process.exit(0);
     }
     shuttingDown = true;
-    warnDeprecatedEnvVars(process.env, log);
     log.info('[Notice] Received %s, stopping Agylity Swarm Runner...', signal);
     runner.stop();
     // Docker sends SIGKILL 10s after SIGTERM, so a wedged subprocess must not hold the container open.

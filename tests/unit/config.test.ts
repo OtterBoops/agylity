@@ -173,6 +173,38 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.equal(mapped.minDispatchHeadroomPercent, 20);
   });
 
+  it('keeps a repository description through the schema instead of dropping it', () => {
+    const [described] = RepositoriesJsonSchema.parse(
+      JSON.stringify([
+        {
+          id: 'agylity',
+          name: 'Agylity Core',
+          path: '/opt/agylity',
+          description: '  Coordinator and runner  ',
+        },
+      ])
+    );
+    assert.equal(described?.description, 'Coordinator and runner');
+
+    const [undescribed] = RepositoriesJsonSchema.parse(
+      JSON.stringify([{ id: 'agylity', name: 'Agylity Core', path: '/opt/agylity' }])
+    );
+    assert.equal(undescribed !== undefined && 'description' in undescribed, false);
+  });
+
+  it('refuses a WEBHOOK_CUSTOM_HEADERS value that is not a flat string map', () => {
+    assert.deepEqual(
+      parseRawEnv({ WEBHOOK_CUSTOM_HEADERS: '{"X-Source":"agylity","X-Trace":"42"}' })
+        .webhookCustomHeaders,
+      { 'X-Source': 'agylity', 'X-Trace': '42' }
+    );
+
+    for (const raw of ['{"x":123}', '[1,2]', '{"nested":{"a":"b"}}', '{ broken']) {
+      const parsed = parseRawEnv({ WEBHOOK_CUSTOM_HEADERS: raw });
+      assert.equal('webhookCustomHeaders' in parsed, false, `expected a rejection for: ${raw}`);
+    }
+  });
+
   it('normalizes a pool policy set saved under the pre-rename pool group key', () => {
     const legacy = validateConfigOverridePatch({
       poolGroupPolicies: {

@@ -1114,3 +1114,155 @@ describe('Daemon: live settings overrides', () => {
     }
   });
 });
+
+/* -------------------------------------------------------------------------- */
+/* Timer clamping, config serialization and shutdown drain                     */
+/* -------------------------------------------------------------------------- */
+
+class GatedNotifier extends NotifierStub {
+  public active = 0;
+  public maxActive = 0;
+  public applied: number[] = [];
+
+  constructor(private readonly gate: Promise<void>) {
+    super();
+  }
+
+  async updateConfig(config: any): Promise<void> {
+    this.active++;
+    this.maxActive = Math.max(this.maxActive, this.active);
+    await this.gate;
+    this.applied.push(config.quotaCheckIntervalSeconds);
+    this.active--;
+  }
+}
+
+describe('Daemon: robustness under hostile timers and overlapping work', () => {
+  it('clamps an oversized agy update interval so the timer never fires immediately', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_agy_clamp_');
+    let updates = 0;
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: {
+        ...inertAgyUpdater,
+        update: async () => {
+          updates++;
+          return { before: null, after: null, updated: false };
+        },
+      },
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      // 10,000h overflows setInterval's 2^31-1 ms ceiling, which Node turns into an instant tick.
+      daemon.configStore.setOverride('agyUpdateIntervalHours', 10_000);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(updates, 0);
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('serializes rapid config syncs instead of interleaving them', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_config_serial_');
+    const gate = deferred<void>();
+    const notifier = new GatedNotifier(gate.promise);
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [];
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      notifier,
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      await daemon.start();
+      daemon.configStore.setOverride('quotaCheckIntervalSeconds', 60);
+      daemon.configStore.setOverride('quotaCheckIntervalSeconds', 90);
+      await settle();
+
+      // Two syncs must never run against the same notifier at once; the slower one would win.
+      assert.equal(notifier.maxActive, 1);
+
+      gate.resolve();
+      await daemon.shutdown();
+      assert.deepEqual(notifier.applied, [60, 90]);
+    } finally {
+      gate.resolve();
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('waits for an in-flight quota probe before closing the database', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_shutdown_probe_');
+    const probeStarted = deferred<void>();
+    const probeGate = deferred<QuotaSnapshot[]>();
+    const snapshot: QuotaSnapshot = {
+      poolId: 'claude',
+      poolGroup: 'claude',
+      displayName: 'Claude and GPT models',
+      remainingFraction: 0.9,
+      resetTime: new Date(Date.now() + 6 * 3600_000).toISOString(),
+      hoursUntilReset: 6,
+      models: ['Claude Sonnet'],
+    };
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          probeStarted.resolve();
+          return probeGate.promise;
+        },
+      },
+      agyUpdater: inertAgyUpdater,
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    try {
+      const probe = daemon.checkQuota();
+      await probeStarted.promise;
+
+      let shutdownSettled = false;
+      const shutdown = daemon.shutdown().then(() => {
+        shutdownSettled = true;
+      });
+      await settle();
+      assert.equal(shutdownSettled, false, 'the connection must stay open while a probe writes');
+
+      probeGate.resolve([snapshot]);
+      await shutdown;
+      assert.equal(shutdownSettled, true);
+      // A write into a closed database would reject here.
+      await probe;
+      assert.equal(daemon.isDbClosed, true);
+    } finally {
+      probeGate.resolve([]);
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+});

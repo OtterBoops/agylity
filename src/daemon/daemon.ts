@@ -102,6 +102,9 @@ export class AgylityDaemon {
   private agyUpdateTimer: NodeJS.Timeout | null = null;
   private probeInFlight = false;
   private agyUpdateInFlight = false;
+  private probeInFlightPromise: Promise<QuotaAlert[]> | null = null;
+  private agyUpdateInFlightPromise: Promise<boolean> | null = null;
+  private configSyncChain: Promise<void> = Promise.resolve();
   private shutdownPromise?: Promise<void>;
   private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
@@ -149,39 +152,49 @@ export class AgylityDaemon {
       this.applyLogLevel(initialConfig.logLevel);
     }
 
-    this.configStore.on('change', async ({ key, resolvedConfig }) => {
-      this.logger.info('Configuration update detected, syncing active components...');
-      if (resolvedConfig.logLevel) {
-        this.applyLogLevel(resolvedConfig.logLevel);
-      }
-      await this.syncComponent('notification adapter', () =>
-        this.notifier.updateConfig?.(resolvedConfig)
-      );
-      await this.syncComponent('quota client', () =>
-        this.quotaClient.updateConfig?.(resolvedConfig)
-      );
-      await this.syncComponent('sentry evaluator', () =>
-        this.sentryEvaluator.updateConfig?.({
-          milestoneHours: resolvedConfig.quotaMilestoneHours,
-          alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
+    this.configStore.on('change', ({ key, resolvedConfig }) => {
+      // Rapid saves must not interleave, so each sync runs after the previous one settles.
+      this.configSyncChain = this.configSyncChain
+        .then(async () => {
+          this.logger.info('Configuration update detected, syncing active components...');
+          if (resolvedConfig.logLevel) {
+            this.applyLogLevel(resolvedConfig.logLevel);
+          }
+          await this.syncComponent('notification adapter', () =>
+            this.notifier.updateConfig?.(resolvedConfig)
+          );
+          await this.syncComponent('quota client', () =>
+            this.quotaClient.updateConfig?.(resolvedConfig)
+          );
+          await this.syncComponent('sentry evaluator', () =>
+            this.sentryEvaluator.updateConfig?.({
+              milestoneHours: resolvedConfig.quotaMilestoneHours,
+              alertThresholdPercent: resolvedConfig.quotaAlertThresholdPercent,
+            })
+          );
+          await this.syncComponent('sentry timer', () => {
+            if (
+              this.timer &&
+              resolvedConfig.quotaCheckIntervalSeconds &&
+              (key === 'quotaCheckIntervalSeconds' || key === '*')
+            ) {
+              const newIntervalSeconds = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds);
+              this.logger.info(
+                'Rescheduling quota sentry timer to %ds interval',
+                newIntervalSeconds
+              );
+              this.scheduleSentryTimer(newIntervalSeconds);
+            }
+          });
+          await this.syncComponent('agy update timer', () => {
+            if (key === 'agyUpdateIntervalHours' || key === '*') {
+              this.scheduleAgyUpdateTimer(resolvedConfig.agyUpdateIntervalHours);
+            }
+          });
         })
-      );
-      await this.syncComponent('sentry timer', () => {
-        if (
-          this.timer &&
-          resolvedConfig.quotaCheckIntervalSeconds &&
-          (key === 'quotaCheckIntervalSeconds' || key === '*')
-        ) {
-          const newIntervalSeconds = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds);
-          this.logger.info('Rescheduling quota sentry timer to %ds interval', newIntervalSeconds);
-          this.scheduleSentryTimer(newIntervalSeconds);
-        }
-      });
-      await this.syncComponent('agy update timer', () => {
-        if (key === 'agyUpdateIntervalHours' || key === '*') {
-          this.scheduleAgyUpdateTimer(resolvedConfig.agyUpdateIntervalHours);
-        }
-      });
+        .catch((err: any) => {
+          this.logger.error('Configuration sync failed: %s', err?.message ?? err);
+        });
     });
   }
 
@@ -402,10 +415,13 @@ export class AgylityDaemon {
       return [];
     }
     this.probeInFlight = true;
+    const probe = this.probeQuota();
+    this.probeInFlightPromise = probe;
     try {
-      return await this.probeQuota();
+      return await probe;
     } finally {
       this.probeInFlight = false;
+      this.probeInFlightPromise = null;
     }
   }
 
@@ -519,6 +535,8 @@ export class AgylityDaemon {
   }
 
   private scheduleSentryTimer(intervalSeconds: number): void {
+    // Shutdown clears timers last, so a scheduling call after the request must never re-arm one.
+    if (this.shutdownRequested) return;
     if (this.timer) clearInterval(this.timer);
     this.timer = setInterval(() => {
       void this.checkQuota().catch((err) => {
@@ -528,6 +546,8 @@ export class AgylityDaemon {
   }
 
   private scheduleAgyUpdateTimer(intervalHours: number): void {
+    // Shutdown clears timers last, so a scheduling call after the request must never re-arm one.
+    if (this.shutdownRequested) return;
     if (this.agyUpdateTimer) {
       clearInterval(this.agyUpdateTimer);
       this.agyUpdateTimer = null;
@@ -536,12 +556,11 @@ export class AgylityDaemon {
       this.logger.info('Periodic agy update disabled (agyUpdateIntervalHours=0)');
       return;
     }
-    this.agyUpdateTimer = setInterval(
-      () => {
-        void this.runScheduledAgyUpdate();
-      },
-      intervalHours * 3600 * 1000
-    );
+    // setInterval overflows above 2^31-1 ms and fires immediately, so the delay is clamped.
+    const intervalMs = Math.min(intervalHours * 3600 * 1000, 2_147_483_647);
+    this.agyUpdateTimer = setInterval(() => {
+      void this.runScheduledAgyUpdate();
+    }, intervalMs);
     this.agyUpdateTimer.unref();
     this.logger.info('Periodic agy update scheduled every %sh', intervalHours);
   }
@@ -553,14 +572,23 @@ export class AgylityDaemon {
       return false;
     }
     this.agyUpdateInFlight = true;
+    const update = this.runAgyUpdate();
+    this.agyUpdateInFlightPromise = update;
+    try {
+      return await update;
+    } finally {
+      this.agyUpdateInFlight = false;
+      this.agyUpdateInFlightPromise = null;
+    }
+  }
+
+  private async runAgyUpdate(): Promise<boolean> {
     try {
       await this.agyUpdater.update();
       return true;
     } catch (err: any) {
       this.logger.warn('Scheduled agy update failed: %s', err?.message ?? err);
       return false;
-    } finally {
-      this.agyUpdateInFlight = false;
     }
   }
 
@@ -691,6 +719,28 @@ export class AgylityDaemon {
     }
   }
 
+  /** A probe writing to SQLite must finish before the connection closes; the wait is bounded. */
+  private async settleInFlight(): Promise<void> {
+    const pending: Promise<unknown>[] = [];
+    if (this.probeInFlightPromise) pending.push(this.probeInFlightPromise);
+    if (this.agyUpdateInFlightPromise) pending.push(this.agyUpdateInFlightPromise);
+    if (pending.length === 0) return;
+
+    let timer: NodeJS.Timeout | undefined;
+    const deadline = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, 5000);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([
+        Promise.all(pending.map((promise) => promise.catch(() => undefined))),
+        deadline,
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   public shutdown(): Promise<void> {
     this.shutdownPromise ??= this.performShutdown();
     return this.shutdownPromise;
@@ -704,6 +754,9 @@ export class AgylityDaemon {
 
     this.logger.info('Initiating graceful daemon shutdown...');
 
+    // A queued config sync can re-arm timers, so it must settle before they are cleared.
+    await this.configSyncChain;
+
     // Order matters: the timer stops first and the database closes last.
     if (this.timer) {
       clearInterval(this.timer);
@@ -714,6 +767,9 @@ export class AgylityDaemon {
       this.agyUpdateTimer = null;
     }
     this.isSentryStopped = true;
+
+    // An in-flight probe still writes through the live connection.
+    await this.settleInFlight();
 
     if (this.notifier && !this.isNotifierShutdown) {
       try {

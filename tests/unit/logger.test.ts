@@ -132,6 +132,23 @@ describe('Universal Logger', () => {
     assert.ok(entries[0]!.message.includes('[redacted]'));
   });
 
+  it('redacts an Authorization credential while keeping the header name', () => {
+    const buffer = new LogBuffer(10, () => []);
+    buffer.push(
+      'error',
+      'fetch failed: Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.c2ln'
+    );
+    buffer.push('warn', 'retry with Bearer ghp_barebearertoken123456');
+
+    const [headerEntry, bareEntry] = buffer.since(0);
+
+    assert.ok(headerEntry!.message.includes('Authorization'));
+    assert.ok(headerEntry!.message.includes('[redacted]'));
+    assert.equal(headerEntry!.message.includes('eyJhbGciOiJIUzI1NiJ9'), false);
+    assert.equal(bareEntry!.message.includes('ghp_barebearertoken123456'), false);
+    assert.ok(bareEntry!.message.includes('[redacted]'));
+  });
+
   it('returns an empty array from since() when limit is zero', () => {
     const buffer = new LogBuffer(10, () => []);
     buffer.push('info', 'first');
