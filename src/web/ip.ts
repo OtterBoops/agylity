@@ -188,7 +188,7 @@ export const extractClientIp = (
   trustedProxies: boolean = false,
   trustedProxyRanges?: string[]
 ): string => {
-  const peerIp = normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
+  const peerIp = normalizeIp(req.socket?.remoteAddress ?? '');
 
   if (trustedProxies) {
     if (isTrustedProxyPeer(peerIp, trustedProxyRanges)) {

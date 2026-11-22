@@ -15,6 +15,15 @@ const isSecretSet = (value: unknown): boolean => {
   return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
 };
 
+/** A writable key: a builtin field, or an env alias that normalises onto one. */
+const isWritableConfigKey = (key: string): boolean => {
+  // Own-property lookup only: `ENV_TO_CONFIG_KEY['__proto__']` would answer with Object.prototype.
+  const alias = Object.hasOwn(ENV_TO_CONFIG_KEY, key) ? ENV_TO_CONFIG_KEY[key] : undefined;
+  if (FORBIDDEN_CONFIG_KEYS.has(key)) return Boolean(alias) && !FORBIDDEN_CONFIG_KEYS.has(alias!);
+  if (Object.hasOwn(BUILTIN_DEFAULTS, key)) return true;
+  return Boolean(alias) && !FORBIDDEN_CONFIG_KEYS.has(alias!);
+};
+
 export const sanitizeConfigForClient = (config: Record<string, any>): Record<string, any> => {
   const result: Record<string, any> = { ...config };
   for (const [k, v] of Object.entries(result)) {
@@ -76,7 +85,8 @@ export const handleConfigEndpoint = async (
     const isEnvelope =
       !isKeyValueForm && (Object.hasOwn(payload, 'set') || Object.hasOwn(payload, 'clear'));
 
-    const patchToValidate: Record<string, unknown> = {};
+    // Null-prototype target: a `__proto__` JSON key must stay an own key the validator can reject.
+    const patchToValidate: Record<string, unknown> = Object.create(null);
     const keysToClear: string[] = [];
 
     if (isEnvelope) {
@@ -99,11 +109,8 @@ export const handleConfigEndpoint = async (
           });
         }
         const key = entry.trim();
-        if (FORBIDDEN_CONFIG_KEYS.has(key) || !Object.hasOwn(BUILTIN_DEFAULTS, key)) {
-          const normalized = ENV_TO_CONFIG_KEY[key];
-          if (!normalized || FORBIDDEN_CONFIG_KEYS.has(normalized)) {
-            return sendJson(res, 400, { error: `Unknown configuration key: ${key}` });
-          }
+        if (!isWritableConfigKey(key)) {
+          return sendJson(res, 400, { error: `Unknown configuration key: ${key}` });
         }
         if (!keysToClear.includes(key)) keysToClear.push(key);
       }
@@ -114,9 +121,13 @@ export const handleConfigEndpoint = async (
       Object.assign(patchToValidate, payload);
     }
 
-    const keysToValidate: Record<string, unknown> = {};
+    const keysToValidate: Record<string, unknown> = Object.create(null);
     for (const [k, v] of Object.entries(patchToValidate)) {
       if (isSecretKey(k) && (isSecretMask(v) || v === null || v === '')) {
+        // A masked or cleared secret keeps its stored value, but the key still has to be real.
+        if (!isWritableConfigKey(k)) {
+          return sendJson(res, 400, { error: `Unknown configuration key: ${k}` });
+        }
         continue;
       }
       keysToValidate[k] = v;
@@ -195,6 +206,10 @@ export const handleDeleteConfigOverride = (
 
   const decodedKey = safeDecodeSegment(key);
   if (decodedKey === null) return sendJson(res, 400, { error: 'Malformed configuration key' });
+  // An unknown or prototype key must never reach the settings store.
+  if (!isWritableConfigKey(decodedKey)) {
+    return sendJson(res, 400, { error: `Unknown configuration key: ${decodedKey}` });
+  }
   options.configStore.deleteOverride(decodedKey);
   log.info('Configuration override deleted via Web API: %s', decodedKey);
   const resolved = options.configStore.resolveConfig();

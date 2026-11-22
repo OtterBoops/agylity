@@ -1,5 +1,6 @@
 import ky from 'ky';
 import crypto from 'node:crypto';
+import { AGYLITY_VERSION } from '../../version.js';
 import type {
   Notifier,
   NotifierOptions,
@@ -263,7 +264,12 @@ export class WebhookNotifier implements Notifier {
     } catch (err: any) {
       return {
         delivered: false,
-        results: { [this.channelName]: { success: false, error: err?.message ?? String(err) } },
+        results: {
+          [this.channelName]: {
+            success: false,
+            error: sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl()),
+          },
+        },
       };
     }
   }
@@ -370,7 +376,7 @@ export class WebhookNotifier implements Notifier {
     const bodyStr = JSON.stringify(outgoingPayload);
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'User-Agent': 'Agylity-Notifier/0.3.2',
+      'User-Agent': `Agylity-Notifier/${AGYLITY_VERSION}`,
     };
 
     if (this.config.webhookCustomHeaders) {

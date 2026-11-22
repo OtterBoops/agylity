@@ -10,9 +10,18 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { configuredCascade, parseCascadeRequest, resolveCoordinator } from './dispatch.js';
+import {
+  configuredCascade,
+  parseCascadeRequest,
+  resolveCoordinator,
+  knownModelIds,
+} from './dispatch.js';
 import { defaultExecFileAsync } from '../../sentry/discovery.js';
-import { BacklogStatusSchema, type BacklogStatus } from '../../coordinator/models.js';
+import {
+  BacklogStatusSchema,
+  isTerminalTaskStatus,
+  type BacklogStatus,
+} from '../../coordinator/models.js';
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
@@ -66,6 +75,7 @@ export const handleBacklogTasks = async (
     const cascadeParse = parseCascadeRequest(payload.cascade, {
       fallbackModel: resolved.defaultDispatchModel,
       fallbackEffort: resolved.defaultDispatchEffort,
+      knownModels: knownModelIds(options),
     });
     if (!cascadeParse.ok) {
       return sendJson(res, 400, { error: cascadeParse.error });
@@ -166,6 +176,7 @@ export const handleBacklogTaskById = async (
       const cascadeParse = parseCascadeRequest(patch.cascade, {
         fallbackModel: resolved.defaultDispatchModel,
         fallbackEffort: resolved.defaultDispatchEffort,
+        knownModels: knownModelIds(options),
       });
       if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
       patch.cascade = cascadeParse.cascade;
@@ -263,9 +274,10 @@ export const handleSyncGithubBacklog = async (
   let canceledCount = 0;
   const failedRepos: string[] = [];
   const existingBacklog = coordinator.queue.listBacklogTasks();
+  // A finished task is history: only open rows keep their issue from being re-imported.
   const existingKeys = new Set(
     existingBacklog
-      .filter((t) => t.githubIssueNumber !== undefined)
+      .filter((t) => t.githubIssueNumber !== undefined && !isTerminalTaskStatus(t.status))
       .map((t) => `${t.repositoryId}#${t.githubIssueNumber}`)
   );
 

@@ -701,6 +701,51 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('DELETE /api/config/:key rejects unknown and prototype keys with 400', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_delete_guard_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('quotaAlertThresholdPercent', 45);
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        for (const key of ['notAConfigKey', '__proto__', 'constructor']) {
+          const res = await ky.delete(`${base}/api/config/${key}`, {
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 400, `${key} must never reach the settings store`);
+        }
+
+        // The same key set is refused on the POST path, including a masked secret value.
+        for (const payload of [
+          { key: '__proto__', value: 'x' },
+          { notAConfigKey: 'x' },
+          { notAConfigKey: '********' },
+        ]) {
+          const res = await ky.post(`${base}/api/config`, {
+            json: payload,
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 400, `${JSON.stringify(payload)} must be rejected`);
+        }
+
+        assert.equal(store.get('quotaAlertThresholdPercent'), 45);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('enforces timing-safe Bearer auth when WEB_UI_AUTH_TOKEN is configured and localhost exemption is disabled', async () => {
       const { dir, cleanup } = makeTempDir('web_test_bearer_auth_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
@@ -1563,6 +1608,62 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         });
         assert.equal(tenthRes.status, 429);
         assert.equal(tenthRes.headers.get('retry-after'), '60');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('locks out a peer that brute-forces a runner credential without throttling a valid runner', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_runner_lockout_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'runner-shared-secret-777',
+        trustedProxies: true,
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const pollUrl = `http://127.0.0.1:${started.port}/api/tasks/poll`;
+        const attacker = { 'x-forwarded-for': '198.51.100.42' };
+
+        for (let i = 0; i < 10; i++) {
+          const res = await ky.post(pollUrl, {
+            headers: { ...attacker, 'x-agylity-runner-token': 'wrong-runner-token' },
+            json: {},
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 401, `attempt ${i + 1} must be rejected before the lockout`);
+        }
+
+        // The runner endpoints are exempt from the control-plane token, so this lockout is their own.
+        const blocked = await ky.post(pollUrl, {
+          headers: { ...attacker, 'x-agylity-runner-token': 'wrong-runner-token' },
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(blocked.status, 429);
+        assert.equal(blocked.headers.get('retry-after'), '60');
+
+        const legit = await ky.post(pollUrl, {
+          headers: {
+            'x-forwarded-for': '198.51.100.43',
+            'x-agylity-runner-token': 'runner-shared-secret-777',
+          },
+          json: {},
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(legit.status, 200);
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -2503,6 +2604,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const row = await ky.get(`${base}/api/routines/${routine.id}`).json<any>();
         assert.equal(row.lastTaskId, triggered.taskId);
         assert.equal(row.lastTriggeredResetTime, resetTime);
+        // The manual trigger burns the pool cycle so the coordinator cannot re-run it this cycle.
+        assert.deepEqual(Object.values(row.lastTriggeredCycles ?? {}), [resetTime]);
       } finally {
         await closeWebServer(server);
         store.close();

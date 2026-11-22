@@ -33,7 +33,7 @@ import {
 
 const coordinatorCache = new WeakMap<WebServerOptions, Coordinator>();
 
-const knownModelIds = (options: WebServerOptions): readonly string[] => [
+export const knownModelIds = (options: WebServerOptions): readonly string[] => [
   ...CANONICAL_AGY_MODELS.map((m) => m.id),
   ...(options.modelCatalog?.getModels() ?? []).map((m) => m.id),
 ];
@@ -539,10 +539,6 @@ export const handleTaskRetry = async (
   }
 
   const retryRes = await coordinator.retryTask(task);
-
-  if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {
-    return sendJson(res, 400, retryRes);
-  }
 
   // A retry is a dispatch, so a safety-floor refusal is a 4xx here too, not a 200 body.
   if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {

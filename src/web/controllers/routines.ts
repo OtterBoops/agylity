@@ -9,7 +9,7 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { parseCascadeRequest, resolveCoordinator } from './dispatch.js';
+import { parseCascadeRequest, resolveCoordinator, knownModelIds } from './dispatch.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 
 const parseOptionalPrPolicy = (
@@ -106,6 +106,7 @@ export const handleRoutineTasks = async (
     const cascadeParse = parseCascadeRequest(payload.cascade, {
       fallbackModel: resolved.defaultDispatchModel,
       fallbackEffort: resolved.defaultDispatchEffort,
+      knownModels: knownModelIds(options),
     });
     if (!cascadeParse.ok) {
       return sendJson(res, 400, { error: cascadeParse.error });
@@ -181,10 +182,20 @@ export const handleRoutineTaskById = async (
       const pool = coordinator
         .getActivePools()
         .find((p) => p.poolGroup === dispatchRes.poolGroup || p.poolId === dispatchRes.poolGroup);
-      coordinator.queue.updateRoutineTask(rt.id, {
-        lastTaskId: dispatchRes.taskId,
-        ...(pool?.resetTime ? { lastTriggeredResetTime: pool.resetTime } : {}),
-      });
+      if (pool?.resetTime) {
+        // A manual trigger burns the same per-pool cycle stamp the coordinator honours.
+        const burnedPoolKey = pool.poolId || pool.poolGroup;
+        coordinator.queue.updateRoutineTask(rt.id, {
+          lastTaskId: dispatchRes.taskId,
+          lastTriggeredResetTime: pool.resetTime,
+          lastTriggeredCycles: {
+            ...(rt.lastTriggeredCycles ?? {}),
+            [burnedPoolKey]: pool.resetTime,
+          },
+        });
+      } else {
+        coordinator.queue.updateRoutineTask(rt.id, { lastTaskId: dispatchRes.taskId });
+      }
     }
 
     return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
@@ -227,6 +238,7 @@ export const handleRoutineTaskById = async (
       const cascadeParse = parseCascadeRequest(patch.cascade, {
         fallbackModel: resolved.defaultDispatchModel,
         fallbackEffort: resolved.defaultDispatchEffort,
+        knownModels: knownModelIds(options),
       });
       if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
       patch.cascade = cascadeParse.cascade;

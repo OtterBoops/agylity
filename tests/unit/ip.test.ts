@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type http from 'node:http';
-import { normalizeIp, isIpAllowed, extractClientIp } from '../../src/web/ip.js';
+import { normalizeIp, isIpAllowed, isLoopbackIp, extractClientIp } from '../../src/web/ip.js';
 
 describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
   describe('normalizeIp', () => {
@@ -26,6 +26,9 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
 
     it('rejects malformed client IPs when whitelist is active', () => {
       assert.equal(isIpAllowed('not-an-ip', ['192.168.1.0/24']), false);
+      // An empty peer address is neither allowlisted nor loopback, so it fails closed.
+      assert.equal(isIpAllowed('', ['127.0.0.0/8', '::1/128']), false);
+      assert.equal(isLoopbackIp(''), false);
     });
   });
 
@@ -33,11 +36,15 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
     it('matches an exact IPv4 address in both bare and /32 form', () => {
       const cases = [
         {
-          whitelist: ['176.12.32.119', '127.0.0.1'],
-          allowed: ['176.12.32.119', '127.0.0.1'],
-          blocked: ['176.12.32.120', '10.0.0.1'],
+          whitelist: ['198.51.100.42', '127.0.0.1'],
+          allowed: ['198.51.100.42', '127.0.0.1'],
+          blocked: ['198.51.100.43', '10.0.0.1'],
         },
-        { whitelist: ['176.12.32.119/32'], allowed: ['176.12.32.119'], blocked: ['176.12.32.118'] },
+        {
+          whitelist: ['198.51.100.42/32'],
+          allowed: ['198.51.100.42'],
+          blocked: ['198.51.100.41'],
+        },
       ];
       for (const { whitelist, allowed, blocked } of cases) {
         for (const ip of allowed) {
@@ -90,6 +97,9 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
         socket: { remoteAddress },
       }) as unknown as http.IncomingMessage;
 
+    const makeAddrlessReq = (headers: Record<string, string>): http.IncomingMessage =>
+      ({ headers, socket: {} }) as unknown as http.IncomingMessage;
+
     it('uses socket.remoteAddress by default when trustedProxies is false', () => {
       const req = makeReq(
         {
@@ -101,50 +111,62 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(extractClientIp(req, false), '172.18.0.1');
     });
 
+    it('fails closed with an empty peer when the socket has no remote address', () => {
+      const req = makeAddrlessReq({
+        'cf-connecting-ip': '198.51.100.42',
+        'x-real-ip': '198.51.100.42',
+        'x-forwarded-for': '198.51.100.42',
+      });
+      // A missing address must never be fabricated into loopback (auth exemption + proxy trust).
+      assert.equal(extractClientIp(req, false), '');
+      assert.equal(extractClientIp(req, true), '');
+      assert.equal(isLoopbackIp(extractClientIp(req, false)), false);
+    });
+
     it('prioritizes cf-connecting-ip when trustedProxies is true', () => {
       const req = makeReq(
         {
-          'cf-connecting-ip': '176.12.32.119',
+          'cf-connecting-ip': '198.51.100.42',
           'x-real-ip': '10.0.0.1',
           'x-forwarded-for': '10.0.0.2',
         },
         '127.0.0.1'
       );
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      assert.equal(extractClientIp(req, true), '198.51.100.42');
     });
 
     it('prioritizes x-real-ip if cf-connecting-ip is missing', () => {
       const req = makeReq(
         {
-          'x-real-ip': '176.12.32.119',
+          'x-real-ip': '198.51.100.42',
           'x-forwarded-for': '10.0.0.2',
         },
         '127.0.0.1'
       );
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      assert.equal(extractClientIp(req, true), '198.51.100.42');
     });
 
     it('extracts the client from x-forwarded-for when the peer is a trusted proxy', () => {
-      const req = makeReq({ 'x-forwarded-for': '176.12.32.119' }, '127.0.0.1');
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      const req = makeReq({ 'x-forwarded-for': '198.51.100.42' }, '127.0.0.1');
+      assert.equal(extractClientIp(req, true), '198.51.100.42');
     });
 
     it('IGNORES a client-supplied prefix in x-forwarded-for', () => {
       const req = makeReq(
         {
-          'x-forwarded-for': '1.2.3.4, 176.12.32.119',
+          'x-forwarded-for': '1.2.3.4, 198.51.100.42',
         },
         '127.0.0.1'
       );
       // The leftmost entry is attacker-controlled, so the rightmost untrusted hop wins.
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      assert.equal(extractClientIp(req, true), '198.51.100.42');
     });
 
     it('ANTI-SPOOFING INVARIANT: a private-range peer is not a trusted proxy', () => {
       const req = makeReq(
         {
-          'cf-connecting-ip': '176.12.32.119',
-          'x-forwarded-for': '176.12.32.119',
+          'cf-connecting-ip': '198.51.100.42',
+          'x-forwarded-for': '198.51.100.42',
         },
         '172.18.0.1'
       );
@@ -155,11 +177,11 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
     it('normalizes ::ffff: in headers', () => {
       const req = makeReq(
         {
-          'cf-connecting-ip': '::ffff:176.12.32.119',
+          'cf-connecting-ip': '::ffff:198.51.100.42',
         },
         '127.0.0.1'
       );
-      assert.equal(extractClientIp(req, true), '176.12.32.119');
+      assert.equal(extractClientIp(req, true), '198.51.100.42');
     });
   });
 });

@@ -414,7 +414,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
         repositoryName: repoName,
         repositoryPath: repoPath,
         prompt,
-        requestedBy: interaction.user?.username ?? 'otter',
+        requestedBy: interaction.user?.username ?? 'Discord User',
         requestedByUserId: interaction.user?.id,
       };
 
@@ -477,15 +477,9 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     const isQueuedTask =
       result?.status === 'queued' || Boolean(result?.taskId && !result?.branchName);
     if (isQueuedTask && result?.taskId) {
-      deps.activeInteractions.set(result.taskId, interaction);
-      setTimeout(
-        () => {
-          if (result?.taskId) deps.activeInteractions.delete(result.taskId);
-          if (repoId) deps.activeInteractions.delete(repoId);
-          if (repoName) deps.activeInteractions.delete(repoName);
-        },
-        30 * 60 * 1000
-      ).unref?.();
+      retainInteraction(deps, result.taskId, interaction);
+      if (repoId) retainInteraction(deps, repoId, interaction);
+      if (repoName) retainInteraction(deps, repoName, interaction);
     } else {
       if (repoId) deps.activeInteractions.delete(repoId);
       if (repoName) deps.activeInteractions.delete(repoName);

@@ -121,14 +121,30 @@ export const clearAuthFailures = (clientIp: string): void => {
   authFailuresByIp.delete(clientIp);
 };
 
+const sendRateLimited = (res: http.ServerResponse): void => {
+  sendJson(
+    res,
+    429,
+    {
+      error:
+        'Too Many Requests: IP temporarily blocked due to repeated failed authentication attempts',
+      retryAfterSeconds: 60,
+    },
+    { 'Retry-After': '60' }
+  );
+};
+
+/** Outbound pull-runner endpoints: authenticated by a runner credential, not the control-plane token. */
+const isRunnerAuthRoute = (pathname: string): boolean =>
+  pathname === '/api/tasks/poll' ||
+  pathname === '/api/runner/heartbeat' ||
+  pathname === '/api/runners/register' ||
+  (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status'));
+
 const isControlPlaneRoute = (pathname: string): boolean => {
   if (!pathname.startsWith('/api/')) return false;
   if (pathname === '/api/health') return false;
-  // Outbound pull-runner endpoints (authenticated independently via runnerToken)
-  if (pathname === '/api/tasks/poll') return false;
-  if (pathname === '/api/runner/heartbeat') return false;
-  if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) return false;
-  if (pathname === '/api/runners/register') return false;
+  if (isRunnerAuthRoute(pathname)) return false;
 
   return true;
 };
@@ -160,10 +176,23 @@ export const handleRequest = async (
     }
 
     const expectedToken = resolveWebUiAuthToken(resolvedConfig);
-    const peerIp = normalizeIp(req.socket?.remoteAddress || '127.0.0.1');
+    const peerIp = normalizeIp(req.socket?.remoteAddress ?? '');
     const isLocalhost = isLoopbackIp(clientIp) && isLoopbackIp(peerIp);
     const exemptLocalhost = resolvedConfig?.webUiAuthExemptLocalhost ?? true;
     const authRequired = Boolean(expectedToken) && !(isLocalhost && exemptLocalhost);
+
+    // A runner credential is brute-forceable too, so these routes share the peer lockout.
+    if (isRunnerAuthRoute(pathname)) {
+      if (isIpRateLimited(clientIp)) return sendRateLimited(res);
+      // The handler owns the verdict: a 401 is a rejected credential, a 2xx clears the counter.
+      res.once('finish', () => {
+        if (res.statusCode === 401) {
+          recordAuthFailure(clientIp);
+        } else if (res.statusCode < 400) {
+          clearAuthFailures(clientIp);
+        }
+      });
+    }
 
     if (authRequired && expectedToken && isControlPlaneRoute(pathname)) {
       if (isIpRateLimited(clientIp)) {
@@ -174,16 +203,7 @@ export const handleRequest = async (
             clientIp,
             pathname
           );
-        return sendJson(
-          res,
-          429,
-          {
-            error:
-              'Too Many Requests: IP temporarily blocked due to repeated failed authentication attempts',
-            retryAfterSeconds: 60,
-          },
-          { 'Retry-After': '60' }
-        );
+        return sendRateLimited(res);
       }
 
       if (!isAuthorized(req, expectedToken)) {
@@ -192,16 +212,7 @@ export const handleRequest = async (
           logger
             .child('security')
             .warn('Rate limit threshold engaged for IP: %s (10 failed auth attempts)', clientIp);
-          return sendJson(
-            res,
-            429,
-            {
-              error:
-                'Too Many Requests: IP temporarily blocked due to repeated failed authentication attempts',
-              retryAfterSeconds: 60,
-            },
-            { 'Retry-After': '60' }
-          );
+          return sendRateLimited(res);
         }
         return sendJson(res, 401, { error: 'Unauthorized: Invalid or missing Bearer token' });
       }
