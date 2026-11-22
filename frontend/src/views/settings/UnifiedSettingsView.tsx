@@ -120,17 +120,17 @@ export const UnifiedSettingsView = ({ config, onChanged }: UnifiedSettingsViewPr
 
   return (
     <div class="mx-auto flex w-full max-w-5xl flex-col gap-5">
-      <div class="rounded-xl border border-pine-highlight bg-pine-surface px-3 py-2.5 sm:px-4">
-        <div class="relative ml-auto flex min-w-0 flex-1 items-center gap-2 sm:max-w-xs">
+      <div class="flex flex-col items-center gap-2">
+        <div class="relative flex w-full max-w-md items-center gap-2">
           <label class="sr-only" for="settings-search">
-            Search all settings
+            Search settings fields
           </label>
           <input
             id="settings-search"
             type="search"
             autoComplete="off"
             spellcheck={false}
-            placeholder="Search all settings…"
+            placeholder="Search settings fields…"
             value={query}
             onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
             onKeyDown={(event) => {
@@ -152,7 +152,7 @@ export const UnifiedSettingsView = ({ config, onChanged }: UnifiedSettingsViewPr
           )}
         </div>
         {searching && (
-          <p class="mt-2 text-xs text-pine-subtle">
+          <p class="text-xs text-pine-subtle">
             {rendered.length} of {SECTION_ORDER.length} sections match “{rawQuery}”. Esc clears the
             search.
           </p>

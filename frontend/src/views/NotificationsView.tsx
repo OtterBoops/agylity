@@ -428,7 +428,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           <h2 class="text-xl font-semibold text-pine-text">Notification Destinations</h2>
           {enabledChannels.length === 0 && (
             <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-subtle">
-              Alerts muted
+              No destination enabled
             </span>
           )}
         </div>
@@ -482,6 +482,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
             >
               {ch.id === 'discord' && (
                 <DiscordChannelForm
+                  destinationEnabled={enabledChannels.includes('discord')}
                   token={discordToken}
                   onTokenChange={(val) => {
                     setDiscordToken(val);

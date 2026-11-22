@@ -1,6 +1,7 @@
 /* impeccable-disable side-tab -- Discord webhook embeds require a 4px left accent border */
 import { faEye } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
+import { POOL_GROUP_SHORT_LABELS } from '../../../src/shared/models.ts';
 
 interface DiscordEmbedSimulatorProps {
   previewTier: 'alert' | 'warning' | 'burn';
@@ -96,7 +97,7 @@ export const DiscordEmbedSimulator = ({
           style={{ borderLeft: `4px solid ${tierAccent}` }}
         >
           <div class="mb-1 text-sm/snug font-bold text-white">
-            [{tierLabel}] Claude and GPT models
+            [{tierLabel}] {POOL_GROUP_SHORT_LABELS.claude} pool
           </div>
 
           <div class="mb-2.5 text-xs text-[#dbdee1]">

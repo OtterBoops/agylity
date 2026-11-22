@@ -19,6 +19,8 @@ interface DiscordChannelFormProps {
   onOwnerUserIdChange: (val: string) => void;
   pingOwner: boolean;
   onPingOwnerChange: (val: boolean) => void;
+  /** A ping inside a disabled destination is configuration that cannot fire. */
+  destinationEnabled?: boolean;
   diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
@@ -37,6 +39,7 @@ export const DiscordChannelForm = ({
   onOwnerUserIdChange,
   pingOwner,
   onPingOwnerChange,
+  destinationEnabled = true,
   diagnostics,
 }: DiscordChannelFormProps) => {
   const [showToken, setShowToken] = useState(false);
@@ -237,7 +240,9 @@ export const DiscordChannelForm = ({
           </div>
 
           <div class="flex items-center justify-between gap-4 border-t border-pine-highlight/40 pt-3 md:col-span-2">
-            <div class="flex flex-col gap-0.5">
+            <div
+              class={`flex flex-col gap-0.5 ${destinationEnabled === false ? 'opacity-60' : ''}`}
+            >
               <span class="text-xs font-semibold text-pine-text">Ping Owner on Discord</span>
               <span class="text-xs text-pine-subtle">
                 Mentions your Discord user ID (
@@ -249,6 +254,7 @@ export const DiscordChannelForm = ({
             </div>
             <ToggleSwitch
               checked={pingOwner}
+              disabled={destinationEnabled === false}
               onChange={onPingOwnerChange}
               label={
                 pingOwner
