@@ -1,5 +1,6 @@
 import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
+import { checkHealth } from '../api';
 import type { SwarmRunnerRecord } from '../types';
 import { Icon } from './Icon';
 import { runnerStatusBadgeClass } from '../utils/status';
@@ -13,9 +14,23 @@ interface SwarmRunnersGridProps {
 
 export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRunnersGridProps) => {
   const [timeFormat] = useTimeFormat();
+  // Compared against each runner's report: a different agy build accepts a different id set.
+  const [coordinatorAgyVersion, setCoordinatorAgyVersion] = useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    checkHealth()
+      .then((health) => {
+        if (!cancelled) setCoordinatorAgyVersion(health.agyVersion ?? null);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleToggle = async (r: SwarmRunnerRecord) => {
     setMutatingId(r.runnerId);
@@ -96,6 +111,23 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                   {r.systemInfo?.platform && (
                     <span class="rounded-sm bg-pine-overlay/60 px-2 py-0.5 font-mono text-xs whitespace-nowrap text-pine-subtle">
                       {r.systemInfo.platform}/{r.systemInfo.arch || 'x64'}
+                    </span>
+                  )}
+
+                  {r.systemInfo?.agyVersion && (
+                    <span
+                      class={`rounded-sm px-2 py-0.5 font-mono text-xs whitespace-nowrap ${
+                        coordinatorAgyVersion && r.systemInfo.agyVersion !== coordinatorAgyVersion
+                          ? 'bg-pine-gold/15 text-pine-gold'
+                          : 'bg-pine-overlay/60 text-pine-subtle'
+                      }`}
+                      title={
+                        coordinatorAgyVersion && r.systemInfo.agyVersion !== coordinatorAgyVersion
+                          ? `This runner reports agy ${r.systemInfo.agyVersion}; the coordinator runs ${coordinatorAgyVersion}`
+                          : 'agy build reported by this runner'
+                      }
+                    >
+                      agy {r.systemInfo.agyVersion}
                     </span>
                   )}
 

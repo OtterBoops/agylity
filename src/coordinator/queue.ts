@@ -30,6 +30,7 @@ export interface RunnerSystemInfo {
   hostname?: string;
   platform?: string;
   arch?: string;
+  agyVersion?: string | null;
 }
 
 export interface SwarmTask {

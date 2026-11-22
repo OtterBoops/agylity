@@ -106,6 +106,7 @@ export class AgylityDaemon {
   private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
   private readonly warnedLowQuotaPools = new Map<string, string>();
+  private readonly warnedAgyDrift = new Set<string>();
   private warnedAuthRequired = false;
 
   constructor(
@@ -424,6 +425,7 @@ export class AgylityDaemon {
           plan.retiredPools.join(', ')
         );
       }
+      this.warnOnAgyDrift();
       this.coordinator.onQuotaUpdated(snapshots);
       reaped = true;
 
@@ -559,6 +561,25 @@ export class AgylityDaemon {
       return false;
     } finally {
       this.agyUpdateInFlight = false;
+    }
+  }
+
+  /** A runner on a different agy build can accept a different id set; say so once per mismatch. */
+  private warnOnAgyDrift(): void {
+    const ours = this.agyUpdater.getCachedVersion();
+    if (!ours) return;
+    for (const runner of this.coordinator.listRunners()) {
+      const theirs = runner.systemInfo?.agyVersion;
+      if (!theirs || theirs === ours) continue;
+      const key = `${runner.runnerId}@${theirs}`;
+      if (this.warnedAgyDrift.has(key)) continue;
+      this.warnedAgyDrift.add(key);
+      this.logger.warn(
+        'Runner %s reports agy %s while this coordinator runs %s; model availability can differ until they match',
+        runner.name || runner.runnerId,
+        theirs,
+        ours
+      );
     }
   }
 

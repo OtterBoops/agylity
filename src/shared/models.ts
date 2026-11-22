@@ -17,6 +17,13 @@ export const POOL_GROUP_LABELS: Record<PoolGroup, string> = {
   claude: 'Claude and GPT models',
 };
 
+// Card titles name the bucket, so they use the codename alone: "Hydrogen pool", "Claude pool".
+export const POOL_GROUP_SHORT_LABELS: Record<PoolGroup, string> = {
+  'gemini-hydrogen': 'Hydrogen',
+  'gemini-argon': 'Argon',
+  claude: 'Claude',
+};
+
 export const DEFAULT_DISPATCH_MODEL = 'gemini-4-hydrogen';
 
 // Pool groups that were renamed after shipping. A pool id is either the group id or `<group>:<slug>`,
@@ -75,6 +82,21 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
     defaultEffort: 'high',
     supportedEfforts: ['low', 'medium', 'high'],
     defaultForGroup: true,
+  },
+  // Orchestrator routes carry no effort variants, and agy bills them to the pool they name.
+  {
+    id: 'gemini-pro-orchestrator-neon',
+    label: 'Orchestrator (Neon)',
+    poolGroup: 'gemini-hydrogen',
+    defaultEffort: 'medium',
+    supportedEfforts: [],
+  },
+  {
+    id: 'gemini-pro-orchestrator-g1-pro',
+    label: 'Orchestrator (Argon)',
+    poolGroup: 'gemini-argon',
+    defaultEffort: 'medium',
+    supportedEfforts: [],
   },
   {
     id: 'claude-sonnet-5-5',

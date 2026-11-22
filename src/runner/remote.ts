@@ -61,10 +61,11 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
-export const collectRunnerSystemInfo = (): RunnerSystemInfo => ({
+export const collectRunnerSystemInfo = (agyVersion?: string | null): RunnerSystemInfo => ({
   hostname: os.hostname(),
   platform: process.platform,
   arch: process.arch,
+  agyVersion: agyVersion ?? null,
 });
 
 const HEARTBEAT_INTERVAL_MS = 10000;
@@ -290,7 +291,7 @@ export class RemoteSwarmRunner {
             this.options.repositories && this.options.repositories.length > 0
               ? this.options.repositories
               : undefined,
-          systemInfo: collectRunnerSystemInfo(),
+          systemInfo: collectRunnerSystemInfo(this.agyUpdater?.getCachedVersion?.() ?? null),
         },
         retry: 0,
         timeout: 15000,
@@ -364,7 +365,7 @@ export class RemoteSwarmRunner {
             runnerName: this.runnerName,
             labels: this.labels,
             repositories: this.repositories,
-            systemInfo: collectRunnerSystemInfo(),
+            systemInfo: collectRunnerSystemInfo(this.agyUpdater?.getCachedVersion?.() ?? null),
             timeoutMs: this.options.pollTimeoutMs ?? 0,
           },
           retry: 0,

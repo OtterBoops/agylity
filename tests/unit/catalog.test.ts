@@ -161,6 +161,43 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
     });
   });
 
+  describe('bundled catalog covers orchestrator routes', () => {
+    it('lists both orchestrator routes with no effort support', () => {
+      const routes = CANONICAL_AGY_MODELS.filter((m) => isOrchestratorModelId(m.id));
+      assert.deepEqual(routes.map((m) => m.id).sort(), [
+        'gemini-pro-orchestrator-g1-pro',
+        'gemini-pro-orchestrator-neon',
+      ]);
+      for (const route of routes) {
+        assert.deepEqual(route.supportedEfforts, [], `${route.id} takes no --effort`);
+        assert.equal(modelSupportsEffort(route.id, route.supportedEfforts), false);
+      }
+      const byId = new Map(routes.map((m) => [m.id, m]));
+      // agy bills each route to the pool its codename names.
+      assert.equal(byId.get('gemini-pro-orchestrator-neon')?.poolGroup, 'gemini-hydrogen');
+      assert.equal(byId.get('gemini-pro-orchestrator-g1-pro')?.poolGroup, 'gemini-argon');
+    });
+
+    it('never picks a route as a group default when the listing lacks the default model', () => {
+      // A tier without Gemini 4 Hydrogen still lists the Neon orchestrator route.
+      const grouped = groupAgyModels(
+        parseAgyModelsOutput(
+          jsonEnvelope([
+            { id: 'gemini-pro-orchestrator-neon', label: 'Orchestrator (Neon)' },
+            { id: 'gemini-3.8-flash-medium', label: 'Gemini 3.8 Flash (Medium)' },
+          ])
+        )
+      );
+      const defaults = grouped.models.filter(
+        (m) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
+      );
+      assert.deepEqual(
+        defaults.map((m) => m.id),
+        ['gemini-3.8-flash']
+      );
+    });
+  });
+
   describe('4. Pool group resolution for new codenames', () => {
     it('groups Gemini 4 Carbon with Hydrogen without bundling it', () => {
       const grouped = groupAgyModels(

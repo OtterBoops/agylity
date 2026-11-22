@@ -134,6 +134,7 @@ export interface SwarmRunnerRecord {
   labels: string[];
   repositories: string[];
   systemInfo?: {
+    agyVersion?: string | null;
     hostname?: string;
     platform?: string;
     arch?: string;

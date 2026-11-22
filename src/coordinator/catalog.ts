@@ -3,6 +3,7 @@ import {
   CANONICAL_AGY_MODELS,
   CATALOG_BY_ID,
   DEFAULT_MODEL_BY_POOL_GROUP,
+  isOrchestratorModelId,
   type AgyModelCatalogEntry,
   type ReasoningEffort,
 } from './models.js';
@@ -113,9 +114,11 @@ const applyPoolGroupDefaults = (models: AgyModelCatalogEntry[]): AgyModelCatalog
   for (const poolGroup of poolGroups) {
     const candidates = models.filter((m) => m.poolGroup === poolGroup);
     if (candidates.length === 0) continue;
-    const chosen = candidates.some((m) => m.id === DEFAULT_MODEL_BY_POOL_GROUP[poolGroup])
+    const concrete = candidates.filter((m) => !isOrchestratorModelId(m.id));
+    const selectable = concrete.length > 0 ? concrete : candidates;
+    const chosen = selectable.some((m) => m.id === DEFAULT_MODEL_BY_POOL_GROUP[poolGroup])
       ? DEFAULT_MODEL_BY_POOL_GROUP[poolGroup]
-      : candidates[0]!.id;
+      : selectable[0]!.id;
     for (const candidate of candidates) {
       candidate.defaultForGroup = candidate.id === chosen;
     }

@@ -743,7 +743,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // 1. GET /api/models returns annotated model catalog
         const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
         assert.equal(modelsRes.defaultModel, 'gemini-4-hydrogen');
-        assert.equal(modelsRes.models.length, 7);
+        // Seven models plus the two orchestrator routes the bundle now carries.
+        assert.equal(modelsRes.models.length, 9);
         const hydrogen = modelsRes.models.find((m: any) => m.id === 'gemini-4-hydrogen');
         assert.ok(hydrogen, 'bundled catalog must offer Gemini 4 Hydrogen offline');
         assert.equal(hydrogen.poolGroup, 'gemini-hydrogen');

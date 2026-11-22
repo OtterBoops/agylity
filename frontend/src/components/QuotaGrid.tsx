@@ -3,7 +3,7 @@ import type { QuotaBurnProjection, QuotaSnapshot } from '../types';
 import { useModelCatalog } from '../state/modelCatalogStore';
 import {
   CANONICAL_AGY_MODELS,
-  POOL_GROUP_LABELS,
+  POOL_GROUP_SHORT_LABELS,
   POOL_GROUPS,
   isOrchestratorModelId,
   type PoolGroup,
@@ -83,6 +83,11 @@ export const QuotaGrid = ({
 
   // The grid shows one cell per pool group, so a pool this plan does not include still appears.
   const presentPoolGroups = new Set<PoolGroup>(quota.map((pool) => pool.poolGroup as PoolGroup));
+  const poolsPerGroup = new Map<PoolGroup, number>();
+  for (const pool of quota) {
+    const group = pool.poolGroup as PoolGroup;
+    poolsPerGroup.set(group, (poolsPerGroup.get(group) ?? 0) + 1);
+  }
   const absentPoolGroups =
     quota.length > 0 ? POOL_GROUPS.filter((poolGroup) => !presentPoolGroups.has(poolGroup)) : [];
   const cellCount = quota.length + absentPoolGroups.length;
@@ -156,8 +161,13 @@ export const QuotaGrid = ({
     >
       {quota.map((pool) => {
         const poolDisplayName = pool.displayName || pool.poolGroup || pool.poolId;
-        // The card is one bucket, so the title names the pool rather than the group alone.
-        const poolCardTitle = `${poolDisplayName} pool`;
+        // The card is one bucket: a group holding several pools is named by the bucket, a single
+        // pool by its codename alone.
+        const poolGroupKey = pool.poolGroup as PoolGroup;
+        const poolCardTitle =
+          (poolsPerGroup.get(poolGroupKey) ?? 1) > 1
+            ? `${poolDisplayName} pool`
+            : `${POOL_GROUP_SHORT_LABELS[poolGroupKey]} pool`;
         const weeklyFraction = pool.weekly?.remainingFraction ?? pool.remainingFraction;
         const weeklyHours = pool.weekly?.hoursUntilReset ?? pool.hoursUntilReset;
         const weeklyResetTime = pool.weekly?.resetTime ?? pool.resetTime;
@@ -397,7 +407,7 @@ export const QuotaGrid = ({
           <div class="flex min-h-17 flex-col">
             <div class="flex items-start justify-between gap-3">
               <h2 class="line-clamp-2 min-w-0 flex-1 text-base/snug font-semibold text-pine-subtle">
-                {POOL_GROUP_LABELS[poolGroup]} pool
+                {POOL_GROUP_SHORT_LABELS[poolGroup]} pool
               </h2>
               <span class="flex shrink-0 items-center gap-1.5 text-pine-subtle">
                 <span class="size-[6px] rounded-full bg-current" aria-hidden="true" />
