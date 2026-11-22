@@ -17,9 +17,15 @@ import {
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
+import {
+  COORDINATOR_FIELDS,
+  NETWORK_SECURITY_FIELDS,
+  SENTRY_GENERAL_FIELDS,
+  TELEMETRY_OVERRIDE_FIELDS,
+} from '../config/fields';
 import { isActiveTaskStatus } from './tasks/badges';
 
-type CommandCategory = 'Navigation' | 'Action' | 'Tasks & Routines' | 'Execution';
+type CommandCategory = 'Navigation' | 'Action' | 'Settings' | 'Tasks & Routines' | 'Execution';
 
 interface CommandItem {
   id: string;
@@ -27,6 +33,7 @@ interface CommandItem {
   category: CommandCategory;
   shortcut?: string;
   icon: IconDefinition;
+  keywords?: string;
   action: () => void;
 }
 
@@ -81,6 +88,33 @@ export const CommandPalette = ({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const liveRequested = useRef(false);
   const currentExecutionQuery = useRef('');
+
+  // Field-level settings jumps: the settings page no longer carries its own search box.
+  const settingsFieldCommands: CommandItem[] = (
+    [
+      ['general', SENTRY_GENERAL_FIELDS],
+      ['coordinator', COORDINATOR_FIELDS],
+      ['advanced', [...NETWORK_SECURITY_FIELDS, ...TELEMETRY_OVERRIDE_FIELDS]],
+    ] as Array<[string, typeof SENTRY_GENERAL_FIELDS]>
+  ).flatMap(([section, fields]) =>
+    fields.map((field) => ({
+      id: `setting-${section}-${field.key}`,
+      title: field.label,
+      category: 'Settings' as const,
+      icon: faSliders,
+      keywords: `${field.key} ${field.hint ?? ''} ${section}`,
+      action: () => {
+        route(`/settings#${section}`);
+        onClose();
+        // The field only exists after the section renders, so scroll once it has.
+        setTimeout(() => {
+          const el = document.getElementById(`f-${field.key}`);
+          el?.scrollIntoView({ block: 'center' });
+          el?.focus();
+        }, 150);
+      },
+    }))
+  );
 
   const commands: CommandItem[] = [
     {
@@ -177,6 +211,7 @@ export const CommandPalette = ({
           },
         ]
       : []),
+    ...settingsFieldCommands,
     {
       id: 'act-new-task',
       title: 'Create New Task...',
@@ -254,7 +289,10 @@ export const CommandPalette = ({
 
   const q = query.trim().toLowerCase();
   const matchesLocal = (c: CommandItem) =>
-    !q || c.title.toLowerCase().includes(q) || c.id.toLowerCase().includes(q);
+    !q ||
+    c.title.toLowerCase().includes(q) ||
+    c.id.toLowerCase().includes(q) ||
+    (c.keywords ?? '').toLowerCase().includes(q);
   const filtered = [
     ...commands.filter(matchesLocal),
     ...routineCommands.filter(matchesLocal),
