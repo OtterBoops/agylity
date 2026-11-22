@@ -16,7 +16,7 @@ Agylity provides continuous Antigravity quota monitoring, rate-limit sentry prot
 
 ## Positioning
 
-A lightweight, non-invasive telemetry sentry and coordinator that communicates directly with Antigravity's local language server JSON-RPC socket, paired with a high-density, real-time reactive dashboard.
+A lightweight, non-invasive telemetry sentry and coordinator that reads quota from Antigravity's local language server over Connect-RPC, falling back to the `agy` CLI, paired with a high-density, real-time reactive dashboard.
 
 ## Operating Context
 
@@ -26,7 +26,7 @@ A lightweight, non-invasive telemetry sentry and coordinator that communicates d
 
 ## Capabilities and Constraints
 
-- Capabilities: Live quota telemetry polling, quota exhaustion alarms, task queueing and dispatching, prompt execution audit logs, routine cron scheduling, and connection inspector.
+- Capabilities: Live quota telemetry polling, quota exhaustion alarms, task queueing and dispatching, prompt execution audit logs, pre-reset headroom window scheduling, and connection inspector.
 - Constraints: Single-tenant authenticated gate, zero emoji spam in telemetry, mobile-first responsive grid hierarchy, fixed container-scroll architecture.
 
 ## Brand Commitments

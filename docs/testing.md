@@ -24,6 +24,8 @@ tests/
 │   │   └── index.ts            # Shared helpers: temp dirs and the in-memory log sinks
 │   └── dispatch.test.ts        # Full dispatch lifecycle against a real temp git repository
 └── unit/
+    ├── agy-updater.test.ts     # `agy --version` probing and `agy update` sequencing
+    ├── ai-plus.test.ts         # AI Plus shape: withheld-model substitution, pool reconciliation
     ├── catalog.test.ts         # Dynamic agy model catalog: fetch, parse, cache TTL
     ├── config.test.ts          # Zod schema, preprocessors, store fallback precedence
     ├── daemon.test.ts          # Daemon lifecycle, signals, scheduler
@@ -49,6 +51,8 @@ tests/
 
 | File                     | Covers                                                                                                                                                                                                                                                                                                                                       |
 | :----------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agy-updater.test.ts`    | `parseAgyVersion` on decorated output, the version-cache TTL, single-flight probing, and `update()` logging the version transition while never throwing on failure.                                                                                                                                                                          |
+| `ai-plus.test.ts`        | The AI Plus account shape: a withheld `gemini-4-hydrogen` substituted inside its own pool group, orchestrator routes kept out of the group default, per-group eligibility, and `pool_state` reconciliation.                                                                                                                                  |
 | `catalog.test.ts`        | `agy models` suffix/output parsing, grouping by base model id, pool group and effort resolution, stale-while-revalidate cache TTL, `/api/models` annotation.                                                                                                                                                                                 |
 | `config.test.ts`         | Boolean string traps (`" FALSE "`, `"1"`, `""`), milestone parsing, the `SQLite > env > defaults` hierarchy, prototype-pollution key rejection.                                                                                                                                                                                              |
 | `db.test.ts`             | WAL mode, key-value overrides, AES-256-GCM round-trips, and that a decryption failure surfaces rather than silently returning an empty secret.                                                                                                                                                                                               |

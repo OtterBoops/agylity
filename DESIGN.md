@@ -5,6 +5,8 @@ colors:
   bg-base: '#232136'
   bg-surface: '#2a273f'
   bg-overlay: '#393552'
+  bg-sunken: '#191724'
+  bg-raised: '#56526e'
   text-primary: '#e0def4'
   text-secondary: '#a4a0c0'
   text-muted: '#6e6a86'
@@ -30,7 +32,7 @@ typography:
   mono:
     fontFamily: "'Space Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
     fontSize: '0.8125rem'
-    fontWeight: 500
+    fontWeight: 400
     lineHeight: 1.4
 rounded:
   sm: '4px'
@@ -74,6 +76,8 @@ The palette is Rosé Pine Moon, held in a single `:root` block of Tailwind v4 CS
   - `bg-base` (`#232136`): Application background and viewport canvas.
   - `bg-surface` (`#2a273f`): Primary cards, sidebars, and elevated containers.
   - `bg-overlay` (`#393552`): Inputs, table header bands, modals, and badge backgrounds.
+  - `bg-sunken` (`#191724`): The plane below the page — log panes, input wells, progress-bar tracks and inline code chips.
+  - `bg-raised` (`#56526e`): One step above `bg-overlay`, for a surface that must lift off an overlay — hovered rows and selected chips. No surface claims it yet.
 - **Text & Borders:**
   - `text-primary` (`#e0def4`): High-contrast titles, primary numbers, and headings.
   - `text-secondary` (`#a4a0c0`): Subtitles, helper text, and secondary metadata.

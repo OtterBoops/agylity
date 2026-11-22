@@ -18,7 +18,7 @@ Google Antigravity gives you generous rolling quotas across **Claude**, **Gemini
 - **Dual-Bucket Quota Sentry**: Tracks 5-hour rolling throttles and weekly budgets via Language Server Connect-RPC (with headless CLI fallback).
 - **Wallet Protection Shield**: Enforces `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`, or `0%` on flat-tier accounts to burn quota down to the last drop).
 - **3-Tier Coordinator & Swarm Runners**: Orchestrates immediate dispatches, backlog items, and pre-reset routines across pull-based runners (`src/runner/`) without opening inbound ports.
-- **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` → `.env` → `Defaults`) with AES-256-GCM encrypted secrets, live UI edits, and silent-by-default multi-channel alerts (`discord`, `webhook`, `console`).
+- **Config with Common Sense**: Three-tier fallback (`SQLite Overrides` → `.env` → `Defaults`) with AES-256-GCM encrypted secrets, live UI edits, and silent-by-default multi-channel alerts (`discord`, `webhook`).
 - **Hardened Web Dashboard**: Optional Vite + Preact + Tailwind v4 UI (`WEB_UI_ENABLED=true`, port `8484`) with Bearer auth, rate limiting, and trusted-proxy CIDR validation.
 
 ## Quickstart (Docker Compose)

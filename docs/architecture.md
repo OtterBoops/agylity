@@ -18,8 +18,8 @@ This document details the core architectural subsystems, Connect-RPC integration
 |  CompositeNotifier:    |        | (Evaluator & Deduplica- |
 |  - Discord Client      |        |  tion Engine)           |
 |  - Webhook POST        |        +------------+------------+
-|  - Console Logger      |                      |
-+------------------------+                      v
++------------------------+                      |
+                                                v
                                   +------------+------------+
                                   |   SQLite Config Store   | <----> data/agylity.db
                                   |  (AES-256-GCM Encrypted |
@@ -133,13 +133,13 @@ Changes made in the Web UI take immediate effect over the in-memory event bus (d
 Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 - **Dynamic Posture**: Inactive when `ALLOWED_IP_RANGES` is empty; strictly active when entries exist.
-- **Proxy Header Spoof Protection**: Reverse proxy headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`) are strictly ignored unless the direct TCP peer socket (`req.socket.remoteAddress`) is verified as a loopback or RFC1918 private network hop (`127.0.0.0/8`, `::1/128`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`). Direct external connections attempting header injection are evaluated against their physical peer IP.
+- **Proxy Header Spoof Protection**: reverse proxy headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`) are ignored unless `TRUSTED_PROXIES` is enabled **and** the direct TCP peer socket (`req.socket.remoteAddress`) is loopback (`127.0.0.0/8`, `::1/128`). Private ranges are deliberately not trusted: any host on the LAN or a Docker bridge could forge the client IP. `X-Forwarded-For` is walked right-to-left, skipping trusted hops, so a client-supplied prefix cannot name its own address.
 
 ### 3.7. Edge Rate Limiting & Timing-Safe Control Plane
 
 `WEB_UI_AUTH_TOKEN` is mandatory for a non-loopback `WEB_UI_HOST`: the server refuses to start without it, and only warns for a loopback bind. When configured:
 
-- **Route Lockdown**: every `/api/*` route requires Bearer authorization, except public `GET /api/health` and the four runner-token endpoints (`POST /api/tasks/poll`, `POST /api/tasks/:id/status`, `POST /api/runner/heartbeat`, `POST /api/runners/register`). The full surface is tabulated in §3.9.
+- **Route Lockdown**: every `/api/*` route requires Bearer authorization, except public `GET /api/health` and the four runner-token endpoints (`POST /api/tasks/poll`, `POST /api/tasks/:id/status`, `POST /api/runner/heartbeat`, `POST /api/runners/register`). The full surface is tabulated in §3.8.
 - **Loopback Exemption**: `WEB_UI_AUTH_EXEMPT_LOCALHOST` (default `true`) skips the token requirement only when _both_ the resolved client IP and the direct peer socket address are loopback — one forwarded header alone is never enough.
 - **Timing-Safe Verification**: both sides are hashed with SHA-256 before `crypto.timingSafeEqual`, so the comparison runs over fixed-width digests and a wrong token cannot be distinguished by its length. Runner shared secrets are stored as SHA-256 hex (`hashRunnerToken`) and compared the same way.
 - **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP. 10 failures within 60s temporarily blocks the IP with HTTP 429 (`Retry-After: 60`). The map is pruned of expired records and capped at 10,000 entries.
@@ -153,6 +153,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | :------------------------------------- | :----- | :---------------------------------------------------------------- |
 | `GET /api/health`                      | public | Liveness only; reports `authRequired`.                            |
 | `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
+| `GET /api/summary`                     | Bearer | Per-group headroom percentages and the cached `agy` version.      |
 | `GET /api/alerts`                      | Bearer | Active alert state.                                               |
 | `POST /api/alerts/dismiss`             | Bearer | Clears the active alert set.                                      |
 | `GET /api/alerts/events`               | Bearer | Paginated alert history (`limit` ≤ 200, `before` cursor, `pool`). |
@@ -224,7 +225,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
-3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `Console`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
+3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
 6. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
@@ -474,7 +475,7 @@ agylity/
 ├── docs/                       # Authoritative operational guides
 │   ├── architecture.md         # System design, Connect-RPC, security invariants
 │   ├── configuration.md        # Environment variables & SQLite hierarchy
-│   ├── deployment.md           # Docker Compose, Arcane GitOps, systemd
+│   ├── deployment.md           # Docker Compose, GitOps/Portainer, systemd
 │   └── testing.md              # Test layout, coverage by suite, and commands
 ├── frontend/                   # Dedicated Vite + Preact + Tailwind CSS client
 │   ├── public/                 # Static vector assets (favicon, icons)
@@ -486,7 +487,7 @@ agylity/
 │   ├── config/                 # Zod validation & SQLite store hierarchy
 │   ├── daemon/                 # Probe scheduler, milestone evaluation & lifecycle
 │   ├── logs/                   # Universal pluggable logger & secret-redacting buffer
-│   ├── notify/                 # Pluggable notifiers (Discord, Console, Webhook)
+│   ├── notify/                 # Pluggable notifiers (Discord, Webhook)
 │   ├── coordinator/            # Swarm coordinator, task queue & model routing
 │   ├── runner/                 # Pull-runner: executor, git auth, PR policy & coordinator client
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
