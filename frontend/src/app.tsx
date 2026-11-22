@@ -53,7 +53,7 @@ const SECTION_BY_PATH: Record<string, SettingsSectionId> = {
   '/settings': 'general',
   '/settings/general': 'general',
   '/settings/coordinator': 'coordinator',
-  '/settings/repositories': 'repositories',
+  '/settings/repositories': 'coordinator',
   '/settings/notifications': 'notifications',
   '/settings/advanced': 'advanced',
 };

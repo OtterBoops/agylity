@@ -8,8 +8,11 @@ import {
   faBell,
   faChartPie,
   faCheckToSlot,
+  faBullhorn,
   faGear,
   faList,
+  faNetworkWired,
+  faSliders,
   faXmark,
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
@@ -31,6 +34,8 @@ interface NavItem {
   label: string;
   icon: IconDefinition;
   badge?: string;
+  /** Set for hash-routed items, where the router can only match the pathname. */
+  active?: boolean;
 }
 
 export const Sidebar = ({
@@ -96,7 +101,24 @@ export const Sidebar = ({
     { href: '/logs', label: 'Logs', icon: faList },
   ];
 
-  const settingsItems: NavItem[] = [{ href: '/settings', label: 'Settings', icon: faGear }];
+  // Settings is a group, not a destination: each section is its own sidebar entry, so the page no
+  // longer needs a second, in-content tab strip.
+  const [settingsHash, setSettingsHash] = useState(() =>
+    typeof window === 'undefined' ? 'general' : window.location.hash.replace(/^#/, '') || 'general'
+  );
+  useEffect(() => {
+    const sync = () => setSettingsHash(window.location.hash.replace(/^#/, '') || 'general');
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+
+  const onSettings = typeof window !== 'undefined' && window.location.pathname === '/settings';
+  const settingsItems: NavItem[] = [
+    { href: '/settings#general', label: 'General', icon: faGear },
+    { href: '/settings#coordinator', label: 'Coordinator', icon: faNetworkWired },
+    { href: '/settings#notifications', label: 'Notifications', icon: faBullhorn },
+    { href: '/settings#advanced', label: 'Advanced', icon: faSliders },
+  ].map((item) => ({ ...item, active: onSettings && settingsHash === item.href.split('#')[1] }));
 
   const [timeFormat] = useTimeFormat();
 
@@ -142,9 +164,15 @@ export const Sidebar = ({
             key={item.href}
             href={item.href}
             onClick={onLinkClick}
-            activeClassName="bg-pine-iris/15 font-semibold !text-pine-iris"
+            activeClassName={
+              item.active === undefined ? 'bg-pine-iris/15 font-semibold !text-pine-iris' : ''
+            }
             title={collapsed ? item.label : undefined}
-            class={`group relative flex w-full cursor-pointer items-center rounded-xl text-pine-subtle transition-all duration-150 hover:bg-pine-overlay/60 hover:text-pine-text ${
+            class={`group relative flex w-full cursor-pointer items-center rounded-xl transition-all duration-150 ${
+              item.active
+                ? 'bg-pine-iris/15 font-semibold text-pine-iris'
+                : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
+            } ${
               collapsed
                 ? 'justify-center px-1 py-2'
                 : 'gap-3 px-3 py-2 text-left text-sm font-medium whitespace-nowrap'
@@ -210,7 +238,7 @@ export const Sidebar = ({
         <div class="border-b border-pine-highlight bg-pine-surface p-4 md:hidden">
           <nav class="flex flex-col gap-3">
             {renderNavSection('Monitor', monitorItems, false, () => setMobileOpen(false))}
-            {renderNavSection(null, settingsItems, false, () => setMobileOpen(false))}
+            {renderNavSection('Settings', settingsItems, false, () => setMobileOpen(false))}
           </nav>
 
           <div
@@ -326,7 +354,7 @@ export const Sidebar = ({
 
           <nav class="flex flex-col gap-3">
             {renderNavSection('Monitor', monitorItems, railActive)}
-            {renderNavSection(null, settingsItems, railActive)}
+            {renderNavSection('Settings', settingsItems, railActive)}
           </nav>
         </div>
 

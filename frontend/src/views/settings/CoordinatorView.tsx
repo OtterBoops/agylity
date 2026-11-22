@@ -7,6 +7,7 @@ import { Icon } from '../../components/Icon';
 import { RunnerRegistrationPanel } from '../../components/RunnerRegistrationPanel';
 import { SwarmRunnersGrid } from '../../components/SwarmRunnersGrid';
 import { PoolGroupPoliciesCard } from '../../components/PoolGroupPoliciesCard';
+import { RepositoriesView } from './RepositoriesView';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
 import { COORDINATOR_FIELDS } from '../../config/fields';
@@ -139,6 +140,8 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
         modelOptions={toModelOptions(catalog.models)}
         searchQuery={searchQuery}
       />
+
+      <RepositoriesView config={config} onChanged={onChanged} />
     </SettingsLayout>
   );
 };

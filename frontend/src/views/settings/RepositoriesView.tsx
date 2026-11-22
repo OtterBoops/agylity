@@ -3,7 +3,6 @@ import { Link } from 'preact-router/match';
 import type { ConfigData } from '../../types';
 import { Icon } from '../../components/Icon';
 import { RepoEditor } from '../../components/RepoEditor';
-import { SettingsLayout } from '../../components/SettingsLayout';
 
 interface RepositoriesViewProps {
   config: ConfigData;
@@ -14,7 +13,7 @@ export const RepositoriesView = ({ config, onChanged }: RepositoriesViewProps) =
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
 
   return (
-    <SettingsLayout>
+    <>
       {!isCoordinatorEnabled ? (
         <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6">
           <div class="mb-1 flex flex-wrap items-center gap-2">
@@ -43,6 +42,6 @@ export const RepositoriesView = ({ config, onChanged }: RepositoriesViewProps) =
       ) : (
         <RepoEditor config={config} onSaved={onChanged} />
       )}
-    </SettingsLayout>
+    </>
   );
 };

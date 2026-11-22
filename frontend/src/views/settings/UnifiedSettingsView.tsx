@@ -11,14 +11,12 @@ import {
 import {
   SETTINGS_SECTIONS,
   loadedSettingsSection,
-  navigateToSection,
   readSettingsSection,
   type SettingsSectionId,
 } from '../../utils/settingsHash';
 import { AdvancedView } from './AdvancedView';
 import { CoordinatorView } from './CoordinatorView';
 import { GeneralView } from './GeneralView';
-import { RepositoriesView } from './RepositoriesView';
 import { NotificationsView } from '../NotificationsView';
 
 interface UnifiedSettingsViewProps {
@@ -65,11 +63,8 @@ const SECTIONS: Record<SettingsSectionId, SectionIndex> = {
       ...fieldTerms(COORDINATOR_FIELDS),
       'Task Coordinator Swarm Runners register registration token revoke',
       'Pool Policies',
+      'Repositories repository git clone url default branch local path RepoEditor',
     ].join(' '),
-  },
-  repositories: {
-    header: 'Repositories git registry',
-    rows: 'Repositories repository git clone url default branch local path RepoEditor',
   },
   notifications: {
     header: 'Notifications alert destinations channels delivery',
@@ -126,62 +121,35 @@ export const UnifiedSettingsView = ({ config, onChanged }: UnifiedSettingsViewPr
   return (
     <div class="mx-auto flex w-full max-w-5xl flex-col gap-5">
       <div class="rounded-xl border border-pine-highlight bg-pine-surface px-3 py-2.5 sm:px-4">
-        <div
-          role="tablist"
-          aria-label="Settings sections"
-          class="flex flex-wrap items-center gap-1"
-        >
-          {SETTINGS_SECTIONS.map((section) => {
-            const selected = !searching && section.id === current;
-            return (
-              <button
-                key={section.id}
-                type="button"
-                role="tab"
-                id={`settings-tab-${section.id}`}
-                aria-selected={selected}
-                aria-controls={`settings-panel-${section.id}`}
-                onClick={() => navigateToSection(section.id)}
-                class={`min-h-9 cursor-pointer rounded-lg px-3 text-xs font-medium transition-colors ${
-                  selected
-                    ? 'bg-pine-iris/15 text-pine-iris'
-                    : 'text-pine-subtle hover:bg-pine-overlay/60 hover:text-pine-text'
-                }`}
-              >
-                {section.label}
-              </button>
-            );
-          })}
-          <div class="relative ml-auto flex min-w-0 flex-1 items-center gap-2 sm:max-w-xs">
-            <label class="sr-only" for="settings-search">
-              Search all settings
-            </label>
-            <input
-              id="settings-search"
-              type="search"
-              autoComplete="off"
-              spellcheck={false}
-              placeholder="Search all settings…"
-              value={query}
-              onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Escape') {
-                  event.preventDefault();
-                  setQuery('');
-                }
-              }}
-              class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
-            />
-            {query !== '' && (
-              <button
-                type="button"
-                onClick={() => setQuery('')}
-                class="shrink-0 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text"
-              >
-                Clear
-              </button>
-            )}
-          </div>
+        <div class="relative ml-auto flex min-w-0 flex-1 items-center gap-2 sm:max-w-xs">
+          <label class="sr-only" for="settings-search">
+            Search all settings
+          </label>
+          <input
+            id="settings-search"
+            type="search"
+            autoComplete="off"
+            spellcheck={false}
+            placeholder="Search all settings…"
+            value={query}
+            onInput={(event) => setQuery((event.target as HTMLInputElement).value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setQuery('');
+              }
+            }}
+            class="w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+          />
+          {query !== '' && (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              class="shrink-0 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 py-1.5 text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text"
+            >
+              Clear
+            </button>
+          )}
         </div>
         {searching && (
           <p class="mt-2 text-xs text-pine-subtle">
@@ -226,7 +194,6 @@ export const UnifiedSettingsView = ({ config, onChanged }: UnifiedSettingsViewPr
               searchQuery={scope.coordinator?.rowQuery}
             />
           )}
-          {id === 'repositories' && <RepositoriesView config={config} onChanged={onChanged} />}
           {id === 'notifications' && <NotificationsView config={config} onSaved={onChanged} />}
           {id === 'advanced' && (
             <AdvancedView
