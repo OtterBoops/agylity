@@ -4,8 +4,31 @@ import { z } from 'zod';
 import type { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../storage/db.js';
 import { upgradePoolGroupId } from '../shared/models.js';
-import type { BurnSample } from './models.js';
 import type { DeliveryChannelResult } from '../notify/types.js';
+import {
+  PROBE_SOURCES,
+  type BurnSample,
+  type EarlyResetNotice,
+  type EarlyResetPool,
+  type ProbeSource,
+  type SentryAlertState,
+  type SentryPoolState,
+} from '../shared/contracts.js';
+
+// The state file's payload types are declared once in the shared wire contracts; the schemas below
+// validate the stored shape and the frontend reads the same declaration.
+export { PROBE_SOURCES };
+export type {
+  BurnSample,
+  EarlyResetNotice,
+  EarlyResetPool,
+  ProbeSource,
+  SentryAlertState,
+  SentryPoolState,
+};
+
+/** The stored pool shape is the wire pool shape, under the name the state file has always used. */
+export type PoolState = SentryPoolState;
 import {
   SentryStore,
   SAMPLE_HISTORY_LIMIT,
@@ -27,7 +50,7 @@ export const PoolSampleSchema = z.object({
   at: z.string(),
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
-});
+}) satisfies z.ZodType<BurnSample>;
 
 export const PoolStateSchema = z.object({
   resetTime: z.string(),
@@ -35,9 +58,7 @@ export const PoolStateSchema = z.object({
   firedMilestones: z.array(z.string()),
   lastAlertSentAt: z.string().nullable().optional(),
   samples: z.array(PoolSampleSchema).optional(),
-});
-
-export type PoolState = z.infer<typeof PoolStateSchema>;
+}) satisfies z.ZodType<PoolState>;
 
 export const EarlyResetPoolSchema = z.object({
   poolId: z.string(),
@@ -46,16 +67,12 @@ export const EarlyResetPoolSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
   previousResetTime: z.string(),
   resetTime: z.string(),
-});
-
-export type EarlyResetPool = z.infer<typeof EarlyResetPoolSchema>;
+}) satisfies z.ZodType<EarlyResetPool>;
 
 export const EarlyResetNoticeSchema = z.object({
   detectedAt: z.string(),
   pools: z.array(EarlyResetPoolSchema),
-});
-
-export type EarlyResetNotice = z.infer<typeof EarlyResetNoticeSchema>;
+}) satisfies z.ZodType<EarlyResetNotice>;
 
 export interface PoolQuotaUpdate {
   cycleRolled: boolean;
@@ -68,7 +85,7 @@ const EARLY_RESET_GUARD_MS = 5 * 60_000;
 
 const detectEarlyReset = (
   poolId: string,
-  existing: PoolState,
+  existing: SentryPoolState,
   remainingFraction: number,
   resetTime: string,
   nowMs: number
@@ -109,16 +126,7 @@ const appendSample = (
   return [...history, sample].slice(-SAMPLE_HISTORY_LIMIT);
 };
 
-export const PROBE_SOURCES = [
-  'connect_rpc',
-  'cli',
-  'cli_fallback',
-  'unreachable',
-  'auth_required',
-] as const;
-
-export type ProbeSource = (typeof PROBE_SOURCES)[number];
-
+// `PROBE_SOURCES` is the contract tuple, so a source the wire type does not allow cannot be stored.
 export const SentryStateSchema = z.object({
   version: z.literal(1),
   lastProbeAt: z.string(),
@@ -127,11 +135,9 @@ export const SentryStateSchema = z.object({
   authErrorMessage: z.string().optional(),
   pools: z.record(z.string(), PoolStateSchema),
   earlyResetNotice: EarlyResetNoticeSchema.nullable().optional(),
-});
+}) satisfies z.ZodType<SentryAlertState>;
 
-export type SentryState = z.infer<typeof SentryStateSchema>;
-
-export const createInitialState = (): SentryState => ({
+export const createInitialState = (): SentryAlertState => ({
   version: 1,
   lastProbeAt: new Date().toISOString(),
   lastProbeSource: 'unreachable',
@@ -196,7 +202,7 @@ export class SentryStateManager {
   private readonly store: SentryStore;
   private readonly ownsDatabase?: AppDatabase;
   private readonly legacyStatePath?: string;
-  private state: SentryState;
+  private state: SentryAlertState;
 
   constructor(source: SentryStateManagerSource = 'data/state.json') {
     if (typeof source === 'string') {
@@ -225,11 +231,11 @@ export class SentryStateManager {
     this.ownsDatabase?.close();
   }
 
-  getState(): SentryState {
+  getState(): SentryAlertState {
     return JSON.parse(JSON.stringify(this.state));
   }
 
-  setState(newState: SentryState): void {
+  setState(newState: SentryAlertState): void {
     this.state = JSON.parse(JSON.stringify(newState));
     this.store.replaceAll(
       {
@@ -243,7 +249,7 @@ export class SentryStateManager {
     );
   }
 
-  private hydrate(): SentryState {
+  private hydrate(): SentryAlertState {
     if (this.store.isEmpty() && this.legacyStatePath) {
       const imported = this.importLegacyState();
       if (imported) {
@@ -263,7 +269,7 @@ export class SentryStateManager {
 
     const initial = createInitialState();
     const probe = this.store.readProbe();
-    const state: SentryState = {
+    const state: SentryAlertState = {
       version: 1,
       lastProbeAt: probe.lastProbeAt ?? initial.lastProbeAt,
       lastProbeSource: probe.lastProbeSource
@@ -278,7 +284,7 @@ export class SentryStateManager {
     return state;
   }
 
-  private importLegacyState(): SentryState | null {
+  private importLegacyState(): SentryAlertState | null {
     const legacyPath = this.legacyStatePath;
     if (!legacyPath) return null;
 
@@ -301,7 +307,7 @@ export class SentryStateManager {
     }
   }
 
-  async load(): Promise<SentryState> {
+  async load(): Promise<SentryAlertState> {
     return this.getState();
   }
 
@@ -535,14 +541,14 @@ export class SentryStateManager {
     return this.store.listAlertEvents(options);
   }
 
-  getPoolState(poolId: string): PoolState | undefined {
+  getPoolState(poolId: string): SentryPoolState | undefined {
     return this.state.pools[poolId];
   }
 
-  private ensurePool(poolId: string, resetTime?: string): PoolState {
+  private ensurePool(poolId: string, resetTime?: string): SentryPoolState {
     const existing = this.state.pools[poolId];
     if (existing) return existing;
-    const pool: PoolState = {
+    const pool: SentryPoolState = {
       resetTime: resetTime ?? new Date(Date.now() + 24 * 3600 * 1000).toISOString(),
       remainingFraction: 1,
       firedMilestones: [],

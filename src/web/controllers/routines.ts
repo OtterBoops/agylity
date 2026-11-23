@@ -11,6 +11,7 @@ import {
 import type { WebServerOptions } from '../types.js';
 import { parseCascadeRequest, resolveCoordinator, knownModelIds } from './dispatch.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
+import { PR_POLICY_VALUES } from '../../shared/contracts.js';
 
 const parseOptionalPrPolicy = (
   raw: unknown
@@ -21,7 +22,7 @@ const parseOptionalPrPolicy = (
   if (!parsed.success) {
     return {
       ok: false,
-      error: "prPolicy must be 'docs_only', 'issues_only', 'all', 'none', or null",
+      error: `prPolicy must be ${PR_POLICY_VALUES.map((value) => `'${value}'`).join(', ')}, or null`,
     };
   }
   return { ok: true, value: parsed.data };

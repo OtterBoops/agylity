@@ -1,8 +1,8 @@
-import { taskBadgeClass } from './badges';
 import type { TimeFormat } from '../../utils/time';
+import { taskStatusBadgeClass } from '../../utils/status';
 
 export const statusDotTextClass = (status: string): string =>
-  taskBadgeClass(status)
+  taskStatusBadgeClass(status)
     .split(/\s+/)
     .find((token) => token.startsWith('text-')) ?? 'text-pine-subtle';
 

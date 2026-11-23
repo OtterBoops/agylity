@@ -388,9 +388,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   // every aborted item on its next probe.
   const handleStopAndPause = async () => {
     const live = tasks.filter(
-      (task) =>
-        selectedIds.has(task.id) &&
-        ['queued', 'claimed', 'running', 'executing'].includes(task.status)
+      (task) => selectedIds.has(task.id) && ['queued', 'claimed', 'executing'].includes(task.status)
     );
     if (live.length === 0) return;
     setBulkBusy(true);

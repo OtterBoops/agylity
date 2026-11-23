@@ -1,7 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { ensureTableSchema, type ColumnSpec } from '../storage/schema.js';
-import type { DeliveryChannelResult } from '../notify/types.js';
-import type { EarlyResetNotice, PoolState } from './state.js';
+import type {
+  AlertEvent,
+  AlertEventPage,
+  DeliveryChannelResult,
+  EarlyResetNotice,
+  SentryPoolState,
+} from '../shared/contracts.js';
+
+// Alert history and pool state are wire payloads, so their shapes come from the shared contracts.
+export type { AlertEvent, AlertEventPage };
 
 // Every write is durable when the mutation returns, so the in-memory state in `state.ts` is a read
 // model, not the source of truth; the DDL is rendered from column specs so a migration cannot drift.
@@ -90,17 +98,6 @@ export const ensureSentryStateSchema = (db: DatabaseSync): void => {
 
 export type AlertEventKind = 'milestone' | 'early_reset';
 
-export interface AlertEventRecord {
-  id: number;
-  firedAt: string;
-  poolId: string;
-  kind: string;
-  milestoneHours: number | null;
-  headroomPercent: number | null;
-  resetTime: string;
-  channels: Record<string, DeliveryChannelResult>;
-}
-
 export interface RecordAlertEventInput {
   poolId: string;
   resetTime: string;
@@ -115,11 +112,6 @@ export interface ListAlertEventsOptions {
   limit?: number;
   before?: string | null;
   poolId?: string | null;
-}
-
-export interface AlertEventPage {
-  events: AlertEventRecord[];
-  nextBefore: string | null;
 }
 
 export interface StoredProbe {
@@ -192,7 +184,7 @@ export class SentryStore {
     return probe;
   }
 
-  public readPools(): Record<string, PoolState> {
+  public readPools(): Record<string, SentryPoolState> {
     const poolRows = this.db.prepare('SELECT * FROM pool_state').all() as Array<
       Record<string, any>
     >;
@@ -216,7 +208,7 @@ export class SentryStore {
       milestonesByPool.set(poolId, list);
     }
 
-    const samplesByPool = new Map<string, PoolState['samples']>();
+    const samplesByPool = new Map<string, SentryPoolState['samples']>();
     for (const row of sampleRows) {
       const poolId = String(row.pool_id);
       const list = samplesByPool.get(poolId) ?? [];
@@ -228,7 +220,7 @@ export class SentryStore {
       samplesByPool.set(poolId, list);
     }
 
-    const pools: Record<string, PoolState> = {};
+    const pools: Record<string, SentryPoolState> = {};
     for (const row of poolRows) {
       const poolId = String(row.pool_id);
       const samples = samplesByPool.get(poolId) ?? [];
@@ -281,7 +273,7 @@ export class SentryStore {
     });
   }
 
-  public writePool(poolId: string, pool: PoolState): void {
+  public writePool(poolId: string, pool: SentryPoolState): void {
     const now = new Date().toISOString();
     this.inTransaction(() => {
       this.db
@@ -432,7 +424,7 @@ export class SentryStore {
 
   public replaceAll(
     probe: StoredProbe,
-    pools: Record<string, PoolState>,
+    pools: Record<string, SentryPoolState>,
     notice: EarlyResetNotice | null
   ): void {
     this.inTransaction(() => {
@@ -521,7 +513,7 @@ export class SentryStore {
     };
   }
 
-  private mapAlertEvent(row: Record<string, any>): AlertEventRecord {
+  private mapAlertEvent(row: Record<string, any>): AlertEvent {
     return {
       id: Number(row.id),
       firedAt: String(row.fired_at),

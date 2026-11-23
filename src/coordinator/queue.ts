@@ -3,8 +3,16 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
-import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import type {
+  BacklogTaskRecord,
+  PrPolicy,
+  RoutineTaskRecord,
+  RunnerRegistrationTokenResult,
+  RunnerSystemInfo,
+  SwarmRunnerRecord,
+  SwarmTask,
+} from '../shared/contracts.js';
 import {
   BacklogStatusSchema,
   normalizeCascade,
@@ -22,57 +30,16 @@ import {
 
 export type { TaskTier, BacklogStatus };
 
-export interface RunnerSystemInfo {
-  hostname?: string;
-  platform?: string;
-  arch?: string;
-  agyVersion?: string | null;
-}
-
-export interface SwarmTask {
-  id: string;
-  taskNumber: number;
-  title: string;
-  tier: TaskTier;
-  originId?: string;
-  originNumber?: number;
-  originTitle?: string;
-  createdAt: string;
-  updatedAt: string;
-  repositoryId: string;
-  repositoryName: string;
-  repositoryPath: string;
-  cloneUrl?: string;
-  defaultBranch: string;
-  prompt: string;
-  requestedBy: string;
-  prPolicy?: PrPolicy;
-  scheduleMode: ScheduleMode;
-  requiredLabels: string[];
-  model: string;
-  cascade: CascadeHop[];
-  poolGroup: PoolGroup;
-  effort: ReasoningEffort;
-  allowOverage: boolean;
-  pushBranch: boolean;
-  autoCreatePr: boolean;
-  prUrl?: string;
-  issueUrls?: string[];
-  expiresAt?: string;
-  verifyCommand?: string;
-  status: TaskStatus;
-  runnerId?: string;
-  claimedAt?: string;
-  heartbeatAt?: string;
-  completedAt?: string;
-  branchName?: string;
-  output?: string;
-  error?: string;
-  durationMs: number;
-  numTurns?: number;
-  totalTokens?: number;
-  thinkingTokens?: number;
-}
+// The queue writes rows and returns them; the payload shapes belong to the shared wire contracts so
+// the dashboard reads the same declaration.
+export type {
+  BacklogTaskRecord,
+  RoutineTaskRecord,
+  RunnerRegistrationTokenResult,
+  RunnerSystemInfo,
+  SwarmRunnerRecord,
+  SwarmTask,
+};
 
 export interface EnqueueTaskInput {
   id?: string;
@@ -135,35 +102,11 @@ export interface TaskListOptions extends TaskListFilters {
   offset?: number;
 }
 
-export interface SwarmRunnerRecord {
-  runnerId: string;
-  name: string;
-  labels: string[];
-  repositories: string[];
-  systemInfo: RunnerSystemInfo;
-  enabled: boolean;
-  hasToken: boolean;
-  activeTaskId?: string;
-  status: 'idle' | 'busy' | 'offline';
-  registeredAt: string;
-  lastSeenAt: string;
-}
-
 export interface CreateRegistrationTokenInput {
   nameHint?: string;
   labels?: string[];
   repositories?: string[];
   ttlMs?: number;
-}
-
-export interface RunnerRegistrationTokenResult {
-  id: string;
-  registrationToken: string;
-  nameHint?: string;
-  labels: string[];
-  repositories: string[];
-  expiresAt: string;
-  createdAt: string;
 }
 
 export interface ExchangeRegistrationTokenInput {
@@ -173,48 +116,6 @@ export interface ExchangeRegistrationTokenInput {
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
-}
-
-export interface BacklogTaskRecord {
-  id: string;
-  taskNumber: number;
-  title: string;
-  prompt: string;
-  repositoryId: string;
-  cascade: CascadeHop[];
-  verifyCommand?: string;
-  autoCreatePr: boolean;
-  priorityOrder: number;
-  status: BacklogStatus;
-  attemptCount: number;
-  maxAttempts: number;
-  lastError?: string;
-  swarmTaskId?: string;
-  githubIssueNumber?: number;
-  githubIssueUrl?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface RoutineTaskRecord {
-  id: string;
-  taskNumber: number;
-  title: string;
-  prompt: string;
-  repositoryId: string;
-  cascade: CascadeHop[];
-  verifyCommand?: string;
-  autoCreatePr: boolean;
-  prPolicy?: PrPolicy;
-  enabled: boolean;
-  sortOrder: number;
-  triggerBeforeResetHours: number;
-  minHeadroomPercent: number;
-  lastTriggeredResetTime?: string;
-  lastTriggeredCycles: Record<string, string>;
-  lastTaskId?: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export const hashRunnerToken = (token: string): string =>

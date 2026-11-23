@@ -3,7 +3,6 @@ import type { TaskStatus } from '../../types';
 const STATUS_LABELS: Record<TaskStatus, string> = {
   queued: 'Queued',
   claimed: 'Claimed',
-  running: 'Running',
   executing: 'Executing',
   completed: 'Completed',
   no_changes: 'No Changes',
@@ -16,7 +15,7 @@ export const statusLabel = (status: string): string =>
 
 export const STATUS_BUCKETS = [
   { id: 'all', label: 'All', statuses: null },
-  { id: 'inflight', label: 'In Flight', statuses: ['queued', 'claimed', 'running', 'executing'] },
+  { id: 'inflight', label: 'In Flight', statuses: ['queued', 'claimed', 'executing'] },
   { id: 'completed', label: 'Completed', statuses: ['completed', 'no_changes'] },
   { id: 'failed', label: 'Failed', statuses: ['failed', 'aborted'] },
 ] as const;

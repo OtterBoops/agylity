@@ -12,6 +12,7 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
+import type { RunnersResponse } from '../../shared/contracts.js';
 import { extractClientIp } from '../ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
@@ -613,7 +614,8 @@ export const handleGetRunners = (
   const coordinator = resolveCoordinator(options);
   const runners = coordinator.listRunners();
   const credentialsAvailable = Boolean(options.configStore.resolveConfig().githubToken?.trim());
-  return sendJson(res, 200, { runners, credentialsAvailable }, { 'Cache-Control': 'no-store' });
+  const payload: RunnersResponse = { runners, credentialsAvailable };
+  return sendJson(res, 200, payload, { 'Cache-Control': 'no-store' });
 };
 
 export const handleCreateRegistrationToken = async (

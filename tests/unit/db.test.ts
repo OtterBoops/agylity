@@ -4,7 +4,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
-import { applyMigrations } from '../../src/storage/migrations.js';
+import { applyMigrations, SWARM_TASK_COLUMNS } from '../../src/storage/migrations.js';
 import { TaskQueue } from '../../src/coordinator/index.js';
 import {
   AppDatabase,
@@ -315,6 +315,158 @@ describe('Secret key classification (canonical map and env spellings)', () => {
 
     for (const key of ['webUiPort', 'notificationChannel', 'logLevel']) {
       assert.equal(isSecretKey(key), false, `${key} must not be encrypted`);
+    }
+  });
+});
+
+describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
+  it('asserts every SWARM_TASK_COLUMNS column through enqueue, claim, status report and read', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const queue = new TaskQueue(db);
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      const cascade = [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-neon', effort: 'low' },
+      ] as const;
+      const issueUrls = [
+        'https://github.com/OtterBoops/agylity/issues/41',
+        'https://github.com/OtterBoops/agylity/issues/42',
+      ];
+
+      const enqueued = queue.enqueue({
+        title: 'Column coverage round-trip',
+        tier: 'backlog',
+        originId: 'backlog-coverage-1',
+        originNumber: 77,
+        originTitle: 'Backlog origin for column coverage',
+        repositoryId: 'agylity-coverage',
+        repositoryName: 'OtterBoops/agylity',
+        repositoryPath: 'clones/agylity-coverage',
+        cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+        defaultBranch: 'develop',
+        prompt: 'Write a task that names every swarm_tasks column',
+        requestedBy: 'coverage-runner',
+        prPolicy: 'all',
+        scheduleMode: 'pre_reset',
+        requiredLabels: ['Linux', 'gpu'],
+        cascade,
+        allowOverage: true,
+        pushBranch: false,
+        autoCreatePr: false,
+        expiresAt,
+        verifyCommand: 'npm test',
+      });
+
+      // claimed_at and heartbeat_at move only on the claim path, so the round-trip has to include it.
+      const claimed = queue.claimNext({ runnerId: 'runner-coverage', labels: ['linux', 'gpu'] });
+      assert.ok(claimed, 'the queued task must be claimable by a runner holding its labels');
+      const claimedAt = claimed.claimedAt;
+      assert.ok(claimedAt, 'claimNext must stamp claimed_at');
+
+      const reported = queue.updateTaskStatus(enqueued.id, {
+        status: 'completed',
+        runnerId: 'runner-coverage',
+        branchName: 'agylity/column-coverage',
+        prUrl: 'https://github.com/OtterBoops/agylity/pull/12',
+        issueUrls,
+        output: 'coverage output',
+        error: 'coverage error note',
+        durationMs: 1234,
+        numTurns: 7,
+        totalTokens: 45_678,
+        thinkingTokens: 1_234,
+      });
+      assert.ok(reported?.applied, 'the terminal status report must land');
+
+      const task = queue.getTask(enqueued.id);
+      assert.ok(task, 'the enqueued task must read back after the round-trip');
+
+      const roundTrips = (column: string, actual: unknown, expected: unknown): void =>
+        assert.deepEqual(
+          actual,
+          expected,
+          `swarm_tasks.${column} must round-trip through TaskQueue`
+        );
+
+      const isStamped = (column: string, value: string | undefined): void => {
+        assert.ok(value, `swarm_tasks.${column} must be populated`);
+        assert.equal(
+          Number.isNaN(Date.parse(value)),
+          false,
+          `swarm_tasks.${column} must hold a parseable timestamp`
+        );
+      };
+
+      // One entry per column spec: the keys are checked against SWARM_TASK_COLUMNS below, so a new
+      // migration column cannot ship without an assertion wired to it.
+      const coverage: Record<string, () => void> = {
+        id: () => roundTrips('id', task.id, enqueued.id),
+        task_number: () => roundTrips('task_number', task.taskNumber, 1),
+        title: () => roundTrips('title', task.title, 'Column coverage round-trip'),
+        tier: () => roundTrips('tier', task.tier, 'backlog'),
+        origin_id: () => roundTrips('origin_id', task.originId, 'backlog-coverage-1'),
+        origin_number: () => roundTrips('origin_number', task.originNumber, 77),
+        origin_title: () =>
+          roundTrips('origin_title', task.originTitle, 'Backlog origin for column coverage'),
+        created_at: () => isStamped('created_at', task.createdAt),
+        updated_at: () => isStamped('updated_at', task.updatedAt),
+        repository_id: () => roundTrips('repository_id', task.repositoryId, 'agylity-coverage'),
+        repository_name: () =>
+          roundTrips('repository_name', task.repositoryName, 'OtterBoops/agylity'),
+        repository_path: () =>
+          roundTrips('repository_path', task.repositoryPath, 'clones/agylity-coverage'),
+        clone_url: () =>
+          roundTrips('clone_url', task.cloneUrl, 'https://github.com/OtterBoops/agylity.git'),
+        default_branch: () => roundTrips('default_branch', task.defaultBranch, 'develop'),
+        prompt: () =>
+          roundTrips('prompt', task.prompt, 'Write a task that names every swarm_tasks column'),
+        requested_by: () => roundTrips('requested_by', task.requestedBy, 'coverage-runner'),
+        pr_policy: () => roundTrips('pr_policy', task.prPolicy, 'all'),
+        schedule_mode: () => roundTrips('schedule_mode', task.scheduleMode, 'pre_reset'),
+        required_labels_json: () =>
+          roundTrips('required_labels_json', task.requiredLabels, ['linux', 'gpu']),
+        model: () => roundTrips('model', task.model, 'gemini-4-argon'),
+        candidate_models_json: () => roundTrips('candidate_models_json', task.cascade, cascade),
+        pool_group: () => roundTrips('pool_group', task.poolGroup, 'gemini-argon'),
+        effort: () => roundTrips('effort', task.effort, 'high'),
+        allow_overage: () => roundTrips('allow_overage', task.allowOverage, true),
+        push_branch: () => roundTrips('push_branch', task.pushBranch, false),
+        auto_create_pr: () => roundTrips('auto_create_pr', task.autoCreatePr, false),
+        pr_url: () =>
+          roundTrips('pr_url', task.prUrl, 'https://github.com/OtterBoops/agylity/pull/12'),
+        issue_urls_json: () => roundTrips('issue_urls_json', task.issueUrls, issueUrls),
+        expires_at: () => roundTrips('expires_at', task.expiresAt, expiresAt),
+        verify_command: () => roundTrips('verify_command', task.verifyCommand, 'npm test'),
+        status: () => roundTrips('status', task.status, 'completed'),
+        runner_id: () => roundTrips('runner_id', task.runnerId, 'runner-coverage'),
+        claimed_at: () => roundTrips('claimed_at', task.claimedAt, claimedAt),
+        heartbeat_at: () => isStamped('heartbeat_at', task.heartbeatAt),
+        completed_at: () => isStamped('completed_at', task.completedAt),
+        branch_name: () => roundTrips('branch_name', task.branchName, 'agylity/column-coverage'),
+        output: () => roundTrips('output', task.output, 'coverage output'),
+        error: () => roundTrips('error', task.error, 'coverage error note'),
+        duration_ms: () => roundTrips('duration_ms', task.durationMs, 1234),
+        num_turns: () => roundTrips('num_turns', task.numTurns, 7),
+        total_tokens: () => roundTrips('total_tokens', task.totalTokens, 45_678),
+        thinking_tokens: () => roundTrips('thinking_tokens', task.thinkingTokens, 1_234),
+      };
+
+      const declared = SWARM_TASK_COLUMNS.map((column) => column.name);
+      const uncovered = declared.filter((name) => coverage[name] === undefined);
+      const unknown = Object.keys(coverage).filter((name) => !declared.includes(name));
+
+      assert.deepEqual(
+        Object.keys(coverage).sort(),
+        [...declared].sort(),
+        `swarm_tasks columns without a round-trip assertion: ${uncovered.join(', ') || 'none'}; assertions for unknown columns: ${unknown.join(', ') || 'none'}`
+      );
+
+      // Each entry runs its own assertion, so a column the mapper dropped fails on its own name.
+      for (const assertColumn of Object.values(coverage)) assertColumn();
+    } finally {
+      db.close();
     }
   });
 });

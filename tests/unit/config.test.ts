@@ -1,8 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   RawEnvSchema,
+  CONFIG_DOC_GROUPS,
+  CONFIG_KEY_ENV_NAMES,
+  CONFIG_REGISTRY,
+  CANONICAL_SECRET_CONFIG_KEYS,
+  ENV_TO_CONFIG_KEY,
+  SECRET_CONFIG_KEY_ENV_NAMES,
   booleanEnv,
   milestoneHoursEnv,
   RepositoriesJsonSchema,
@@ -13,6 +20,9 @@ import {
   DEFAULT_QUOTA_BURN_MAX_HOURS,
   DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
 } from '../../src/config/schema.js';
+import { applyConfigReference, renderEnvExample } from '../../src/config/docs.js';
+import { PR_POLICIES, PR_POLICY_HINTS } from '../../src/shared/policies.js';
+import { PR_POLICY_VALUES } from '../../src/shared/contracts.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { warnDeprecatedEnvVars } from '../../src/config/deprecated.js';
 import { logger } from '../../src/logs/logger.js';
@@ -29,7 +39,8 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       WEB_UI_AUTH_TOKEN: 'secret-token-123',
     };
     const parsed = RawEnvSchema.parse(raw);
-    assert.equal(parsed.NOTIFICATION_CHANNELS, 'discord');
+    // RawEnvSchema publishes the converted value: a channel list, not the raw comma string.
+    assert.deepEqual(parsed.NOTIFICATION_CHANNELS, ['discord']);
     assert.equal(parsed.QUOTA_CHECK_INTERVAL_SECONDS, 600);
     assert.equal(parsed.QUOTA_ALERT_THRESHOLD_PERCENT, 30);
     assert.equal(parsed.WEB_UI_PORT, 8080);
@@ -650,5 +661,85 @@ describe('Backlog dispatch headroom configuration', () => {
       () => validateConfigOverridePatch({ backlogMinHeadroomPercent: -1 }),
       /Too small/
     );
+  });
+});
+
+describe('CONFIG_REGISTRY (single source of config truth)', () => {
+  it('maps every registry env spelling onto its config key in both directions', () => {
+    const pairs = CONFIG_REGISTRY.filter(
+      (entry) => entry.env !== undefined && entry.key !== undefined
+    );
+    const envSpellings = CONFIG_REGISTRY.flatMap((entry) => (entry.env ? [entry.env] : []));
+    assert.equal(new Set(envSpellings).size, envSpellings.length, 'env spellings must be unique');
+
+    for (const entry of pairs) {
+      assert.equal(CONFIG_KEY_ENV_NAMES[entry.key], entry.env);
+      assert.equal(ENV_TO_CONFIG_KEY[entry.env], entry.key);
+    }
+    assert.equal(
+      Object.keys(ENV_TO_CONFIG_KEY).length,
+      pairs.length,
+      'ENV_TO_CONFIG_KEY must hold exactly the registry pairs'
+    );
+  });
+
+  it('documents every entry in a declared group', () => {
+    const groups = new Set(CONFIG_DOC_GROUPS.map((group) => group.id));
+    for (const entry of CONFIG_REGISTRY) {
+      const name = entry.env ?? entry.key;
+      assert.ok(entry.description.trim() !== '', `${name} needs a description`);
+      assert.ok(groups.has(entry.group), `${name} names an undeclared doc group`);
+    }
+  });
+
+  it('accepts each built-in default as an override, so every key is dashboard-writable', () => {
+    for (const [key, value] of Object.entries(BUILTIN_DEFAULTS)) {
+      assert.doesNotThrow(
+        () => validateConfigOverridePatch({ [key]: structuredClone(value) }),
+        `${key} must accept its own built-in default`
+      );
+    }
+  });
+
+  it('derives the secret list and its env spellings from the registry secret flag', () => {
+    const secretKeys = CONFIG_REGISTRY.flatMap((entry) =>
+      entry.key !== undefined && entry.secret ? [entry.key] : []
+    );
+    assert.deepEqual([...CANONICAL_SECRET_CONFIG_KEYS].sort(), secretKeys.sort());
+    for (const [key, env] of Object.entries(SECRET_CONFIG_KEY_ENV_NAMES)) {
+      assert.equal(CONFIG_KEY_ENV_NAMES[key as keyof typeof CONFIG_KEY_ENV_NAMES], env);
+    }
+  });
+
+  it('keeps docs/configuration.md generated from the registry', () => {
+    const docPath = path.resolve(import.meta.dirname, '../../docs/configuration.md');
+    const doc = readFileSync(docPath, 'utf8');
+    assert.equal(
+      applyConfigReference(doc),
+      doc,
+      'docs/configuration.md is stale: npm run docs:config'
+    );
+  });
+
+  it('keeps .env.example generated from the registry', () => {
+    const envPath = path.resolve(import.meta.dirname, '../../.env.example');
+    assert.equal(
+      readFileSync(envPath, 'utf8'),
+      renderEnvExample(),
+      '.env.example is stale: npm run docs:config'
+    );
+  });
+});
+
+describe('PR_POLICIES (single source of policy copy)', () => {
+  it('covers every wire value exactly once with a label and a hint', () => {
+    assert.deepEqual(
+      PR_POLICIES.map((policy) => policy.value).sort(),
+      [...PR_POLICY_VALUES].sort()
+    );
+    for (const policy of PR_POLICIES) {
+      assert.ok(policy.label.trim() !== '', `${policy.value} needs a label`);
+      assert.equal(PR_POLICY_HINTS[policy.value], policy.hint);
+    }
   });
 });

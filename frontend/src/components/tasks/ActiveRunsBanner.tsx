@@ -3,8 +3,8 @@ import { route } from 'preact-router';
 import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { formatDateTime, useTimeFormat } from '../../utils/time';
+import { taskStatusBadgeClass } from '../../utils/status';
 import { Icon } from '../Icon';
-import { taskBadgeClass } from './badges';
 
 interface ActiveRunCardProps {
   run: SwarmTask;
@@ -39,7 +39,7 @@ export const ActiveRunCard = ({
           <span class="truncate font-mono text-xs text-pine-subtle">{run.repositoryName}</span>
         </div>
         <span
-          class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${taskBadgeClass(run.status)}`}
+          class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(run.status)}`}
         >
           {run.status}
         </span>

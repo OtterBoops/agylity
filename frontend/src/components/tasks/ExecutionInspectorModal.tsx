@@ -8,13 +8,15 @@ import {
   faTimes,
   faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
-import type { PrPolicy, SwarmTask } from '../../types';
+import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
+import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
 import { getTask } from '../../api';
 import { dialogBackdropClickHandler } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
+import { taskStatusBadgeClass } from '../../utils/status';
 import { Icon } from '../Icon';
-import { isActiveTaskStatus, isLiveTaskStatus, taskBadgeClass } from './badges';
+import { isActiveTaskStatus, isLiveTaskStatus } from './badges';
 import { githubIssueLabel } from './executionRow';
 
 const POLL_INTERVAL_MS = 3000;
@@ -22,13 +24,6 @@ const POLL_INTERVAL_MS = 3000;
 const AUTOSCROLL_SLACK_PX = 24;
 
 const OVERLAP_SEARCH_LIMIT = 4096;
-
-const PR_POLICY_LABELS: Record<PrPolicy, string> = {
-  docs_only: 'Docs only',
-  issues_only: 'Issues only',
-  all: 'All files',
-  none: 'Disabled',
-};
 
 const formatTokenCount = (value: number): string => value.toLocaleString();
 
@@ -179,7 +174,7 @@ export const ExecutionInspectorContent = ({
               {live.title || (live.taskNumber ? `Task #${live.taskNumber}` : 'Task details')}
             </h2>
             <span
-              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskBadgeClass(live.status)}`}
+              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(live.status)}`}
             >
               {live.status}
             </span>
@@ -276,9 +271,7 @@ export const ExecutionInspectorContent = ({
             <DetailItem label="Created">
               {formatDateTime(live.createdAt, { timeFormat })}
             </DetailItem>
-            <DetailItem label="Runner">
-              {live.runnerId || live.claimedByRunnerId || '\u2014'}
-            </DetailItem>
+            <DetailItem label="Runner">{live.runnerId || '\u2014'}</DetailItem>
             <DetailItem label="Duration">{formatDuration(live.durationMs)}</DetailItem>
             <DetailItem label="Claimed">
               {formatDateTime(live.claimedAt, { timeFormat }) || '\u2014'}
@@ -329,7 +322,7 @@ export const ExecutionInspectorContent = ({
               )}
             </DetailItem>
             <DetailItem label="PR Policy">
-              {live.prPolicy ? PR_POLICY_LABELS[live.prPolicy] : 'Inherited'}
+              {live.prPolicy ? PR_POLICY_SHORT_LABELS[live.prPolicy] : 'Inherited'}
             </DetailItem>
             <DetailItem label="Verify Command" span>
               {live.verifyCommand || '\u2014'}
