@@ -11,6 +11,11 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { clearAuthFailures } from '../../src/web/routes.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
+import {
+  handleSyncGithubBacklog,
+  resolveGithubRepoSlug,
+} from '../../src/web/controllers/backlog.js';
+import { Coordinator } from '../../src/coordinator/coordinator.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* ==================================================================== */
@@ -3654,5 +3659,236 @@ describe('Web: Antigravity CLI version reporting', () => {
       store.close();
       cleanup();
     }
+  });
+
+  describe('GitHub Backlog Sync (#14)', () => {
+    const createMockResponse = (): {
+      res: http.ServerResponse;
+      getBody: () => any;
+      getStatus: () => number;
+    } => {
+      let status = 200;
+      let raw = '';
+      const res = {
+        writeHead(code: number) {
+          status = code;
+          return res;
+        },
+        setHeader() {},
+        end(chunk?: string | Buffer) {
+          if (chunk) raw += chunk.toString();
+        },
+      } as unknown as http.ServerResponse;
+      return {
+        res,
+        getStatus: () => status,
+        getBody: () => (raw ? JSON.parse(raw) : undefined),
+      };
+    };
+
+    it('resolves repoSlug from cloneUrl, id, name, or local git origin remote', async () => {
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+          cloneUrl: 'git@github.com:OtterBoops/agylity.git',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'OtterBoops/agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'OtterBoops/agylity',
+          path: '/repos/agylity',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      const fromGitOrigin = await resolveGithubRepoSlug(
+        {
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        },
+        async () => ({ stdout: 'https://github.com/OtterBoops/agylity.git\n', stderr: '' })
+      );
+      assert.equal(fromGitOrigin, 'OtterBoops/agylity');
+
+      const unresolvable = await resolveGithubRepoSlug(
+        {
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        },
+        async () => {
+          throw new Error('not a git repo');
+        }
+      );
+      assert.equal(unresolvable, undefined);
+    });
+
+    it('reports unresolvable repos in failedRepos via POST /api/backlog/sync-github', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_unresolvable_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        repositories: [
+          {
+            id: 'local-only',
+            name: 'local-only',
+            path: path.join(dir, 'missing'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const body = await ky
+          .post(`http://127.0.0.1:${started.port}/api/backlog/sync-github`, { retry: 0 })
+          .json<any>();
+
+        assert.equal(body.success, false);
+        assert.equal(body.importedCount, 0);
+        assert.deepEqual(body.failedRepos, ['local-only']);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('imports issues via repo.name / git origin and re-imports previously canceled issues', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_canceled_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        githubBacklogLabel: 'backlog',
+        repositories: [
+          {
+            id: 'repo-by-name',
+            name: 'OtterBoops/repo-one',
+            path: path.join(dir, 'one'),
+            defaultBranch: 'main',
+          },
+          {
+            id: 'repo-by-git',
+            name: 'repo-two',
+            path: path.join(dir, 'two'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const coordinator = new Coordinator({ configStore: store });
+
+      try {
+        // Canceled row for issue #10 should NOT block re-importing #10.
+        const canceledRow = coordinator.queue.createBacklogTask({
+          title: '[GH #10] Previously canceled',
+          prompt: 'Old prompt',
+          repositoryId: 'repo-by-name',
+          githubIssueNumber: 10,
+        });
+        coordinator.queue.updateBacklogTask(canceledRow.id, { status: 'canceled' });
+
+        // Active pending row for issue #11 SHOULD block duplicate import.
+        coordinator.queue.createBacklogTask({
+          title: '[GH #11] Still pending',
+          prompt: 'Active prompt',
+          repositoryId: 'repo-by-name',
+          githubIssueNumber: 11,
+        });
+
+        const requestedSlugs: string[] = [];
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator },
+          'POST',
+          {
+            execFileAsync: async () => ({
+              stdout: 'git@github.com:OtterBoops/repo-two.git\n',
+              stderr: '',
+            }),
+            listOpenIssues: async (slug) => {
+              requestedSlugs.push(slug);
+              if (slug === 'OtterBoops/repo-one') {
+                return {
+                  truncated: false,
+                  issues: [
+                    { number: 10, title: 'Reopened issue', body: 'Should re-import' },
+                    { number: 11, title: 'Already active', body: 'Should skip' },
+                  ],
+                };
+              }
+              return {
+                truncated: false,
+                issues: [{ number: 20, title: 'From git origin', body: 'Origin body' }],
+              };
+            },
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(requestedSlugs, ['OtterBoops/repo-one', 'OtterBoops/repo-two']);
+        assert.deepEqual(mockRes.getBody(), {
+          success: true,
+          importedCount: 2,
+          canceledCount: 0,
+          label: 'backlog',
+          failedRepos: [],
+        });
+
+        const tasks = coordinator.queue.listBacklogTasks();
+        const reimported = tasks.filter(
+          (t) =>
+            t.repositoryId === 'repo-by-name' &&
+            t.githubIssueNumber === 10 &&
+            t.status === 'pending'
+        );
+        assert.equal(reimported.length, 1);
+        assert.equal(reimported[0]?.title, '[GH #10] Reopened issue');
+
+        const activeDuplicates = tasks.filter(
+          (t) => t.repositoryId === 'repo-by-name' && t.githubIssueNumber === 11
+        );
+        assert.equal(activeDuplicates.length, 1);
+
+        const fromOrigin = tasks.filter(
+          (t) => t.repositoryId === 'repo-by-git' && t.githubIssueNumber === 20
+        );
+        assert.equal(fromOrigin.length, 1);
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
   });
 });

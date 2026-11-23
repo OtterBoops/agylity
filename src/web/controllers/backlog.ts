@@ -23,6 +23,7 @@ import {
   type BacklogStatus,
 } from '../../coordinator/models.js';
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
+import type { RepositoryEntry } from '../../config/schema.js';
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
@@ -257,11 +258,60 @@ export const handleBulkBacklogTasks = async (
   return sendJson(res, 200, { updated: items.length, items, skipped });
 };
 
+const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+const GITHUB_URL_SLUG_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
+
+const parseGithubSlugFromUrl = (value: string): string | undefined => {
+  const match = GITHUB_URL_SLUG_RE.exec(value.trim());
+  return match ? `${match[1]}/${match[2]}` : undefined;
+};
+
+const isTerminalBacklogStatus = (status: BacklogStatus): boolean =>
+  status === 'canceled' || isTerminalTaskStatus(status);
+
+export const resolveGithubRepoSlug = async (
+  repo: Pick<RepositoryEntry, 'id' | 'name' | 'path' | 'cloneUrl'>,
+  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync
+): Promise<string | undefined> => {
+  if (repo.cloneUrl) {
+    const fromCloneUrl = parseGithubSlugFromUrl(repo.cloneUrl);
+    if (fromCloneUrl) return fromCloneUrl;
+  }
+  if (OWNER_REPO_SLUG_RE.test(repo.id)) {
+    return repo.id;
+  }
+  if (OWNER_REPO_SLUG_RE.test(repo.name)) {
+    return repo.name;
+  }
+  if (repo.path) {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['-C', repo.path, 'remote', 'get-url', 'origin'],
+        { timeout: 5000 }
+      );
+      if (stdout) {
+        const fromOrigin = parseGithubSlugFromUrl(stdout);
+        if (fromOrigin) return fromOrigin;
+      }
+    } catch {
+      // Missing checkout, non-git directory, or no origin remote.
+    }
+  }
+  return undefined;
+};
+
+export interface SyncGithubBacklogDeps {
+  listOpenIssues?: typeof listOpenIssues;
+  execFileAsync?: typeof defaultExecFileAsync;
+}
+
 export const handleSyncGithubBacklog = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
-  method: string
+  method: string,
+  deps?: SyncGithubBacklogDeps
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
@@ -269,30 +319,32 @@ export const handleSyncGithubBacklog = async (
   const coordinator = resolveCoordinator(options);
   const targetLabel = config.githubBacklogLabel || 'backlog';
   const ghToken = process.env.GITHUB_TOKEN?.trim();
+  const fetchIssues = deps?.listOpenIssues ?? listOpenIssues;
+  const execFileAsync = deps?.execFileAsync ?? defaultExecFileAsync;
 
   let importedCount = 0;
   let canceledCount = 0;
   const failedRepos: string[] = [];
   const existingBacklog = coordinator.queue.listBacklogTasks();
-  // A finished task is history: only open rows keep their issue from being re-imported.
+  // Finished or canceled rows are history: only active rows block re-importing an issue.
   const existingKeys = new Set(
     existingBacklog
-      .filter((t) => t.githubIssueNumber !== undefined && !isTerminalTaskStatus(t.status))
+      .filter((t) => t.githubIssueNumber !== undefined && !isTerminalBacklogStatus(t.status))
       .map((t) => `${t.repositoryId}#${t.githubIssueNumber}`)
   );
 
   for (const repo of config.repositories) {
-    let repoSlug: string | undefined;
-    if (repo.cloneUrl) {
-      const match = /github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/.exec(repo.cloneUrl);
-      if (match) repoSlug = `${match[1]}/${match[2]}`;
+    const repoSlug = await resolveGithubRepoSlug(repo, execFileAsync);
+    if (!repoSlug) {
+      options.logger?.warn?.(
+        'Cannot resolve GitHub owner/repo slug for configured repository %s; skipping backlog sync',
+        repo.id
+      );
+      failedRepos.push(repo.id);
+      continue;
     }
-    if (!repoSlug && repo.id.includes('/')) {
-      repoSlug = repo.id;
-    }
-    if (!repoSlug) continue;
 
-    const listing = await listOpenIssues(repoSlug, targetLabel, ghToken, options.logger);
+    const listing = await fetchIssues(repoSlug, targetLabel, ghToken, options.logger);
     if (!listing) {
       failedRepos.push(repo.id);
       continue;
