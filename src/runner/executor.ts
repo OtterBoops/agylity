@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { SwarmTask, TaskStatusPatch } from '../coordinator/queue.js';
@@ -38,6 +39,8 @@ export interface TaskExecutorOptions {
   cascade?: CascadeHop[];
   mirrorCacheDir?: string;
   useMirrorCache?: boolean;
+  /** Optional hook for resolving git author identity from a leased GitHub token (overridable in tests). */
+  resolveGithubIdentityFn?: (token: string) => Promise<{ name: string; email: string } | undefined>;
 }
 
 export interface TaskExecuteOptions {
@@ -83,9 +86,9 @@ export interface TaskExecutionTelemetry {
 // Every policy states its own directive: an empty suffix would let the model choose a default that
 // no gate then enforces, and the policy now binds every tier.
 const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
-  all: '\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT push or open a pull request yourself.]',
+  all: '\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT add Co-authored-by trailers, override git author/committer identity, push, or open a pull request yourself.]',
   docs_only:
-    '\n\n[Policy: Documentation only — modify documentation files only (do NOT modify source code or other non-documentation files) and commit your changes with a concise, descriptive commit message. Do NOT push or open a pull request yourself.]',
+    '\n\n[Policy: Documentation only — modify documentation files only (do NOT modify source code or other non-documentation files) and commit your changes with a concise, descriptive commit message. Do NOT add Co-authored-by trailers, override git author/committer identity, push, or open a pull request yourself.]',
   issues_only:
     '\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]',
   none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
@@ -337,6 +340,39 @@ export const spawnFromExecFileFn =
     return child;
   };
 
+// Resolves the GitHub token owner's git identity so squash-merges match the repo owner cleanly
+// without triggering GitHub's automatic `Co-authored-by:` trailer.
+const defaultResolveGithubIdentity = async (
+  token: string
+): Promise<{ name: string; email: string } | undefined> => {
+  try {
+    const user = await ky
+      .get('https://api.github.com/user', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+          'X-GitHub-Api-Version': '2022-11-28',
+          'User-Agent': 'agylity-runner',
+        },
+        timeout: 10000,
+        retry: 0,
+      })
+      .json<{ id?: number; login?: string; name?: string | null; email?: string | null }>();
+    const login = typeof user.login === 'string' ? user.login.trim() : '';
+    const name = (typeof user.name === 'string' ? user.name.trim() : '') || login;
+    const explicitEmail = typeof user.email === 'string' ? user.email.trim() : '';
+    const noreplyEmail =
+      typeof user.id === 'number' && Number.isFinite(user.id) && login
+        ? `${user.id}+${login}@users.noreply.github.com`
+        : '';
+    const email = explicitEmail || noreplyEmail;
+    if (!name || !email) return undefined;
+    return { name, email };
+  } catch {
+    return undefined;
+  }
+};
+
 export class TaskExecutor {
   private readonly agyBinPath: string;
   private readonly timeoutMs: number;
@@ -349,6 +385,10 @@ export class TaskExecutor {
   private readonly cascade?: CascadeHop[];
   private readonly mirrorCacheDir: string;
   private readonly useMirrorCache: boolean;
+  private readonly resolveGithubIdentityFn: (
+    token: string
+  ) => Promise<{ name: string; email: string } | undefined>;
+  private readonly githubIdentityCache = new Map<string, { name: string; email: string } | null>();
   private readonly onStatusUpdate?: (
     patch: TaskStatusPatch & { message?: string }
   ) => Promise<void> | void;
@@ -367,6 +407,7 @@ export class TaskExecutor {
     this.cascade = options.cascade;
     this.mirrorCacheDir = options.mirrorCacheDir ?? path.join(os.tmpdir(), 'agylity-repo-mirrors');
     this.useMirrorCache = options.useMirrorCache !== false;
+    this.resolveGithubIdentityFn = options.resolveGithubIdentityFn ?? defaultResolveGithubIdentity;
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
@@ -832,6 +873,34 @@ export class TaskExecutor {
     };
   }
 
+  private async resolveGitIdentityEnv(
+    githubToken?: string,
+    fallbackName?: string
+  ): Promise<Record<string, string>> {
+    const envAuthorName = process.env.GIT_AUTHOR_NAME?.trim();
+    const envAuthorEmail = process.env.GIT_AUTHOR_EMAIL?.trim();
+    let resolved: { name: string; email: string } | undefined;
+
+    if ((!envAuthorName || !envAuthorEmail) && githubToken) {
+      const cacheKey = createHash('sha256').update(githubToken).digest('hex');
+      if (this.githubIdentityCache.has(cacheKey)) {
+        resolved = this.githubIdentityCache.get(cacheKey) ?? undefined;
+      } else {
+        resolved = await this.resolveGithubIdentityFn(githubToken);
+        this.githubIdentityCache.set(cacheKey, resolved ?? null);
+      }
+    }
+
+    const authorName = envAuthorName || resolved?.name || fallbackName || 'Agylity Runner';
+    const authorEmail = envAuthorEmail || resolved?.email || 'noreply@agylity.local';
+    return {
+      GIT_AUTHOR_NAME: authorName,
+      GIT_AUTHOR_EMAIL: authorEmail,
+      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME?.trim() || authorName,
+      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL?.trim() || authorEmail,
+    };
+  }
+
   /**
    * Runs the agent, failing over along the cascade while upstream reports capacity exhaustion.
    *
@@ -851,6 +920,7 @@ export class TaskExecutor {
       signal?: AbortSignal | undefined;
       onOutput?: ((tail: string) => void) | undefined;
       githubToken?: string | undefined;
+      gitIdentityEnv: Record<string, string>;
     }
   ): Promise<{
     output: string;
@@ -901,8 +971,6 @@ export class TaskExecutor {
       );
 
       try {
-        const authorName = process.env.GIT_AUTHOR_NAME || 'Agylity Runner';
-        const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
         const streamed = await this.runStreamedCommand(this.agyBinPath, agyArgs, {
           cwd,
           timeoutMs: this.timeoutMs,
@@ -910,15 +978,11 @@ export class TaskExecutor {
           onOutput: context.onOutput,
           // The lease is the only credential the child sees; the empty fallback keeps a stale
           // GITHUB_TOKEN inherited from the runner environment out of the agent's reach.
-          // Provide a deterministic git identity fallback so `agy` never hits "Author identity
-          // unknown" inside a container and improvises a third-party `@users.noreply.github.com`
-          // email.
+          // Provide a deterministic git identity so `agy` never hits "Author identity unknown"
+          // inside a container and improvises a third-party `@users.noreply.github.com` email.
           env: {
             ...process.env,
-            GIT_AUTHOR_NAME: authorName,
-            GIT_AUTHOR_EMAIL: authorEmail,
-            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
-            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+            ...context.gitIdentityEnv,
             GITHUB_TOKEN: context.githubToken ?? '',
           },
         });
@@ -1028,7 +1092,8 @@ export class TaskExecutor {
   private async commitWorkingTree(
     task: SwarmTask,
     branchName: string,
-    baseBranch: string
+    baseBranch: string,
+    gitIdentityEnv: Record<string, string>
   ): Promise<{ commitsProduced: boolean; deliverableTitle?: string }> {
     const cwd = task.repositoryPath;
     const deliverableTitle = await this.authoredCommitSubject(cwd, baseBranch);
@@ -1041,17 +1106,12 @@ export class TaskExecutor {
       });
       if (statusOut && statusOut.trim() !== '') {
         await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
-        const authorName = process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
-        const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
         await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
           cwd,
           timeout: 30000,
           env: {
             ...process.env,
-            GIT_AUTHOR_NAME: authorName,
-            GIT_AUTHOR_EMAIL: authorEmail,
-            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
-            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+            ...gitIdentityEnv,
           },
         });
         committed = true;
@@ -1449,6 +1509,8 @@ export class TaskExecutor {
         modelSupportsEffort(task.model) ? primaryHop.effort : undefined
       );
 
+      const gitIdentityEnv = await this.resolveGitIdentityEnv(githubToken, task.requestedBy);
+
       const agent = await this.runAgentWithCascade(task, {
         cwd,
         branchName,
@@ -1460,6 +1522,7 @@ export class TaskExecutor {
         signal: options.signal,
         onOutput: options.onOutput,
         githubToken,
+        gitIdentityEnv,
       });
       capturedOutput = agent.output;
       capturedTelemetryRaw = agent.lastStdout;
@@ -1470,7 +1533,7 @@ export class TaskExecutor {
         await this.runVerification(task.verifyCommand, cwd, options.signal);
       }
 
-      const commit = await this.commitWorkingTree(task, branchName, baseBranch);
+      const commit = await this.commitWorkingTree(task, branchName, baseBranch, gitIdentityEnv);
       if (!commit.commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
         const issues = await this.collectIssueDeliverables(task, startMs, githubToken);
