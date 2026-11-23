@@ -81,12 +81,14 @@ services:
       - RUNNER_STATE_PATH=/data/runner.json
       - RUNNER_NAME=agylity-runner-1
       - RUNNER_TOKEN=${RUNNER_TOKEN}
-      # Git identity for task completion commits. The GitHub token is not set here: it is leased
+      # Git identity for task completion commits. Set these to your own GitHub name and noreply
+      # email (never a placeholder `@users.noreply.github.com` username you don't own, or GitHub
+      # will attribute commits to that account). The GitHub token is not set here: it is leased
       # from the coordinator, in memory, for the task this runner claims.
-      - GIT_AUTHOR_NAME=agylity[bot]
-      - GIT_AUTHOR_EMAIL=agylity@users.noreply.github.com
-      - GIT_COMMITTER_NAME=agylity[bot]
-      - GIT_COMMITTER_EMAIL=agylity@users.noreply.github.com
+      - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-Agylity Runner}
+      - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-noreply@agylity.local}
+      - GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-Agylity Runner}
+      - GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-noreply@agylity.local}
 
     depends_on:
       agylity:

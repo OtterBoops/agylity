@@ -354,9 +354,11 @@ lets the dashboard link a run back to the item that produced it.
 - **Autonomy quench**: the autonomous evaluator runs on each quota probe but stays quiet for two hours
   after an `immediate`-tier dispatch (a human started it now). The timestamp lives in `runtime_state`, so a
   redeploy does not re-arm autonomous work.
-- **Tier 2 (backlog)**: one run in flight at a time, counted over the queue's terminal-status set
-  (`countActiveBacklogTasks`), and gated once at spawn on `COORDINATOR_ENABLED`, the two-hour autonomy
-  quench, and effective headroom of at least
+- **Tier 2 (backlog)**: concurrency is governed by `BACKLOG_CONCURRENCY` (default `per_repo`: one active
+  backlog run per repository bounded by online enabled runners; `single`: one active globally;
+  `per_runner`: one per online enabled runner even on the same repository), counted over the queue's
+  terminal-status set (`listActiveBacklogTasks`), and gated once at spawn on `COORDINATOR_ENABLED`, the
+  two-hour autonomy quench, and effective headroom of at least
   `max(BACKLOG_MIN_HEADROOM_PERCENT, MIN_DISPATCH_HEADROOM_PERCENT)` — the configurable floor defaults
   to `40`, and the global safety floor still wins when it is higher. The spawn is ready-to-run:
   `scheduleMode` `immediate` with a two-hour queued deadline, so an idle runner claims it straight
@@ -365,7 +367,8 @@ lets the dashboard link a run back to the item that produced it.
   settle.
 - **Tier 3 (routine)**: sequential looping inside one pool reset cycle — a routine re-triggers as soon
   as its previous run reaches `completed`, while the window and headroom still hold. At most one run is
-  in flight per routine at any time (checked against `origin_id`, so a manual trigger counts too), and a
+  in flight per routine at any time (checked against `origin_id` both at auto-spawn and at claim time in
+  `claimNext`, so stacked manual triggers also drain serially across multiple runners), and a
   `failed`/`aborted` run burns the rest of the cycle: `last_triggered_reset_time` plus the terminal
   status of `last_task_id` is the gate. Released at spawn only inside the routine's own
   `trigger_before_reset_hours` (falling back to `QUOTA_BURN_MAX_HOURS`) and only while headroom is at

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { PrPolicy } from '../config/schema.js';
 import {
+  DEFAULT_BACKLOG_CONCURRENCY,
   DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
   DEFAULT_QUOTA_BURN_MAX_HOURS,
 } from '../config/schema.js';
@@ -317,6 +318,7 @@ export class Coordinator {
           error: t.error || 'Runner heartbeat lease expired',
         });
       }
+      this.bus.emit('task:available');
     }
     return expiredTasks;
   }
@@ -451,37 +453,53 @@ export class Coordinator {
 
     try {
       // The tier gates at spawn and dispenses with the pre-reset window, so claim time only has to
-      // enforce the live safety floor. One backlog run in flight, and headroom clearing both the
-      // configurable backlog floor and the global safety floor.
+      // enforce the live safety floor. Concurrency is governed by `backlogConcurrency` (single,
+      // per_repo, or per_runner) and bounded by online enabled runners (minimum 1 so a task can
+      // still be queued before a runner registers).
       const headroomFloor = Math.max(
         resolved.backlogMinHeadroomPercent ?? DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
         resolved.minDispatchHeadroomPercent ?? 0
       );
-      const nextBacklog =
-        this.queue.countActiveBacklogTasks() === 0
-          ? this.queue.getNextEligibleBacklogTask()
-          : undefined;
+      const concurrencyMode = resolved.backlogConcurrency ?? DEFAULT_BACKLOG_CONCURRENCY;
+      const onlineRunners = this.queue
+        .listRunners()
+        .filter((runner) => runner.enabled && runner.status !== 'offline').length;
+      const maxActiveBacklog = concurrencyMode === 'single' ? 1 : Math.max(1, onlineRunners);
 
-      if (nextBacklog) {
-        const modelChoice = evaluateModelPreferenceChain({
-          cascade: nextBacklog.cascade,
-          defaultModel: resolved.defaultDispatchModel,
-          pools: snapshots,
-          minHeadroomPercent: headroomFloor,
-          isPoolDispatchEnabled: (poolGroup) =>
-            resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
-          catalog: this.activeModelCatalog(),
-        });
+      const activeBacklogTasks = this.queue.listActiveBacklogTasks();
+      let activeCount = activeBacklogTasks.length;
+      const activeRepos = new Set(activeBacklogTasks.map((t) => t.repositoryId.toLowerCase()));
 
-        if (
-          modelChoice.allowed &&
-          modelChoice.selectedModel &&
-          modelChoice.selectedEffort !== undefined
-        ) {
+      if (activeCount < maxActiveBacklog) {
+        const candidates = this.queue.listEligibleBacklogTasks();
+        for (const nextBacklog of candidates) {
+          if (activeCount >= maxActiveBacklog) break;
+
+          const repoKey = nextBacklog.repositoryId.toLowerCase();
+          if (concurrencyMode === 'per_repo' && activeRepos.has(repoKey)) {
+            continue;
+          }
+
+          const modelChoice = evaluateModelPreferenceChain({
+            cascade: nextBacklog.cascade,
+            defaultModel: resolved.defaultDispatchModel,
+            pools: snapshots,
+            minHeadroomPercent: headroomFloor,
+            isPoolDispatchEnabled: (poolGroup) =>
+              resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
+            catalog: this.activeModelCatalog(),
+          });
+
+          if (
+            !modelChoice.allowed ||
+            !modelChoice.selectedModel ||
+            modelChoice.selectedEffort === undefined
+          ) {
+            continue;
+          }
+
           const matchedRepo = resolved.repositories.find(
-            (r) =>
-              r.id.toLowerCase() === nextBacklog.repositoryId.toLowerCase() ||
-              r.name.toLowerCase() === nextBacklog.repositoryId.toLowerCase()
+            (r) => r.id.toLowerCase() === repoKey || r.name.toLowerCase() === repoKey
           );
           const repoPath = matchedRepo?.path || `/repos/${nextBacklog.repositoryId}`;
           const cloneUrl = matchedRepo?.cloneUrl;
@@ -524,6 +542,8 @@ export class Coordinator {
           );
 
           spawned.push(created);
+          activeCount += 1;
+          activeRepos.add(repoKey);
           this.log.info(
             'Dispatched backlog task #%d ("%s") via model %s (pool=%s, attempt %d/%d)',
             nextBacklog.taskNumber,
@@ -1533,6 +1553,10 @@ export class Coordinator {
     });
 
     this.bus.emit(`task:updated:${taskId}`, updated);
+
+    if (isTerminalTaskStatus(updated.status) && updated.originId) {
+      this.bus.emit('task:available');
+    }
 
     return result;
   }

@@ -1777,6 +1777,21 @@ describe('Runner: deliverable-settled titles', () => {
     assert.equal(prTitleFrom(exec), 'Human picked this');
   });
 
+  it('preserves commit subjects over 72 chars in the PR title while keeping the dashboard title clipped', async () => {
+    const longSubject =
+      'fix(queue): use tailWindow in capOutput to avoid splitting surrogate pairs (#20)';
+    const { result, exec } = await runDeliverable(
+      { tier: 'routine', title: 'Bug hunt' },
+      { onLog: () => `${longSubject}\n` }
+    );
+
+    assert.ok(
+      (result.resolvedTitle?.length ?? 0) <= 72,
+      'dashboard resolvedTitle stays within the 72-char budget'
+    );
+    assert.equal(prTitleFrom(exec), longSubject);
+  });
+
   it('settles the title from a filed issue and clears the discarded branch', async () => {
     const duringRun = new Date(Date.now() + 60_000).toISOString();
     const { result, exec } = await runDeliverable(

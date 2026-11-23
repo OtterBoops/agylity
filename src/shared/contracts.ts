@@ -11,6 +11,10 @@ export const PR_POLICY_VALUES = ['all', 'docs_only', 'issues_only', 'none'] as c
 
 export type PrPolicy = (typeof PR_POLICY_VALUES)[number];
 
+export const BACKLOG_CONCURRENCY_VALUES = ['single', 'per_repo', 'per_runner'] as const;
+
+export type BacklogConcurrency = (typeof BACKLOG_CONCURRENCY_VALUES)[number];
+
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 
 /** The server never emits `running`; a live task is `claimed` or `executing`. */

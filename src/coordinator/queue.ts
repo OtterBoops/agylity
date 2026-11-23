@@ -705,8 +705,7 @@ export class TaskQueue {
     return row?.active === 1;
   }
 
-  // The backlog tier runs one task at a time, counted over the same terminal set the reconciler
-  // settles on: an inline status list here would drift and leave two runs in flight.
+  // Counted over the same terminal set the reconciler settles on so an inline status list can never drift.
   public countActiveBacklogTasks(): number {
     const row = this.rawDb
       .prepare(
@@ -715,6 +714,16 @@ export class TaskQueue {
       )
       .get() as { active?: number } | undefined;
     return Number(row?.active ?? 0);
+  }
+
+  public listActiveBacklogTasks(): SwarmTask[] {
+    const rows = this.rawDb
+      .prepare(
+        `SELECT * FROM swarm_tasks
+         WHERE tier = 'backlog' AND status NOT IN (${TERMINAL_STATUS_SQL})`
+      )
+      .all() as Array<Record<string, any>>;
+    return rows.map((row) => this.mapRowToTask(row));
   }
 
   // `q` is a LIKE term: `%%` would match every row and a stray `_` would silently widen a wildcard,
@@ -838,6 +847,17 @@ export class TaskQueue {
         )
         .all() as Array<Record<string, any>>;
 
+      const activeOrigins = new Set(
+        (
+          this.rawDb
+            .prepare(
+              `SELECT DISTINCT origin_id FROM swarm_tasks
+               WHERE origin_id IS NOT NULL AND status IN ('claimed', 'executing')`
+            )
+            .all() as Array<{ origin_id: string }>
+        ).map((row) => row.origin_id)
+      );
+
       const now = new Date().toISOString();
       const nowEpoch = Date.now();
 
@@ -850,6 +870,13 @@ export class TaskQueue {
             this.expireQueuedTask(task, now);
             continue;
           }
+        }
+
+        // Serialize stacked runs of the same origin (e.g. a routine triggered multiple times):
+        // at most one claimed/executing task per origin_id at a time so concurrent runners do not
+        // duplicate the same investigation from the same base commit.
+        if (task.originId && activeOrigins.has(task.originId)) {
+          continue;
         }
 
         if (task.requiredLabels.length > 0) {
@@ -1418,6 +1445,17 @@ export class TaskQueue {
     const row = this.rawDb.prepare('SELECT * FROM backlog_tasks WHERE id = ?').get(id) as
       Record<string, any> | undefined;
     return row ? this.mapRowToBacklogTask(row) : undefined;
+  }
+
+  public listEligibleBacklogTasks(): BacklogTaskRecord[] {
+    const rows = this.rawDb
+      .prepare(
+        `SELECT * FROM backlog_tasks
+         WHERE status = 'pending' AND attempt_count < max_attempts
+         ORDER BY priority_order ASC, task_number ASC, created_at ASC`
+      )
+      .all() as Array<Record<string, any>>;
+    return rows.map((r) => this.mapRowToBacklogTask(r));
   }
 
   public getNextEligibleBacklogTask(): BacklogTaskRecord | undefined {
