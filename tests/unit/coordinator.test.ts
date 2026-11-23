@@ -257,6 +257,69 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('serializes stacked runs of the same originId across runners while allowing other origins on the same repo', () => {
+      const { dir, cleanup } = makeTempDir('orch_origin_serial_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+
+        const hunt1 = queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          tier: 'routine',
+          originId: 'rt-bug-hunt',
+          prompt: 'Bug hunt run 1',
+          scheduleMode: 'immediate',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+        const hunt2 = queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          tier: 'routine',
+          originId: 'rt-bug-hunt',
+          prompt: 'Bug hunt run 2',
+          scheduleMode: 'immediate',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+        const docsRun = queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          tier: 'routine',
+          originId: 'rt-docs-audit',
+          prompt: 'Docs audit run 1',
+          scheduleMode: 'immediate',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+
+        // Runner 1 claims the first bug-hunt run.
+        const claimed1 = queue.claimNext({ runnerId: 'runner-1' });
+        assert.equal(claimed1?.id, hunt1.id);
+
+        // Runner 2 skips the stacked bug-hunt run for the active origin and claims the distinct routine instead.
+        const claimed2 = queue.claimNext({ runnerId: 'runner-2' });
+        assert.equal(claimed2?.id, docsRun.id);
+
+        // Runner 3 sees only the blocked stacked bug-hunt run and gets nothing while run 1 is still active.
+        const blocked = queue.claimNext({ runnerId: 'runner-3' });
+        assert.equal(blocked, null);
+        assert.equal(queue.getTask(hunt2.id)?.status, 'queued');
+
+        // Once run 1 finishes, runner 3 can immediately claim run 2.
+        queue.updateTaskStatus(hunt1.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          durationMs: 500,
+        });
+
+        const claimed3 = queue.claimNext({ runnerId: 'runner-3' });
+        assert.equal(claimed3?.id, hunt2.id);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('keeps the stored identity of an unrestricted registered runner across a claim', () => {
       const { dir, cleanup } = makeTempDir('orch_runner_identity_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -3976,6 +4039,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           )
         );
         assert.notEqual(capturedCommitEnv?.GIT_AUTHOR_NAME, 'agylity[bot]');
+        assert.doesNotMatch(
+          capturedCommitEnv?.GIT_AUTHOR_EMAIL ?? '',
+          /@users\.noreply\.github\.com$/
+        );
 
         const userTask = queue.enqueue({
           repositoryName: 'agylity',
@@ -4894,6 +4961,166 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.ok(stored.startsWith('[truncated 5 characters]\n🚀'));
         assert.equal(stored.length, `[truncated 5 characters]\n`.length + OUTPUT_CAP + 1);
         assert.equal(hasLoneSurrogate(stored), false);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('wakes a long-polling runner immediately when an active routine run finishes', async () => {
+      const { dir, cleanup } = makeTempDir('coord_routine_wake_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+        coordinator.onQuotaUpdated(pools);
+
+        const rt = coordinator.queue.createRoutineTask({
+          title: 'Bug hunt',
+          prompt: 'Find a real bug and open a PR',
+          repositoryId: 'test-repo',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+          enabled: true,
+        });
+
+        const run1 = await coordinator.dispatch({
+          repositoryId: rt.repositoryId,
+          repositoryName: rt.repositoryId,
+          prompt: rt.prompt,
+          title: rt.title,
+          tier: 'routine',
+          originId: rt.id,
+          originNumber: rt.taskNumber,
+          originTitle: rt.title,
+          cascade: rt.cascade,
+          scheduleMode: 'immediate',
+          requestedBy: `routine:${rt.id}`,
+        });
+        const run2 = await coordinator.dispatch({
+          repositoryId: rt.repositoryId,
+          repositoryName: rt.repositoryId,
+          prompt: rt.prompt,
+          title: rt.title,
+          tier: 'routine',
+          originId: rt.id,
+          originNumber: rt.taskNumber,
+          originTitle: rt.title,
+          cascade: rt.cascade,
+          scheduleMode: 'immediate',
+          requestedBy: `routine:${rt.id}`,
+        });
+        assert.equal(run1.success, true);
+        assert.equal(run2.success, true);
+
+        const claimed1 = await coordinator.pollForTask({
+          runnerId: 'runner-1',
+          timeoutMs: 0,
+        });
+        assert.equal(claimed1?.id, run1.taskId);
+
+        // Runner 2 enters a long poll while run 1 is active; completing run 1 must wake it immediately.
+        const controller = new AbortController();
+        const startedAt = Date.now();
+        const pollPromise = coordinator.pollForTask(
+          {
+            runnerId: 'runner-2',
+            timeoutMs: 5000,
+          },
+          controller.signal
+        );
+
+        await coordinator.reportTaskStatus(run1.taskId!, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          durationMs: 250,
+        });
+
+        const claimed2 = await pollPromise;
+        controller.abort();
+
+        assert.equal(claimed2?.id, run2.taskId);
+        assert.ok(Date.now() - startedAt < 2000, 'runner-2 should wake before the 5s poll timeout');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('honors backlogConcurrency modes (per_repo, single, per_runner) across multiple online runners', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_concurrency_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const baseCfg = backlogConfig(dir);
+        const configStore = new ConfigStore(db, {
+          ...baseCfg,
+          repositories: [
+            ...baseCfg.repositories,
+            {
+              id: 'repo-b',
+              name: 'Repo B',
+              path: path.join(dir, 'repo-b'),
+              cloneUrl: 'https://example.invalid/repo-b.git',
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+
+        // Register 3 online enabled runners.
+        for (const id of ['runner-1', 'runner-2', 'runner-3']) {
+          coordinator.queue.registerRunnerHeartbeat({
+            runnerId: id,
+            name: id,
+            labels: [],
+            repositories: [],
+            status: 'idle',
+          });
+        }
+
+        const addItem = (repositoryId: string, title: string, priorityOrder: number) =>
+          coordinator.queue.createBacklogTask({
+            title,
+            prompt: `Prompt for ${title}`,
+            repositoryId,
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+            priorityOrder,
+          });
+
+        const a1 = addItem('agylity', 'Repo A #1', 1);
+        const a2 = addItem('agylity', 'Repo A #2', 2);
+        const b1 = addItem('repo-b', 'Repo B #1', 3);
+
+        // Default mode is `per_repo`: spawns 1 for agylity and 1 for repo-b, holding Repo A #2 back.
+        const perRepoSpawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(perRepoSpawned.length, 2);
+        assert.deepEqual(
+          perRepoSpawned.map((t) => t.originId),
+          [a1.id, b1.id]
+        );
+        assert.equal(coordinator.queue.getBacklogTask(a2.id)?.status, 'pending');
+
+        // Switching to `per_runner` immediately allows the 3rd online runner slot to pick up Repo A #2.
+        configStore.setOverride('backlogConcurrency', 'per_runner');
+        const perRunnerSpawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(perRunnerSpawned.length, 1);
+        assert.equal(perRunnerSpawned[0]?.originId, a2.id);
+
+        // Complete all 3 runs, add 2 fresh items across distinct repos, and verify `single` caps at 1 globally.
+        for (const task of [...perRepoSpawned, ...perRunnerSpawned]) {
+          await coordinator.reportTaskStatus(task.id, { status: 'completed', durationMs: 100 });
+        }
+        const s1 = addItem('agylity', 'Single A', 4);
+        const s2 = addItem('repo-b', 'Single B', 5);
+
+        configStore.setOverride('backlogConcurrency', 'single');
+        const singleSpawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(singleSpawned.length, 1);
+        assert.equal(singleSpawned[0]?.originId, s1.id);
+        assert.equal(coordinator.queue.getBacklogTask(s2.id)?.status, 'pending');
       } finally {
         db.close();
         cleanup();

@@ -901,6 +901,8 @@ export class TaskExecutor {
       );
 
       try {
+        const authorName = process.env.GIT_AUTHOR_NAME || 'Agylity Runner';
+        const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
         const streamed = await this.runStreamedCommand(this.agyBinPath, agyArgs, {
           cwd,
           timeoutMs: this.timeoutMs,
@@ -908,7 +910,17 @@ export class TaskExecutor {
           onOutput: context.onOutput,
           // The lease is the only credential the child sees; the empty fallback keeps a stale
           // GITHUB_TOKEN inherited from the runner environment out of the agent's reach.
-          env: { ...process.env, GITHUB_TOKEN: context.githubToken ?? '' },
+          // Provide a deterministic git identity fallback so `agy` never hits "Author identity
+          // unknown" inside a container and improvises a third-party `@users.noreply.github.com`
+          // email.
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: authorName,
+            GIT_AUTHOR_EMAIL: authorEmail,
+            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
+            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+            GITHUB_TOKEN: context.githubToken ?? '',
+          },
         });
         lastStdout = streamed.stdout || '';
         output = [streamed.stdout?.trim(), streamed.stderr?.trim()].filter(Boolean).join('\n');
@@ -1030,7 +1042,7 @@ export class TaskExecutor {
       if (statusOut && statusOut.trim() !== '') {
         await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
         const authorName = process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
-        const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
+        const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
         await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
           cwd,
           timeout: 30000,
@@ -1556,13 +1568,19 @@ export class TaskExecutor {
         }
 
         if (task.autoCreatePr) {
+          // GitHub PR titles accept up to 256 chars, so keep full commit subjects (e.g. with issue
+          // references at the tail) instead of clipping them to the 72-char dashboard row budget.
+          const prTitleSource = hasExplicitTitleOverride
+            ? task.title
+            : (commit.deliverableTitle ?? resolvedTitle ?? task.title);
+          const prTitle = resolveTaskTitle(prTitleSource, task.prompt, 200);
           prUrl = await this.openPullRequest(
             task,
             finalBranchName,
             baseBranch,
             agent.executedHop,
             githubToken,
-            resolvedTitle ?? resolveTaskTitle(task.title, task.prompt),
+            prTitle,
             capturedOutput
           );
         }

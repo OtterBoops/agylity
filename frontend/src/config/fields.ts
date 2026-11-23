@@ -121,6 +121,17 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Minimum remaining pool quota required to spawn a backlog task (default: 40%). The global AI safety floor still applies whenever it is higher.',
   },
   {
+    key: 'backlogConcurrency',
+    label: 'Backlog concurrency',
+    type: 'select',
+    options: [
+      { value: 'per_repo', label: 'One per repository (Parallel across repos, serial per repo)' },
+      { value: 'single', label: 'One globally (Single backlog task at a time)' },
+      { value: 'per_runner', label: 'One per online runner (Parallel even on the same repo)' },
+    ],
+    hint: 'How many Tier 2 backlog items the autonomous scheduler may run at once, bounded by online enabled runners.',
+  },
+  {
     key: 'githubBacklogLabel',
     label: 'GitHub backlog label',
     type: 'text',

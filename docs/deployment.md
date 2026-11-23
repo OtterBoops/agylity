@@ -78,10 +78,12 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        environment:
          - COORDINATOR_URL=http://agylity:8484
          - RUNNER_STATE_PATH=/data/runner.json
-         - GIT_AUTHOR_NAME=agylity[bot]
-         - GIT_AUTHOR_EMAIL=agylity@users.noreply.github.com
-         - GIT_COMMITTER_NAME=agylity[bot]
-         - GIT_COMMITTER_EMAIL=agylity@users.noreply.github.com
+         # Set to your own GitHub name and noreply email (avoid placeholder @users.noreply.github.com
+         # usernames you do not own, or GitHub will link commits to that account).
+         - GIT_AUTHOR_NAME=${GIT_AUTHOR_NAME:-Agylity Runner}
+         - GIT_AUTHOR_EMAIL=${GIT_AUTHOR_EMAIL:-noreply@agylity.local}
+         - GIT_COMMITTER_NAME=${GIT_COMMITTER_NAME:-Agylity Runner}
+         - GIT_COMMITTER_EMAIL=${GIT_COMMITTER_EMAIL:-noreply@agylity.local}
        volumes:
          - agylity-runner-data:/data
          - agylity-gemini:/home/node/.gemini

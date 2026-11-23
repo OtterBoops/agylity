@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { logger } from '../logs/logger.js';
-import { PR_POLICY_VALUES, type PrPolicy } from '../shared/contracts.js';
+import {
+  BACKLOG_CONCURRENCY_VALUES,
+  PR_POLICY_VALUES,
+  type BacklogConcurrency,
+  type PrPolicy,
+} from '../shared/contracts.js';
 
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
@@ -27,6 +32,8 @@ export const DEFAULT_MILESTONE_HOURS = [48, 24, 12];
 export const DEFAULT_QUOTA_BURN_MAX_HOURS = 4;
 
 export const DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT = 40;
+
+export const DEFAULT_BACKLOG_CONCURRENCY: BacklogConcurrency = 'per_repo';
 
 export const milestoneHoursEnv = z.preprocess((val) => {
   if (Array.isArray(val)) {
@@ -227,6 +234,7 @@ export interface AppConfig {
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
   backlogMinHeadroomPercent: number;
+  backlogConcurrency: BacklogConcurrency;
 
   webUiEnabled: boolean;
   baseUrl?: string;
@@ -759,6 +767,19 @@ export const CONFIG_REGISTRY = [
     envSchema: z.coerce.number().min(0).max(100),
     description:
       'Minimum effective headroom percentage a Tier 2 backlog spawn requires, range 0\u2013100. It is a floor rather than an override: the spawn also has to clear `MIN_DISPATCH_HEADROOM_PERCENT`, and the higher of the two wins. Editable as **Backlog minimum headroom (%)** in **Settings \u2192 Coordinator**.',
+  },
+  {
+    group: 'coordinator',
+    type: 'string',
+    defaultLabel: 'per_repo',
+    example: 'comment',
+    key: 'backlogConcurrency',
+    value: DEFAULT_BACKLOG_CONCURRENCY,
+    overrideSchema: z.enum(BACKLOG_CONCURRENCY_VALUES),
+    env: 'BACKLOG_CONCURRENCY',
+    envSchema: z.enum(BACKLOG_CONCURRENCY_VALUES),
+    description:
+      'How many Tier 2 backlog tasks the autonomous scheduler may keep active at once: `single` (1 globally), `per_repo` (1 per repository, capped by online runners), or `per_runner` (1 per online runner, even on the same repository). Editable as **Backlog concurrency** in **Settings \u2192 Coordinator**.',
   },
   {
     group: 'coordinator',
