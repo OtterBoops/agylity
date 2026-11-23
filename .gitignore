@@ -5,7 +5,10 @@ data/
 .env
 *.log
 coverage/
-.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/agylity/
 .codex/
 .impeccable/
 **/.impeccable/

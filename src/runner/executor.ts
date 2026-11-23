@@ -14,6 +14,7 @@ import {
   type CascadeHop,
 } from '../coordinator/models.js';
 import type { PrPolicy } from '../config/schema.js';
+import { resolveTaskTitle } from '../shared/titles.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
   ALLOWED_TEST_RUNNERS,
@@ -42,6 +43,8 @@ export interface TaskExecutorOptions {
 export interface TaskExecuteOptions {
   signal?: AbortSignal;
   onOutput?: (tail: string) => void;
+  /** Leased from the coordinator for this task only; never read from the runner's own environment. */
+  githubToken?: string;
 }
 
 export type SpawnFn = (
@@ -53,8 +56,13 @@ export type SpawnFn = (
 export interface TaskExecutionResult {
   success: boolean;
   noChanges?: boolean;
-  branchName?: string;
+  /** `null` reports that a branch was discarded, which clears the column rather than leaving it. */
+  branchName?: string | null;
   prUrl?: string;
+  /** GitHub issues filed by the run, which are the deliverable when the branch stayed empty. */
+  issueUrls?: string[];
+  /** The title the deliverable earned, which the coordinator settles onto the row. */
+  resolvedTitle?: string;
   output: string;
   error?: string;
   durationMs: number;
@@ -71,6 +79,35 @@ export interface TaskExecutionTelemetry {
   inputTokens?: number;
   outputTokens?: number;
 }
+
+// Every policy states its own directive: an empty suffix would let the model choose a default that
+// no gate then enforces, and the policy now binds every tier.
+const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
+  all: '\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]',
+  docs_only:
+    '\n\n[Policy: Documentation only — modify documentation files in the working tree only; do NOT modify source code or other non-documentation files.]',
+  issues_only:
+    '\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]',
+  none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
+};
+
+const GITHUB_SLUG_FROM_URL_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
+const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+// The footer the prompt asks the agent to append, which marks an issue as this fleet's deliverable.
+const AGYLITY_FOOTER_MARKER = 'Dispatched via Agylity';
+// A prompt that already ends with that footer block must not get a second one appended to its PR.
+const AGYLITY_FOOTER_TAIL_RE = new RegExp(
+  `---\\s*\\n\\*${AGYLITY_FOOTER_MARKER}[^\\n]*\\*\\s*$`,
+  'i'
+);
+const ISSUE_DELIVERABLE_LIMIT = 50;
+const ISSUE_DELIVERABLE_MAX_URLS = 10;
+
+const parseGithubSlug = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  const match = GITHUB_SLUG_FROM_URL_RE.exec(value.trim());
+  return match ? `${match[1]}/${match[2]}` : undefined;
+};
 
 const finiteNumber = (value: unknown): number | undefined => {
   if (value === null || value === undefined || value === '') return undefined;
@@ -492,8 +529,12 @@ export class TaskExecutor {
     return path.join(this.mirrorCacheDir, `${digest}.git`);
   }
 
-  private async cloneRepository(rawCloneUrl: string, targetPath: string): Promise<void> {
-    const authArgs = buildGitAuthArgs(rawCloneUrl);
+  private async cloneRepository(
+    rawCloneUrl: string,
+    targetPath: string,
+    githubToken: string | undefined
+  ): Promise<void> {
+    const authArgs = buildGitAuthArgs(rawCloneUrl, githubToken);
     const mirrorPath = this.resolveMirrorPath(rawCloneUrl);
 
     if (mirrorPath) {
@@ -663,7 +704,8 @@ export class TaskExecutor {
   private async ensureRepository(
     task: SwarmTask,
     branchName: string,
-    startMs: number
+    startMs: number,
+    githubToken: string | undefined
   ): Promise<TaskExecutionResult | null> {
     if (this.dirExistsFn(task.repositoryPath)) return null;
 
@@ -681,13 +723,14 @@ export class TaskExecutor {
         message: `Cloning repository from ${cloneUrl} into ${task.repositoryPath}`,
       });
       mkdirSync(path.dirname(task.repositoryPath), { recursive: true });
-      await this.cloneRepository(cloneUrl, task.repositoryPath);
+      await this.cloneRepository(cloneUrl, task.repositoryPath, githubToken);
       return null;
     } catch (cloneErr: any) {
       // A half-written clone must not survive: the next run would see the directory and skip cloning.
       await this.removeCloneTarget(task.repositoryPath);
       const errMsg = `Failed to clone repository from ${cloneUrl}: ${redactGitSecrets(
-        cloneErr?.message || String(cloneErr)
+        cloneErr?.message || String(cloneErr),
+        [githubToken]
       )}`;
       this.log.error(errMsg);
       return this.failureResult(branchName, startMs, errMsg);
@@ -704,7 +747,8 @@ export class TaskExecutor {
   private async prepareBranch(
     task: SwarmTask,
     branchName: string,
-    baseBranch: string
+    baseBranch: string,
+    githubToken: string | undefined
   ): Promise<void> {
     const cwd = task.repositoryPath;
     try {
@@ -727,7 +771,7 @@ export class TaskExecutor {
       }
       await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 30000 });
       try {
-        const gitPullArgs = [...buildGitAuthArgs(task.cloneUrl), 'pull', '--ff-only'];
+        const gitPullArgs = [...buildGitAuthArgs(task.cloneUrl, githubToken), 'pull', '--ff-only'];
         await this.execFileFn('git', gitPullArgs, { cwd, timeout: 30000 });
       } catch (pullErr: unknown) {
         this.log.warn(
@@ -735,7 +779,9 @@ export class TaskExecutor {
           baseBranch,
           task.id,
           baseBranch,
-          redactGitSecrets(pullErr instanceof Error ? pullErr.message : String(pullErr))
+          redactGitSecrets(pullErr instanceof Error ? pullErr.message : String(pullErr), [
+            githubToken,
+          ])
         );
       }
     } catch (baseCheckoutErr: unknown) {
@@ -756,10 +802,7 @@ export class TaskExecutor {
     tierLabel: string,
     effort: CascadeHop['effort'] | undefined
   ): { prompt: string; policySuffix: string; attributionSuffix: string } {
-    const policySuffix =
-      prPolicy === 'issues_only'
-        ? `\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]`
-        : '';
+    const policySuffix = PR_POLICY_DIRECTIVES[prPolicy];
     const effortNote = effort ? ` (${effort} reasoning)` : '';
     const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
     return {
@@ -787,6 +830,7 @@ export class TaskExecutor {
       primaryHop: CascadeHop;
       signal?: AbortSignal | undefined;
       onOutput?: ((tail: string) => void) | undefined;
+      githubToken?: string | undefined;
     }
   ): Promise<{
     output: string;
@@ -842,6 +886,9 @@ export class TaskExecutor {
           timeoutMs: this.timeoutMs,
           signal: context.signal,
           onOutput: context.onOutput,
+          // The lease is the only credential the child sees; the empty fallback keeps a stale
+          // GITHUB_TOKEN inherited from the runner environment out of the agent's reach.
+          env: { ...process.env, GITHUB_TOKEN: context.githubToken ?? '' },
         });
         lastStdout = streamed.stdout || '';
         output = [streamed.stdout?.trim(), streamed.stderr?.trim()].filter(Boolean).join('\n');
@@ -940,13 +987,19 @@ export class TaskExecutor {
     }
   }
 
-  /** Commits whatever the agent left behind, or reports that the branch holds no work. */
+  /**
+   * Commits whatever the agent left behind, or reports that the branch holds no work.
+   *
+   * The subject of a commit the agent wrote itself is the run's deliverable title; the runner's own
+   * fallback commit is not, because that message is derived from the dispatch, not from the work.
+   */
   private async commitWorkingTree(
     task: SwarmTask,
     branchName: string,
     baseBranch: string
-  ): Promise<boolean> {
+  ): Promise<{ commitsProduced: boolean; deliverableTitle?: string }> {
     const cwd = task.repositoryPath;
+    const deliverableTitle = await this.authoredCommitSubject(cwd, baseBranch);
     let committed = false;
 
     try {
@@ -958,21 +1011,17 @@ export class TaskExecutor {
         await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
         const authorName = process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
         const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
-        await this.execFileFn(
-          'git',
-          ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
-          {
-            cwd,
-            timeout: 30000,
-            env: {
-              ...process.env,
-              GIT_AUTHOR_NAME: authorName,
-              GIT_AUTHOR_EMAIL: authorEmail,
-              GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
-              GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
-            },
-          }
-        );
+        await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
+          cwd,
+          timeout: 30000,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: authorName,
+            GIT_AUTHOR_EMAIL: authorEmail,
+            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
+            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+          },
+        });
         committed = true;
       }
     } catch (commitErr: any) {
@@ -983,7 +1032,7 @@ export class TaskExecutor {
       );
     }
 
-    if (committed) return true;
+    if (committed) return { commitsProduced: true, deliverableTitle };
 
     try {
       const { stdout: revCount } = await this.execFileFn(
@@ -991,9 +1040,36 @@ export class TaskExecutor {
         ['rev-list', '--count', `${baseBranch}..HEAD`],
         { cwd, timeout: 10000 }
       );
-      return parseInt(revCount.trim(), 10) > 0;
+      return {
+        commitsProduced: parseInt(revCount.trim(), 10) > 0,
+        deliverableTitle,
+      };
     } catch {
-      return false;
+      return { commitsProduced: false, deliverableTitle };
+    }
+  }
+
+  /** The newest subject among commits the agent wrote, or undefined when the branch is still clean. */
+  private async authoredCommitSubject(
+    cwd: string,
+    baseBranch: string
+  ): Promise<string | undefined> {
+    try {
+      const { stdout: revCount } = await this.execFileFn(
+        'git',
+        ['rev-list', '--count', `${baseBranch}..HEAD`],
+        { cwd, timeout: 10000 }
+      );
+      if (!(parseInt(revCount.trim(), 10) > 0)) return undefined;
+
+      const { stdout: subject } = await this.execFileFn(
+        'git',
+        ['log', '-1', '--format=%s', `${baseBranch}..HEAD`],
+        { cwd, timeout: 10000 }
+      );
+      return subject.trim() || undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -1006,20 +1082,30 @@ export class TaskExecutor {
   }
 
   /** Returns the failure message for a rejected push, or null once the branch is upstream. */
-  private async pushTaskBranch(task: SwarmTask, branchName: string): Promise<string | null> {
+  private async pushTaskBranch(
+    task: SwarmTask,
+    branchName: string,
+    githubToken: string | undefined
+  ): Promise<string | null> {
     try {
-      const gitPushArgs = [...buildGitAuthArgs(task.cloneUrl), 'push', '-u', 'origin', branchName];
+      const gitPushArgs = [
+        ...buildGitAuthArgs(task.cloneUrl, githubToken),
+        'push',
+        '-u',
+        'origin',
+        branchName,
+      ];
       await this.execFileFn('git', gitPushArgs, {
         cwd: task.repositoryPath,
         timeout: 60000,
       });
       return null;
     } catch (gitPushErr: any) {
-      const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr));
+      const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr), [githubToken]);
       this.log.error('Git push failed on %s: %s', branchName, pushErrMsg);
-      return !process.env.GITHUB_TOKEN?.trim()
-        ? `Git push to origin/${branchName} failed: ${pushErrMsg} (this runner has no GITHUB_TOKEN set)`
-        : `Git push to origin/${branchName} failed: ${pushErrMsg}`;
+      return githubToken
+        ? `Git push to origin/${branchName} failed: ${pushErrMsg}`
+        : `Git push to origin/${branchName} failed: ${pushErrMsg} (the coordinator leased no GitHub token for this task)`;
     }
   }
 
@@ -1028,18 +1114,24 @@ export class TaskExecutor {
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
-    hop: CascadeHop
+    hop: CascadeHop,
+    githubToken: string | undefined,
+    title: string
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
       // A failover hop is the model that actually wrote the branch, so the footer names that one.
       const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      const prBody = [
-        task.prompt,
-        '',
-        '---',
-        `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
-      ].join('\n');
+      // Avoid stacking a second Agylity footer when the source prompt/issue already ends with one.
+      const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(task.prompt);
+      const prBody = hasDispatchFooter
+        ? task.prompt
+        : [
+            task.prompt,
+            '',
+            '---',
+            `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
+          ].join('\n');
 
       const { stdout: prOut } = await this.execFileFn(
         'gh',
@@ -1051,17 +1143,14 @@ export class TaskExecutor {
           '--head',
           branchName,
           '--title',
-          `[Agylity] Task ${task.id}: ${task.prompt.slice(0, 70)}`,
+          title,
           '--body',
           prBody,
         ],
         {
           cwd: task.repositoryPath,
           timeout: 30000,
-          env: {
-            ...process.env,
-            GITHUB_TOKEN: process.env.GITHUB_TOKEN?.trim() || '',
-          },
+          env: { ...process.env, GITHUB_TOKEN: githubToken ?? '' },
         }
       );
       const match = prOut.match(/https:\/\/github\.com\/[^\s]+/);
@@ -1075,10 +1164,11 @@ export class TaskExecutor {
   }
 
   /**
-   * Applies the autonomous PR policy to a finished branch.
+   * Applies the PR policy to a finished branch.
    *
    * Returns the terminal result when the policy suppresses the branch, or null when the branch may
-   * be pushed. An immediate dispatch is a human asking for exactly this work, so it is never policed.
+   * be pushed. Every tier is policed: a human dispatch is a request for this work, not permission to
+   * bypass the configured policy.
    */
   private async applyPrPolicy(
     task: SwarmTask,
@@ -1089,17 +1179,17 @@ export class TaskExecutor {
       prPolicy: PrPolicy;
       telemetry: TaskExecutionTelemetry;
       startMs: number;
+      githubToken?: string | undefined;
     }
   ): Promise<TaskExecutionResult | null> {
-    const { branchName, baseBranch, output, prPolicy, telemetry, startMs } = context;
-    if (task.tier === 'immediate') return null;
+    const { branchName, baseBranch, output, prPolicy, telemetry, startMs, githubToken } = context;
 
     const suppress = async (detail: string): Promise<TaskExecutionResult> => {
       await this.discardBranch(task.repositoryPath, baseBranch, branchName);
       return {
         success: true,
         noChanges: true,
-        branchName: undefined,
+        branchName: null,
         output: `${output}\n\n${detail}`,
         durationMs: Date.now() - startMs,
         ...this.telemetryFields(telemetry),
@@ -1143,7 +1233,8 @@ export class TaskExecutor {
       // An uninspectable diff cannot prove the branch is docs-only, so the gate stays shut.
       return suppress(
         `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only' and the commit diff could not be inspected (${redactGitSecrets(
-          diffErr?.message ?? String(diffErr)
+          diffErr?.message ?? String(diffErr),
+          [githubToken]
         )}).`
       );
     }
@@ -1161,12 +1252,120 @@ export class TaskExecutor {
     );
   }
 
+  /** Resolves the task repository's GitHub owner/repo slug from configuration or its origin remote. */
+  private async resolveGithubRepoSlug(task: SwarmTask): Promise<string | undefined> {
+    const fromCloneUrl = parseGithubSlug(task.cloneUrl);
+    if (fromCloneUrl) return fromCloneUrl;
+    const configuredName = task.repositoryName?.trim();
+    if (configuredName && OWNER_REPO_SLUG_RE.test(configuredName)) return configuredName;
+    try {
+      const { stdout } = await this.execFileFn(
+        'git',
+        ['-C', task.repositoryPath, 'remote', 'get-url', 'origin'],
+        { timeout: 5000 }
+      );
+      return parseGithubSlug(stdout);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Finds the GitHub issues this run filed, which are the deliverable of a zero-diff run.
+   *
+   * The listing is ground truth from the GitHub API: issues created at or after the run started that
+   * carry the Agylity footer. A URL the agent merely mentions in prose is not evidence it created
+   * anything, so prose is never scraped.
+   */
+  private async collectIssueDeliverables(
+    task: SwarmTask,
+    sinceMs: number,
+    githubToken: string | undefined
+  ): Promise<Array<{ url: string; title: string }>> {
+    const slug = await this.resolveGithubRepoSlug(task);
+    if (!slug) {
+      this.log.warn(
+        'Cannot resolve a GitHub owner/repo slug for %s; no issue deliverable can be reported',
+        task.id
+      );
+      return [];
+    }
+
+    let stdout = '';
+    try {
+      const listing = await this.execFileFn(
+        'gh',
+        [
+          'issue',
+          'list',
+          '--repo',
+          slug,
+          '--state',
+          'all',
+          '--limit',
+          String(ISSUE_DELIVERABLE_LIMIT),
+          '--json',
+          'number,title,url,body,createdAt',
+        ],
+        {
+          cwd: task.repositoryPath,
+          timeout: 20000,
+          env: { ...process.env, GITHUB_TOKEN: githubToken ?? '' },
+        }
+      );
+      stdout = listing.stdout || '';
+    } catch (listErr: unknown) {
+      this.log.warn(
+        'Could not query GitHub issues for %s: %s',
+        slug,
+        listErr instanceof Error ? listErr.message : String(listErr)
+      );
+      return [];
+    }
+
+    let parsed: unknown = [];
+    try {
+      parsed = stdout.trim() ? JSON.parse(stdout) : [];
+    } catch (parseErr: unknown) {
+      this.log.warn(
+        'Could not parse the GitHub issue listing for %s: %s',
+        slug,
+        parseErr instanceof Error ? parseErr.message : String(parseErr)
+      );
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+
+    const created: Array<{ url: string; title: string; createdAt: number }> = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as { url?: unknown; title?: unknown; body?: unknown; createdAt?: unknown };
+      const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+      const title = typeof entry.title === 'string' ? entry.title.trim() : '';
+      const body = typeof entry.body === 'string' ? entry.body : '';
+      const createdAt = typeof entry.createdAt === 'string' ? Date.parse(entry.createdAt) : NaN;
+      if (!url || !Number.isFinite(createdAt) || createdAt < sinceMs) continue;
+      if (!body.includes(AGYLITY_FOOTER_MARKER)) continue;
+      if (created.some((existing) => existing.url === url)) continue;
+      created.push({ url, title, createdAt });
+    }
+
+    return created
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(0, ISSUE_DELIVERABLE_MAX_URLS)
+      .map((entry) => ({ url: entry.url, title: entry.title }));
+  }
+
   public async execute(
     task: SwarmTask,
     options: TaskExecuteOptions = {}
   ): Promise<TaskExecutionResult> {
     const startMs = Date.now();
-    const branchName = task.branchName || buildContinuationBranchName(task.id, task.prompt);
+    // Scoped to this call so nothing can leak the lease into a later task on the same executor.
+    const githubToken = options.githubToken?.trim() || undefined;
+    const branchName =
+      task.branchName ||
+      buildContinuationBranchName(task.id, resolveTaskTitle(task.title, task.prompt));
 
     if (branchName === 'main' || branchName === 'master') {
       return this.failureResult(
@@ -1176,7 +1375,15 @@ export class TaskExecutor {
       );
     }
 
-    const repositoryFailure = await this.ensureRepository(task, branchName, startMs);
+    // A human-typed title on a human tier outranks the deliverable; a routine's own name is kept on
+    // `origin_title`, so its runs always settle from what they produced.
+    const hasExplicitTitleOverride =
+      task.tier !== 'routine' &&
+      Boolean(task.title?.trim()) &&
+      task.title.trim() !== resolveTaskTitle(undefined, task.prompt);
+    let resolvedTitle: string | undefined;
+
+    const repositoryFailure = await this.ensureRepository(task, branchName, startMs, githubToken);
     if (repositoryFailure) return repositoryFailure;
 
     const cwd = task.repositoryPath;
@@ -1192,7 +1399,7 @@ export class TaskExecutor {
         message: `Checking out isolated branch ${branchName} (from ${baseBranch}) and launching agy (${task.model})`,
       });
 
-      await this.prepareBranch(task, branchName, baseBranch);
+      await this.prepareBranch(task, branchName, baseBranch, githubToken);
 
       const primaryHop: CascadeHop = {
         model: task.model,
@@ -1218,6 +1425,7 @@ export class TaskExecutor {
         primaryHop,
         signal: options.signal,
         onOutput: options.onOutput,
+        githubToken,
       });
       capturedOutput = agent.output;
       capturedTelemetryRaw = agent.lastStdout;
@@ -1228,9 +1436,35 @@ export class TaskExecutor {
         await this.runVerification(task.verifyCommand, cwd, options.signal);
       }
 
-      const commitsProduced = await this.commitWorkingTree(task, branchName, baseBranch);
-      if (!commitsProduced) {
+      const commit = await this.commitWorkingTree(task, branchName, baseBranch);
+      if (!commit.commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
+        const issues = await this.collectIssueDeliverables(task, startMs, githubToken);
+        const issueUrls = issues.map((issue) => issue.url);
+        if (issueUrls.length > 0) {
+          const issueTitle =
+            issues.length === 1
+              ? (issues[0]?.title ?? '')
+              : `${issues[0]?.title ?? ''} (+${issues.length - 1})`;
+          if (!hasExplicitTitleOverride) {
+            resolvedTitle = resolveTaskTitle(issueTitle, task.prompt);
+          }
+          this.log.info(
+            'Task %s produced no commits but filed %d GitHub issue(s); reporting them as the deliverable',
+            task.id,
+            issueUrls.length
+          );
+          return {
+            success: true,
+            branchName: null,
+            issueUrls,
+            resolvedTitle,
+            output:
+              `${capturedOutput}\n\n[Deliverable] Filed GitHub issues: ${issueUrls.join(' ')}`.trim(),
+            durationMs: Date.now() - startMs,
+            ...this.telemetryFields(telemetry),
+          };
+        }
         this.log.info(
           'Zero diff produced for task %s; cleaned up local branch %s',
           task.id,
@@ -1239,7 +1473,7 @@ export class TaskExecutor {
         return {
           success: true,
           noChanges: true,
-          branchName: undefined,
+          branchName: null,
           output: capturedOutput,
           durationMs: Date.now() - startMs,
           ...this.telemetryFields(telemetry),
@@ -1253,16 +1487,45 @@ export class TaskExecutor {
         prPolicy: effectivePrPolicy,
         telemetry,
         startMs,
+        githubToken,
       });
       if (suppression) return suppression;
 
+      // The work that actually shipped names the task; only a human-typed title outranks it.
+      if (!hasExplicitTitleOverride && commit.deliverableTitle) {
+        resolvedTitle = resolveTaskTitle(commit.deliverableTitle, task.prompt);
+      }
+
+      let finalBranchName = branchName;
+      if (!hasExplicitTitleOverride && resolvedTitle) {
+        const nextBranchName = buildContinuationBranchName(task.id, resolvedTitle);
+        if (nextBranchName !== branchName) {
+          try {
+            await this.execFileFn('git', ['branch', '-m', branchName, nextBranchName], {
+              cwd,
+              timeout: 15000,
+            });
+            finalBranchName = nextBranchName;
+          } catch (renameErr: any) {
+            this.log.warn(
+              'Could not rename %s to %s in %s; keeping the original branch: %s',
+              branchName,
+              nextBranchName,
+              cwd,
+              renameErr?.message ?? renameErr
+            );
+          }
+        }
+      }
+
       let prUrl: string | undefined;
       if (task.pushBranch) {
-        const pushError = await this.pushTaskBranch(task, branchName);
+        const pushError = await this.pushTaskBranch(task, finalBranchName, githubToken);
         if (pushError) {
           return {
             success: false,
-            branchName,
+            branchName: finalBranchName,
+            resolvedTitle,
             output: capturedOutput,
             error: pushError,
             durationMs: Date.now() - startMs,
@@ -1271,14 +1534,22 @@ export class TaskExecutor {
         }
 
         if (task.autoCreatePr) {
-          prUrl = await this.openPullRequest(task, branchName, baseBranch, agent.executedHop);
+          prUrl = await this.openPullRequest(
+            task,
+            finalBranchName,
+            baseBranch,
+            agent.executedHop,
+            githubToken,
+            resolvedTitle ?? resolveTaskTitle(task.title, task.prompt)
+          );
         }
       }
 
       return {
         success: true,
-        branchName,
+        branchName: finalBranchName,
         prUrl,
+        resolvedTitle,
         output: capturedOutput,
         durationMs: Date.now() - startMs,
         ...this.telemetryFields(telemetry),
@@ -1286,11 +1557,14 @@ export class TaskExecutor {
     } catch (err: any) {
       const durationMs = Date.now() - startMs;
       // Git stderr can carry a remote URL with an embedded credential, so it is redacted before any sink.
-      const errMessage = redactGitSecrets(err?.stderr?.trim() || err?.message || String(err));
+      const errMessage = redactGitSecrets(err?.stderr?.trim() || err?.message || String(err), [
+        githubToken,
+      ]);
       this.log.error('Task %s execution failed: %s', task.id, errMessage);
       if (err?.stdout || err?.stderr) {
         const extra = redactGitSecrets(
-          [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n')
+          [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n'),
+          [githubToken]
         );
         if (extra && !capturedOutput.includes(extra)) {
           capturedOutput = capturedOutput ? `${capturedOutput}\n\n${extra}` : extra;
@@ -1299,7 +1573,9 @@ export class TaskExecutor {
       const failureTelemetry = hasTelemetryValues(telemetry)
         ? telemetry
         : parseAgyTelemetry(capturedTelemetryRaw || err?.stdout);
-      const failureOutput = redactGitSecrets(capturedOutput || String(err?.stdout ?? '').trim());
+      const failureOutput = redactGitSecrets(capturedOutput || String(err?.stdout ?? '').trim(), [
+        githubToken,
+      ]);
       return {
         success: false,
         branchName,

@@ -1,7 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   RawEnvSchema,
+  CONFIG_DOC_GROUPS,
+  CONFIG_KEY_ENV_NAMES,
+  CONFIG_REGISTRY,
+  CANONICAL_SECRET_CONFIG_KEYS,
+  ENV_TO_CONFIG_KEY,
+  SECRET_CONFIG_KEY_ENV_NAMES,
   booleanEnv,
   milestoneHoursEnv,
   RepositoriesJsonSchema,
@@ -10,11 +18,15 @@ import {
   BUILTIN_DEFAULTS,
   DEFAULT_MILESTONE_HOURS,
   DEFAULT_QUOTA_BURN_MAX_HOURS,
+  DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
 } from '../../src/config/schema.js';
+import { applyConfigReference, renderEnvExample } from '../../src/config/docs.js';
+import { PR_POLICIES, PR_POLICY_HINTS } from '../../src/shared/policies.js';
+import { PR_POLICY_VALUES } from '../../src/shared/contracts.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { warnDeprecatedEnvVars } from '../../src/config/deprecated.js';
 import { logger } from '../../src/logs/logger.js';
-import { createMemorySink } from '../e2e/harness/index.js';
+import { createMemorySink, makeTempDir } from '../e2e/harness/index.js';
 
 describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses valid environment variables with correct coerced types', () => {
@@ -27,7 +39,8 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       WEB_UI_AUTH_TOKEN: 'secret-token-123',
     };
     const parsed = RawEnvSchema.parse(raw);
-    assert.equal(parsed.NOTIFICATION_CHANNELS, 'discord');
+    // RawEnvSchema publishes the converted value: a channel list, not the raw comma string.
+    assert.deepEqual(parsed.NOTIFICATION_CHANNELS, ['discord']);
     assert.equal(parsed.QUOTA_CHECK_INTERVAL_SECONDS, 600);
     assert.equal(parsed.QUOTA_ALERT_THRESHOLD_PERCENT, 30);
     assert.equal(parsed.WEB_UI_PORT, 8080);
@@ -349,6 +362,123 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
   });
 });
 
+describe('Coordinator GitHub token configuration', () => {
+  it('resolves githubToken from the env spelling, then a SQLite override that wins, and to undefined when unset', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_');
+
+    try {
+      const envConfig = parseRawEnv({ GITHUB_TOKEN: ' ghp_env_token ' });
+      assert.equal(envConfig.githubToken, 'ghp_env_token');
+
+      const store = new ConfigStore(path.join(dir, 'test.db'), envConfig);
+      try {
+        assert.equal(store.resolveConfig().githubToken, 'ghp_env_token');
+        assert.equal(store.get('githubToken'), 'ghp_env_token');
+        assert.equal(store.getSources().githubToken, 'env');
+
+        store.setOverride('githubToken', 'ghp_override_token');
+        assert.equal(store.resolveConfig().githubToken, 'ghp_override_token');
+        assert.equal(store.get('githubToken'), 'ghp_override_token');
+        assert.equal(store.getSources().githubToken, 'override');
+      } finally {
+        store.close();
+      }
+
+      const unset = new ConfigStore(path.join(dir, 'unset.db'), {});
+      try {
+        assert.equal(unset.resolveConfig().githubToken, undefined);
+        assert.equal(unset.get('githubToken'), undefined);
+      } finally {
+        unset.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('persists githubToken as enc:v1 at rest and reads the plaintext back', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_secret_');
+    const dbPath = path.join(dir, 'test.db');
+    const plaintext = 'ghp_at_rest_plaintext';
+
+    try {
+      const store = new ConfigStore(dbPath, {});
+      try {
+        store.setOverride('githubToken', plaintext);
+
+        const raw = store.getDatabase().getRaw('githubToken');
+        assert.ok(raw, 'githubToken must be written to the settings table');
+        assert.match(raw, /^"enc:v1:/);
+        assert.equal(raw.includes(plaintext), false, 'the raw row must not contain the token');
+        assert.equal(store.get('githubToken'), plaintext);
+        assert.equal(store.resolveConfig().githubToken, plaintext);
+      } finally {
+        store.close();
+      }
+
+      const reopened = new ConfigStore(dbPath, {});
+      try {
+        assert.equal(reopened.get('githubToken'), plaintext);
+        assert.equal(reopened.resolveConfig().githubToken, plaintext);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('falls back to the env token when the githubToken override is cleared', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_clear_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), { githubToken: 'ghp_env_token' });
+
+    try {
+      store.setOverride('githubToken', 'ghp_override_token');
+      assert.equal(store.get('githubToken'), 'ghp_override_token');
+
+      store.removeOverride('githubToken');
+      assert.equal(store.resolveConfig().githubToken, 'ghp_env_token');
+      assert.equal(store.get('githubToken'), 'ghp_env_token');
+      assert.equal(store.getDatabase().getRaw('githubToken'), undefined);
+    } finally {
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('defaults allowTokenlessRunner to false and honours both env and override', () => {
+    const { dir, cleanup } = makeTempDir('config_allow_tokenless_');
+
+    try {
+      assert.equal(parseRawEnv({ ALLOW_TOKENLESS_RUNNER: 'true' }).allowTokenlessRunner, true);
+
+      const defaults = new ConfigStore(path.join(dir, 'defaults.db'), {});
+      try {
+        assert.equal(defaults.resolveConfig().allowTokenlessRunner, false);
+        assert.equal(defaults.get('allowTokenlessRunner'), false);
+      } finally {
+        defaults.close();
+      }
+
+      const store = new ConfigStore(path.join(dir, 'env.db'), { allowTokenlessRunner: true });
+      try {
+        assert.equal(store.resolveConfig().allowTokenlessRunner, true);
+
+        store.setOverride('allowTokenlessRunner', false);
+        assert.equal(store.resolveConfig().allowTokenlessRunner, false);
+        assert.equal(store.get('allowTokenlessRunner'), false);
+
+        store.removeOverride('allowTokenlessRunner');
+        assert.equal(store.resolveConfig().allowTokenlessRunner, true);
+      } finally {
+        store.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+});
+
 describe('parseRawEnv malformed-value resilience', () => {
   it('falls back to built-in defaults instead of throwing on malformed env values', () => {
     const parsed = parseRawEnv({
@@ -456,5 +586,160 @@ describe('Antigravity CLI update scheduling configuration', () => {
     assert.equal(warnings.length, 2);
     assert.ok(warnings[0]?.includes('NOTIFICATION_CHANNELS'));
     assert.ok(warnings[1]?.includes('AGYLITY_SECRET_KEY'));
+  });
+});
+
+describe('Backlog dispatch headroom configuration', () => {
+  it('defaults backlogMinHeadroomPercent to 40 and parses the env spelling, including 0 and 100', () => {
+    assert.equal(BUILTIN_DEFAULTS.backlogMinHeadroomPercent, 40);
+    assert.equal(DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT, 40);
+
+    // Unset env leaves the field absent so the default applies downstream.
+    assert.equal(parseRawEnv({}).backlogMinHeadroomPercent, undefined);
+
+    assert.equal(
+      RawEnvSchema.parse({ BACKLOG_MIN_HEADROOM_PERCENT: '55' }).BACKLOG_MIN_HEADROOM_PERCENT,
+      55
+    );
+    assert.equal(parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '55' }).backlogMinHeadroomPercent, 55);
+
+    // Boundary values are valid: 0 defers to the global safety floor, 100 is the strictest.
+    assert.equal(parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '0' }).backlogMinHeadroomPercent, 0);
+    assert.equal(
+      parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '100' }).backlogMinHeadroomPercent,
+      100
+    );
+  });
+
+  it('lets a SQLite override outrank both the env value and the built-in default', () => {
+    const { dir, cleanup } = makeTempDir('config_backlog_headroom_');
+
+    try {
+      const defaults = new ConfigStore(path.join(dir, 'defaults.db'), {});
+      try {
+        assert.equal(defaults.resolveConfig().backlogMinHeadroomPercent, 40);
+        assert.equal(defaults.getSources().backlogMinHeadroomPercent, 'default');
+      } finally {
+        defaults.close();
+      }
+
+      const store = new ConfigStore(path.join(dir, 'env.db'), {
+        backlogMinHeadroomPercent: 60,
+      });
+      try {
+        // Level 2 beats the built-in default.
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 60);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'env');
+
+        // Level 1 beats both env and the default.
+        store.setOverride('backlogMinHeadroomPercent', 25);
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 25);
+        assert.equal(store.get('backlogMinHeadroomPercent'), 25);
+        assert.equal(store.get('BACKLOG_MIN_HEADROOM_PERCENT'), 25);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'override');
+
+        // Clearing the override falls back to the env value.
+        store.deleteOverride('backlogMinHeadroomPercent');
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 60);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'env');
+      } finally {
+        store.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('rejects out-of-range overrides but accepts a value inside 0-100', () => {
+    assert.equal(
+      validateConfigOverridePatch({ backlogMinHeadroomPercent: 55 }).backlogMinHeadroomPercent,
+      55
+    );
+
+    assert.throws(() => validateConfigOverridePatch({ backlogMinHeadroomPercent: 101 }), /Too big/);
+    assert.throws(
+      () => validateConfigOverridePatch({ backlogMinHeadroomPercent: -1 }),
+      /Too small/
+    );
+  });
+});
+
+describe('CONFIG_REGISTRY (single source of config truth)', () => {
+  it('maps every registry env spelling onto its config key in both directions', () => {
+    const pairs = CONFIG_REGISTRY.filter(
+      (entry) => entry.env !== undefined && entry.key !== undefined
+    );
+    const envSpellings = CONFIG_REGISTRY.flatMap((entry) => (entry.env ? [entry.env] : []));
+    assert.equal(new Set(envSpellings).size, envSpellings.length, 'env spellings must be unique');
+
+    for (const entry of pairs) {
+      assert.equal(CONFIG_KEY_ENV_NAMES[entry.key], entry.env);
+      assert.equal(ENV_TO_CONFIG_KEY[entry.env], entry.key);
+    }
+    assert.equal(
+      Object.keys(ENV_TO_CONFIG_KEY).length,
+      pairs.length,
+      'ENV_TO_CONFIG_KEY must hold exactly the registry pairs'
+    );
+  });
+
+  it('documents every entry in a declared group', () => {
+    const groups = new Set(CONFIG_DOC_GROUPS.map((group) => group.id));
+    for (const entry of CONFIG_REGISTRY) {
+      const name = entry.env ?? entry.key;
+      assert.ok(entry.description.trim() !== '', `${name} needs a description`);
+      assert.ok(groups.has(entry.group), `${name} names an undeclared doc group`);
+    }
+  });
+
+  it('accepts each built-in default as an override, so every key is dashboard-writable', () => {
+    for (const [key, value] of Object.entries(BUILTIN_DEFAULTS)) {
+      assert.doesNotThrow(
+        () => validateConfigOverridePatch({ [key]: structuredClone(value) }),
+        `${key} must accept its own built-in default`
+      );
+    }
+  });
+
+  it('derives the secret list and its env spellings from the registry secret flag', () => {
+    const secretKeys = CONFIG_REGISTRY.flatMap((entry) =>
+      entry.key !== undefined && entry.secret ? [entry.key] : []
+    );
+    assert.deepEqual([...CANONICAL_SECRET_CONFIG_KEYS].sort(), secretKeys.sort());
+    for (const [key, env] of Object.entries(SECRET_CONFIG_KEY_ENV_NAMES)) {
+      assert.equal(CONFIG_KEY_ENV_NAMES[key as keyof typeof CONFIG_KEY_ENV_NAMES], env);
+    }
+  });
+
+  it('keeps docs/configuration.md generated from the registry', () => {
+    const docPath = path.resolve(import.meta.dirname, '../../docs/configuration.md');
+    const doc = readFileSync(docPath, 'utf8');
+    assert.equal(
+      applyConfigReference(doc),
+      doc,
+      'docs/configuration.md is stale: npm run docs:config'
+    );
+  });
+
+  it('keeps .env.example generated from the registry', () => {
+    const envPath = path.resolve(import.meta.dirname, '../../.env.example');
+    assert.equal(
+      readFileSync(envPath, 'utf8'),
+      renderEnvExample(),
+      '.env.example is stale: npm run docs:config'
+    );
+  });
+});
+
+describe('PR_POLICIES (single source of policy copy)', () => {
+  it('covers every wire value exactly once with a label and a hint', () => {
+    assert.deepEqual(
+      PR_POLICIES.map((policy) => policy.value).sort(),
+      [...PR_POLICY_VALUES].sort()
+    );
+    for (const policy of PR_POLICIES) {
+      assert.ok(policy.label.trim() !== '', `${policy.value} needs a label`);
+      assert.equal(PR_POLICY_HINTS[policy.value], policy.hint);
+    }
   });
 });

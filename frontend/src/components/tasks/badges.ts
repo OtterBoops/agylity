@@ -1,22 +1,20 @@
-import type { RoutineEligibility, RoutineEligibilityState, RoutineTaskRecord } from '../../types';
-import { taskStatusBadgeClass, toneBadgeClass } from '../../utils/status';
-
-export type NotifyTone = 'success' | 'error';
+import type {
+  RoutineEligibilityState,
+  RoutineEligibilityStatus,
+  RoutineTaskRecord,
+} from '../../types';
+import { toneBadgeClass } from '../../utils/status';
 
 export const ACTIVE_TASK_STATUSES: ReadonlySet<string> = new Set([
   'queued',
   'claimed',
-  'running',
   'executing',
 ]);
 
 export const isActiveTaskStatus = (status: string): boolean => ACTIVE_TASK_STATUSES.has(status);
 
 export const isLiveTaskStatus = (status: string): boolean =>
-  status === 'claimed' || status === 'running' || status === 'executing';
-
-export const taskBadgeClass = (status: string): string =>
-  status === 'running' ? `animate-pulse ${toneBadgeClass('busy')}` : taskStatusBadgeClass(status);
+  status === 'claimed' || status === 'executing';
 
 export const eligibilityBadgeClass = (state: RoutineEligibilityState): string =>
   state === 'ready' || state === 'running'
@@ -28,7 +26,7 @@ export const eligibilityBadgeClass = (state: RoutineEligibilityState): string =>
         : toneBadgeClass('neutral');
 
 /** Payloads cached before `eligibility` shipped fall back to the row's own enabled flag. */
-export const resolveRoutineEligibility = (routine: RoutineTaskRecord): RoutineEligibility =>
+export const resolveRoutineEligibility = (routine: RoutineTaskRecord): RoutineEligibilityStatus =>
   routine.eligibility ??
   (routine.enabled
     ? {

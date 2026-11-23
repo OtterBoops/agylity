@@ -1,11 +1,11 @@
 import { useState } from 'preact/hooks';
 import { autocompleteForType, normalizeModelId, resolveModelEffort } from '../config/fields';
-import type { ConfigData, ReasoningEffort, ToastState } from '../types';
+import type { ConfigData, ReasoningEffort } from '../types';
 import { deleteConfigOverride } from '../api';
 import { clearDraft, configStore, dirtyKeys, saveDrafts, setDraft } from '../state/configStore';
+import { pushErrorToast, pushSuccessToast } from '../state/toastStore';
 import { useStore } from '../state/store';
 import { ProvenanceBadge } from './settings/ProvenanceBadge';
-import { StatusBanner } from './StatusBanner';
 import { ToggleSwitch } from './ToggleSwitch';
 
 export interface FieldDef {
@@ -71,7 +71,6 @@ export const SettingsForm = ({
 }: SettingsFormProps) => {
   const { drafts, saving } = useStore(configStore);
   const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
-  const [toast, setToast] = useState<ToastState | null>(null);
 
   const resolved = config.resolved || {};
   const overrides = config.overrides || {};
@@ -118,23 +117,21 @@ export const SettingsForm = ({
 
   const handleReset = () => {
     for (const key of formKeys) clearDraft(key);
-    setToast(null);
   };
 
   const handleSave = async (e: Event) => {
     e.preventDefault();
     if (formDirtyKeys.length === 0) return;
 
-    setToast(null);
     try {
       await saveDrafts(formKeys);
-      setToast({
-        type: 'success',
-        message: `Saved ${formDirtyKeys.length} setting${formDirtyKeys.length === 1 ? '' : 's'}!`,
-      });
+      pushSuccessToast(
+        'Settings saved',
+        `Saved ${formDirtyKeys.length} setting${formDirtyKeys.length === 1 ? '' : 's'}!`
+      );
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err?.message || 'Failed to save settings' });
+      pushErrorToast('Could not save settings', err?.message || 'Failed to save settings');
     }
   };
 
@@ -144,7 +141,7 @@ export const SettingsForm = ({
       clearDraft(key);
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err?.message || 'Failed to reset' });
+      pushErrorToast('Could not reset setting', key + ': ' + (err?.message || 'Failed to reset'));
     }
   };
 
@@ -328,8 +325,6 @@ export const SettingsForm = ({
           </button>
         </div>
       </div>
-
-      {toast && <StatusBanner status={toast} />}
     </form>
   );
 };

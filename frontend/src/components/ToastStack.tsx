@@ -39,7 +39,9 @@ const ToastCard = ({ toast }: { toast: Toast }) => {
         </button>
       </div>
       {toast.message && (
-        <p class="mt-1 font-mono text-xs wrap-break-word text-pine-subtle">{toast.message}</p>
+        <p class="mt-1 font-mono text-xs wrap-break-word whitespace-pre-line text-pine-subtle">
+          {toast.message}
+        </p>
       )}
       <div class="mt-2 flex justify-end">
         <button

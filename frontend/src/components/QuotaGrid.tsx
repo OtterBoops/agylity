@@ -107,7 +107,7 @@ export const QuotaGrid = ({
     return () => clearInterval(timer);
   }, []);
 
-  const getLiveCountdown = (isoStr?: string, fallbackHours?: number): string => {
+  const getLiveCountdown = (isoStr?: string, fallbackHours?: number | null): string => {
     if (!isoStr) return formatResetHuman(fallbackHours ?? 0);
     const targetMs = new Date(isoStr).getTime();
     if (isNaN(targetMs)) return formatResetHuman(fallbackHours ?? 0);

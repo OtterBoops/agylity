@@ -23,6 +23,7 @@ import {
   type BacklogStatus,
 } from '../../coordinator/models.js';
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
+import type { RepositoryEntry } from '../../config/schema.js';
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
@@ -257,44 +258,120 @@ export const handleBulkBacklogTasks = async (
   return sendJson(res, 200, { updated: items.length, items, skipped });
 };
 
+const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+const GITHUB_URL_SLUG_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
+
+const parseGithubSlugFromUrl = (value: string): string | undefined => {
+  const match = GITHUB_URL_SLUG_RE.exec(value.trim());
+  return match ? `${match[1]}/${match[2]}` : undefined;
+};
+
+const isTerminalBacklogStatus = (status: BacklogStatus): boolean =>
+  status === 'canceled' || isTerminalTaskStatus(status);
+
+export const resolveGithubRepoSlug = async (
+  repo: Pick<RepositoryEntry, 'id' | 'name' | 'path' | 'cloneUrl'>,
+  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync
+): Promise<string | undefined> => {
+  if (repo.cloneUrl) {
+    const fromCloneUrl = parseGithubSlugFromUrl(repo.cloneUrl);
+    if (fromCloneUrl) return fromCloneUrl;
+  }
+  if (OWNER_REPO_SLUG_RE.test(repo.id)) {
+    return repo.id;
+  }
+  if (OWNER_REPO_SLUG_RE.test(repo.name)) {
+    return repo.name;
+  }
+  if (repo.path) {
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        ['-C', repo.path, 'remote', 'get-url', 'origin'],
+        { timeout: 5000 }
+      );
+      if (stdout) {
+        const fromOrigin = parseGithubSlugFromUrl(stdout);
+        if (fromOrigin) return fromOrigin;
+      }
+    } catch {
+      // Missing checkout, non-git directory, or no origin remote.
+    }
+  }
+  return undefined;
+};
+
+export interface GithubIssueSyncFailure {
+  repositoryId: string;
+  reason: string;
+}
+
+const describeError = (err: unknown): string => {
+  if (err instanceof Error && err.message) return err.message;
+  const text = String(err);
+  return text === '[object Object]' ? 'unknown error' : text;
+};
+
+export interface SyncGithubBacklogDeps {
+  listOpenIssues?: typeof listOpenIssues;
+  execFileAsync?: typeof defaultExecFileAsync;
+}
+
 export const handleSyncGithubBacklog = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
-  method: string
+  method: string,
+  deps?: SyncGithubBacklogDeps
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
   const config = options.configStore.resolveConfig();
   const coordinator = resolveCoordinator(options);
   const targetLabel = config.githubBacklogLabel || 'backlog';
-  const ghToken = process.env.GITHUB_TOKEN?.trim();
+  const ghToken = config.githubToken?.trim();
+  const fetchIssues = deps?.listOpenIssues ?? listOpenIssues;
+  const execFileAsync = deps?.execFileAsync ?? defaultExecFileAsync;
 
   let importedCount = 0;
   let canceledCount = 0;
   const failedRepos: string[] = [];
+  const failures: GithubIssueSyncFailure[] = [];
+  const markFailed = (repositoryId: string, reason: string) => {
+    failedRepos.push(repositoryId);
+    failures.push({ repositoryId, reason });
+  };
   const existingBacklog = coordinator.queue.listBacklogTasks();
-  // A finished task is history: only open rows keep their issue from being re-imported.
+  // Finished or canceled rows are history: only active rows block re-importing an issue.
   const existingKeys = new Set(
     existingBacklog
-      .filter((t) => t.githubIssueNumber !== undefined && !isTerminalTaskStatus(t.status))
+      .filter((t) => t.githubIssueNumber !== undefined && !isTerminalBacklogStatus(t.status))
       .map((t) => `${t.repositoryId}#${t.githubIssueNumber}`)
   );
 
   for (const repo of config.repositories) {
-    let repoSlug: string | undefined;
-    if (repo.cloneUrl) {
-      const match = /github\.com[/:]([^/]+)\/([^/#?]+?)(?:\.git)?\/?$/.exec(repo.cloneUrl);
-      if (match) repoSlug = `${match[1]}/${match[2]}`;
+    const repoSlug = await resolveGithubRepoSlug(repo, execFileAsync);
+    if (!repoSlug) {
+      options.logger?.warn?.(
+        'Cannot resolve GitHub owner/repo slug for configured repository %s; skipping backlog sync',
+        repo.id
+      );
+      markFailed(
+        repo.id,
+        'cannot resolve GitHub owner/repo from repository name, clone URL, or git origin remote'
+      );
+      continue;
     }
-    if (!repoSlug && repo.id.includes('/')) {
-      repoSlug = repo.id;
-    }
-    if (!repoSlug) continue;
 
-    const listing = await listOpenIssues(repoSlug, targetLabel, ghToken, options.logger);
-    if (!listing) {
-      failedRepos.push(repo.id);
+    const listing = await fetchIssues(
+      repoSlug,
+      targetLabel,
+      ghToken,
+      options.logger,
+      execFileAsync
+    );
+    if (!listing.ok) {
+      markFailed(repo.id, listing.reason);
       continue;
     }
     const issues = listing.issues;
@@ -337,13 +414,10 @@ export const handleSyncGithubBacklog = async (
           canceledCount++;
         }
       }
-    } catch (err: any) {
-      options.logger?.error?.(
-        'Failed to import GitHub backlog for repo %s: %s',
-        repo.id,
-        err?.message ?? err
-      );
-      failedRepos.push(repo.id);
+    } catch (err) {
+      const reason = describeError(err);
+      options.logger?.error?.('Failed to import GitHub backlog for repo %s: %s', repo.id, reason);
+      markFailed(repo.id, `import failed: ${reason}`);
     }
   }
 
@@ -353,6 +427,7 @@ export const handleSyncGithubBacklog = async (
     canceledCount,
     label: targetLabel,
     failedRepos,
+    failures,
   });
 };
 
@@ -373,72 +448,106 @@ const GITHUB_ISSUE_PAGES = 5;
 const GITHUB_ISSUE_PAGE_SIZE = 100;
 const GH_CLI_ISSUE_LIMIT = 500;
 
-const listOpenIssues = async (
+export type GithubIssueFetchResult =
+  ({ ok: true } & GithubIssueListing) | { ok: false; reason: string };
+
+const fetchGithubRestIssues = async (
+  repoSlug: string,
+  label: string,
+  ghToken: string
+): Promise<GithubIssueListing> => {
+  const issues: GithubIssue[] = [];
+  let truncated = false;
+
+  for (let page = 1; page <= GITHUB_ISSUE_PAGES; page++) {
+    const batch = await ky
+      .get(`https://api.github.com/repos/${repoSlug}/issues`, {
+        headers: {
+          Authorization: `Bearer ${ghToken}`,
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'Agylity-Backlog-Sync',
+        },
+        searchParams: {
+          labels: label,
+          state: 'open',
+          per_page: GITHUB_ISSUE_PAGE_SIZE,
+          page,
+        },
+        timeout: 15000,
+      })
+      .json<GithubIssue[]>();
+
+    // The issues endpoint also returns pull requests.
+    issues.push(...batch.filter((item: any) => !item.pull_request));
+    if (batch.length < GITHUB_ISSUE_PAGE_SIZE) break;
+    if (page === GITHUB_ISSUE_PAGES) truncated = true;
+  }
+  return { issues, truncated };
+};
+
+const fetchGhCliIssues = async (
+  repoSlug: string,
+  label: string,
+  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync,
+  ghToken?: string
+): Promise<GithubIssueListing> => {
+  const { stdout } = await execFileAsync(
+    'gh',
+    [
+      'issue',
+      'list',
+      '--repo',
+      repoSlug,
+      '--label',
+      label,
+      '--state',
+      'open',
+      '--limit',
+      String(GH_CLI_ISSUE_LIMIT),
+      '--json',
+      'number,title,body,url',
+    ],
+    { timeout: 20000, env: { ...process.env, GITHUB_TOKEN: ghToken ?? '' } }
+  );
+  const issues: GithubIssue[] = stdout && stdout.trim() ? JSON.parse(stdout) : [];
+  return { issues, truncated: issues.length >= GH_CLI_ISSUE_LIMIT };
+};
+
+export const listOpenIssues = async (
   repoSlug: string,
   label: string,
   ghToken: string | undefined,
-  logger?: WebServerOptions['logger']
-): Promise<GithubIssueListing | undefined> => {
+  logger?: WebServerOptions['logger'],
+  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync
+): Promise<GithubIssueFetchResult> => {
+  let restError: string | undefined;
+
   if (ghToken) {
     try {
-      const issues: GithubIssue[] = [];
-      let truncated = false;
-      for (let page = 1; page <= GITHUB_ISSUE_PAGES; page++) {
-        const batch = await ky
-          .get(`https://api.github.com/repos/${repoSlug}/issues`, {
-            headers: {
-              Authorization: `Bearer ${ghToken}`,
-              Accept: 'application/vnd.github+json',
-              'User-Agent': 'Agylity-Backlog-Sync',
-            },
-            searchParams: {
-              labels: label,
-              state: 'open',
-              per_page: GITHUB_ISSUE_PAGE_SIZE,
-              page,
-            },
-            timeout: 15000,
-          })
-          .json<GithubIssue[]>();
-
-        // The issues endpoint also returns pull requests.
-        issues.push(...batch.filter((item: any) => !item.pull_request));
-        if (batch.length < GITHUB_ISSUE_PAGE_SIZE) break;
-        if (page === GITHUB_ISSUE_PAGES) truncated = true;
-      }
-      return { issues, truncated };
-    } catch (apiErr) {
+      return { ok: true, ...(await fetchGithubRestIssues(repoSlug, label, ghToken)) };
+    } catch (err) {
+      restError = describeError(err);
       logger?.warn?.(
-        'GitHub REST sync failed for %s, falling back to gh CLI: %s',
+        'GitHub REST backlog sync failed for %s, falling back to gh CLI: %s',
         repoSlug,
-        apiErr
+        restError
       );
+    }
+
+    try {
+      return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync, ghToken)) };
+    } catch (err) {
+      const reason = `GitHub REST API failed (${restError}) and the gh CLI failed (${describeError(err)})`;
+      logger?.warn?.('GitHub backlog sync failed for %s: %s', repoSlug, reason);
+      return { ok: false, reason };
     }
   }
 
   try {
-    const { stdout } = await defaultExecFileAsync(
-      'gh',
-      [
-        'issue',
-        'list',
-        '--repo',
-        repoSlug,
-        '--label',
-        label,
-        '--state',
-        'open',
-        '--limit',
-        String(GH_CLI_ISSUE_LIMIT),
-        '--json',
-        'number,title,body,url',
-      ],
-      { timeout: 20000 }
-    );
-    const issues: GithubIssue[] = stdout && stdout.trim() ? JSON.parse(stdout) : [];
-    return { issues, truncated: issues.length >= GH_CLI_ISSUE_LIMIT };
-  } catch (ghCliErr) {
-    logger?.debug?.('gh CLI sync failed for %s: %s', repoSlug, ghCliErr);
-    return undefined;
+    return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync, ghToken)) };
+  } catch (err) {
+    const reason = `no GitHub token is configured on the coordinator and the gh CLI is unavailable (${describeError(err)})`;
+    logger?.warn?.('GitHub backlog sync failed for %s: %s', repoSlug, reason);
+    return { ok: false, reason };
   }
 };

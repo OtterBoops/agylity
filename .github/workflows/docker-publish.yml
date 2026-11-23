@@ -203,6 +203,11 @@ jobs:
           else
             base_image="base"
           fi
+          # Tag pushes are releases; branch pushes are main builds.
+          channel="main"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            channel="release"
+          fi
           {
             echo "IMAGE=${IMAGE}"
             echo "RUNNER_IMAGE=${RUNNER_IMAGE}"
@@ -212,6 +217,8 @@ jobs:
             echo "VERSION=${version}"
             echo "REVISION=${GITHUB_SHA}"
             echo "CREATED=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "BUILD_CHANNEL=${channel}"
+            echo "BUILD_COMMIT=${short}"
           } >> "$GITHUB_ENV"
 
       # A tag on a commit whose images were already pushed by the branch run only
@@ -221,7 +228,16 @@ jobs:
         run: |
           set -euo pipefail
           short="${GITHUB_SHA::7}"
+          # The channel is baked into the image config, so a sha image built for `main` must not be
+          # retagged as a release: it would keep reporting the wrong channel on /api/health.
+          baked_channel=""
+          if docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1; then
+            baked_channel=$(docker buildx imagetools inspect \
+              --format '{{range .Image.Config.Env}}{{println .}}{{end}}' "${IMAGE}:sha-${short}" \
+              2>/dev/null | sed -n 's/^BUILD_CHANNEL=//p' || true)
+          fi
           if [[ "$GITHUB_REF" == refs/tags/* ]] \
+            && [[ "$baked_channel" == "$BUILD_CHANNEL" ]] \
             && docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1 \
             && docker buildx imagetools inspect "${RUNNER_IMAGE}:sha-${short}" >/dev/null 2>&1; then
             echo "reusable=true" >> "$GITHUB_OUTPUT"

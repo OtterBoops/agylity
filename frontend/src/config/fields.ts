@@ -6,6 +6,8 @@ import {
   DEFAULT_DISPATCH_MODEL,
   modelSupportsEffort,
 } from '../../../src/shared/models.ts';
+import type { PrPolicy } from '../../../src/shared/contracts.ts';
+import { PR_POLICIES } from '../../../src/shared/policies.ts';
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = CANONICAL_AGY_MODELS.map(
   (model) => ({ value: model.id, label: model.label })
@@ -30,15 +32,9 @@ export const EFFORT_CODES: Record<ReasoningEffort, string> = {
   xhigh: 'XH',
 };
 
-export const PR_POLICY_OPTIONS: Array<{
-  value: 'docs_only' | 'issues_only' | 'all' | 'none';
-  label: string;
-}> = [
-  { value: 'all', label: 'All files (Allow code & doc PRs)' },
-  { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
-  { value: 'issues_only', label: 'Issues only (No PRs or code changes)' },
-  { value: 'none', label: 'None (Disable autonomous PRs & branch pushes)' },
-];
+export const PR_POLICY_OPTIONS: Array<{ value: PrPolicy; label: string }> = PR_POLICIES.map(
+  (policy) => ({ value: policy.value, label: policy.label })
+);
 
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
 
@@ -118,6 +114,13 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Minimum remaining pool quota required to trigger scheduled maintenance routines (default: 30%).',
   },
   {
+    key: 'backlogMinHeadroomPercent',
+    label: 'Backlog minimum headroom (%)',
+    type: 'number',
+    placeholder: '40',
+    hint: 'Minimum remaining pool quota required to spawn a backlog task (default: 40%). The global AI safety floor still applies whenever it is higher.',
+  },
+  {
     key: 'githubBacklogLabel',
     label: 'GitHub backlog label',
     type: 'text',
@@ -144,11 +147,26 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Whether usage past 0% quota may draw purchased credits. The language server does not report this, so set it to match your account.',
   },
   {
+    key: 'githubToken',
+    label: 'GitHub token',
+    type: 'password',
+    colSpan: 2,
+    hint: 'Encrypted at rest with AES-256-GCM. Used for branch pushes, pull requests, issue filing and backlog sync. The coordinator leases it to runners per task, so runners no longer need their own copy.',
+  },
+  {
     key: 'runnerSharedSecret',
     label: 'Fallback shared runner secret (optional)',
     type: 'password',
     colSpan: 2,
     hint: 'Encrypted at rest with AES-256-GCM. Optional fallback token alongside per-runner registration tokens.',
+  },
+  {
+    key: 'allowTokenlessRunner',
+    label: 'Allow tokenless runners',
+    type: 'boolean',
+    onLabel: 'Allowed',
+    offLabel: 'Blocked',
+    hint: 'Only applies to remotes that are not GitHub. Leave this off for GitHub repositories: their rounds need the coordinator-held token.',
   },
 ];
 

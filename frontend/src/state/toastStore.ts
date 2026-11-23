@@ -39,7 +39,12 @@ export const dismissToast = (id: number): void => {
 
 // An interaction that fails must say so where the user clicked, and stay readable long enough to
 // be copied; the stack is capped so a retry loop cannot bury the page in toasts.
+// An error toast is also the log entry: routing it through console.error keeps the browser
+// console truthful without every call site remembering to log.
 export const pushToast = (toast: Omit<Toast, 'id'>): number => {
+  if (toast.tone === 'error') {
+    console.error('[agylity]', toast.title, ...(toast.message ? [toast.message] : []));
+  }
   const id = nextId++;
   toasts = [...toasts, { ...toast, id }].slice(-MAX_TOASTS);
   timers.set(
@@ -49,6 +54,9 @@ export const pushToast = (toast: Omit<Toast, 'id'>): number => {
   publish();
   return id;
 };
+
+export const pushSuccessToast = (title: string, message?: string): number =>
+  pushToast({ tone: 'success', title, message });
 
 export const pushErrorToast = (title: string, message?: string): number =>
   pushToast({ tone: 'error', title, message });

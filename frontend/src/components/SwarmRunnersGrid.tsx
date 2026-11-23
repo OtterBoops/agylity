@@ -1,24 +1,31 @@
 import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useState } from 'preact/hooks';
 import { checkHealth } from '../api';
+import { pushErrorToast } from '../state/toastStore';
 import type { SwarmRunnerRecord } from '../types';
 import { Icon } from './Icon';
+import { MissingCredentialsBadge } from './tasks/MissingCredentialsBadge';
 import { runnerStatusBadgeClass } from '../utils/status';
 import { formatTime, useTimeFormat } from '../utils/time';
 
 interface SwarmRunnersGridProps {
   runners: SwarmRunnerRecord[];
+  credentialsAvailable: boolean;
   onToggleEnabled: (runner: SwarmRunnerRecord) => Promise<void>;
   onRevoke: (runner: SwarmRunnerRecord) => Promise<void>;
 }
 
-export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRunnersGridProps) => {
+export const SwarmRunnersGrid = ({
+  runners,
+  credentialsAvailable,
+  onToggleEnabled,
+  onRevoke,
+}: SwarmRunnersGridProps) => {
   const [timeFormat] = useTimeFormat();
   // Compared against each runner's report: a different agy build accepts a different id set.
   const [coordinatorAgyVersion, setCoordinatorAgyVersion] = useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,11 +41,13 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
 
   const handleToggle = async (r: SwarmRunnerRecord) => {
     setMutatingId(r.runnerId);
-    setError(null);
     try {
       await onToggleEnabled(r);
     } catch (err: any) {
-      setError(err?.message || 'Failed to update runner status');
+      pushErrorToast(
+        'Could not update runner status',
+        err?.message || 'Failed to update runner status'
+      );
     } finally {
       setMutatingId(null);
     }
@@ -46,12 +55,11 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
 
   const handleRevoke = async (r: SwarmRunnerRecord) => {
     setMutatingId(r.runnerId);
-    setError(null);
     try {
       await onRevoke(r);
       setConfirmRevokeId(null);
     } catch (err: any) {
-      setError(err?.message || 'Failed to revoke runner');
+      pushErrorToast('Could not revoke runner', err?.message || 'Failed to revoke runner');
     } finally {
       setMutatingId(null);
     }
@@ -65,15 +73,6 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
         </h3>
       </div>
 
-      {error && (
-        <div
-          role="alert"
-          class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
-        >
-          {error}
-        </div>
-      )}
-
       {runners.length === 0 ? (
         <div class="rounded-lg border border-pine-highlight bg-pine-overlay/25 p-4 text-xs text-pine-subtle">
           No runners registered yet. Click <strong class="text-pine-text">New Runner</strong> above
@@ -84,6 +83,8 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
           {runners.map((r) => {
             const isMutating = mutatingId === r.runnerId;
             const isConfirmingRevoke = confirmRevokeId === r.runnerId;
+            // An idle runner with no coordinator token has nothing to work with; busy/offline states still matter.
+            const missingCredentials = !credentialsAvailable && r.status === 'idle';
 
             return (
               <div
@@ -96,11 +97,15 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
                   </span>
                   <span class="font-mono text-xs text-pine-subtle">{r.runnerId}</span>
 
-                  <span
-                    class={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
-                  >
-                    {r.status}
-                  </span>
+                  {missingCredentials ? (
+                    <MissingCredentialsBadge />
+                  ) : (
+                    <span
+                      class={`inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap uppercase ${runnerStatusBadgeClass(r.status)}`}
+                    >
+                      {r.status}
+                    </span>
+                  )}
 
                   {!r.enabled && (
                     <span class="inline-flex items-center rounded-md border border-pine-highlight bg-pine-overlay px-2 py-0.5 text-xs font-semibold tracking-wide whitespace-nowrap text-pine-subtle uppercase">

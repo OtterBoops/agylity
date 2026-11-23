@@ -1,7 +1,10 @@
 import type { QuotaAlert, QuotaSnapshot } from '../sentry/models.js';
 import type { ResolvedConfig } from '../config/schema.js';
+import type { DeliveryChannelResult } from '../shared/contracts.js';
 
 export type { QuotaAlert, QuotaSnapshot };
+// Delivered-channel results are part of the alert-history payload the dashboard reads.
+export type { DeliveryChannelResult };
 
 export type DispatchStep =
   'waking' | 'polling' | 'executing' | 'completed' | 'no_changes' | 'aborted' | 'failed';
@@ -14,6 +17,7 @@ export interface DispatchStatusUpdate {
   repositoryPath?: string;
   prompt?: string;
   branchName?: string;
+  issueUrls?: string[];
   output?: string;
   error?: string;
   durationMs?: number;
@@ -53,11 +57,6 @@ export interface DispatchResult {
   taskId?: string;
   status?: string;
   code?: string;
-}
-
-export interface DeliveryChannelResult {
-  success: boolean;
-  error?: string;
 }
 
 export interface InfoNotice {

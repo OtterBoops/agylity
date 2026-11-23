@@ -48,6 +48,7 @@ export const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'push_branch', ddl: 'push_branch INTEGER NOT NULL DEFAULT 1' },
   { name: 'auto_create_pr', ddl: 'auto_create_pr INTEGER NOT NULL DEFAULT 1' },
   { name: 'pr_url', ddl: 'pr_url TEXT' },
+  { name: 'issue_urls_json', ddl: "issue_urls_json TEXT NOT NULL DEFAULT '[]'" },
   { name: 'expires_at', ddl: 'expires_at TEXT' },
   { name: 'verify_command', ddl: 'verify_command TEXT' },
   { name: 'status', ddl: "status TEXT NOT NULL DEFAULT 'queued'" },
@@ -432,6 +433,13 @@ const migratePoolGroupVocabulary = (db: DatabaseSync): void => {
   movePoolGroupPoliciesKey(db);
 };
 
+// A database created before v6 has no issue column; SQLite has no `ADD COLUMN IF NOT EXISTS`.
+const addIssueUrlsColumn = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'swarm_tasks')) return;
+  if (tableHasColumn(db, 'swarm_tasks', 'issue_urls_json')) return;
+  db.exec("ALTER TABLE swarm_tasks ADD COLUMN issue_urls_json TEXT NOT NULL DEFAULT '[]'");
+};
+
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
 export const MIGRATIONS: readonly Migration[] = [
   {
@@ -490,6 +498,13 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'v5_pool_group',
     up: (db) => {
       migratePoolGroupVocabulary(db);
+    },
+  },
+  {
+    version: 6,
+    name: 'v6_issue_urls',
+    up: (db) => {
+      addIssueUrlsColumn(db);
     },
   },
 ];

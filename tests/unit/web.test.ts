@@ -11,6 +11,19 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { clearAuthFailures } from '../../src/web/routes.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
+import {
+  handleSyncGithubBacklog,
+  listOpenIssues,
+  resolveGithubRepoSlug,
+} from '../../src/web/controllers/backlog.js';
+import { Coordinator } from '../../src/coordinator/coordinator.js';
+import {
+  formatBuildLabel,
+  isNewerMainCommit,
+  normalizeBuildCommit,
+  resolveBuildChannel,
+} from '../../src/shared/build.js';
+import type { Logger } from '../../src/logs/logger.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* ==================================================================== */
@@ -638,6 +651,37 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(postRes.secretsMeta.discordToken.isSet, true);
         assert.equal(postRes.secretsMeta.webhookSecret.isSet, false);
         assert.equal(postRes.overrides.discordToken, '••••••••');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('GET /api/config masks githubToken and reports it as set', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_github_token_mask_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('githubToken', 'ghp_plaintext_never_returned');
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const res = await ky.get(`http://127.0.0.1:${started.port}/api/config`).json<any>();
+
+        assert.equal(res.resolved.githubToken, '••••••••');
+        assert.equal(res.overrides.githubToken, '••••••••');
+        assert.equal(res.secretsMeta.githubToken.isSet, true);
+        assert.equal(
+          JSON.stringify(res).includes('ghp_plaintext_never_returned'),
+          false,
+          'the plaintext token must never reach the client'
+        );
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -1674,6 +1718,87 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('leases the coordinator GitHub token in memory and never writes it to the task row', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_lease_token_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'runner-shared-secret-901',
+        repositories: [
+          {
+            id: 'OtterBoops/agylity',
+            name: 'OtterBoops/agylity',
+            path: path.join(dir, 'repo'),
+            cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      // Set through the UI path so the at-rest encryption is part of what this asserts.
+      store.setOverride('githubToken', 'ghp_lease_me_123456');
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-hydrogen': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const dispatch = await ky
+          .post(`${base}/api/dispatch`, {
+            json: {
+              repositoryId: 'OtterBoops/agylity',
+              prompt: 'Lease the credential',
+              cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(dispatch.success, true, JSON.stringify(dispatch));
+
+        const lease = await ky
+          .post(`${base}/api/tasks/poll`, {
+            headers: { 'x-agylity-runner-token': 'runner-shared-secret-901' },
+            json: { runnerId: 'runner-lease' },
+            retry: 0,
+          })
+          .json<any>();
+
+        assert.equal(lease.credentialsAvailable, true);
+        assert.equal(lease.githubToken, 'ghp_lease_me_123456');
+        assert.equal(lease.task?.id, dispatch.taskId);
+
+        // The lease lives in the response only: neither the API nor the row may carry it.
+        const listed = await ky.get(`${base}/api/tasks`).json<any>();
+        assert.equal(JSON.stringify(listed).includes('ghp_lease_me_123456'), false);
+        const rows = store.getDatabase().getRawDb().prepare('SELECT * FROM swarm_tasks').all();
+        assert.equal(JSON.stringify(rows).includes('ghp_lease_me_123456'), false);
+        // At rest it is ciphertext, like every other secret.
+        assert.equal(store.getDatabase().getRaw('githubToken')?.includes('enc:v1:'), true);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('isolates the runner and control-plane brute-force counters', async () => {
       const { dir, cleanup } = makeTempDir('web_test_domain_isolation_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {
@@ -2334,6 +2459,80 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(task?.numTurns, 4);
         assert.equal(task?.totalTokens, 1670);
         assert.equal(task?.thinkingTokens, 120);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('persists a settled title, issue URLs, and a cleared branch name', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_deliverable_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: {
+              repositoryId: 'agylity',
+              prompt: 'Report findings as issues',
+              allowOverage: true,
+            },
+          })
+          .json<any>();
+
+        // The claim is the coordinator's, so the runner's later reports are the ones under test.
+        await ky.post(`${baseUrl}/api/tasks/poll`, {
+          headers: authHeaders,
+          json: { runnerId: 'runner-a', timeoutMs: 0 },
+        });
+
+        const executing = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'executing',
+              runnerId: 'runner-a',
+              branchName: 'agy/abc12345-report-findings',
+            },
+          })
+          .json<any>();
+        assert.equal(executing.task.branchName, 'agy/abc12345-report-findings');
+
+        const issueUrls = ['https://github.com/OtterBoops/agylity/issues/21'];
+        const reported = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'completed',
+              runnerId: 'runner-a',
+              branchName: null,
+              title: 'Parser drops the trailing token',
+              issueUrls,
+            },
+          })
+          .json<any>();
+
+        assert.equal(reported.success, true);
+        assert.equal(reported.task.title, 'Parser drops the trailing token');
+        assert.deepEqual(reported.task.issueUrls, issueUrls);
+        // A discarded branch is cleared, not merely left at whatever the executing report said.
+        assert.equal(reported.task.branchName, undefined);
+
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.title, 'Parser drops the trailing token');
+        assert.deepEqual(task?.issueUrls, issueUrls);
+        assert.equal(task?.branchName, undefined);
       } finally {
         await closeWebServer(server);
         store.close();
@@ -3654,5 +3853,614 @@ describe('Web: Antigravity CLI version reporting', () => {
       store.close();
       cleanup();
     }
+  });
+
+  describe('GitHub Backlog Sync (#14)', () => {
+    const createMockResponse = (): {
+      res: http.ServerResponse;
+      getBody: () => any;
+      getStatus: () => number;
+    } => {
+      let status = 200;
+      let raw = '';
+      const res = {
+        writeHead(code: number) {
+          status = code;
+          return res;
+        },
+        setHeader() {},
+        end(chunk?: string | Buffer) {
+          if (chunk) raw += chunk.toString();
+        },
+      } as unknown as http.ServerResponse;
+      return {
+        res,
+        getStatus: () => status,
+        getBody: () => (raw ? JSON.parse(raw) : undefined),
+      };
+    };
+
+    it('resolves repoSlug from cloneUrl, id, name, or local git origin remote', async () => {
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+          cloneUrl: 'git@github.com:OtterBoops/agylity.git',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'OtterBoops/agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      assert.equal(
+        await resolveGithubRepoSlug({
+          id: 'agylity',
+          name: 'OtterBoops/agylity',
+          path: '/repos/agylity',
+        }),
+        'OtterBoops/agylity'
+      );
+
+      const fromGitOrigin = await resolveGithubRepoSlug(
+        {
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        },
+        async () => ({ stdout: 'https://github.com/OtterBoops/agylity.git\n', stderr: '' })
+      );
+      assert.equal(fromGitOrigin, 'OtterBoops/agylity');
+
+      const unresolvable = await resolveGithubRepoSlug(
+        {
+          id: 'agylity',
+          name: 'agylity',
+          path: '/repos/agylity',
+        },
+        async () => {
+          throw new Error('not a git repo');
+        }
+      );
+      assert.equal(unresolvable, undefined);
+    });
+
+    it('reports unresolvable repos in failedRepos via POST /api/backlog/sync-github', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_unresolvable_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        repositories: [
+          {
+            id: 'local-only',
+            name: 'local-only',
+            path: path.join(dir, 'missing'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const body = await ky
+          .post(`http://127.0.0.1:${started.port}/api/backlog/sync-github`, { retry: 0 })
+          .json<any>();
+
+        assert.equal(body.success, false);
+        assert.equal(body.importedCount, 0);
+        assert.deepEqual(body.failedRepos, ['local-only']);
+        assert.equal(body.failures.length, 1);
+        assert.equal(body.failures[0].repositoryId, 'local-only');
+        assert.match(body.failures[0].reason, /cannot resolve GitHub owner\/repo/);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('imports issues via repo.name / git origin and re-imports previously canceled issues', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_canceled_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        githubBacklogLabel: 'backlog',
+        repositories: [
+          {
+            id: 'repo-by-name',
+            name: 'OtterBoops/repo-one',
+            path: path.join(dir, 'one'),
+            defaultBranch: 'main',
+          },
+          {
+            id: 'repo-by-git',
+            name: 'repo-two',
+            path: path.join(dir, 'two'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const coordinator = new Coordinator({ configStore: store });
+
+      try {
+        // Canceled row for issue #10 should NOT block re-importing #10.
+        const canceledRow = coordinator.queue.createBacklogTask({
+          title: '[GH #10] Previously canceled',
+          prompt: 'Old prompt',
+          repositoryId: 'repo-by-name',
+          githubIssueNumber: 10,
+        });
+        coordinator.queue.updateBacklogTask(canceledRow.id, { status: 'canceled' });
+
+        // Active pending row for issue #11 SHOULD block duplicate import.
+        coordinator.queue.createBacklogTask({
+          title: '[GH #11] Still pending',
+          prompt: 'Active prompt',
+          repositoryId: 'repo-by-name',
+          githubIssueNumber: 11,
+        });
+
+        const requestedSlugs: string[] = [];
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator },
+          'POST',
+          {
+            execFileAsync: async () => ({
+              stdout: 'git@github.com:OtterBoops/repo-two.git\n',
+              stderr: '',
+            }),
+            listOpenIssues: async (slug) => {
+              requestedSlugs.push(slug);
+              if (slug === 'OtterBoops/repo-one') {
+                return {
+                  ok: true,
+                  truncated: false,
+                  issues: [
+                    { number: 10, title: 'Reopened issue', body: 'Should re-import' },
+                    { number: 11, title: 'Already active', body: 'Should skip' },
+                  ],
+                };
+              }
+              return {
+                ok: true,
+                truncated: false,
+                issues: [{ number: 20, title: 'From git origin', body: 'Origin body' }],
+              };
+            },
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(requestedSlugs, ['OtterBoops/repo-one', 'OtterBoops/repo-two']);
+        assert.deepEqual(mockRes.getBody(), {
+          success: true,
+          importedCount: 2,
+          canceledCount: 0,
+          label: 'backlog',
+          failedRepos: [],
+          failures: [],
+        });
+
+        const tasks = coordinator.queue.listBacklogTasks();
+        const reimported = tasks.filter(
+          (t) =>
+            t.repositoryId === 'repo-by-name' &&
+            t.githubIssueNumber === 10 &&
+            t.status === 'pending'
+        );
+        assert.equal(reimported.length, 1);
+        assert.equal(reimported[0]?.title, '[GH #10] Reopened issue');
+
+        const activeDuplicates = tasks.filter(
+          (t) => t.repositoryId === 'repo-by-name' && t.githubIssueNumber === 11
+        );
+        assert.equal(activeDuplicates.length, 1);
+
+        const fromOrigin = tasks.filter(
+          (t) => t.repositoryId === 'repo-by-git' && t.githubIssueNumber === 20
+        );
+        assert.equal(fromOrigin.length, 1);
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/backlog/sync-github passes the coordinator config token to the issue listing', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_config_token_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        repositories: [
+          {
+            id: 'OtterBoops/agylity',
+            name: 'OtterBoops/agylity',
+            path: path.join(dir, 'agylity'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      store.setOverride('githubToken', 'ghp_coordinator_token');
+      const coordinator = new Coordinator({ configStore: store });
+      const savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+
+      try {
+        const receivedTokens: Array<string | undefined> = [];
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator },
+          'POST',
+          {
+            listOpenIssues: async (_slug, _label, ghToken) => {
+              receivedTokens.push(ghToken);
+              return { ok: true, truncated: false, issues: [] };
+            },
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(receivedTokens, ['ghp_coordinator_token']);
+      } finally {
+        if (savedEnvToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = savedEnvToken;
+        store.close();
+        cleanup();
+      }
+    });
+
+    const makeLoggerStub = () => {
+      const warns: unknown[][] = [];
+      const logger = {
+        namespace: undefined,
+        debug: () => {},
+        info: () => {},
+        warn: (...args: unknown[]) => {
+          warns.push(args);
+        },
+        error: () => {},
+        child: () => logger,
+        setLevel: () => {},
+        getLevel: () => 'info',
+        addSink: () => () => {},
+        removeSink: () => {},
+        clearSinks: () => {},
+        setSinks: () => {},
+      } as unknown as Logger;
+      return { logger, warns };
+    };
+
+    it('uses the authenticated GitHub REST API when a token is supplied', async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedAuth: string | null = null;
+      let ghCliCalls = 0;
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const req = input instanceof Request ? input : new Request(input, init);
+        capturedAuth = req.headers.get('authorization');
+        return new Response(
+          JSON.stringify([
+            {
+              number: 42,
+              title: 'Real issue',
+              body: 'body',
+              html_url: 'https://github.com/OtterBoops/agylity/issues/42',
+            },
+            {
+              number: 43,
+              title: 'Pull request item',
+              pull_request: { url: 'https://api.github.com/repos/OtterBoops/agylity/pulls/43' },
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_test',
+          undefined,
+          async () => {
+            ghCliCalls++;
+            throw new Error('gh should not run when the REST call succeeds');
+          }
+        );
+
+        assert.equal(capturedAuth, 'Bearer ghp_test');
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+        assert.equal(result.truncated, false);
+        assert.deepEqual(
+          result.issues.map((issue) => issue.number),
+          [42]
+        );
+        assert.equal(ghCliCalls, 0);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('falls back to the gh CLI when the authenticated REST call fails', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ message: 'Bad credentials' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch;
+
+      let ghArgs: readonly string[] = [];
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_expired',
+          undefined,
+          async (cmd: string, args: readonly string[]) => {
+            assert.equal(cmd, 'gh');
+            ghArgs = args;
+            return {
+              stdout: JSON.stringify([{ number: 7, title: 'From CLI', body: 'body', url: 'u' }]),
+              stderr: '',
+            };
+          }
+        );
+
+        assert.deepEqual(ghArgs.slice(0, 4), ['issue', 'list', '--repo', 'OtterBoops/agylity']);
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+        assert.deepEqual(
+          result.issues.map((issue) => issue.number),
+          [7]
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('reports a reason when no GitHub token is configured and the gh CLI is unavailable', async () => {
+      const originalFetch = globalThis.fetch;
+      let restCalls = 0;
+      globalThis.fetch = (async () => {
+        restCalls++;
+        return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+      const { logger, warns } = makeLoggerStub();
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          undefined,
+          logger,
+          async () => {
+            throw new Error('spawn gh ENOENT');
+          }
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.match(result.reason, /no GitHub token is configured on the coordinator/);
+        assert.match(result.reason, /spawn gh ENOENT/);
+        assert.equal(restCalls, 0, 'must not call GitHub REST without a token');
+        assert.equal(warns.length, 1, 'the failure must be logged at warn level');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('reports both REST and gh CLI errors when both fail with a token', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ message: 'Bad credentials' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch;
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_expired',
+          undefined,
+          async () => {
+            throw new Error('gh: not authenticated');
+          }
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.match(result.reason, /GitHub REST API failed/);
+        assert.match(result.reason, /gh: not authenticated/);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('surfaces per-repo failure reasons from POST /api/backlog/sync-github', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_failures_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        githubBacklogLabel: 'backlog',
+        repositories: [
+          {
+            id: 'OtterBoops/broken',
+            name: 'OtterBoops/broken',
+            path: path.join(dir, 'broken'),
+            defaultBranch: 'main',
+          },
+          {
+            id: 'local-only',
+            name: 'local-only',
+            path: path.join(dir, 'missing'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const coordinator = new Coordinator({ configStore: store });
+      const { logger, warns } = makeLoggerStub();
+
+      try {
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator, logger },
+          'POST',
+          {
+            execFileAsync: async () => {
+              throw new Error('not a git repo');
+            },
+            listOpenIssues: async () => ({
+              ok: false,
+              reason:
+                'no GitHub token is configured on the coordinator and the gh CLI is unavailable (spawn gh ENOENT)',
+            }),
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(mockRes.getBody(), {
+          success: false,
+          importedCount: 0,
+          canceledCount: 0,
+          label: 'backlog',
+          failedRepos: ['OtterBoops/broken', 'local-only'],
+          failures: [
+            {
+              repositoryId: 'OtterBoops/broken',
+              reason:
+                'no GitHub token is configured on the coordinator and the gh CLI is unavailable (spawn gh ENOENT)',
+            },
+            {
+              repositoryId: 'local-only',
+              reason:
+                'cannot resolve GitHub owner/repo from repository name, clone URL, or git origin remote',
+            },
+          ],
+        });
+        assert.ok(warns.length >= 1, 'slug resolution failures must be logged at warn level');
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+  });
+});
+
+describe('Web: build channel reporting', () => {
+  const withBuildEnv = async (
+    channel: string | undefined,
+    commit: string | undefined,
+    fn: (port: number) => Promise<void>
+  ): Promise<void> => {
+    const { dir, cleanup } = makeTempDir('web_build_channel_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const previous = { channel: process.env.BUILD_CHANNEL, commit: process.env.BUILD_COMMIT };
+    let server: http.Server | undefined;
+
+    try {
+      if (channel === undefined) delete process.env.BUILD_CHANNEL;
+      else process.env.BUILD_CHANNEL = channel;
+      if (commit === undefined) delete process.env.BUILD_COMMIT;
+      else process.env.BUILD_COMMIT = commit;
+
+      const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+      server = started.server;
+      await fn(started.port);
+    } finally {
+      if (server) await closeWebServer(server);
+      if (previous.channel === undefined) delete process.env.BUILD_CHANNEL;
+      else process.env.BUILD_CHANNEL = previous.channel;
+      if (previous.commit === undefined) delete process.env.BUILD_COMMIT;
+      else process.env.BUILD_COMMIT = previous.commit;
+      store.close();
+      cleanup();
+    }
+  };
+
+  it('reports a main build channel with a seven-character commit on /api/health', async () => {
+    await withBuildEnv('main', '32789fb995558b4a3f017182ed58bbef2c41ed06', async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.status, 'ok');
+      assert.equal(health.buildChannel, 'main');
+      assert.equal(health.buildCommit, '32789fb');
+    });
+  });
+
+  it('reports the release channel unchanged', async () => {
+    await withBuildEnv('release', 'abc1234', async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.buildChannel, 'release');
+      assert.equal(health.buildCommit, 'abc1234');
+    });
+  });
+
+  it('falls back to the dev channel and a null commit when the build args are absent', async () => {
+    await withBuildEnv(undefined, undefined, async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.buildChannel, 'dev');
+      assert.equal(health.buildCommit, null);
+    });
+  });
+});
+
+describe('Shared: build channel helpers', () => {
+  it('accepts only the three known channels and fails open to dev', () => {
+    assert.equal(resolveBuildChannel('release'), 'release');
+    assert.equal(resolveBuildChannel('MAIN'), 'main');
+    assert.equal(resolveBuildChannel('dev'), 'dev');
+    assert.equal(resolveBuildChannel('nightly'), 'dev');
+    assert.equal(resolveBuildChannel(''), 'dev');
+    assert.equal(resolveBuildChannel(undefined), 'dev');
+  });
+
+  it('normalises a commit to seven lowercase hex characters', () => {
+    assert.equal(normalizeBuildCommit('32789FB995558B4A3F017182ED58BBEF2C41ED06'), '32789fb');
+    assert.equal(normalizeBuildCommit('32789fb'), '32789fb');
+    assert.equal(normalizeBuildCommit('32789f'), null);
+    assert.equal(normalizeBuildCommit('not-a-sha'), null);
+    assert.equal(normalizeBuildCommit(null), null);
+  });
+
+  it('labels a main build with its short SHA and every other channel with the version', () => {
+    assert.equal(formatBuildLabel('main', '0.6.6', '32789fb'), 'main · 32789fb');
+    assert.equal(formatBuildLabel('main', '0.6.6', null), 'v0.6.6');
+    assert.equal(formatBuildLabel('release', '0.6.6', '32789fb'), 'v0.6.6');
+    assert.equal(formatBuildLabel('dev', '0.6.6', '32789fb'), 'v0.6.6');
+  });
+
+  it('treats any different main commit as newer, never as an ordering', () => {
+    assert.equal(isNewerMainCommit('32789fb', '9e1c0aa'), true);
+    assert.equal(isNewerMainCommit('9e1c0aa', '32789fb'), true);
+    assert.equal(isNewerMainCommit('32789fb', '32789fb'), false);
+    assert.equal(isNewerMainCommit('32789fb', '32789fb0000000000'), false);
+    assert.equal(isNewerMainCommit('32789fb', null), false);
+    assert.equal(isNewerMainCommit(null, '9e1c0aa'), false);
   });
 });

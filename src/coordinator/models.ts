@@ -24,16 +24,52 @@ export {
 } from '../shared/models.js';
 export type { AgyModelCatalogEntry, ReasoningEffort };
 
-export type ScheduleMode = 'immediate' | 'pre_reset';
-export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('immediate');
+// Wire enums and payloads are declared once in ../../shared/contracts.ts; the zod schemas below
+// only validate what crosses the boundary, so no type is stated twice.
+import type {
+  BacklogStatus,
+  CascadeHop,
+  RoutineEligibilityState,
+  RoutineEligibilityStatus,
+  ScheduleMode,
+  TaskStatus,
+  TaskTier,
+} from '../shared/contracts.js';
 
-export type TaskTier = 'immediate' | 'backlog' | 'routine';
+export type {
+  BacklogStatus,
+  CascadeHop,
+  RoutineEligibilityState,
+  RoutineEligibilityStatus,
+  ScheduleMode,
+  TaskStatus,
+  TaskTier,
+};
 
-export type BacklogStatus =
-  'pending' | 'dispatched' | 'paused' | 'completed' | 'failed' | 'canceled';
+// Each schema is bound to its contract: a literal the contract does not allow is a compile error.
+export const ScheduleModeSchema = z
+  .enum(['immediate', 'pre_reset'])
+  .default('immediate') satisfies z.ZodType<ScheduleMode, ScheduleMode | undefined>;
+
+export type RunnerLeaseBlockReason = 'missing_github_token';
+
+/**
+ * A GitHub remote needs the coordinator's PAT: without it the clone is anonymous and the push fails
+ * after the run has already spent quota. A task with no clone URL is a local checkout and exempt.
+ */
+export const isGithubRemoteTask = (task: {
+  cloneUrl?: string;
+  repositoryName?: string;
+}): boolean => {
+  const cloneUrl = task.cloneUrl?.trim().toLowerCase();
+  if (cloneUrl) return cloneUrl.includes('github.com');
+  // A bare owner/repo name is how a cloned GitHub repository is configured.
+  return /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(task.repositoryName?.trim() ?? '');
+};
+
 export const BacklogStatusSchema = z
   .enum(['pending', 'dispatched', 'paused', 'completed', 'failed', 'canceled'])
-  .default('pending');
+  .default('pending') satisfies z.ZodType<BacklogStatus, BacklogStatus | undefined>;
 
 export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).default('high');
 
@@ -46,25 +82,6 @@ export const isTerminalTaskStatus = (status: string): boolean =>
 /** A cycle only re-arms after its previous run succeeded; anything else ends the cycle. */
 export const ROUTINE_CYCLE_REARM_STATUSES = ['completed'] as const;
 
-export type RoutineEligibilityState =
-  | 'disabled'
-  | 'running'
-  | 'ready'
-  | 'waiting_window'
-  | 'cycle_complete'
-  | 'cycle_failed'
-  | 'pool_disabled'
-  | 'low_headroom'
-  | 'no_telemetry';
-
-export interface RoutineEligibilityStatus {
-  state: RoutineEligibilityState;
-  label: string;
-  detail: string;
-}
-
-export type TaskStatus =
-  'queued' | 'claimed' | 'executing' | 'completed' | 'no_changes' | 'failed' | 'aborted';
 export const TaskStatusSchema = z.enum([
   'queued',
   'claimed',
@@ -73,7 +90,7 @@ export const TaskStatusSchema = z.enum([
   'no_changes',
   'failed',
   'aborted',
-]);
+]) satisfies z.ZodType<TaskStatus>;
 
 export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   effectiveHeadroomPercent: number | null;
@@ -207,11 +224,6 @@ export const resolveDefaultDispatchModel = (
   configured: string | undefined,
   catalog: readonly AgyModelCatalogEntry[] = CANONICAL_AGY_MODELS
 ): string => resolveAvailableModelId(resolveConcreteModelId(configured), catalog);
-
-export interface CascadeHop {
-  model: string;
-  effort: ReasoningEffort;
-}
 
 export const normalizeCascade = (input: unknown, fallbackModel?: string): CascadeHop[] => {
   const hops: CascadeHop[] = [];

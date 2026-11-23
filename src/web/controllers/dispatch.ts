@@ -12,12 +12,14 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
+import type { RunnersResponse } from '../../shared/contracts.js';
 import { extractClientIp } from '../ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
 import { Coordinator } from '../../coordinator/coordinator.js';
-import { RegistrationTokenError } from '../../coordinator/queue.js';
+import { RegistrationTokenError, type SwarmTask } from '../../coordinator/queue.js';
+import type { RunnerLeaseBlockReason } from '../../coordinator/models.js';
 import {
   annotateModelsWithQuota,
   resolveDefaultDispatchModel,
@@ -339,8 +341,15 @@ export const handlePollTasks = async (
   }
   noteRunnerAuth(req, options, true);
 
+  const githubToken = resolved.githubToken?.trim() || undefined;
+  const credentialsAvailable = Boolean(githubToken);
+
   if (!resolved.coordinatorEnabled) {
-    return sendJson(res, 200, { task: null, coordinatorEnabled: false });
+    return sendJson(res, 200, {
+      task: null,
+      coordinatorEnabled: false,
+      credentialsAvailable,
+    });
   }
 
   const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
@@ -365,6 +374,17 @@ export const handlePollTasks = async (
   // The request's 'close' has already fired after the body read; only the response reports a mid-poll hangup.
   res.once('close', onClose);
 
+  let leaseBlocked: RunnerLeaseBlockReason | undefined;
+  const onLeaseBlocked = (task: SwarmTask, reason: RunnerLeaseBlockReason) => {
+    if (reason !== 'missing_github_token') return;
+    leaseBlocked = reason;
+    options.logger?.warn?.(
+      'Withholding task %s on %s: the coordinator has no GitHub token and tokenless leasing is off',
+      task.id,
+      task.repositoryName
+    );
+  };
+
   try {
     const task = await coordinator.pollForTask(
       {
@@ -374,12 +394,26 @@ export const handlePollTasks = async (
         repositories,
         systemInfo,
         timeoutMs,
+        // A non-GitHub remote needs no credential, so only the flag can keep it leasable.
+        leaseGithubTasks: credentialsAvailable || resolved.allowTokenlessRunner,
+        onLeaseBlocked,
       },
       abortController.signal
     );
 
     if (!res.writableEnded) {
-      return sendJson(res, 200, { task }, { 'Cache-Control': 'no-store' });
+      return sendJson(
+        res,
+        200,
+        {
+          task,
+          credentialsAvailable,
+          // The lease travels in memory on this response only: never a row, never a log.
+          ...(task && githubToken ? { githubToken } : {}),
+          ...(task ? {} : leaseBlocked ? { leaseBlocked } : {}),
+        },
+        { 'Cache-Control': 'no-store' }
+      );
     }
   } finally {
     res.off('close', onClose);
@@ -483,8 +517,11 @@ export const handleTaskStatus = async (
   const result = await coordinator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
     runnerId: auth.runner?.runnerId ?? toStringOrUndefined(payload.runnerId),
-    branchName: toStringOrUndefined(payload.branchName),
+    // A runner that discarded its branch sends null, which clears the column instead of keeping it.
+    branchName: payload.branchName === null ? null : toStringOrUndefined(payload.branchName),
     prUrl: toStringOrUndefined(payload.prUrl),
+    issueUrls: Array.isArray(payload.issueUrls) ? toStringArray(payload.issueUrls) : undefined,
+    title: toStringOrUndefined(payload.title),
     output: toStringOrUndefined(payload.output),
     error: toStringOrUndefined(payload.error),
     durationMs: toFiniteNumberOrUndefined(payload.durationMs),
@@ -579,7 +616,9 @@ export const handleGetRunners = (
   if (method !== 'GET') return methodNotAllowed(res);
   const coordinator = resolveCoordinator(options);
   const runners = coordinator.listRunners();
-  return sendJson(res, 200, runners, { 'Cache-Control': 'no-store' });
+  const credentialsAvailable = Boolean(options.configStore.resolveConfig().githubToken?.trim());
+  const payload: RunnersResponse = { runners, credentialsAvailable };
+  return sendJson(res, 200, payload, { 'Cache-Control': 'no-store' });
 };
 
 export const handleCreateRegistrationToken = async (

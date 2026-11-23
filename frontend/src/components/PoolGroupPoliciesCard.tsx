@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks';
 import { faSliders } from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData } from '../types';
 import { updateConfig } from '../api';
+import { pushErrorToast } from '../state/toastStore';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
 
@@ -38,7 +39,6 @@ const POOLS: PoolDef[] = [
 
 export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCardProps) => {
   const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const rawPolicies = config.resolved?.poolGroupPolicies || {};
   const currentPolicies = {
@@ -62,7 +62,6 @@ export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCard
   ) => {
     const key = `${poolKey}:${field}`;
     setSavingKey(key);
-    setError(null);
     try {
       const updated = {
         ...currentPolicies,
@@ -74,8 +73,8 @@ export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCard
       await updateConfig({ poolGroupPolicies: updated });
       onSaved();
     } catch (err: any) {
-      // The switch reflects server state, so a failed write silently snaps back without this.
-      setError(err?.message || 'Failed to update the pool policy');
+      // The switch mirrors server state, so a failed write snaps back silently without this.
+      pushErrorToast('Pool policy not saved', err?.message || 'Failed to update the pool policy');
     } finally {
       setSavingKey(null);
     }
@@ -93,15 +92,6 @@ export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCard
           model pool.
         </p>
       </div>
-
-      {error && (
-        <p
-          role="alert"
-          class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
-        >
-          {error}
-        </p>
-      )}
 
       <div class="divide-y divide-pine-highlight/40 border-t border-pine-highlight/40">
         {POOLS.map((pool) => {

@@ -1,9 +1,11 @@
 import type { SwarmRunnerRecord } from '../types';
 import { formatTime, useTimeFormat } from '../utils/time';
+import { MissingCredentialsBadge } from './tasks/MissingCredentialsBadge';
 import { TableHeadRow, TableRow, TableShell, TH } from './TableShell';
 
 interface SwarmRunnersStripProps {
   runners: SwarmRunnerRecord[];
+  credentialsAvailable: boolean;
   coordinatorEnabled: boolean;
   runnersError?: string | null;
 }
@@ -16,6 +18,7 @@ const runnerStatus = (runner: SwarmRunnerRecord): { label: string; tone: string 
 
 export const SwarmRunnersStrip = ({
   runners,
+  credentialsAvailable,
   coordinatorEnabled,
   runnersError = null,
 }: SwarmRunnersStripProps) => {
@@ -64,10 +67,17 @@ export const SwarmRunnersStrip = ({
         <tbody>
           {runners.map((runner) => {
             const status = runnerStatus(runner);
+            const missingCredentials = !credentialsAvailable && runner.status === 'idle';
             return (
               <TableRow key={runner.runnerId}>
                 <td class="truncate px-2.5 text-sm text-pine-text">{runner.name}</td>
-                <td class={`px-2.5 text-xs uppercase ${status.tone}`}>{status.label}</td>
+                <td class="px-2.5 text-xs whitespace-nowrap uppercase">
+                  {missingCredentials ? (
+                    <MissingCredentialsBadge />
+                  ) : (
+                    <span class={status.tone}>{status.label}</span>
+                  )}
+                </td>
                 <td class="truncate px-2.5 font-mono text-xs text-pine-subtle">
                   {runner.activeTaskId ? (
                     <a

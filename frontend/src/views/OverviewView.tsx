@@ -117,6 +117,8 @@ export const OverviewView = ({
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>(
     () => readUiCache<SwarmRunnerRecord[]>(RUNNERS_CACHE_KEY) ?? []
   );
+  // Optimistic until the first poll answers: a transient failure must not accuse the config.
+  const [credentialsAvailable, setCredentialsAvailable] = useState(true);
   const [runnersError, setRunnersError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -126,8 +128,9 @@ export const OverviewView = ({
       getRunners()
         .then((next) => {
           if (cancelled) return;
-          setRunners(next);
-          writeUiCache(RUNNERS_CACHE_KEY, next);
+          setRunners(next.runners);
+          setCredentialsAvailable(next.credentialsAvailable);
+          writeUiCache(RUNNERS_CACHE_KEY, next.runners);
           setRunnersError(null);
         })
         .catch((err: any) => {
@@ -158,6 +161,7 @@ export const OverviewView = ({
       />
       <SwarmRunnersStrip
         runners={runners}
+        credentialsAvailable={credentialsAvailable}
         coordinatorEnabled={coordinatorEnabled}
         runnersError={runnersError}
       />

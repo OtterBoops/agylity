@@ -7,6 +7,7 @@ import type {
   LogEntry,
   ModelCatalogEntry,
   SwarmRunnerRecord,
+  RunnersResponse,
   RunnerRegistrationTokenResult,
   SwarmTask,
   BacklogTaskRecord,
@@ -49,6 +50,8 @@ export interface HealthStatus {
   timestamp?: string;
   authRequired?: boolean;
   agyVersion?: string | null;
+  buildChannel?: string;
+  buildCommit?: string | null;
 }
 
 export const checkHealth = async (): Promise<HealthStatus> => {
@@ -275,11 +278,12 @@ export const getModels = (): Promise<ModelsResponse> =>
       models: [],
     }));
 
-export const getRunners = (): Promise<SwarmRunnerRecord[]> =>
+export const getRunners = (): Promise<RunnersResponse> =>
   api
     .get('runners')
-    .json<SwarmRunnerRecord[]>()
-    .catch(() => []);
+    .json<RunnersResponse>()
+    // A failed poll says nothing about configuration, so do not accuse it of a missing token.
+    .catch(() => ({ runners: [], credentialsAvailable: true }));
 
 export const createRegistrationToken = (payload: {
   nameHint?: string;
@@ -409,20 +413,22 @@ export const dispatchBacklogTask = (
     .post(`backlog/${encodeURIComponent(id)}/dispatch`)
     .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
-export const syncGithubBacklog = (): Promise<{
+export interface GithubSyncFailure {
+  repositoryId: string;
+  reason: string;
+}
+
+export interface GithubSyncResult {
   success: boolean;
   importedCount: number;
   canceledCount?: number;
   label: string;
   failedRepos?: string[];
-}> =>
-  api.post('backlog/sync-github').json<{
-    success: boolean;
-    importedCount: number;
-    canceledCount?: number;
-    label: string;
-    failedRepos?: string[];
-  }>();
+  failures?: GithubSyncFailure[];
+}
+
+export const syncGithubBacklog = (): Promise<GithubSyncResult> =>
+  api.post('backlog/sync-github').json<GithubSyncResult>();
 
 export const getDispatchEligibility = (params: { model?: string; allowOverage?: boolean } = {}) => {
   const query = new URLSearchParams();

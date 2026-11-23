@@ -1,7 +1,7 @@
 import { useState } from 'preact/hooks';
-import type { ConfigData, ToastState } from '../types';
+import type { ConfigData } from '../types';
 import { updateConfig } from '../api';
-import { StatusBanner } from './StatusBanner';
+import { pushErrorToast, pushSuccessToast } from '../state/toastStore';
 
 interface Repo {
   id: string;
@@ -25,7 +25,6 @@ const hasCustomPath = (repo: Repo): boolean =>
 export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
   const current: Repo[] = config.resolved?.repositories || [];
   const [newRepoInput, setNewRepoInput] = useState('');
-  const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Repo | null>(null);
@@ -75,21 +74,20 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
 
     const newRepo = deriveRepo(newRepoInput);
     if (current.some((r) => r.id === newRepo.id)) {
-      setToast({ type: 'error', message: `Repository "${newRepo.id}" already exists.` });
+      pushErrorToast('Could not add repository', `Repository "${newRepo.id}" already exists.`);
       return;
     }
 
     setIsSaving(true);
-    setToast(null);
 
     const updated = [...current, newRepo];
     try {
       await updateConfig({ repositories: updated });
       setNewRepoInput('');
-      setToast({ type: 'success', message: `Added repository "${newRepo.name}".` });
+      pushSuccessToast('Repository added', `Added repository "${newRepo.name}".`);
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to add repository' });
+      pushErrorToast('Could not add repository', err?.message || 'Failed to add repository');
     } finally {
       setIsSaving(false);
     }
@@ -97,14 +95,13 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
 
   const handleRemoveRepo = async (id: string) => {
     setIsSaving(true);
-    setToast(null);
     const updated = current.filter((r) => r.id !== id);
     try {
       await updateConfig({ repositories: updated });
-      setToast({ type: 'success', message: 'Repository removed.' });
+      pushSuccessToast('Repository removed');
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to remove repository' });
+      pushErrorToast('Could not remove repository', err?.message || 'Failed to remove repository');
     } finally {
       setIsSaving(false);
     }
@@ -133,7 +130,6 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
     if (!editingId || !draft) return;
 
     setIsSaving(true);
-    setToast(null);
 
     const entry: Repo = {
       ...draft,
@@ -147,10 +143,10 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
       await updateConfig({ repositories: updated });
       setEditingId(null);
       setDraft(null);
-      setToast({ type: 'success', message: `Updated repository "${entry.name}".` });
+      pushSuccessToast('Repository updated', `Updated repository "${entry.name}".`);
       onSaved();
     } catch (err: any) {
-      setToast({ type: 'error', message: err.message || 'Failed to update repository' });
+      pushErrorToast('Could not update repository', err?.message || 'Failed to update repository');
     } finally {
       setIsSaving(false);
     }
@@ -297,8 +293,6 @@ export const RepoEditor = ({ config, onSaved }: RepoEditorProps) => {
           )}
         </div>
       )}
-
-      {toast && <StatusBanner status={toast} />}
     </div>
   );
 };

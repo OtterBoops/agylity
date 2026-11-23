@@ -197,6 +197,22 @@ export const formatDurationHuman = (durationMs?: number): string => {
   return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
 };
 
+// One labelled link per issue, fitted to the 100-char value budget the other dispatch fields use;
+// a link that does not fit is dropped whole so the markdown never ends mid-link.
+const renderIssueLinks = (urls: readonly string[]): string => {
+  const links = urls.map((url) => {
+    const number = /\/issues\/(\d+)/.exec(url)?.[1];
+    return number ? `[Issue #${number}](${url})` : `[Issue](${url})`;
+  });
+  const fitted: string[] = [];
+  for (const link of links) {
+    const candidate = fitted.length > 0 ? `${fitted.join(' · ')} · ${link}` : link;
+    if (candidate.length > 100 && fitted.length > 0) break;
+    fitted.push(link);
+  }
+  return fitted.join(' · ').slice(0, 100);
+};
+
 export const buildDispatchStatusEmbed = (
   status: DispatchStatusUpdate,
   options?: EmbedBuildOptions
@@ -266,6 +282,12 @@ export const buildDispatchStatusEmbed = (
       value: `\`${status.taskId.slice(0, 100)}\``,
       inline: true,
     });
+  }
+
+  // Issues are a deliverable even when the run produced no commits, so an empty list renders nothing.
+  const issueLinks = status.issueUrls?.length ? renderIssueLinks(status.issueUrls) : '';
+  if (issueLinks !== '') {
+    fields.push({ name: 'Deliverables', value: issueLinks, inline: true });
   }
 
   let description = '';

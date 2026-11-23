@@ -35,6 +35,7 @@ export const AlertsView = ({ alerts }: AlertsViewProps) => {
       setNextBefore(page.nextBefore);
       setError(null);
     } catch (err: any) {
+      console.error('[agylity] could not load alert history', err);
       setError(err?.message || 'Could not load alert history');
     } finally {
       setLoading(false);

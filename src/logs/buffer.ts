@@ -1,4 +1,8 @@
 import { format } from 'node:util';
+import type { LogEntry, LogLevel } from '../shared/contracts.js';
+
+// The log record the API serves is a wire payload, declared once in the shared contracts.
+export type { LogEntry, LogLevel };
 
 export const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
@@ -8,15 +12,6 @@ export const LEVEL_PRIORITY: Record<LogLevel, number> = {
 };
 
 export const LOG_LEVELS = Object.keys(LEVEL_PRIORITY) as LogLevel[];
-
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
-
-export interface LogEntry {
-  id: number;
-  ts: string;
-  level: LogLevel;
-  message: string;
-}
 
 const PATTERNS: RegExp[] = [
   // Discord bot tokens: <id>.<ts>.<hmac>

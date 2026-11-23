@@ -5,7 +5,7 @@ import { getDispatchEligibility } from '../api';
 import { useModelCatalog } from '../state/modelCatalogStore';
 import { readUiCache, VERDICT_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 import { CANONICAL_AGY_MODELS } from '../../../src/shared/models.ts';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { formatDateTime, useTimeFormat } from '../utils/time';
 
 const VERDICT_POLL_MS = 15_000;
@@ -107,9 +107,12 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
   );
   const [failed, setFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [timeFormat] = useTimeFormat();
   const catalog = useModelCatalog();
   const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useDialogScrollLock(detailOpen);
 
   // syncKey is the quota store's lastUpdated, so a quota change re-probes at once instead of letting
   // the two bars drift on independent 15s/60s timers. Restarting the interval anchors it to that edge.
@@ -139,7 +142,10 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
 
   const openDetail = () => {
     const dialog = dialogRef.current;
-    if (dialog && !dialog.open) dialog.showModal();
+    if (dialog && !dialog.open) {
+      dialog.showModal();
+      setDetailOpen(true);
+    }
   };
 
   const closeDetail = () => dialogRef.current?.close();
@@ -213,8 +219,9 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
       <dialog
         ref={dialogRef}
         aria-labelledby="dispatch-verdict-title"
+        onClose={() => setDetailOpen(false)}
         onClick={dialogBackdropClickHandler(dialogRef, closeDetail)}
-        class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+        class="fixed inset-0 m-auto max-h-[85vh] w-[calc(100%-2rem)] max-w-xl overflow-y-auto overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
       >
         <div class="flex items-baseline justify-between gap-3">
           <h2 id="dispatch-verdict-title" class="text-base font-semibold text-pine-text">

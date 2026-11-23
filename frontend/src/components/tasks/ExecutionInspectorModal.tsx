@@ -8,26 +8,23 @@ import {
   faTimes,
   faTriangleExclamation,
 } from '@fortawesome/free-solid-svg-icons';
-import type { PrPolicy, SwarmTask } from '../../types';
+import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
+import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
+import { resolveTaskTitle, UNTITLED_TASK_TITLE } from '../../../../src/shared/titles.ts';
 import { getTask } from '../../api';
-import { dialogBackdropClickHandler } from '../../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
-import { isActiveTaskStatus, isLiveTaskStatus, taskBadgeClass } from './badges';
+import { isActiveTaskStatus, isLiveTaskStatus } from './badges';
+import { githubIssueLabel } from './executionRow';
+import { taskDisplayBadgeClass, taskDisplayStatusLabel } from './statusLabels';
 
 const POLL_INTERVAL_MS = 3000;
 
 const AUTOSCROLL_SLACK_PX = 24;
 
 const OVERLAP_SEARCH_LIMIT = 4096;
-
-const PR_POLICY_LABELS: Record<PrPolicy, string> = {
-  docs_only: 'Docs only',
-  issues_only: 'Issues only',
-  all: 'All files',
-  none: 'Disabled',
-};
 
 const formatTokenCount = (value: number): string => value.toLocaleString();
 
@@ -142,6 +139,7 @@ export const ExecutionInspectorContent = ({
         })
         .catch((err: unknown) => {
           if (cancelled) return;
+          console.error('[agylity] live refresh failed', err);
           setError(`Live refresh failed: ${err instanceof Error ? err.message : String(err)}`);
         });
     }, POLL_INTERVAL_MS);
@@ -162,6 +160,14 @@ export const ExecutionInspectorContent = ({
   const liveStatus = isLiveTaskStatus(live.status);
   const canAbort = isActiveTaskStatus(live.status) || live.status === 'claimed';
   const canRetry = TERMINAL_STATUSES.has(live.status);
+  // resolveTaskTitle owns the prompt fallback, so the ID heading is only for a task with neither.
+  const title = resolveTaskTitle(live.title, live.prompt);
+  const heading =
+    title === UNTITLED_TASK_TITLE
+      ? live.taskNumber
+        ? `Task #${live.taskNumber}`
+        : 'Task details'
+      : title;
 
   return (
     <>
@@ -174,12 +180,12 @@ export const ExecutionInspectorContent = ({
               data-drawer-focus
               class="text-base font-bold wrap-break-word text-pine-text"
             >
-              {live.title || (live.taskNumber ? `Task #${live.taskNumber}` : 'Task details')}
+              {heading}
             </h2>
             <span
-              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskBadgeClass(live.status)}`}
+              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskDisplayBadgeClass(live)}`}
             >
-              {live.status}
+              {taskDisplayStatusLabel(live)}
             </span>
           </div>
           <p class="mt-1 font-mono text-xs text-pine-subtle">
@@ -274,9 +280,7 @@ export const ExecutionInspectorContent = ({
             <DetailItem label="Created">
               {formatDateTime(live.createdAt, { timeFormat })}
             </DetailItem>
-            <DetailItem label="Runner">
-              {live.runnerId || live.claimedByRunnerId || '\u2014'}
-            </DetailItem>
+            <DetailItem label="Runner">{live.runnerId || '\u2014'}</DetailItem>
             <DetailItem label="Duration">{formatDuration(live.durationMs)}</DetailItem>
             <DetailItem label="Claimed">
               {formatDateTime(live.claimedAt, { timeFormat }) || '\u2014'}
@@ -305,8 +309,29 @@ export const ExecutionInspectorContent = ({
                 </span>
               )}
             </DetailItem>
+            <DetailItem label="Issues">
+              {live.issueUrls && live.issueUrls.length > 0 ? (
+                <span class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {live.issueUrls.map((url) => (
+                    <a
+                      key={url}
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open issue ${githubIssueLabel(url)}`}
+                      class="inline-flex items-center gap-1 text-pine-iris hover:underline"
+                    >
+                      <span>{githubIssueLabel(url)}</span>
+                      <Icon icon={faExternalLinkAlt} class="size-2.5" />
+                    </a>
+                  ))}
+                </span>
+              ) : (
+                <span class="text-pine-subtle">{'\u2014'}</span>
+              )}
+            </DetailItem>
             <DetailItem label="PR Policy">
-              {live.prPolicy ? PR_POLICY_LABELS[live.prPolicy] : 'Inherited'}
+              {live.prPolicy ? PR_POLICY_SHORT_LABELS[live.prPolicy] : 'Inherited'}
             </DetailItem>
             <DetailItem label="Verify Command" span>
               {live.verifyCommand || '\u2014'}
@@ -330,7 +355,7 @@ export const ExecutionInspectorContent = ({
               {copiedPrompt ? 'Copied' : 'Copy'}
             </button>
           </div>
-          <div class="max-h-40 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-overlay p-3 font-mono wrap-break-word break-all whitespace-pre-wrap">
+          <div class="max-h-40 overflow-y-auto overscroll-contain rounded-lg border border-pine-highlight bg-pine-overlay p-3 font-mono wrap-break-word break-all whitespace-pre-wrap">
             {live.prompt}
           </div>
         </div>
@@ -338,7 +363,7 @@ export const ExecutionInspectorContent = ({
         {live.error && (
           <div>
             <h4 class="mb-1 text-xs font-semibold text-pine-love uppercase">Failure Diagnostic</h4>
-            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
+            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
               {live.error}
             </div>
           </div>
@@ -361,7 +386,7 @@ export const ExecutionInspectorContent = ({
                 stickToBottom.current =
                   el.scrollHeight - el.scrollTop - el.clientHeight <= AUTOSCROLL_SLACK_PX;
               }}
-              class="m-0 max-h-48 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam"
+              class="m-0 max-h-48 overflow-y-auto overscroll-contain rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam"
             >
               {live.output}
             </pre>
@@ -387,6 +412,8 @@ export const ExecutionInspectorModal = ({
 }: ExecutionInspectorModalProps) => {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
+  useDialogScrollLock(true);
+
   useEffect(() => {
     dialogRef.current?.showModal();
   }, []);
@@ -399,7 +426,7 @@ export const ExecutionInspectorModal = ({
       ref={dialogRef}
       onClose={onClose}
       onClick={dialogBackdropClickHandler(dialogRef, onClose)}
-      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
       <ExecutionInspectorContent
         task={task}

@@ -11,9 +11,9 @@ import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient, extractCliJsonPayload } from '../../src/sentry/client.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
-import type { InfoNotice } from '../../src/notify/types.js';
+import type { DispatchStatusUpdate, InfoNotice } from '../../src/notify/types.js';
 import {
-  assertRunnerGitCredentials,
+  warnLegacyGithubToken,
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
@@ -25,6 +25,7 @@ import {
   RemoteSwarmRunner,
 } from '../../src/coordinator/index.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
+import type { Logger } from '../../src/logs/logger.js';
 import {
   DiscordNotifier,
   createDispatchModal,
@@ -422,6 +423,79 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         cleanup();
       }
     });
+
+    it('derives the queue title from the prompt when no title is supplied', () => {
+      const { dir, cleanup } = makeTempDir('orch_title_enqueue_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const cascade = [{ model: 'gemini-4-argon', effort: 'high' }] as const;
+
+        // The dashboard row and the branch/commit/PR surfaces share one title, so a dispatch prompt
+        // written as a Markdown heading must land as the readable title, markers stripped.
+        const derived = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: '## Fix the parser\n\nThe body is not the title.',
+          cascade,
+        });
+        assert.equal(derived.title, 'Fix the parser');
+
+        // An explicit title still wins over the prompt's heading.
+        const explicit = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Explicit queue title',
+          prompt: '## Ignored heading\n\nbody',
+          cascade,
+        });
+        assert.equal(explicit.title, 'Explicit queue title');
+
+        // The old literal fallback is gone: a prompt with nothing to say yields the shared default.
+        const blank = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: '   \n\n\t',
+          cascade,
+        });
+        assert.equal(blank.title, 'Untitled task');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('maps a legacy blank-title row through the shared title helper', () => {
+      const { dir, cleanup } = makeTempDir('orch_title_legacy_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const cascade = [{ model: 'gemini-4-argon', effort: 'high' }] as const;
+        const markdown = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Placeholder',
+          prompt: '## Fix the parser\n\nbody',
+          cascade,
+        });
+        const empty = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Placeholder',
+          prompt: '   ',
+          cascade,
+        });
+
+        // Rows written before every task carried a title store an empty string, not NULL.
+        const blankTitle = db.getRawDb().prepare('UPDATE swarm_tasks SET title = ? WHERE id = ?');
+        blankTitle.run('', markdown.id);
+        blankTitle.run('', empty.id);
+
+        // Neither the first 100 chars of the prompt nor the literal 'Task' may come back.
+        assert.equal(queue.getTask(markdown.id)?.title, 'Fix the parser');
+        assert.equal(queue.getTask(empty.id)?.title, 'Untitled task');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
@@ -529,7 +603,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(invocations[5]?.file, 'agy');
         assert.deepEqual(invocations[5]?.args, [
           '-p',
-          'Implement swarm poller unit tests\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
+          'Implement swarm poller unit tests\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
           '--mode',
           'auto',
           '--dangerously-skip-permissions',
@@ -619,11 +693,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('passes GITHUB_TOKEN via extraheader during clone and redacts token on failure', async () => {
+    it('passes the leased token via extraheader during clone and redacts it on failure', async () => {
       const { dir, cleanup } = makeTempDir('orch_clone_guard_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
-      const oldToken = process.env.GITHUB_TOKEN;
-      process.env.GITHUB_TOKEN = 'ghp_secret_dummy_token_99999';
+      const leasedToken = 'ghp_secret_dummy_token_99999';
 
       try {
         const queue = new TaskQueue(db);
@@ -642,27 +715,31 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           execFileFn: async (file, args) => {
             invocations.push({ file, args });
             if (file === 'git' && args[0] === '-c') {
-              throw new Error(
-                'fatal: could not read Username for ghp_secret_dummy_token_99999@github.com'
-              );
+              throw new Error(`fatal: could not read Username for ${leasedToken}@github.com`);
             }
             return { stdout: '', stderr: '' };
           },
         });
 
-        const res = await executor.execute(task);
+        const res = await executor.execute(task, { githubToken: leasedToken });
         assert.equal(res.success, false);
-        // Verify extraheader format was used
         assert.equal(invocations[0]?.file, 'git');
-        assert.ok(invocations[0]?.args[0] === '-c');
-        assert.ok(invocations[0]?.args[1]?.includes('extraheader=AUTHORIZATION: basic'));
-        // Verify URL did not embed token
-        assert.ok(!invocations[0]?.args.some((a) => a.includes('ghp_secret_dummy_token_99999@')));
-        // Verify token was redacted in error output
-        assert.ok(!res.error?.includes('ghp_secret_dummy_token_99999'));
+        assert.equal(invocations[0]?.args[0], '-c');
+        assert.equal(
+          invocations[0]?.args[1]?.includes('extraheader=AUTHORIZATION: basic '),
+          true,
+          'the clone must authenticate with the leased token'
+        );
+        const expectedBasic = Buffer.from(`x-access-token:${leasedToken}`, 'utf8').toString(
+          'base64'
+        );
+        assert.equal(invocations[0]?.args[1]?.includes(expectedBasic), true);
+        // The URL must never embed the token.
+        assert.ok(!invocations[0]?.args.some((arg) => arg.includes(`${leasedToken}@`)));
+        // Nor may it survive into the failure the coordinator stores.
+        assert.ok(!res.error?.includes(leasedToken));
         assert.ok(res.error?.includes('[redacted]'));
       } finally {
-        process.env.GITHUB_TOKEN = oldToken;
         db.close();
         cleanup();
       }
@@ -833,7 +910,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(tasks[0]?.status, 'completed');
         assert.ok(tasks[0]?.branchName?.startsWith('agy/'));
 
-        const workers = await ky.get(`${baseUrl}/api/runners`).json<any[]>();
+        const runnersRes = await ky
+          .get(`${baseUrl}/api/runners`)
+          .json<{ runners: any[]; credentialsAvailable: boolean }>();
+        const workers = runnersRes.runners;
+        assert.equal(runnersRes.credentialsAvailable, false);
         assert.equal(workers.length, 1);
         assert.equal(workers[0]?.runnerId, 'runner-worker-1');
         assert.equal(workers[0]?.status, 'idle');
@@ -2018,6 +2099,106 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('persists issueUrls on a completed run, forwards them to the notifier, and closes the task to further patches', async () => {
+      const { dir, cleanup } = makeTempDir('orch_issues_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const updates: DispatchStatusUpdate[] = [];
+        const coordinator = new Coordinator({
+          configStore: new ConfigStore(db),
+          notifier: {
+            channelName: 'test',
+            initialize: async () => {},
+            notifyQuotaAlert: async () => ({ delivered: true, results: {} }),
+            notifyDispatchStatus: async (update) => {
+              updates.push(update);
+            },
+            notifyInfo: async () => {},
+            shutdown: async () => {},
+          },
+        });
+
+        const queue = coordinator.queue;
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Review the discord bot modals and file the follow-up issues',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-1' });
+
+        const issueUrls = ['https://github.com/o/r/issues/14', 'https://github.com/o/r/issues/15'];
+        const result = await coordinator.reportTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          issueUrls,
+        });
+        assert.equal(result?.applied, true);
+
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.status, 'completed');
+        assert.deepEqual(stored?.issueUrls, issueUrls);
+        // Issues are the deliverable of their own: no branch PR accompanies them.
+        assert.equal(stored?.prUrl, undefined);
+
+        const completedUpdate = updates.find((update) => update.status === 'completed');
+        assert.ok(completedUpdate, 'the completion notice must reach the notifier');
+        assert.deepEqual(completedUpdate.issueUrls, issueUrls);
+
+        // Terminal means closed: a later patch must be refused, exactly as for no_changes.
+        const later = queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+        });
+        assert.equal(later?.applied, false);
+        const reread = queue.getTask(task.id);
+        assert.equal(reread?.status, 'completed');
+        assert.deepEqual(reread?.issueUrls, issueUrls);
+        assert.equal(reread?.prUrl, undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('keeps stored issueUrls when a later non-terminal patch omits the field', () => {
+      const { dir, cleanup } = makeTempDir('orch_issues_retain_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'File the follow-up issues while the run continues',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-1' });
+
+        const issueUrls = ['https://github.com/o/r/issues/14'];
+        const first = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          runnerId: 'runner-1',
+          issueUrls,
+        });
+        assert.equal(first?.applied, true);
+        assert.deepEqual(queue.getTask(task.id)?.issueUrls, issueUrls);
+
+        // A later report that says nothing about issues must not clear the ones already filed.
+        const second = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          runnerId: 'runner-1',
+          branchName: 'agy/task-abc-file-follow-ups',
+        });
+        assert.equal(second?.applied, true);
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.status, 'executing');
+        assert.deepEqual(stored?.issueUrls, issueUrls);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('survives an unparsable claimed_at instead of failing the duration_ms NOT NULL constraint', () => {
       const { dir, cleanup } = makeTempDir('orch_bad_claim_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -2494,49 +2675,123 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
   });
-  describe('6. Runner GitHub Credential Preflight', () => {
-    it('refuses to start when GITHUB_TOKEN is absent', () => {
-      assert.throws(() => assertRunnerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
-      // The message also names the compose `environment:` trap, which is how a token gets lost.
-      assert.throws(
-        () => assertRunnerGitCredentials(['OtterBoops/agylity'], {}),
-        /environment: in compose\.yaml/
-      );
+  describe('6. Runner GitHub Credential Handoff', () => {
+    const captureWarnings = () => {
+      const warnings: unknown[][] = [];
+      const log = {
+        namespace: undefined,
+        debug: () => {},
+        info: () => {},
+        warn: (...args: unknown[]) => {
+          warnings.push(args);
+        },
+        error: () => {},
+        child: () => log,
+        setLevel: () => {},
+        getLevel: () => 'info',
+        addSink: () => () => {},
+        removeSink: () => {},
+        clearSinks: () => {},
+        setSinks: () => {},
+      } as unknown as Logger;
+      return { log, warnings };
+    };
+
+    it('boots without a local token instead of refusing to start', () => {
+      assert.doesNotThrow(() => warnLegacyGithubToken(captureWarnings().log, {}));
     });
 
-    it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
-      assert.throws(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
+    it('warns loudly that a runner-local GITHUB_TOKEN is ignored', () => {
+      const { log, warnings } = captureWarnings();
+
+      warnLegacyGithubToken(log, { GITHUB_TOKEN: 'ghp_legacy_runner' });
+
+      assert.equal(warnings.length, 1);
+      assert.match(String(warnings[0]?.[0]), /Ignoring GITHUB_TOKEN/);
+      assert.match(String(warnings[0]?.[0]), /coordinator/);
     });
 
-    it('accepts a real token', () => {
-      assert.doesNotThrow(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: 'ghp_abc123' }));
+    it('stays quiet for a blank token', () => {
+      const { log, warnings } = captureWarnings();
+
+      warnLegacyGithubToken(log, { GITHUB_TOKEN: '   ' });
+
+      assert.equal(warnings.length, 0);
     });
 
-    it('allows an explicit opt-out for non-GitHub remotes', () => {
-      assert.doesNotThrow(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'true' }));
-    });
+    const liveCoordinator = (dir: string) => {
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-hydrogen': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      return { store, coordinator: new Coordinator({ configStore: store, sentryState }) };
+    };
 
-    it('does not let the opt-out be enabled by a truthy-but-wrong value', () => {
-      assert.throws(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'yes' }));
-    });
+    it('withholds a GitHub-remote task when the coordinator holds no token', async () => {
+      const { dir, cleanup } = makeTempDir('orch_lease_guard_');
+      const { store, coordinator } = liveCoordinator(dir);
 
-    it('blocks start() before any registration or poll happens', async () => {
-      const savedToken = process.env.GITHUB_TOKEN;
-      const savedOptOut = process.env.ALLOW_TOKENLESS_RUNNER;
-      delete process.env.GITHUB_TOKEN;
-      delete process.env.ALLOW_TOKENLESS_RUNNER;
       try {
-        const worker = new RemoteSwarmRunner({
-          coordinatorUrl: 'http://127.0.0.1:1',
-          runnerId: 'runner-no-token',
-          sharedSecret: 'swarm-secret-token-999',
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'OtterBoops/agylity',
+          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+          prompt: 'Needs a credential to clone',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
         });
-        await assert.rejects(() => worker.start(), /GITHUB_TOKEN is not set/);
+        const blocks: string[] = [];
+
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-no-token',
+          timeoutMs: 0,
+          leaseGithubTasks: false,
+          onLeaseBlocked: (blocked, reason) => blocks.push(`${blocked.id}:${reason}`),
+        });
+
+        assert.equal(claimed, null);
+        assert.deepEqual(blocks, [`${task.id}:missing_github_token`]);
+        assert.equal(coordinator.queue.getTask(task.id)?.status, 'queued');
       } finally {
-        if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
-        else process.env.GITHUB_TOKEN = savedToken;
-        if (savedOptOut === undefined) delete process.env.ALLOW_TOKENLESS_RUNNER;
-        else process.env.ALLOW_TOKENLESS_RUNNER = savedOptOut;
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('still leases a local checkout when no token is configured', async () => {
+      const { dir, cleanup } = makeTempDir('orch_lease_local_');
+      const { store, coordinator } = liveCoordinator(dir);
+
+      try {
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'local-repo',
+          repositoryPath: path.join(dir, 'repo'),
+          prompt: 'Runs against a local checkout',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+        const blocks: string[] = [];
+
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-no-token',
+          timeoutMs: 0,
+          leaseGithubTasks: false,
+          onLeaseBlocked: (blocked, reason) => blocks.push(`${blocked.id}:${reason}`),
+        });
+
+        assert.equal(claimed?.id, task.id);
+        assert.deepEqual(blocks, []);
+      } finally {
+        store.close();
+        cleanup();
       }
     });
   });
@@ -2928,7 +3183,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(task.tier, 'routine');
         assert.equal(task.originId, rt.id);
         assert.equal(task.model, 'claude-sonnet-5-5');
-        assert.equal(task.scheduleMode, 'pre_reset');
+        // The routine's own window already gated the spawn, so the queue must hand it out at once
+        // rather than re-check it against the global pre-reset window at claim time.
+        assert.equal(task.scheduleMode, 'immediate');
         assert.equal(task.status, 'queued');
 
         // Verify routine task was stamped with lastTriggeredResetTime and lastTaskId
@@ -4358,6 +4615,243 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           queue.updateBacklogTask(backlog.id, { prompt: ' Rewritten prompt ' })?.prompt,
           'Rewritten prompt'
         );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 14. Backlog Tier Gating, Immediate Claimability & Unclaimed Expiry    */
+  /* ==================================================================== */
+  describe('14. Backlog tier gating, immediate claimability & unclaimed expiry', () => {
+    // 100h out is deliberately far outside any pre-reset burn window, so a spawn here can only be
+    // the backlog tier's own path.
+    const hydrogenPools = (remainingFraction: number, hoursUntilReset = 100): QuotaSnapshot[] => [
+      {
+        poolId: 'gemini-hydrogen',
+        poolGroup: 'gemini-hydrogen',
+        displayName: 'Gemini Flash',
+        remainingFraction,
+        resetTime: new Date(Date.now() + hoursUntilReset * 3600 * 1000).toISOString(),
+        hoursUntilReset,
+        models: ['gemini-4-hydrogen'],
+      },
+    ];
+
+    const backlogConfig = (dir: string) => ({
+      coordinatorEnabled: true,
+      defaultDispatchModel: 'gemini-4-hydrogen',
+      repositories: [
+        {
+          id: 'agylity',
+          name: 'OtterBoops/agylity',
+          path: dir,
+          cloneUrl: 'https://example.invalid/agylity.git',
+          defaultBranch: 'main',
+        },
+      ],
+    });
+
+    const createOrigin = (coordinator: Coordinator, title: string, priorityOrder: number) =>
+      coordinator.queue.createBacklogTask({
+        title,
+        prompt: `Prompt for ${title}`,
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        priorityOrder,
+      });
+
+    it('runs one backlog task at a time and only picks the next item once the first is terminal', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_gate_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+
+        const first = createOrigin(coordinator, 'First backlog item', 1);
+        const second = createOrigin(coordinator, 'Second backlog item', 2);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'pending');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+
+        const firstTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(firstTick.length, 1);
+        const run = firstTick[0]!;
+        assert.equal(run.tier, 'backlog');
+        assert.equal(run.originId, first.id);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'dispatched');
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.attemptCount, 1);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.swarmTaskId, run.id);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 1);
+
+        // One in flight: a queued backlog run must hold the tier even though another row is pending.
+        const queuedTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(queuedTick.length, 0);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.attemptCount, 0);
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 1);
+
+        coordinator.queue.updateTaskStatus(run.id, { status: 'completed', durationMs: 25 });
+        assert.equal(coordinator.reconcileBacklogOrigins(), 1);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'completed');
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 0);
+
+        const thirdTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(thirdTick.length, 1);
+        assert.equal(thirdTick[0]?.originId, second.id);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'dispatched');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.attemptCount, 1);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('gates the backlog tier on the configured floor while the global safety floor still wins', async () => {
+      const cases: Array<{
+        label: string;
+        overrides: Record<string, number>;
+        expected: number;
+      }> = [
+        {
+          label: 'an override above the live headroom blocks the spawn',
+          overrides: { backlogMinHeadroomPercent: 60 },
+          expected: 0,
+        },
+        {
+          label: 'an override at the live headroom allows the spawn',
+          overrides: { backlogMinHeadroomPercent: 40 },
+          expected: 1,
+        },
+        {
+          label: 'a higher global floor blocks a lower backlog override',
+          overrides: { backlogMinHeadroomPercent: 20, minDispatchHeadroomPercent: 55 },
+          expected: 0,
+        },
+      ];
+
+      for (const testCase of cases) {
+        const { dir, cleanup } = makeTempDir('coord_backlog_headroom_');
+        const db = new AppDatabase(path.join(dir, 'test.db'));
+
+        try {
+          const configStore = new ConfigStore(db, backlogConfig(dir));
+          for (const [key, value] of Object.entries(testCase.overrides)) {
+            configStore.setOverride(key, value);
+          }
+          const coordinator = new Coordinator({ configStore });
+          const origin = createOrigin(coordinator, 'Headroom item', 1);
+
+          const spawned = await coordinator.triggerEligibleAutonomousTasks(hydrogenPools(0.5));
+          assert.equal(spawned.length, testCase.expected, testCase.label);
+
+          const row = coordinator.queue.getBacklogTask(origin.id);
+          assert.equal(
+            row?.status,
+            testCase.expected === 1 ? 'dispatched' : 'pending',
+            testCase.label
+          );
+          assert.equal(row?.attemptCount, testCase.expected, testCase.label);
+          assert.equal(coordinator.queue.countActiveBacklogTasks(), testCase.expected);
+        } finally {
+          db.close();
+          cleanup();
+        }
+      }
+    });
+
+    it('leaves a spawned backlog task immediately claimable outside any pre-reset window', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_claim_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        createOrigin(coordinator, 'Claimable backlog item', 1);
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(hydrogenPools(0.8));
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0]?.scheduleMode, 'immediate');
+
+        // The pool resets 100h away, yet an immediate backlog task must not wait for a burn window.
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-backlog',
+          timeoutMs: 0,
+        });
+        assert.ok(claimed, 'a queued backlog task must be claimable');
+        assert.equal(claimed?.id, spawned[0]!.id);
+        assert.equal(claimed?.tier, 'backlog');
+        assert.equal(claimed?.scheduleMode, 'immediate');
+        assert.equal(claimed?.status, 'claimed');
+        assert.equal(claimed?.runnerId, 'runner-backlog');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('settles an unclaimed expired backlog run back to pending without burning a retry', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_expiry_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+        const origin = createOrigin(coordinator, 'Expiring backlog item', 1);
+        const pastIso = new Date(Date.now() - 60_000).toISOString();
+
+        // Path 1: the coordinator sweep reaps a deadline that passed with no runner polling at all.
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(spawned.length, 1);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.attemptCount, 1);
+
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+          .run(pastIso, spawned[0]!.id);
+        coordinator.reapStaleClaims();
+
+        const aborted = coordinator.queue.getTask(spawned[0]!.id);
+        assert.equal(aborted?.status, 'aborted');
+        assert.match(aborted?.error ?? '', /queue window/);
+        assert.doesNotMatch(aborted?.error ?? '', /weekly/i);
+
+        const settled = coordinator.queue.getBacklogTask(origin.id);
+        assert.equal(settled?.status, 'pending');
+        // The run never reached a runner, so the attempt is handed back rather than burned.
+        assert.equal(settled?.attemptCount, 0);
+        assert.equal(settled?.swarmTaskId, undefined);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask()?.id, origin.id);
+
+        // Path 2: a runner polling past the deadline expires it lazily and gets nothing.
+        const respawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(respawned.length, 1);
+        assert.equal(respawned[0]?.originId, origin.id);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.attemptCount, 1);
+
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+          .run(pastIso, respawned[0]!.id);
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-backlog',
+          timeoutMs: 0,
+        });
+        assert.equal(claimed, null);
+
+        const lazilyAborted = coordinator.queue.getTask(respawned[0]!.id);
+        assert.equal(lazilyAborted?.status, 'aborted');
+        assert.match(lazilyAborted?.error ?? '', /queue window/);
+        assert.doesNotMatch(lazilyAborted?.error ?? '', /weekly/i);
+
+        const resettled = coordinator.queue.getBacklogTask(origin.id);
+        assert.equal(resettled?.status, 'pending');
+        assert.equal(resettled?.attemptCount, 0);
+        assert.equal(resettled?.swarmTaskId, undefined);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask()?.id, origin.id);
       } finally {
         db.close();
         cleanup();

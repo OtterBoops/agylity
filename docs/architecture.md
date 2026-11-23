@@ -107,6 +107,8 @@ Continuation tasks are designed to be executed strictly on designated runner mac
 
 Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secrets) stored in SQLite are encrypted before being written to disk using native Node 26 `node:crypto` AES-256-GCM authenticated encryption (`enc:v1:<iv>:<tag>:<ciphertext>`). On all REST API routes (`GET /api/config`), secret values are masked (`••••••••`) to prevent accidental credential leakage in browser network logs or client inspection.
 
+The GitHub PAT is a coordinator secret under the same rules: `enc:v1` at rest, masked in `GET /api/config`, settable or clearable from the dashboard without a restart, and resolved as the SQLite override before the coordinator's own `GITHUB_TOKEN` environment variable. Runners never persist it — the credential is leased per task (§7.1).
+
 ### 3.3. AI Overcharge & Credit Safety Floor
 
 A task is blocked from dispatch when the headroom of its chosen pool is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), protecting against billable AI overages.
@@ -151,7 +153,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 | Route                                  | Auth   | Notes                                                             |
 | :------------------------------------- | :----- | :---------------------------------------------------------------- |
-| `GET /api/health`                      | public | Liveness only; reports `authRequired`.                            |
+| `GET /api/health`                      | public | Liveness; reports `authRequired` and build provenance.            |
 | `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
 | `GET /api/summary`                     | Bearer | Per-group headroom percentages and the cached `agy` version.      |
 | `GET /api/alerts`                      | Bearer | Active alert state.                                               |
@@ -172,7 +174,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `GET /api/backlog`                     | Bearer | Backlog items.                                                    |
 | `POST /api/backlog`                    | Bearer | Creates one backlog item.                                         |
 | `PATCH /api/backlog/bulk`              | Bearer | Pause/resume up to 200 ids (`{action, ids}`).                     |
-| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues into the backlog.                           |
+| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues in; per-repo `failures` reasons.            |
 | `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
 | `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
 | `DELETE /api/backlog/:id`              | Bearer | Deletes the item.                                                 |
@@ -193,6 +195,8 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `POST /api/runners/register`           | Runner | Exchanges a registration token for a runner id.                   |
 
 "Bearer" means the `WEB_UI_AUTH_TOKEN` control-plane check; "Runner" means the request carries a runner credential and is exempt from the web token. The HTML shell and hashed assets are served unauthenticated — the client-side `<ControlPlaneGate />` (§3.9) is what withholds the dashboard DOM, so no API data is reachable without the token.
+
+`GET /api/health` also carries **build provenance**: `buildChannel` (`release` | `main` | `dev`, failing open to `dev` when `BUILD_CHANNEL` is unset or unrecognised) and `buildCommit` (the 7-character short SHA, or `null`). Both are baked into the coordinator image as Docker build args, which CI supplies per ref — `release` on tag builds, `main` on branch builds. The dashboard reads them to label the sidebar version indicator: a `main` build renders `main · <sha>` and compares its SHA against the newest commit on `main` (a different short SHA is the update signal, since commits have no ordering to compare), while `release` and `dev` builds keep the `v{APP_VERSION}` label and the GitHub Releases semver comparison. `src/shared/build.ts` owns the validation and label rules for both sides.
 
 ### 3.9. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
 
@@ -223,12 +227,13 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 ## 5. Subsystem Breakdown
 
-1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
+1. **Configuration Store (`src/config/`)**: `schema.ts` holds `CONFIG_REGISTRY`, the single declaration of every knob (env spelling, validator, built-in default, secret flag, description), from which `BUILTIN_DEFAULTS`, the env↔key maps, the secret list and the env parser are all derived; `docs.ts` renders the env reference table and `.env.example` from that same table. `store.ts` applies the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`) and emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
-5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`).
-6. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
+5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`). Mutation feedback routes through `frontend/src/state/toastStore.ts` (`pushToast`, `pushSuccessToast`, `pushErrorToast`), and an error toast also writes to `console.error`; view-level load failures stay inline in the view so an empty or degraded surface still explains itself.
+6. **Shared Wire Contracts (`src/shared/`)**: `contracts.ts` declares every payload the HTTP API emits (`SwarmTask`, `BacklogTaskRecord`, `RoutineTaskRecord`, `QuotaSnapshot`, `SentryAlertState`, `AlertEvent`, log entries, and the PR/tier/status enums) and `policies.ts` owns the PR-policy table (value, select label, hint). Both are type-only and free of runtime imports so the Vite client bundles them directly; backend modules re-export the declarations and `frontend/src/types.ts` is a pure re-export of the contract plus genuinely frontend-only shapes. Zod schemas stay beside their producers purely as validators.
+7. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
 
 ---
 
@@ -302,8 +307,9 @@ Coordinator (Homelab / Cloud)
    - Runner machines connect outbound via HTTPS to `/api/tasks/poll`.
    - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on runner nodes.
 2. **Task Scheduling**: every task carries a `scheduleMode`.
-   - **`immediate`**: run as soon as a matching runner polls.
-   - **`pre_reset`**: opportunistic quota-burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
+   - **`immediate`**: run as soon as a matching runner polls. Both autonomous tiers enqueue this way: the tier's own window and headroom gate have already run at spawn, so a spawned backlog or routine task must be claimable by an idle runner rather than waiting for a reset it was never gated on.
+   - **`pre_reset`**: opportunistic quota-burn, and the mode of an explicit manual `POST /api/dispatch` burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
+   - The gate that decides whether to dispatch runs once, at spawn, inside the autonomous evaluator. Claim time enforces only live safety: the `MIN_DISPATCH_HEADROOM_PERCENT` floor (or `allowOverage`), `poolGroupPolicies.dispatchEnabled`, the runner's `leaseGithubTasks` scope, and the task's own `expiresAt`.
 3. **Target Routing by Labels and Repository**:
    - A task declares `requiredLabels`; a runner claims it only if it holds **all** of them, and only if the task's repository is in the runner's own scope. A runner's scope comes from its registration — the poll payload may narrow it, never widen it.
 4. **One Active Task per Runner**:
@@ -320,6 +326,12 @@ Coordinator (Homelab / Cloud)
    - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested group, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 7. **Alerting-First Operational Mode**:
    - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
+8. **Single GitHub Credential, Leased Per Task**:
+   - `GITHUB_TOKEN` exists on the coordinator only, as the `githubToken` config secret. No runner is configured with a GitHub token, and no runner state file carries one.
+   - `POST /api/tasks/poll` attaches the token to the lease response in memory, for the single task that runner just claimed. It is never written to `swarm_tasks`, to `runner.json`, or to a log — there is nothing to scrub after the run.
+   - The runner passes the leased token to git auth, the `gh` CLI and the spawned `agy` child environment for that task, and to nothing else. `redactGitSecrets()` strips the token and its base64 basic-auth form from every git stdout/stderr path before it reaches a log, a heartbeat or a status report.
+   - The poll and runner-list payloads carry `credentialsAvailable`, which reports the coordinator's own state rather than the runner's. While it is `false` no GitHub-remote task is leased to any runner unless `allowTokenlessRunner` is on, which is only correct for a non-GitHub remote; the dashboard badges an idle runner `NO CREDENTIALS` in the STATUS column.
+   - A runner still carrying `GITHUB_TOKEN` in its own environment logs a warning that the variable is ignored, and its boot no longer depends on the variable being set.
 
 ### 7.2. Task Taxonomy: Three Tiers
 
@@ -327,28 +339,45 @@ Coordinator (Homelab / Cloud)
 | :---------- | :-------------- | :------------------------------------------------------ | :-------------------------------------------------------- |
 | `immediate` | `swarm_tasks`   | Web UI, Discord, `POST /api/dispatch`                   | `coordinator.dispatch`                                    |
 | `backlog`   | `backlog_tasks` | `POST /api/backlog`, GitHub label sync                  | autonomous evaluator, or `POST /api/backlog/:id/dispatch` |
-| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | pre-reset evaluator, or `POST /api/routines/:id/trigger`  |
+| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | autonomous evaluator, or `POST /api/routines/:id/trigger` |
 
 Every `swarm_tasks` row carries `tier`, `origin_id`, `origin_number` and `origin_title`, which is what
 lets the dashboard link a run back to the item that produced it.
 
+- **PR policy is tier-blind**: `prPolicy` (`all`, `docs_only`, `issues_only`, `none`) is applied
+  identically to all three tiers — an `immediate` dispatch is policed exactly like a `backlog` or
+  `routine` run, so a human dispatch under `none`/`issues_only` also has its branch suppressed and
+  `docs_only` also gates it. Every policy states its directive in the prompt: `all` implements the
+  requested changes on the branch and runs the relevant checks, `docs_only` permits documentation edits
+  only, `issues_only` reports findings as GitHub Issues without touching repository files or opening a
+  PR, and `none` is read-only analysis with no PR expected.
 - **Autonomy quench**: the autonomous evaluator runs on each quota probe but stays quiet for two hours
   after an `immediate`-tier dispatch (a human started it now). The timestamp lives in `runtime_state`, so a
   redeploy does not re-arm autonomous work.
-- **Tier 2 (backlog)**: at most one item per probe, gated on effective headroom of at least
-  `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
+- **Tier 2 (backlog)**: one run in flight at a time, counted over the queue's terminal-status set
+  (`countActiveBacklogTasks`), and gated once at spawn on `COORDINATOR_ENABLED`, the two-hour autonomy
+  quench, and effective headroom of at least
+  `max(BACKLOG_MIN_HEADROOM_PERCENT, MIN_DISPATCH_HEADROOM_PERCENT)` — the configurable floor defaults
+  to `40`, and the global safety floor still wins when it is higher. The spawn is ready-to-run:
+  `scheduleMode` `immediate` with a two-hour queued deadline, so an idle runner claims it straight
+  away. The `swarm_tasks` insert and the origin's `dispatched` write commit in one transaction
+  (`spawnBacklogTask`), so a crash between them cannot strand an origin behind a run nothing will
+  settle.
 - **Tier 3 (routine)**: sequential looping inside one pool reset cycle — a routine re-triggers as soon
   as its previous run reaches `completed`, while the window and headroom still hold. At most one run is
   in flight per routine at any time (checked against `origin_id`, so a manual trigger counts too), and a
   `failed`/`aborted` run burns the rest of the cycle: `last_triggered_reset_time` plus the terminal
-  status of `last_task_id` is the gate. Released only inside `trigger_before_reset_hours` and only while
-  headroom is at least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. Needs
+  status of `last_task_id` is the gate. Released at spawn only inside the routine's own
+  `trigger_before_reset_hours` (falling back to `QUOTA_BURN_MAX_HOURS`) and only while headroom is at
+  least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`; the task is then enqueued
+  ready-to-run (`immediate`) with `expiresAt` still bounded by the pool reset deadline. Needs
   `COORDINATOR_ENABLED` and `ROUTINES_ENABLED`.
-- **Burn kick notice**: the first time a pool's pre-reset window opens in a reset cycle — whether from a
-  routine or from an opportunistic `pre_reset` task being claimed — one silent `[Notice]` is delivered
-  through every configured channel. It is informational by construction: no owner mention, so it cannot
-  page anyone. The announced cycle per pool is recorded in `runtime_state` (`burnKickAnnouncedCycles`),
-  so looping inside the same cycle does not repeat it and a redeploy does not re-announce it.
+- **Burn kick notice**: the first time a pool's pre-reset window opens in a reset cycle — from a routine
+  spawn or from an opportunistic `pre_reset` task being claimed — one silent `[Notice]` is delivered
+  through every configured channel. A ready-to-run backlog spawn is not a burn and announces nothing.
+  It is informational by construction: no owner mention, so it cannot page anyone. The announced cycle
+  per pool is recorded in `runtime_state` (`burnKickAnnouncedCycles`), so looping inside the same cycle
+  does not repeat it and a redeploy does not re-announce it.
 - **Model preference chains**: both autonomous tiers store an ordered `models[]` and dispatch the
   first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
   to no pool is refused rather than charged to another group's headroom; an id the active catalog
@@ -356,7 +385,13 @@ lets the dashboard link a run back to the item that produced it.
 - **Origin settlement**: a backlog item closes on `completed`/`no_changes`, returns to `pending` while
   `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
   from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
-  user cancel — none of those produce a runner report.
+  user cancel — none of those produce a runner report. A queued task that expires unclaimed returns its
+  origin to `pending` with `attempt_count` restored and `swarm_task_id` cleared, so no retry is burned
+  for a run no runner ever received. Expiry is enforced both lazily at claim time and by a sweep inside
+  `reapStaleClaims`, so an offline runner or a pool dip cannot wedge the backlog tier behind a task
+  nothing will claim. The two expiries read differently to the operator: an unclaimed queued task
+  reports `no runner claimed the task within its queue window`, while a `pre_reset` or routine task
+  reports the weekly reset window passing.
 - **Routes**: `GET|POST /api/backlog`, `PATCH /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
   `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
   `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor
@@ -395,6 +430,31 @@ stranded; an exchange naming a runner an operator has since disabled is refused 
 re-enabling it. A long-poll whose client socket has already closed claims nothing, so a hung-up poll
 cannot strand a task until its lease expires.
 
+A run that ends with no commits is settled by what it delivered, not by its diff. When the branch holds
+nothing over the base branch, the runner asks the GitHub API (through the `gh` CLI) for issues in the
+task's repository created at or after the run's start time that carry the Agylity attribution footer. One
+or more such issues make the run a success: the task reports those `issueUrls` and settles as `completed`
+instead of `no_changes`, and the list is persisted on the task row (`swarm_tasks.issue_urls_json`) so the
+dashboard task rows, the inspector and the completion embed's Deliverables field can show it. Issue URLs
+quoted in the agent's prose are never scraped — the deliverable comes from the API, filtered by creation
+window and footer, so a mention in the output cannot be mistaken for a filed issue.
+
+The deliverable also names the task. A run that carries no human-typed title adopts one from what it
+produced: the subject of the newest commit the agent wrote (read before the runner's own fallback
+commit, whose message is derived from the dispatch rather than from the work) or the title of the issue
+it filed, rendered as `<first title> (+N)` when several were. That settled title becomes the PR title,
+and the branch is renamed to `buildContinuationBranchName(task.id, resolvedTitle)` with `git branch -m`
+immediately before the push, so the branch slug, the commit subject and the PR title describe the same
+work. An explicit title typed on an immediate or backlog dispatch outranks all of it, and every routine
+run settles this way because the routine's own name is preserved on `origin_title`. A branch that is
+discarded — a zero-diff run, an `issues_only` run that filed its issues, or any policy suppression —
+reports `branchName: null`, which clears `swarm_tasks.branch_name` to `NULL` instead of leaving the row
+pointing at a branch that no longer exists.
+
+The dashboard renders that outcome as a derived status rather than a new one: a `completed` task with
+issue deliverables and no PR shows `Issue Filed` (or `Issues Filed`) in the iris tone, while still
+belonging to the Completed filter, because the stored status remains `completed`.
+
 ### 7.4. Repository Clone Strategy
 
 Runners clone through a local bare mirror cache keyed by the clone URL:
@@ -407,13 +467,19 @@ path fails, the runner removes the half-written target and falls back to a plain
 directory is container-local in Docker and is not persisted by the shipped compose file, so the first
 task after a container restart pays for one cold clone to rebuild it.
 
+Clone and push authenticate with the token leased alongside the task, not with runner configuration:
+it arrives in the poll response, is used for git auth and the `gh` CLI, and is dropped when the task
+settles. `redactGitSecrets()` rewrites both the raw token and its base64 basic-auth form out of clone
+and push stdout/stderr, so a failing `git` command cannot print the credential into the runner log or
+the status report the coordinator stores.
+
 ---
 
 ## 8. Persistent Schema (`node:sqlite`)
 
 The whole persistent schema — `settings`, the coordinator tables and the sentry tables — is declared as
 column specs and applied through one forward-only registry in `src/storage/migrations.ts`, recorded in
-`schema_migrations` (current head: `v5_pool_group`). `AppDatabase` owns it: opening the database creates
+`schema_migrations` (current head: `v6_issue_urls`). `AppDatabase` owns it: opening the database creates
 `settings` and runs `applyMigrations()`, so every table reaches the head version in one place and
 `TaskQueue`/`SentryStateManager` only reuse what is already there. Each table is built with
 `ensureTableSchema()` (`CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that
@@ -442,14 +508,18 @@ Migration v5 (`v5_pool_group`) retires the `pool_family` spelling. It renames `s
 database that already carries `pool_group`, or only the new settings key, is left untouched — and they
 run inside the migration's single transaction, so a failure leaves neither half applied.
 
-| Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| :--------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `swarm_tasks`                | `id`, `task_number`, `title`, `tier`, `origin_id`, `origin_number`, `origin_title`, `created_at`, `updated_at`, `repository_id`, `repository_name`, `repository_path`, `clone_url`, `default_branch`, `prompt`, `requested_by`, `pr_policy`, `schedule_mode`, `required_labels_json`, `model`, `candidate_models_json`, `pool_group`, `effort`, `allow_overage`, `push_branch`, `auto_create_pr`, `pr_url`, `expires_at`, `verify_command`, `status`, `runner_id`, `claimed_at`, `heartbeat_at`, `completed_at`, `branch_name`, `output`, `error`, `duration_ms`, `num_turns`, `total_tokens`, `thinking_tokens` |
-| `backlog_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `priority_order`, `status`, `attempt_count`, `max_attempts`, `last_error`, `swarm_task_id`, `github_issue_number`, `github_issue_url`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                       |
-| `routine_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `enabled`, `sort_order`, `trigger_before_reset_hours`, `min_headroom_percent`, `last_triggered_reset_time`, `last_triggered_cycles_json`, `last_task_id`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                    |
-| `swarm_runners`              | `runner_id`, `name`, `token_hash`, `labels_json`, `repositories_json`, `system_info_json`, `enabled`, `active_task_id`, `status`, `registered_at`, `last_seen_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| `swarm_runner_registrations` | `id`, `token_hash`, `name_hint`, `labels_json`, `repositories_json`, `expires_at`, `created_at`, `consumed_by_runner_id`, `consumed_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `runtime_state`              | `key`, `value`, `updated_at` — quench timestamps, announced burn cycles and other cross-restart bookkeeping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+Migration v6 (`v6_issue_urls`) adds `swarm_tasks.issue_urls_json` (`TEXT NOT NULL DEFAULT '[]'`), the
+JSON array of issue links a run filed instead of commits. It is guarded by `tableHasColumn`, so replaying
+it over a database that already carries the column is a no-op, and existing rows backfill to `[]`.
+
+| Table                        | Columns                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| :--------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `swarm_tasks`                | `id`, `task_number`, `title`, `tier`, `origin_id`, `origin_number`, `origin_title`, `created_at`, `updated_at`, `repository_id`, `repository_name`, `repository_path`, `clone_url`, `default_branch`, `prompt`, `requested_by`, `pr_policy`, `schedule_mode`, `required_labels_json`, `model`, `candidate_models_json`, `pool_group`, `effort`, `allow_overage`, `push_branch`, `auto_create_pr`, `pr_url`, `issue_urls_json`, `expires_at`, `verify_command`, `status`, `runner_id`, `claimed_at`, `heartbeat_at`, `completed_at`, `branch_name`, `output`, `error`, `duration_ms`, `num_turns`, `total_tokens`, `thinking_tokens` |
+| `backlog_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `priority_order`, `status`, `attempt_count`, `max_attempts`, `last_error`, `swarm_task_id`, `github_issue_number`, `github_issue_url`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                                          |
+| `routine_tasks`              | `id`, `task_number`, `title`, `prompt`, `repository_id`, `models_json`, `verify_command`, `auto_create_pr`, `pr_policy`, `enabled`, `sort_order`, `trigger_before_reset_hours`, `min_headroom_percent`, `last_triggered_reset_time`, `last_triggered_cycles_json`, `last_task_id`, `created_at`, `updated_at`                                                                                                                                                                                                                                                                                                                       |
+| `swarm_runners`              | `runner_id`, `name`, `token_hash`, `labels_json`, `repositories_json`, `system_info_json`, `enabled`, `active_task_id`, `status`, `registered_at`, `last_seen_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `swarm_runner_registrations` | `id`, `token_hash`, `name_hint`, `labels_json`, `repositories_json`, `expires_at`, `created_at`, `consumed_by_runner_id`, `consumed_at`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `runtime_state`              | `key`, `value`, `updated_at` — quench timestamps, announced burn cycles and other cross-restart bookkeeping.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 Defaults worth knowing about: `swarm_tasks.tier` is `immediate`, `schedule_mode` is `immediate`,
 `pr_policy` is `inherit`, `effort` is `high`, `push_branch` and `auto_create_pr` are `1`,
@@ -499,6 +569,7 @@ agylity/
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
+│   ├── shared/                 # Wire contracts, PR policies & model catalog shared with the client
 │   ├── version.ts              # Shared version constant, read from package.json
 │   ├── runner-cli.ts           # Standalone headless swarm runner CLI
 │   └── index.ts                # Daemon bootstrap & graceful shutdown coordinator

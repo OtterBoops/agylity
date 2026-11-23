@@ -3,8 +3,17 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
-import type { PrPolicy } from '../config/schema.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { resolveTaskTitle } from '../shared/titles.js';
+import type {
+  BacklogTaskRecord,
+  PrPolicy,
+  RoutineTaskRecord,
+  RunnerRegistrationTokenResult,
+  RunnerSystemInfo,
+  SwarmRunnerRecord,
+  SwarmTask,
+} from '../shared/contracts.js';
 import {
   BacklogStatusSchema,
   normalizeCascade,
@@ -22,56 +31,16 @@ import {
 
 export type { TaskTier, BacklogStatus };
 
-export interface RunnerSystemInfo {
-  hostname?: string;
-  platform?: string;
-  arch?: string;
-  agyVersion?: string | null;
-}
-
-export interface SwarmTask {
-  id: string;
-  taskNumber: number;
-  title: string;
-  tier: TaskTier;
-  originId?: string;
-  originNumber?: number;
-  originTitle?: string;
-  createdAt: string;
-  updatedAt: string;
-  repositoryId: string;
-  repositoryName: string;
-  repositoryPath: string;
-  cloneUrl?: string;
-  defaultBranch: string;
-  prompt: string;
-  requestedBy: string;
-  prPolicy?: PrPolicy;
-  scheduleMode: ScheduleMode;
-  requiredLabels: string[];
-  model: string;
-  cascade: CascadeHop[];
-  poolGroup: PoolGroup;
-  effort: ReasoningEffort;
-  allowOverage: boolean;
-  pushBranch: boolean;
-  autoCreatePr: boolean;
-  prUrl?: string;
-  expiresAt?: string;
-  verifyCommand?: string;
-  status: TaskStatus;
-  runnerId?: string;
-  claimedAt?: string;
-  heartbeatAt?: string;
-  completedAt?: string;
-  branchName?: string;
-  output?: string;
-  error?: string;
-  durationMs: number;
-  numTurns?: number;
-  totalTokens?: number;
-  thinkingTokens?: number;
-}
+// The queue writes rows and returns them; the payload shapes belong to the shared wire contracts so
+// the dashboard reads the same declaration.
+export type {
+  BacklogTaskRecord,
+  RoutineTaskRecord,
+  RunnerRegistrationTokenResult,
+  RunnerSystemInfo,
+  SwarmRunnerRecord,
+  SwarmTask,
+};
 
 export interface EnqueueTaskInput {
   id?: string;
@@ -111,8 +80,12 @@ export interface ClaimTaskOptions {
 export interface TaskStatusPatch {
   status: TaskStatus;
   runnerId?: string;
-  branchName?: string;
+  /** `null` clears the column: a discarded branch has no name to report. */
+  branchName?: string | null;
   prUrl?: string;
+  issueUrls?: string[];
+  /** Settles the row's title when the run's deliverable names it better than the dispatch did. */
+  title?: string;
   output?: string;
   error?: string;
   durationMs?: number;
@@ -133,35 +106,11 @@ export interface TaskListOptions extends TaskListFilters {
   offset?: number;
 }
 
-export interface SwarmRunnerRecord {
-  runnerId: string;
-  name: string;
-  labels: string[];
-  repositories: string[];
-  systemInfo: RunnerSystemInfo;
-  enabled: boolean;
-  hasToken: boolean;
-  activeTaskId?: string;
-  status: 'idle' | 'busy' | 'offline';
-  registeredAt: string;
-  lastSeenAt: string;
-}
-
 export interface CreateRegistrationTokenInput {
   nameHint?: string;
   labels?: string[];
   repositories?: string[];
   ttlMs?: number;
-}
-
-export interface RunnerRegistrationTokenResult {
-  id: string;
-  registrationToken: string;
-  nameHint?: string;
-  labels: string[];
-  repositories: string[];
-  expiresAt: string;
-  createdAt: string;
 }
 
 export interface ExchangeRegistrationTokenInput {
@@ -171,48 +120,6 @@ export interface ExchangeRegistrationTokenInput {
   labels?: string[];
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
-}
-
-export interface BacklogTaskRecord {
-  id: string;
-  taskNumber: number;
-  title: string;
-  prompt: string;
-  repositoryId: string;
-  cascade: CascadeHop[];
-  verifyCommand?: string;
-  autoCreatePr: boolean;
-  priorityOrder: number;
-  status: BacklogStatus;
-  attemptCount: number;
-  maxAttempts: number;
-  lastError?: string;
-  swarmTaskId?: string;
-  githubIssueNumber?: number;
-  githubIssueUrl?: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface RoutineTaskRecord {
-  id: string;
-  taskNumber: number;
-  title: string;
-  prompt: string;
-  repositoryId: string;
-  cascade: CascadeHop[];
-  verifyCommand?: string;
-  autoCreatePr: boolean;
-  prPolicy?: PrPolicy;
-  enabled: boolean;
-  sortOrder: number;
-  triggerBeforeResetHours: number;
-  minHeadroomPercent: number;
-  lastTriggeredResetTime?: string;
-  lastTriggeredCycles: Record<string, string>;
-  lastTaskId?: string;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export const hashRunnerToken = (token: string): string =>
@@ -276,6 +183,20 @@ const coerceTrimmedString = (value: unknown, fallback: string): string => {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
   return trimmed === '' ? fallback : trimmed;
+};
+
+const parseIssueUrls = (raw: unknown): string[] | undefined => {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const urls = parsed.filter(
+      (entry): entry is string => typeof entry === 'string' && entry !== ''
+    );
+    return urls.length > 0 ? urls : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const parseCycleMap = (raw: unknown): Record<string, string> => {
@@ -599,6 +520,41 @@ export class TaskQueue {
 
   public enqueue(input: EnqueueTaskInput): SwarmTask {
     const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    this.inTransaction(() => this.insertTaskRow(id, input));
+    this.pruneOldTasks();
+    return this.getTask(id)!;
+  }
+
+  // A tier that must also settle its origin row commits both writes here, because a crash between
+  // them strands the origin and wedges the tier behind a run nothing will ever settle.
+  public spawnBacklogTask(
+    input: EnqueueTaskInput,
+    origin: { id: string; attemptCount: number }
+  ): SwarmTask {
+    const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    this.inTransaction(() => {
+      this.insertTaskRow(id, input);
+      const settled = this.rawDb
+        .prepare(
+          `UPDATE backlog_tasks
+           SET status = 'dispatched', attempt_count = ?, swarm_task_id = ?, last_error = NULL,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(origin.attemptCount, id, new Date().toISOString(), origin.id) as unknown as {
+        changes?: number;
+      };
+      // Neither write may land alone, so a vanished origin rolls the task insert back with it.
+      if ((settled?.changes ?? 0) === 0) {
+        throw new Error(`Backlog origin ${origin.id} no longer exists`);
+      }
+    });
+    this.pruneOldTasks();
+    return this.getTask(id)!;
+  }
+
+  // Assumes the caller holds the write transaction, so a spawn can add its own origin write to it.
+  private insertTaskRow(id: string, input: EnqueueTaskInput): void {
     const now = new Date().toISOString();
     const repoId = (input.repositoryId || input.repositoryName).trim();
     const repoName = input.repositoryName.trim();
@@ -620,8 +576,7 @@ export class TaskQueue {
     const pushBranch = input.pushBranch !== false;
     const autoCreatePr = input.autoCreatePr !== false;
 
-    const firstLinePrompt = (prompt.split('\n')[0] ?? '').trim().slice(0, 100);
-    const title = (input.title || firstLinePrompt || 'Task').trim();
+    const title = resolveTaskTitle(input.title, prompt);
     const tier: TaskTier = input.tier ?? 'immediate';
     const originId = input.originId ?? null;
     const originNumber = input.originNumber ?? null;
@@ -629,55 +584,50 @@ export class TaskQueue {
 
     // Two concurrent enqueues must never pick the same number, so the max read and the insert share
     // one write transaction.
-    this.inTransaction(() => {
-      const maxNumberRow = this.rawDb
-        .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
-        .get() as { max_num?: number } | undefined;
-      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-      this.rawDb
-        .prepare(
-          `INSERT INTO swarm_tasks (
-          id, task_number, title, tier, origin_id, origin_number, origin_title,
-          created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
-          required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
-          push_branch, auto_create_pr, expires_at, verify_command, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
-        )
-        .run(
-          id,
-          taskNumber,
-          title,
-          tier,
-          originId,
-          originNumber,
-          originTitle,
-          now,
-          now,
-          repoId,
-          repoName,
-          repoPath,
-          input.cloneUrl ?? null,
-          defaultBranch,
-          prompt,
-          requestedBy,
-          prPolicy,
-          scheduleMode,
-          JSON.stringify(requiredLabels),
-          model,
-          JSON.stringify(cascade),
-          poolGroup,
-          effort,
-          allowOverage ? 1 : 0,
-          pushBranch ? 1 : 0,
-          autoCreatePr ? 1 : 0,
-          input.expiresAt ?? null,
-          input.verifyCommand ?? null
-        );
-    });
-
-    this.pruneOldTasks();
-    return this.getTask(id)!;
+    const maxNumberRow = this.rawDb
+      .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
+      .get() as { max_num?: number } | undefined;
+    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+    this.rawDb
+      .prepare(
+        `INSERT INTO swarm_tasks (
+        id, task_number, title, tier, origin_id, origin_number, origin_title,
+        created_at, updated_at, repository_id, repository_name, repository_path,
+        clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
+        required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
+        push_branch, auto_create_pr, expires_at, verify_command, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+      )
+      .run(
+        id,
+        taskNumber,
+        title,
+        tier,
+        originId,
+        originNumber,
+        originTitle,
+        now,
+        now,
+        repoId,
+        repoName,
+        repoPath,
+        input.cloneUrl ?? null,
+        defaultBranch,
+        prompt,
+        requestedBy,
+        prPolicy,
+        scheduleMode,
+        JSON.stringify(requiredLabels),
+        model,
+        JSON.stringify(cascade),
+        poolGroup,
+        effort,
+        allowOverage ? 1 : 0,
+        pushBranch ? 1 : 0,
+        autoCreatePr ? 1 : 0,
+        input.expiresAt ?? null,
+        input.verifyCommand ?? null
+      );
   }
 
   public pruneOldTasks(keepTerminalCount = 250): void {
@@ -753,6 +703,18 @@ export class TaskQueue {
       )
       .get(originId) as { active?: number } | undefined;
     return row?.active === 1;
+  }
+
+  // The backlog tier runs one task at a time, counted over the same terminal set the reconciler
+  // settles on: an inline status list here would drift and leave two runs in flight.
+  public countActiveBacklogTasks(): number {
+    const row = this.rawDb
+      .prepare(
+        `SELECT COUNT(*) AS active FROM swarm_tasks
+         WHERE tier = 'backlog' AND status NOT IN (${TERMINAL_STATUS_SQL})`
+      )
+      .get() as { active?: number } | undefined;
+    return Number(row?.active ?? 0);
   }
 
   // `q` is a LIKE term: `%%` would match every row and a stray `_` would silently widen a wildcard,
@@ -885,16 +847,7 @@ export class TaskQueue {
         if (task.expiresAt) {
           const expEpoch = Date.parse(task.expiresAt);
           if (!Number.isNaN(expEpoch) && nowEpoch >= expEpoch) {
-            this.rawDb
-              .prepare(
-                `UPDATE swarm_tasks
-                 SET status = 'aborted',
-                     error = 'Expired: weekly quota reset window passed',
-                     completed_at = ?,
-                     updated_at = ?
-                 WHERE id = ? AND status = 'queued'`
-              )
-              .run(now, now, task.id);
+            this.expireQueuedTask(task, now);
             continue;
           }
         }
@@ -1024,8 +977,20 @@ export class TaskQueue {
           ? Math.max(0, elapsedMs)
           : existing.durationMs;
 
-    const branchName = patch.branchName ?? existing.branchName ?? null;
+    const branchName =
+      patch.branchName === null ? null : (patch.branchName ?? existing.branchName ?? null);
+    // A blank title never erases one: only a non-empty settled title replaces the stored title.
+    const title = patch.title?.trim()
+      ? resolveTaskTitle(patch.title, existing.prompt)
+      : existing.title;
     const prUrl = patch.prUrl ?? existing.prUrl ?? null;
+    // The column is NOT NULL DEFAULT '[]', so "no issues" is an empty array, never NULL.
+    const issueUrlsJson =
+      patch.issueUrls !== undefined
+        ? JSON.stringify(patch.issueUrls)
+        : existing.issueUrls
+          ? JSON.stringify(existing.issueUrls)
+          : '[]';
     const output = patch.output !== undefined ? capOutput(patch.output) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
     const runnerId = patch.runnerId ?? existing.runnerId ?? null;
@@ -1046,8 +1011,10 @@ export class TaskQueue {
         `UPDATE swarm_tasks
          SET status = ?,
              runner_id = ?,
+             title = ?,
              branch_name = ?,
              pr_url = ?,
+             issue_urls_json = ?,
              output = ?,
              error = ?,
              duration_ms = ?,
@@ -1064,8 +1031,10 @@ export class TaskQueue {
       .run(
         patch.status,
         runnerId,
+        title,
         branchName,
         prUrl,
+        issueUrlsJson,
         output,
         error,
         durationMs,
@@ -1146,6 +1115,59 @@ export class TaskQueue {
 
     this.registerRunnerHeartbeat({ runnerId, activeTaskId: taskId, status: 'busy' });
     return { task: this.getTask(taskId) ?? existing, applied: true };
+  }
+
+  // A queued row is settled by the coordinator alone, so the runner that never received it is not
+  // blamed and an unclaimed backlog origin returns to pending without burning a retry it never used.
+  private expireQueuedTask(task: SwarmTask, now: string): boolean {
+    // A pre-reset or routine task expires with the reset window it was queued for; a backlog or
+    // immediate task expires because no runner claimed it. The two tell the operator different things.
+    const resetWindowExpired = task.scheduleMode === 'pre_reset' || task.tier === 'routine';
+    const error = resetWindowExpired
+      ? 'Expired: weekly quota reset window passed'
+      : 'Expired: no runner claimed the task within its queue window';
+
+    const result = this.rawDb
+      .prepare(
+        `UPDATE swarm_tasks
+         SET status = 'aborted', error = ?, completed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'queued'`
+      )
+      .run(error, now, now, task.id) as unknown as { changes?: number };
+    if ((result?.changes ?? 0) === 0) return false;
+
+    if (!task.originId || task.claimedAt) return true;
+    const origin = this.getBacklogTask(task.originId);
+    if (!origin || origin.status !== 'dispatched' || origin.swarmTaskId !== task.id) return true;
+    this.rawDb
+      .prepare(
+        `UPDATE backlog_tasks
+         SET status = 'pending', attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(Math.max(0, origin.attemptCount - 1), error, now, origin.id);
+    return true;
+  }
+
+  // The claim path expires lazily, which never runs when no runner polls at all; this sweep is what
+  // stops an offline runner or a pool dip from wedging the backlog tier indefinitely.
+  public reapExpiredQueuedTasks(nowMs = Date.now()): SwarmTask[] {
+    const rows = this.rawDb
+      .prepare("SELECT * FROM swarm_tasks WHERE status = 'queued' AND expires_at IS NOT NULL")
+      .all() as Array<Record<string, any>>;
+
+    const now = new Date(nowMs).toISOString();
+    const expired: SwarmTask[] = [];
+    for (const row of rows) {
+      const task = this.mapRowToTask(row);
+      const expEpoch = task.expiresAt ? Date.parse(task.expiresAt) : NaN;
+      if (Number.isNaN(expEpoch) || nowMs < expEpoch) continue;
+      if (this.expireQueuedTask(task, now)) {
+        const reaped = this.getTask(task.id);
+        if (reaped) expired.push(reaped);
+      }
+    }
+    return expired;
   }
 
   public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {
@@ -1318,15 +1340,10 @@ export class TaskQueue {
       ...normalizeCascade(storedCascade, primaryModel).filter((hop) => hop.model !== primaryModel),
     ];
 
-    const firstLinePrompt = (
+    const title = resolveTaskTitle(
+      typeof row.title === 'string' ? row.title : '',
       String(row.prompt || '')
-        .trim()
-        .split('\n')[0] ?? ''
-    )
-      .trim()
-      .slice(0, 100);
-    const storedTitle = typeof row.title === 'string' ? row.title.trim() : '';
-    const title = storedTitle !== '' ? storedTitle : firstLinePrompt || 'Task';
+    );
 
     return {
       id: String(row.id),
@@ -1360,6 +1377,7 @@ export class TaskQueue {
       pushBranch: row.push_branch === 1,
       autoCreatePr: row.auto_create_pr !== 0,
       prUrl: row.pr_url ? String(row.pr_url) : undefined,
+      issueUrls: parseIssueUrls(row.issue_urls_json),
       expiresAt: row.expires_at ? String(row.expires_at) : undefined,
       verifyCommand: row.verify_command ? String(row.verify_command) : undefined,
       status: (row.status as TaskStatus) || 'queued',
