@@ -7,6 +7,7 @@ import type {
   LogEntry,
   ModelCatalogEntry,
   SwarmRunnerRecord,
+  RunnersResponse,
   RunnerRegistrationTokenResult,
   SwarmTask,
   BacklogTaskRecord,
@@ -275,11 +276,12 @@ export const getModels = (): Promise<ModelsResponse> =>
       models: [],
     }));
 
-export const getRunners = (): Promise<SwarmRunnerRecord[]> =>
+export const getRunners = (): Promise<RunnersResponse> =>
   api
     .get('runners')
-    .json<SwarmRunnerRecord[]>()
-    .catch(() => []);
+    .json<RunnersResponse>()
+    // A failed poll says nothing about configuration, so do not accuse it of a missing token.
+    .catch(() => ({ runners: [], credentialsAvailable: true }));
 
 export const createRegistrationToken = (payload: {
   nameHint?: string;

@@ -652,6 +652,37 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
 
+    it('GET /api/config masks githubToken and reports it as set', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_config_github_token_mask_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('githubToken', 'ghp_plaintext_never_returned');
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+
+        const res = await ky.get(`http://127.0.0.1:${started.port}/api/config`).json<any>();
+
+        assert.equal(res.resolved.githubToken, '••••••••');
+        assert.equal(res.overrides.githubToken, '••••••••');
+        assert.equal(res.secretsMeta.githubToken.isSet, true);
+        assert.equal(
+          JSON.stringify(res).includes('ghp_plaintext_never_returned'),
+          false,
+          'the plaintext token must never reach the client'
+        );
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('POST /api/config rejects malformed JSON with 400 Bad Request', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_malformed_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
@@ -1675,6 +1706,87 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       } finally {
         clearAuthFailures('198.51.100.42', 'runner');
         clearAuthFailures('198.51.100.43', 'runner');
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('leases the coordinator GitHub token in memory and never writes it to the task row', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_lease_token_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'runner-shared-secret-901',
+        repositories: [
+          {
+            id: 'OtterBoops/agylity',
+            name: 'OtterBoops/agylity',
+            path: path.join(dir, 'repo'),
+            cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      // Set through the UI path so the at-rest encryption is part of what this asserts.
+      store.setOverride('githubToken', 'ghp_lease_me_123456');
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-hydrogen': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          sentryState,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const dispatch = await ky
+          .post(`${base}/api/dispatch`, {
+            json: {
+              repositoryId: 'OtterBoops/agylity',
+              prompt: 'Lease the credential',
+              cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(dispatch.success, true, JSON.stringify(dispatch));
+
+        const lease = await ky
+          .post(`${base}/api/tasks/poll`, {
+            headers: { 'x-agylity-runner-token': 'runner-shared-secret-901' },
+            json: { runnerId: 'runner-lease' },
+            retry: 0,
+          })
+          .json<any>();
+
+        assert.equal(lease.credentialsAvailable, true);
+        assert.equal(lease.githubToken, 'ghp_lease_me_123456');
+        assert.equal(lease.task?.id, dispatch.taskId);
+
+        // The lease lives in the response only: neither the API nor the row may carry it.
+        const listed = await ky.get(`${base}/api/tasks`).json<any>();
+        assert.equal(JSON.stringify(listed).includes('ghp_lease_me_123456'), false);
+        const rows = store.getDatabase().getRawDb().prepare('SELECT * FROM swarm_tasks').all();
+        assert.equal(JSON.stringify(rows).includes('ghp_lease_me_123456'), false);
+        // At rest it is ciphertext, like every other secret.
+        assert.equal(store.getDatabase().getRaw('githubToken')?.includes('enc:v1:'), true);
+      } finally {
         if (server) await closeWebServer(server);
         store.close();
         cleanup();
@@ -3899,6 +4011,49 @@ describe('Web: Antigravity CLI version reporting', () => {
       }
     });
 
+    it('POST /api/backlog/sync-github passes the coordinator config token to the issue listing', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_config_token_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        repositories: [
+          {
+            id: 'OtterBoops/agylity',
+            name: 'OtterBoops/agylity',
+            path: path.join(dir, 'agylity'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      store.setOverride('githubToken', 'ghp_coordinator_token');
+      const coordinator = new Coordinator({ configStore: store });
+      const savedEnvToken = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+
+      try {
+        const receivedTokens: Array<string | undefined> = [];
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator },
+          'POST',
+          {
+            listOpenIssues: async (_slug, _label, ghToken) => {
+              receivedTokens.push(ghToken);
+              return { ok: true, truncated: false, issues: [] };
+            },
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(receivedTokens, ['ghp_coordinator_token']);
+      } finally {
+        if (savedEnvToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = savedEnvToken;
+        store.close();
+        cleanup();
+      }
+    });
+
     const makeLoggerStub = () => {
       const warns: unknown[][] = [];
       const logger = {
@@ -3920,7 +4075,7 @@ describe('Web: Antigravity CLI version reporting', () => {
       return { logger, warns };
     };
 
-    it('uses the authenticated GitHub REST API when GITHUB_TOKEN is set', async () => {
+    it('uses the authenticated GitHub REST API when a token is supplied', async () => {
       const originalFetch = globalThis.fetch;
       let capturedAuth: string | null = null;
       let ghCliCalls = 0;
@@ -4008,7 +4163,7 @@ describe('Web: Antigravity CLI version reporting', () => {
       }
     });
 
-    it('reports a reason when GITHUB_TOKEN is unset and the gh CLI is unavailable', async () => {
+    it('reports a reason when no GitHub token is configured and the gh CLI is unavailable', async () => {
       const originalFetch = globalThis.fetch;
       let restCalls = 0;
       globalThis.fetch = (async () => {
@@ -4030,7 +4185,7 @@ describe('Web: Antigravity CLI version reporting', () => {
 
         assert.equal(result.ok, false);
         if (result.ok) return;
-        assert.match(result.reason, /GITHUB_TOKEN is unset/);
+        assert.match(result.reason, /no GitHub token is configured on the coordinator/);
         assert.match(result.reason, /spawn gh ENOENT/);
         assert.equal(restCalls, 0, 'must not call GitHub REST without a token');
         assert.equal(warns.length, 1, 'the failure must be logged at warn level');
@@ -4103,7 +4258,8 @@ describe('Web: Antigravity CLI version reporting', () => {
             },
             listOpenIssues: async () => ({
               ok: false,
-              reason: 'GITHUB_TOKEN is unset and the gh CLI is unavailable (spawn gh ENOENT)',
+              reason:
+                'no GitHub token is configured on the coordinator and the gh CLI is unavailable (spawn gh ENOENT)',
             }),
           }
         );
@@ -4118,7 +4274,8 @@ describe('Web: Antigravity CLI version reporting', () => {
           failures: [
             {
               repositoryId: 'OtterBoops/broken',
-              reason: 'GITHUB_TOKEN is unset and the gh CLI is unavailable (spawn gh ENOENT)',
+              reason:
+                'no GitHub token is configured on the coordinator and the gh CLI is unavailable (spawn gh ENOENT)',
             },
             {
               repositoryId: 'local-only',

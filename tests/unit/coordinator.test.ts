@@ -13,7 +13,7 @@ import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
 import type { DispatchStatusUpdate, InfoNotice } from '../../src/notify/types.js';
 import {
-  assertRunnerGitCredentials,
+  warnLegacyGithubToken,
   buildContinuationBranchName,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
@@ -25,6 +25,7 @@ import {
   RemoteSwarmRunner,
 } from '../../src/coordinator/index.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
+import type { Logger } from '../../src/logs/logger.js';
 import {
   DiscordNotifier,
   createDispatchModal,
@@ -619,11 +620,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('passes GITHUB_TOKEN via extraheader during clone and redacts token on failure', async () => {
+    it('passes the leased token via extraheader during clone and redacts it on failure', async () => {
       const { dir, cleanup } = makeTempDir('orch_clone_guard_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
-      const oldToken = process.env.GITHUB_TOKEN;
-      process.env.GITHUB_TOKEN = 'ghp_secret_dummy_token_99999';
+      const leasedToken = 'ghp_secret_dummy_token_99999';
 
       try {
         const queue = new TaskQueue(db);
@@ -642,27 +642,31 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           execFileFn: async (file, args) => {
             invocations.push({ file, args });
             if (file === 'git' && args[0] === '-c') {
-              throw new Error(
-                'fatal: could not read Username for ghp_secret_dummy_token_99999@github.com'
-              );
+              throw new Error(`fatal: could not read Username for ${leasedToken}@github.com`);
             }
             return { stdout: '', stderr: '' };
           },
         });
 
-        const res = await executor.execute(task);
+        const res = await executor.execute(task, { githubToken: leasedToken });
         assert.equal(res.success, false);
-        // Verify extraheader format was used
         assert.equal(invocations[0]?.file, 'git');
-        assert.ok(invocations[0]?.args[0] === '-c');
-        assert.ok(invocations[0]?.args[1]?.includes('extraheader=AUTHORIZATION: basic'));
-        // Verify URL did not embed token
-        assert.ok(!invocations[0]?.args.some((a) => a.includes('ghp_secret_dummy_token_99999@')));
-        // Verify token was redacted in error output
-        assert.ok(!res.error?.includes('ghp_secret_dummy_token_99999'));
+        assert.equal(invocations[0]?.args[0], '-c');
+        assert.equal(
+          invocations[0]?.args[1]?.includes('extraheader=AUTHORIZATION: basic '),
+          true,
+          'the clone must authenticate with the leased token'
+        );
+        const expectedBasic = Buffer.from(`x-access-token:${leasedToken}`, 'utf8').toString(
+          'base64'
+        );
+        assert.equal(invocations[0]?.args[1]?.includes(expectedBasic), true);
+        // The URL must never embed the token.
+        assert.ok(!invocations[0]?.args.some((arg) => arg.includes(`${leasedToken}@`)));
+        // Nor may it survive into the failure the coordinator stores.
+        assert.ok(!res.error?.includes(leasedToken));
         assert.ok(res.error?.includes('[redacted]'));
       } finally {
-        process.env.GITHUB_TOKEN = oldToken;
         db.close();
         cleanup();
       }
@@ -833,7 +837,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(tasks[0]?.status, 'completed');
         assert.ok(tasks[0]?.branchName?.startsWith('agy/'));
 
-        const workers = await ky.get(`${baseUrl}/api/runners`).json<any[]>();
+        const runnersRes = await ky
+          .get(`${baseUrl}/api/runners`)
+          .json<{ runners: any[]; credentialsAvailable: boolean }>();
+        const workers = runnersRes.runners;
+        assert.equal(runnersRes.credentialsAvailable, false);
         assert.equal(workers.length, 1);
         assert.equal(workers[0]?.runnerId, 'runner-worker-1');
         assert.equal(workers[0]?.status, 'idle');
@@ -2594,49 +2602,123 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
   });
-  describe('6. Runner GitHub Credential Preflight', () => {
-    it('refuses to start when GITHUB_TOKEN is absent', () => {
-      assert.throws(() => assertRunnerGitCredentials([], {}), /GITHUB_TOKEN is not set/);
-      // The message also names the compose `environment:` trap, which is how a token gets lost.
-      assert.throws(
-        () => assertRunnerGitCredentials(['OtterBoops/agylity'], {}),
-        /environment: in compose\.yaml/
-      );
+  describe('6. Runner GitHub Credential Handoff', () => {
+    const captureWarnings = () => {
+      const warnings: unknown[][] = [];
+      const log = {
+        namespace: undefined,
+        debug: () => {},
+        info: () => {},
+        warn: (...args: unknown[]) => {
+          warnings.push(args);
+        },
+        error: () => {},
+        child: () => log,
+        setLevel: () => {},
+        getLevel: () => 'info',
+        addSink: () => () => {},
+        removeSink: () => {},
+        clearSinks: () => {},
+        setSinks: () => {},
+      } as unknown as Logger;
+      return { log, warnings };
+    };
+
+    it('boots without a local token instead of refusing to start', () => {
+      assert.doesNotThrow(() => warnLegacyGithubToken(captureWarnings().log, {}));
     });
 
-    it('treats a blank token as absent -- compose sets an empty string when the var is unset', () => {
-      assert.throws(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: '   ' }), /not set/);
+    it('warns loudly that a runner-local GITHUB_TOKEN is ignored', () => {
+      const { log, warnings } = captureWarnings();
+
+      warnLegacyGithubToken(log, { GITHUB_TOKEN: 'ghp_legacy_runner' });
+
+      assert.equal(warnings.length, 1);
+      assert.match(String(warnings[0]?.[0]), /Ignoring GITHUB_TOKEN/);
+      assert.match(String(warnings[0]?.[0]), /coordinator/);
     });
 
-    it('accepts a real token', () => {
-      assert.doesNotThrow(() => assertRunnerGitCredentials([], { GITHUB_TOKEN: 'ghp_abc123' }));
+    it('stays quiet for a blank token', () => {
+      const { log, warnings } = captureWarnings();
+
+      warnLegacyGithubToken(log, { GITHUB_TOKEN: '   ' });
+
+      assert.equal(warnings.length, 0);
     });
 
-    it('allows an explicit opt-out for non-GitHub remotes', () => {
-      assert.doesNotThrow(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'true' }));
-    });
+    const liveCoordinator = (dir: string) => {
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          'gemini-hydrogen': {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+      return { store, coordinator: new Coordinator({ configStore: store, sentryState }) };
+    };
 
-    it('does not let the opt-out be enabled by a truthy-but-wrong value', () => {
-      assert.throws(() => assertRunnerGitCredentials([], { ALLOW_TOKENLESS_RUNNER: 'yes' }));
-    });
+    it('withholds a GitHub-remote task when the coordinator holds no token', async () => {
+      const { dir, cleanup } = makeTempDir('orch_lease_guard_');
+      const { store, coordinator } = liveCoordinator(dir);
 
-    it('blocks start() before any registration or poll happens', async () => {
-      const savedToken = process.env.GITHUB_TOKEN;
-      const savedOptOut = process.env.ALLOW_TOKENLESS_RUNNER;
-      delete process.env.GITHUB_TOKEN;
-      delete process.env.ALLOW_TOKENLESS_RUNNER;
       try {
-        const worker = new RemoteSwarmRunner({
-          coordinatorUrl: 'http://127.0.0.1:1',
-          runnerId: 'runner-no-token',
-          sharedSecret: 'swarm-secret-token-999',
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'OtterBoops/agylity',
+          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+          prompt: 'Needs a credential to clone',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
         });
-        await assert.rejects(() => worker.start(), /GITHUB_TOKEN is not set/);
+        const blocks: string[] = [];
+
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-no-token',
+          timeoutMs: 0,
+          leaseGithubTasks: false,
+          onLeaseBlocked: (blocked, reason) => blocks.push(`${blocked.id}:${reason}`),
+        });
+
+        assert.equal(claimed, null);
+        assert.deepEqual(blocks, [`${task.id}:missing_github_token`]);
+        assert.equal(coordinator.queue.getTask(task.id)?.status, 'queued');
       } finally {
-        if (savedToken === undefined) delete process.env.GITHUB_TOKEN;
-        else process.env.GITHUB_TOKEN = savedToken;
-        if (savedOptOut === undefined) delete process.env.ALLOW_TOKENLESS_RUNNER;
-        else process.env.ALLOW_TOKENLESS_RUNNER = savedOptOut;
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('still leases a local checkout when no token is configured', async () => {
+      const { dir, cleanup } = makeTempDir('orch_lease_local_');
+      const { store, coordinator } = liveCoordinator(dir);
+
+      try {
+        const task = coordinator.queue.enqueue({
+          repositoryName: 'local-repo',
+          repositoryPath: path.join(dir, 'repo'),
+          prompt: 'Runs against a local checkout',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+        const blocks: string[] = [];
+
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-no-token',
+          timeoutMs: 0,
+          leaseGithubTasks: false,
+          onLeaseBlocked: (blocked, reason) => blocks.push(`${blocked.id}:${reason}`),
+        });
+
+        assert.equal(claimed?.id, task.id);
+        assert.deepEqual(blocks, []);
+      } finally {
+        store.close();
+        cleanup();
       }
     });
   });

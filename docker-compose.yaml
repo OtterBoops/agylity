@@ -38,7 +38,8 @@ services:
       - DISCORD_PING_OWNER=${DISCORD_PING_OWNER:-true}
       - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
-      # GitHub token for authenticated backlog sync (POST /api/backlog/sync-github)
+      # GitHub token for authenticated clone/push, pull request and issue creation, backlog sync,
+      # and the in-memory per-task lease that lets runners act on GitHub remotes.
       - GITHUB_TOKEN=${GITHUB_TOKEN}
 
     healthcheck:
@@ -80,8 +81,8 @@ services:
       - RUNNER_STATE_PATH=/data/runner.json
       - RUNNER_NAME=agylity-runner-1
       - RUNNER_TOKEN=${RUNNER_TOKEN}
-      # Git identity & GitHub token for zero-mount authenticated git clone/push
-      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      # Git identity for task completion commits. The GitHub token is not set here: it is leased
+      # from the coordinator, in memory, for the task this runner claims.
       - GIT_AUTHOR_NAME=agylity[bot]
       - GIT_AUTHOR_EMAIL=agylity@users.noreply.github.com
       - GIT_COMMITTER_NAME=agylity[bot]

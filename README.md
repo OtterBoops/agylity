@@ -29,14 +29,14 @@ No need to clone the repo — grab the compose file and env template directly:
 curl -sLO https://raw.githubusercontent.com/OtterBoops/agylity/main/docker-compose.yaml
 curl -sLO https://raw.githubusercontent.com/OtterBoops/agylity/main/.env.example
 cp .env.example .env
-# Configure notifications, safety floor, WEB_UI_AUTH_TOKEN, and GITHUB_TOKEN (for runners)
+# Configure notifications, safety floor, WEB_UI_AUTH_TOKEN, and GITHUB_TOKEN (on the coordinator)
 docker compose up -d
 ```
 
 Dashboard: `http://localhost:8484`.
 
 > [!NOTE]
-> Runner containers need `GITHUB_TOKEN` in both `.env` **and** `compose.yaml` `environment:` — otherwise they exit `1` at boot rather than burning quota on a branch they cannot push. Set `ALLOW_TOKENLESS_RUNNER=true` only for non-GitHub remotes.
+> `GITHUB_TOKEN` belongs on the coordinator, which holds it encrypted at rest and leases it to a runner in memory for each task that runner claims — a runner needs no token of its own. Name it under `environment:` for the `agylity` service in the compose file, because `env_file` alone does not put a variable into a container's environment. Set `ALLOW_TOKENLESS_RUNNER=true` only for non-GitHub remotes.
 
 ## Documentation
 

@@ -194,6 +194,8 @@ export const RawEnvSchema = z.object({
 
   WEB_UI_ENABLED: z.string().optional(),
   ALLOW_OVERAGE: z.string().optional(),
+  GITHUB_TOKEN: z.string().optional(),
+  ALLOW_TOKENLESS_RUNNER: z.string().optional(),
   WEB_UI_PORT: z.coerce.number().int().positive().optional(),
   WEB_UI_HOST: z.string().optional(),
   WEB_UI_AUTH_TOKEN: z.string().optional(),
@@ -215,6 +217,8 @@ export interface AppConfig {
   webhookSecret?: string;
   webhookCustomHeaders?: Record<string, string>;
   discordToken?: string;
+  /** GitHub PAT: the coordinator leases it to runners per task and uses it for backlog sync. */
+  githubToken?: string;
   discordClientId?: string;
   discordGuildId?: string;
   discordNotificationChannelId?: string;
@@ -247,6 +251,8 @@ export interface AppConfig {
   webUiEnabled: boolean;
   baseUrl?: string;
   allowOverage: boolean;
+  /** Leases GitHub-remote tasks without a token; only for a non-GitHub remote. */
+  allowTokenlessRunner: boolean;
   webUiPort: number;
   webUiHost: string;
   webUiAuthToken?: string;
@@ -266,6 +272,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   webhookSecret: 'WEBHOOK_SECRET',
   webhookCustomHeaders: 'WEBHOOK_CUSTOM_HEADERS',
   discordToken: 'DISCORD_TOKEN',
+  githubToken: 'GITHUB_TOKEN',
   discordClientId: 'DISCORD_CLIENT_ID',
   discordGuildId: 'DISCORD_GUILD_ID',
   discordNotificationChannelId: 'DISCORD_NOTIFICATION_CHANNEL_ID',
@@ -290,6 +297,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
   webUiEnabled: 'WEB_UI_ENABLED',
   allowOverage: 'ALLOW_OVERAGE',
+  allowTokenlessRunner: 'ALLOW_TOKENLESS_RUNNER',
   webUiPort: 'WEB_UI_PORT',
   webUiHost: 'WEB_UI_HOST',
   webUiAuthToken: 'WEB_UI_AUTH_TOKEN',
@@ -311,6 +319,7 @@ export const ENV_TO_CONFIG_KEY: Record<string, keyof AppConfig> = {
 
 export const CANONICAL_SECRET_CONFIG_KEYS = [
   'discordToken',
+  'githubToken',
   'antigravityCsrfToken',
   'notificationWebhookUrl',
   'webhookSecret',
@@ -335,6 +344,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   webhookSecret: undefined,
   webhookCustomHeaders: undefined,
   discordToken: undefined,
+  githubToken: undefined,
   discordClientId: undefined,
   discordGuildId: undefined,
   discordNotificationChannelId: undefined,
@@ -365,6 +375,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
 
   webUiEnabled: false,
   allowOverage: false,
+  allowTokenlessRunner: false,
   webUiPort: 8484,
   webUiHost: '0.0.0.0',
   webUiAuthToken: undefined,
@@ -431,6 +442,9 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.DISCORD_TOKEN && !isTemplatePlaceholder(parsed.DISCORD_TOKEN)) {
     result.discordToken = parsed.DISCORD_TOKEN;
   }
+  if (parsed.GITHUB_TOKEN && !isTemplatePlaceholder(parsed.GITHUB_TOKEN)) {
+    result.githubToken = parsed.GITHUB_TOKEN.trim();
+  }
   if (parsed.DISCORD_CLIENT_ID && !isTemplatePlaceholder(parsed.DISCORD_CLIENT_ID)) {
     result.discordClientId = parsed.DISCORD_CLIENT_ID;
   }
@@ -487,6 +501,14 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
       result.repositories = RepositoriesJsonSchema.parse(parsed.REPOSITORIES_JSON);
     } catch {
       warnEnvFallback('REPOSITORIES_JSON', 'invalid JSON or repository entry');
+    }
+  }
+
+  if (parsed.ALLOW_TOKENLESS_RUNNER !== undefined && parsed.ALLOW_TOKENLESS_RUNNER.trim() !== '') {
+    try {
+      result.allowTokenlessRunner = booleanEnv.parse(parsed.ALLOW_TOKENLESS_RUNNER);
+    } catch {
+      warnEnvFallback('ALLOW_TOKENLESS_RUNNER', 'expected a boolean');
     }
   }
 
@@ -584,6 +606,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   webhookSecret: z.string().optional(),
   webhookCustomHeaders: z.record(z.string(), z.string()).optional(),
   discordToken: z.string().optional(),
+  githubToken: z.string().optional(),
   discordClientId: z.string().optional(),
   discordGuildId: z.string().optional(),
   discordNotificationChannelId: z.string().optional(),
@@ -610,6 +633,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
   webUiEnabled: z.boolean(),
   allowOverage: z.boolean(),
+  allowTokenlessRunner: z.boolean(),
   webUiPort: z.number().int().positive(),
   webUiHost: z.string(),
   webUiAuthToken: z.string().optional(),

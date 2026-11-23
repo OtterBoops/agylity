@@ -329,7 +329,7 @@ export const handleSyncGithubBacklog = async (
   const config = options.configStore.resolveConfig();
   const coordinator = resolveCoordinator(options);
   const targetLabel = config.githubBacklogLabel || 'backlog';
-  const ghToken = process.env.GITHUB_TOKEN?.trim();
+  const ghToken = config.githubToken?.trim();
   const fetchIssues = deps?.listOpenIssues ?? listOpenIssues;
   const execFileAsync = deps?.execFileAsync ?? defaultExecFileAsync;
 
@@ -488,7 +488,8 @@ const fetchGithubRestIssues = async (
 const fetchGhCliIssues = async (
   repoSlug: string,
   label: string,
-  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync
+  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync,
+  ghToken?: string
 ): Promise<GithubIssueListing> => {
   const { stdout } = await execFileAsync(
     'gh',
@@ -506,7 +507,7 @@ const fetchGhCliIssues = async (
       '--json',
       'number,title,body,url',
     ],
-    { timeout: 20000 }
+    { timeout: 20000, env: { ...process.env, GITHUB_TOKEN: ghToken ?? '' } }
   );
   const issues: GithubIssue[] = stdout && stdout.trim() ? JSON.parse(stdout) : [];
   return { issues, truncated: issues.length >= GH_CLI_ISSUE_LIMIT };
@@ -534,7 +535,7 @@ export const listOpenIssues = async (
     }
 
     try {
-      return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync)) };
+      return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync, ghToken)) };
     } catch (err) {
       const reason = `GitHub REST API failed (${restError}) and the gh CLI failed (${describeError(err)})`;
       logger?.warn?.('GitHub backlog sync failed for %s: %s', repoSlug, reason);
@@ -543,9 +544,9 @@ export const listOpenIssues = async (
   }
 
   try {
-    return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync)) };
+    return { ok: true, ...(await fetchGhCliIssues(repoSlug, label, execFileAsync, ghToken)) };
   } catch (err) {
-    const reason = `GITHUB_TOKEN is unset and the gh CLI is unavailable (${describeError(err)})`;
+    const reason = `no GitHub token is configured on the coordinator and the gh CLI is unavailable (${describeError(err)})`;
     logger?.warn?.('GitHub backlog sync failed for %s: %s', repoSlug, reason);
     return { ok: false, reason };
   }

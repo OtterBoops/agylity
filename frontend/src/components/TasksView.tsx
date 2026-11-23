@@ -185,7 +185,8 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   }, []);
 
   const loadRunners = useCallback(async () => {
-    setRunners(await getRunners());
+    const response = await getRunners();
+    setRunners(response.runners);
   }, []);
 
   useEffect(() => {

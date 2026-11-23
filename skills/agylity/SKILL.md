@@ -181,7 +181,7 @@ Coordinator (Homelab / Cloud)
 
 - **Registration Token (`agyr_reg_...`)**: Short-lived (1-hour expiration) token generated via Web UI or API.
 - **Exchange**: On first boot, runner POSTs to `/api/runners/register` exchanging the registration token for a permanent runner credential (`agyr_run_...`).
-- **Persistence**: Runner credential persisted to `runner.json` (or `/data/runner.json` in containers via volume mount).
+- **Persistence**: Runner credential persisted to `runner.json` (or `/data/runner.json` in containers via volume mount). This is the runner's own enrolment token only — the GitHub credential is never part of runner state; it is leased from the coordinator per task (see §5.2).
 
 ### 2. Isolated Git Checkout, Branch Hygiene & Subprocess Credential Handling
 
@@ -194,8 +194,11 @@ Coordinator (Homelab / Cloud)
   git -c http.https://github.com/.extraheader="AUTHORIZATION: basic ***" clone -- <url> <path>
   ```
   `buildGitAuthArgs()` only attaches that header when the clone URL is unset or starts with `https://github.com/`. The header is host-bound; sending it to any other host would hand that host the token, so non-GitHub remotes get no header at all.
-- **Redaction:** `redactGitSecrets()` (`src/runner/git.ts`) is the single implementation — it splits out both the raw `GITHUB_TOKEN` value and its base64 basic-auth form, replacing each with `[redacted]`. Every git stderr/stdout path (clone, push, refusals) goes through it before logging or returning to a client.
-- **Fail at Boot, Not at Push:** `assertRunnerGitCredentials()` throws on `start()` when `GITHUB_TOKEN` is unset (naming the runner's repository scope) unless `ALLOW_TOKENLESS_RUNNER=true`, because a tokenless runner only discovers the problem at push — after the agent run has already spent quota. `env_file` alone does not put a variable into the container environment; the token must also be listed under `environment:` in the compose file.
+- **Redaction:** `redactGitSecrets()` (`src/runner/git.ts`) is the single implementation — it splits out both the leased token and its base64 basic-auth form, replacing each with `[redacted]`. Every git stderr/stdout path (clone, push, refusals) goes through it before logging or returning to a client, and the same value is stripped from the spawned agent's output before it reaches a log, a heartbeat or a status report.
+- **Single Credential on the Coordinator:** `GITHUB_TOKEN` (`githubToken`) is a coordinator config secret — `enc:v1` at rest, masked in `/api/config`, settable or clearable from Settings without a restart, resolved as the SQLite override then the coordinator's environment. A runner is configured with no GitHub token of its own.
+- **Leased in Memory, Never Persisted:** `POST /api/tasks/poll` attaches the token to the lease response for the one task the runner just claimed. It is never written to `swarm_tasks`, to `runner.json`, or to any log, so there is nothing to scrub after the run.
+- **Tokenless Leasing Is Refused, Not Attempted:** `credentialsAvailable` on the poll and runner-list payloads reports the coordinator's own credential state; while it is false no GitHub-remote task is leased to any runner unless `allowTokenlessRunner` is on — correct only for a non-GitHub remote — and the dashboard shows `NO CREDENTIALS` in an idle runner's STATUS cell.
+- **A Runner's Own Token Is Ignored:** a runner that still carries `GITHUB_TOKEN` in its environment logs a WARN at startup that the variable is ignored, and it no longer refuses to boot when the variable is absent, because the credential arrives with the task.
 
 ### 3. Runner Runtime Loop & Lease Semantics
 

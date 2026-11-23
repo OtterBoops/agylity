@@ -40,7 +40,7 @@ Access the web dashboard at `http://localhost:8484` (when `WEB_UI_ENABLED=true`)
 
 The shipped `docker-compose.yaml` runs **both** services, so a plain `docker compose up -d` gives you a coordinator _and_ a runner. Without a runner the coordinator still polls quota and raises alerts, but every dispatched task stays `queued`.
 
-Minimum keys in `.env` for that stack: `WEB_UI_AUTH_TOKEN` (the control plane refuses to start on a non-loopback `WEB_UI_HOST` without it), `GITHUB_TOKEN` (branch pushes and pull requests, plus authenticated backlog sync from the coordinator), and a runner credential — `RUNNER_TOKEN`, or a registration token if you enrol the runner through the API instead. See `docs/configuration.md` for the full surface.
+Minimum keys in `.env` for that stack: `WEB_UI_AUTH_TOKEN` (the control plane refuses to start on a non-loopback `WEB_UI_HOST` without it), `GITHUB_TOKEN` (held by the coordinator: authenticated clone and push, pull requests, issue filing and backlog sync, plus the per-task lease it hands a runner in memory), and a runner credential — `RUNNER_TOKEN`, or a registration token if you enrol the runner through the API instead. Runners need no GitHub token of their own. See `docs/configuration.md` for the full surface.
 
 ---
 
@@ -64,8 +64,9 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        env_file:
          - /opt/agylity/.env
        environment:
-         # The coordinator authenticates to the GitHub REST API for backlog sync, so the token
-         # must be named here as well — `env_file` alone does not put it in the container environment.
+         # The coordinator holds the GitHub credential: clone/push, pull requests, issue filing,
+         # backlog sync, and the in-memory per-task lease to runners. Name it here as well —
+         # `env_file` alone does not put it in the container environment.
          - GITHUB_TOKEN=${GITHUB_TOKEN}
 
      agylity-runner:
@@ -77,9 +78,6 @@ For homelabs managed via GitOps, Portainer, or Dockge:
        environment:
          - COORDINATOR_URL=http://agylity:8484
          - RUNNER_STATE_PATH=/data/runner.json
-         # The runner pushes branches, so the token must be named here as well as in .env —
-         # `env_file` alone does not put it in the container environment.
-         - GITHUB_TOKEN=${GITHUB_TOKEN}
          - GIT_AUTHOR_NAME=agylity[bot]
          - GIT_AUTHOR_EMAIL=agylity@users.noreply.github.com
          - GIT_COMMITTER_NAME=agylity[bot]
@@ -211,4 +209,4 @@ node dist/runner-cli.js --url http://127.0.0.1:8484 --token agyr_reg_... --name 
 node dist/runner-cli.js --url http://127.0.0.1:8484 --state data/runner.json
 ```
 
-Flags also read from the environment as `COORDINATOR_URL`, `REGISTRATION_TOKEN` / `RUNNER_TOKEN`, `RUNNER_NAME`, `RUNNER_LABELS`, `RUNNER_REPOSITORIES`, `RUNNER_STATE_PATH`, `AGY_BIN_PATH` and `PR_POLICY`. The state file defaults to `data/runner.json`, so give it a durable path — losing it means re-enrolling. The host must have the `agy` CLI installed and authenticated, plus `git` and `gh` for branch pushes and pull requests.
+Flags also read from the environment as `COORDINATOR_URL`, `REGISTRATION_TOKEN` / `RUNNER_TOKEN`, `RUNNER_NAME`, `RUNNER_LABELS`, `RUNNER_REPOSITORIES`, `RUNNER_STATE_PATH`, `AGY_BIN_PATH` and `PR_POLICY`. The state file defaults to `data/runner.json`, so give it a durable path — losing it means re-enrolling. The host must have the `agy` CLI installed and authenticated, plus `git` and `gh` for branch pushes and pull requests. The GitHub token is not part of that setup: the runner receives it with each task it leases and needs nothing in its own environment for it.

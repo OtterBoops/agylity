@@ -8,7 +8,7 @@ import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask } from '../coordinator/queue.js';
 import type { PrPolicy } from '../config/schema.js';
 import { TaskExecutor, type TaskExecutionResult } from './executor.js';
-import { assertRunnerGitCredentials } from './git.js';
+import { warnLegacyGithubToken } from './git.js';
 import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 
 // The coordinator rejects a JSON body over 64 KB, so an untruncated run output would turn a
@@ -115,6 +115,7 @@ export class RemoteSwarmRunner {
   private warnedAuthRequired = false;
   private credentialRejectedUntil = 0;
   private warnedCredentialRejected = false;
+  private warnedMissingLeaseCredential = false;
 
   constructor(options: RemoteSwarmRunnerOptions) {
     this.options = options;
@@ -355,7 +356,12 @@ export class RemoteSwarmRunner {
     const baseUrl = this.options.coordinatorUrl.replace(/\/+$/, '');
     const headers = this.buildAuthHeaders();
 
-    let res: { task: SwarmTask | null };
+    let res: {
+      task: SwarmTask | null;
+      credentialsAvailable?: boolean;
+      leaseBlocked?: 'missing_github_token';
+      githubToken?: string;
+    };
     try {
       res = await ky
         .post(`${baseUrl}/api/tasks/poll`, {
@@ -372,7 +378,12 @@ export class RemoteSwarmRunner {
           timeout: (this.options.pollTimeoutMs ?? 0) + 10000,
           signal: this.abortController?.signal,
         })
-        .json<{ task: SwarmTask | null }>();
+        .json<{
+          task: SwarmTask | null;
+          credentialsAvailable?: boolean;
+          leaseBlocked?: 'missing_github_token';
+          githubToken?: string;
+        }>();
     } catch (err) {
       this.noteCredentialRejection(err);
       throw err;
@@ -380,6 +391,7 @@ export class RemoteSwarmRunner {
 
     this.credentialRejectedUntil = 0;
     this.warnedCredentialRejected = false;
+    this.noteCoordinatorCredentials(res?.credentialsAvailable, res?.leaseBlocked);
     const task = res?.task ?? null;
     if (!task) return null;
 
@@ -419,6 +431,8 @@ export class RemoteSwarmRunner {
         onOutput: (tail) => {
           outputTail = tail;
         },
+        // Held in memory for this task only: the lease is never written to runner.json or a log.
+        githubToken: res?.githubToken,
       });
     } finally {
       clearInterval(heartbeatTimer);
@@ -455,7 +469,7 @@ export class RemoteSwarmRunner {
 
   public async start(): Promise<void> {
     if (this.isRunning) return;
-    assertRunnerGitCredentials(this.repositories);
+    warnLegacyGithubToken(this.log);
     this.isRunning = true;
     this.abortController = new AbortController();
 
@@ -491,6 +505,27 @@ export class RemoteSwarmRunner {
         await this.sleep(Math.max(idleIntervalMs, 3000));
       }
     }
+  }
+
+  /**
+   * Surfaces the one coordinator-side misconfiguration that strands GitHub work: with no token
+   * configured, every GitHub-remote task is withheld and this runner would otherwise just idle.
+   */
+  private noteCoordinatorCredentials(
+    credentialsAvailable: boolean | undefined,
+    leaseBlocked: 'missing_github_token' | undefined
+  ): void {
+    if (credentialsAvailable !== false) {
+      this.warnedMissingLeaseCredential = false;
+      return;
+    }
+    if (this.warnedMissingLeaseCredential) return;
+    this.warnedMissingLeaseCredential = true;
+    this.log.error(
+      leaseBlocked === 'missing_github_token'
+        ? 'Coordinator has no GitHub token configured: GitHub-remote tasks cannot be leased until one is set in the dashboard settings'
+        : 'Coordinator reports no GitHub token configured: GitHub work will be refused until one is set in the dashboard settings'
+    );
   }
 
   private scheduleAgyUpdateTimer(): void {

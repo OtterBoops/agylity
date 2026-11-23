@@ -142,6 +142,12 @@ export interface SwarmRunnerRecord {
   lastSeenAt: string;
 }
 
+export interface RunnersResponse {
+  runners: SwarmRunnerRecord[];
+  // False when the coordinator has no GitHub token: runners cannot push, open PRs or file issues.
+  credentialsAvailable: boolean;
+}
+
 export interface RunnerRegistrationTokenResult {
   id: string;
   registrationToken: string;

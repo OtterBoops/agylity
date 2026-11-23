@@ -1,5 +1,5 @@
 export { buildContinuationBranchName, isDocumentationFile, normalizePrPolicy } from './policy.js';
-export { assertRunnerGitCredentials, buildGitAuthArgs, redactGitSecrets } from './git.js';
+export { buildGitAuthArgs, redactGitSecrets, warnLegacyGithubToken } from './git.js';
 export {
   TaskExecutor,
   buildCapacityContinuationPrompt,

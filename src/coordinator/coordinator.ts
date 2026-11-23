@@ -21,6 +21,7 @@ import {
   resolveConcreteModelId,
   resolveDefaultDispatchModel,
   resolvePoolGroupForModel,
+  isGithubRemoteTask,
   isTerminalTaskStatus,
   resolveReasoningEffortForModel,
   modelSupportsEffort,
@@ -33,6 +34,7 @@ import {
   type ScheduleMode,
   type TaskStatus,
   type TaskTier,
+  type RunnerLeaseBlockReason,
 } from './models.js';
 import {
   TaskQueue,
@@ -114,6 +116,10 @@ export interface RunnerPollRequest {
   repositories?: string[];
   systemInfo?: RunnerSystemInfo;
   timeoutMs?: number;
+  /** False when the coordinator holds no GitHub PAT: GitHub remotes are then not claimable. */
+  leaseGithubTasks?: boolean;
+  /** Called for every task withheld by that guard, so the caller can say why nothing was leased. */
+  onLeaseBlocked?: (task: SwarmTask, reason: RunnerLeaseBlockReason) => void;
 }
 
 export interface CoordinatorOptions {
@@ -1287,6 +1293,10 @@ export class Coordinator {
         repositories: pollReq.repositories,
         systemInfo: pollReq.systemInfo,
         eligibilityCheck: (candidate) => {
+          if (pollReq.leaseGithubTasks === false && isGithubRemoteTask(candidate)) {
+            pollReq.onLeaseBlocked?.(candidate, 'missing_github_token');
+            return { allowed: false };
+          }
           const evaluate = (model?: string) =>
             this.evaluateEligibility({
               model,

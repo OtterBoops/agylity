@@ -22,13 +22,18 @@ interface CoordinatorViewProps {
 
 export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorViewProps) => {
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
+  // Optimistic until the first poll answers: a transient failure must not accuse the config.
+  const [credentialsAvailable, setCredentialsAvailable] = useState(true);
   const [showRegisterPanel, setShowRegisterPanel] = useState(false);
   const catalog = useModelCatalog();
 
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
 
   const refreshRunners = useCallback(() => {
-    getRunners().then((list) => setRunners(list));
+    getRunners().then((next) => {
+      setRunners(next.runners);
+      setCredentialsAvailable(next.credentialsAvailable);
+    });
   }, []);
 
   useEffect(() => {
@@ -153,6 +158,7 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
 
         <SwarmRunnersGrid
           runners={runners}
+          credentialsAvailable={credentialsAvailable}
           onToggleEnabled={handleToggleRunnerEnabled}
           onRevoke={handleRevokeRunner}
         />

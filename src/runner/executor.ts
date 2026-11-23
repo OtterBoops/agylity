@@ -42,6 +42,8 @@ export interface TaskExecutorOptions {
 export interface TaskExecuteOptions {
   signal?: AbortSignal;
   onOutput?: (tail: string) => void;
+  /** Leased from the coordinator for this task only; never read from the runner's own environment. */
+  githubToken?: string;
 }
 
 export type SpawnFn = (
@@ -518,8 +520,12 @@ export class TaskExecutor {
     return path.join(this.mirrorCacheDir, `${digest}.git`);
   }
 
-  private async cloneRepository(rawCloneUrl: string, targetPath: string): Promise<void> {
-    const authArgs = buildGitAuthArgs(rawCloneUrl);
+  private async cloneRepository(
+    rawCloneUrl: string,
+    targetPath: string,
+    githubToken: string | undefined
+  ): Promise<void> {
+    const authArgs = buildGitAuthArgs(rawCloneUrl, githubToken);
     const mirrorPath = this.resolveMirrorPath(rawCloneUrl);
 
     if (mirrorPath) {
@@ -689,7 +695,8 @@ export class TaskExecutor {
   private async ensureRepository(
     task: SwarmTask,
     branchName: string,
-    startMs: number
+    startMs: number,
+    githubToken: string | undefined
   ): Promise<TaskExecutionResult | null> {
     if (this.dirExistsFn(task.repositoryPath)) return null;
 
@@ -707,13 +714,14 @@ export class TaskExecutor {
         message: `Cloning repository from ${cloneUrl} into ${task.repositoryPath}`,
       });
       mkdirSync(path.dirname(task.repositoryPath), { recursive: true });
-      await this.cloneRepository(cloneUrl, task.repositoryPath);
+      await this.cloneRepository(cloneUrl, task.repositoryPath, githubToken);
       return null;
     } catch (cloneErr: any) {
       // A half-written clone must not survive: the next run would see the directory and skip cloning.
       await this.removeCloneTarget(task.repositoryPath);
       const errMsg = `Failed to clone repository from ${cloneUrl}: ${redactGitSecrets(
-        cloneErr?.message || String(cloneErr)
+        cloneErr?.message || String(cloneErr),
+        [githubToken]
       )}`;
       this.log.error(errMsg);
       return this.failureResult(branchName, startMs, errMsg);
@@ -730,7 +738,8 @@ export class TaskExecutor {
   private async prepareBranch(
     task: SwarmTask,
     branchName: string,
-    baseBranch: string
+    baseBranch: string,
+    githubToken: string | undefined
   ): Promise<void> {
     const cwd = task.repositoryPath;
     try {
@@ -753,7 +762,7 @@ export class TaskExecutor {
       }
       await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 30000 });
       try {
-        const gitPullArgs = [...buildGitAuthArgs(task.cloneUrl), 'pull', '--ff-only'];
+        const gitPullArgs = [...buildGitAuthArgs(task.cloneUrl, githubToken), 'pull', '--ff-only'];
         await this.execFileFn('git', gitPullArgs, { cwd, timeout: 30000 });
       } catch (pullErr: unknown) {
         this.log.warn(
@@ -761,7 +770,9 @@ export class TaskExecutor {
           baseBranch,
           task.id,
           baseBranch,
-          redactGitSecrets(pullErr instanceof Error ? pullErr.message : String(pullErr))
+          redactGitSecrets(pullErr instanceof Error ? pullErr.message : String(pullErr), [
+            githubToken,
+          ])
         );
       }
     } catch (baseCheckoutErr: unknown) {
@@ -810,6 +821,7 @@ export class TaskExecutor {
       primaryHop: CascadeHop;
       signal?: AbortSignal | undefined;
       onOutput?: ((tail: string) => void) | undefined;
+      githubToken?: string | undefined;
     }
   ): Promise<{
     output: string;
@@ -865,6 +877,9 @@ export class TaskExecutor {
           timeoutMs: this.timeoutMs,
           signal: context.signal,
           onOutput: context.onOutput,
+          // The lease is the only credential the child sees; the empty fallback keeps a stale
+          // GITHUB_TOKEN inherited from the runner environment out of the agent's reach.
+          env: { ...process.env, GITHUB_TOKEN: context.githubToken ?? '' },
         });
         lastStdout = streamed.stdout || '';
         output = [streamed.stdout?.trim(), streamed.stderr?.trim()].filter(Boolean).join('\n');
@@ -1029,20 +1044,30 @@ export class TaskExecutor {
   }
 
   /** Returns the failure message for a rejected push, or null once the branch is upstream. */
-  private async pushTaskBranch(task: SwarmTask, branchName: string): Promise<string | null> {
+  private async pushTaskBranch(
+    task: SwarmTask,
+    branchName: string,
+    githubToken: string | undefined
+  ): Promise<string | null> {
     try {
-      const gitPushArgs = [...buildGitAuthArgs(task.cloneUrl), 'push', '-u', 'origin', branchName];
+      const gitPushArgs = [
+        ...buildGitAuthArgs(task.cloneUrl, githubToken),
+        'push',
+        '-u',
+        'origin',
+        branchName,
+      ];
       await this.execFileFn('git', gitPushArgs, {
         cwd: task.repositoryPath,
         timeout: 60000,
       });
       return null;
     } catch (gitPushErr: any) {
-      const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr));
+      const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr), [githubToken]);
       this.log.error('Git push failed on %s: %s', branchName, pushErrMsg);
-      return !process.env.GITHUB_TOKEN?.trim()
-        ? `Git push to origin/${branchName} failed: ${pushErrMsg} (this runner has no GITHUB_TOKEN set)`
-        : `Git push to origin/${branchName} failed: ${pushErrMsg}`;
+      return githubToken
+        ? `Git push to origin/${branchName} failed: ${pushErrMsg}`
+        : `Git push to origin/${branchName} failed: ${pushErrMsg} (the coordinator leased no GitHub token for this task)`;
     }
   }
 
@@ -1051,7 +1076,8 @@ export class TaskExecutor {
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
-    hop: CascadeHop
+    hop: CascadeHop,
+    githubToken: string | undefined
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
@@ -1081,10 +1107,7 @@ export class TaskExecutor {
         {
           cwd: task.repositoryPath,
           timeout: 30000,
-          env: {
-            ...process.env,
-            GITHUB_TOKEN: process.env.GITHUB_TOKEN?.trim() || '',
-          },
+          env: { ...process.env, GITHUB_TOKEN: githubToken ?? '' },
         }
       );
       const match = prOut.match(/https:\/\/github\.com\/[^\s]+/);
@@ -1113,9 +1136,10 @@ export class TaskExecutor {
       prPolicy: PrPolicy;
       telemetry: TaskExecutionTelemetry;
       startMs: number;
+      githubToken?: string | undefined;
     }
   ): Promise<TaskExecutionResult | null> {
-    const { branchName, baseBranch, output, prPolicy, telemetry, startMs } = context;
+    const { branchName, baseBranch, output, prPolicy, telemetry, startMs, githubToken } = context;
 
     const suppress = async (detail: string): Promise<TaskExecutionResult> => {
       await this.discardBranch(task.repositoryPath, baseBranch, branchName);
@@ -1166,7 +1190,8 @@ export class TaskExecutor {
       // An uninspectable diff cannot prove the branch is docs-only, so the gate stays shut.
       return suppress(
         `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only' and the commit diff could not be inspected (${redactGitSecrets(
-          diffErr?.message ?? String(diffErr)
+          diffErr?.message ?? String(diffErr),
+          [githubToken]
         )}).`
       );
     }
@@ -1209,7 +1234,11 @@ export class TaskExecutor {
    * carry the Agylity footer. A URL the agent merely mentions in prose is not evidence it created
    * anything, so prose is never scraped.
    */
-  private async collectIssueDeliverables(task: SwarmTask, sinceMs: number): Promise<string[]> {
+  private async collectIssueDeliverables(
+    task: SwarmTask,
+    sinceMs: number,
+    githubToken: string | undefined
+  ): Promise<string[]> {
     const slug = await this.resolveGithubRepoSlug(task);
     if (!slug) {
       this.log.warn(
@@ -1238,7 +1267,7 @@ export class TaskExecutor {
         {
           cwd: task.repositoryPath,
           timeout: 20000,
-          env: { ...process.env, GITHUB_TOKEN: process.env.GITHUB_TOKEN?.trim() || '' },
+          env: { ...process.env, GITHUB_TOKEN: githubToken ?? '' },
         }
       );
       stdout = listing.stdout || '';
@@ -1288,6 +1317,8 @@ export class TaskExecutor {
     options: TaskExecuteOptions = {}
   ): Promise<TaskExecutionResult> {
     const startMs = Date.now();
+    // Scoped to this call so nothing can leak the lease into a later task on the same executor.
+    const githubToken = options.githubToken?.trim() || undefined;
     const branchName = task.branchName || buildContinuationBranchName(task.id, task.prompt);
 
     if (branchName === 'main' || branchName === 'master') {
@@ -1298,7 +1329,7 @@ export class TaskExecutor {
       );
     }
 
-    const repositoryFailure = await this.ensureRepository(task, branchName, startMs);
+    const repositoryFailure = await this.ensureRepository(task, branchName, startMs, githubToken);
     if (repositoryFailure) return repositoryFailure;
 
     const cwd = task.repositoryPath;
@@ -1314,7 +1345,7 @@ export class TaskExecutor {
         message: `Checking out isolated branch ${branchName} (from ${baseBranch}) and launching agy (${task.model})`,
       });
 
-      await this.prepareBranch(task, branchName, baseBranch);
+      await this.prepareBranch(task, branchName, baseBranch, githubToken);
 
       const primaryHop: CascadeHop = {
         model: task.model,
@@ -1340,6 +1371,7 @@ export class TaskExecutor {
         primaryHop,
         signal: options.signal,
         onOutput: options.onOutput,
+        githubToken,
       });
       capturedOutput = agent.output;
       capturedTelemetryRaw = agent.lastStdout;
@@ -1353,7 +1385,7 @@ export class TaskExecutor {
       const commitsProduced = await this.commitWorkingTree(task, branchName, baseBranch);
       if (!commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
-        const issueUrls = await this.collectIssueDeliverables(task, startMs);
+        const issueUrls = await this.collectIssueDeliverables(task, startMs, githubToken);
         if (issueUrls.length > 0) {
           this.log.info(
             'Task %s produced no commits but filed %d GitHub issue(s); reporting them as the deliverable',
@@ -1392,12 +1424,13 @@ export class TaskExecutor {
         prPolicy: effectivePrPolicy,
         telemetry,
         startMs,
+        githubToken,
       });
       if (suppression) return suppression;
 
       let prUrl: string | undefined;
       if (task.pushBranch) {
-        const pushError = await this.pushTaskBranch(task, branchName);
+        const pushError = await this.pushTaskBranch(task, branchName, githubToken);
         if (pushError) {
           return {
             success: false,
@@ -1410,7 +1443,13 @@ export class TaskExecutor {
         }
 
         if (task.autoCreatePr) {
-          prUrl = await this.openPullRequest(task, branchName, baseBranch, agent.executedHop);
+          prUrl = await this.openPullRequest(
+            task,
+            branchName,
+            baseBranch,
+            agent.executedHop,
+            githubToken
+          );
         }
       }
 
@@ -1425,11 +1464,14 @@ export class TaskExecutor {
     } catch (err: any) {
       const durationMs = Date.now() - startMs;
       // Git stderr can carry a remote URL with an embedded credential, so it is redacted before any sink.
-      const errMessage = redactGitSecrets(err?.stderr?.trim() || err?.message || String(err));
+      const errMessage = redactGitSecrets(err?.stderr?.trim() || err?.message || String(err), [
+        githubToken,
+      ]);
       this.log.error('Task %s execution failed: %s', task.id, errMessage);
       if (err?.stdout || err?.stderr) {
         const extra = redactGitSecrets(
-          [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n')
+          [err.stdout?.trim(), err.stderr?.trim()].filter(Boolean).join('\n'),
+          [githubToken]
         );
         if (extra && !capturedOutput.includes(extra)) {
           capturedOutput = capturedOutput ? `${capturedOutput}\n\n${extra}` : extra;
@@ -1438,7 +1480,9 @@ export class TaskExecutor {
       const failureTelemetry = hasTelemetryValues(telemetry)
         ? telemetry
         : parseAgyTelemetry(capturedTelemetryRaw || err?.stdout);
-      const failureOutput = redactGitSecrets(capturedOutput || String(err?.stdout ?? '').trim());
+      const failureOutput = redactGitSecrets(capturedOutput || String(err?.stdout ?? '').trim(), [
+        githubToken,
+      ]);
       return {
         success: false,
         branchName,

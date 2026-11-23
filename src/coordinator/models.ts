@@ -29,6 +29,22 @@ export const ScheduleModeSchema = z.enum(['immediate', 'pre_reset']).default('im
 
 export type TaskTier = 'immediate' | 'backlog' | 'routine';
 
+export type RunnerLeaseBlockReason = 'missing_github_token';
+
+/**
+ * A GitHub remote needs the coordinator's PAT: without it the clone is anonymous and the push fails
+ * after the run has already spent quota. A task with no clone URL is a local checkout and exempt.
+ */
+export const isGithubRemoteTask = (task: {
+  cloneUrl?: string;
+  repositoryName?: string;
+}): boolean => {
+  const cloneUrl = task.cloneUrl?.trim().toLowerCase();
+  if (cloneUrl) return cloneUrl.includes('github.com');
+  // A bare owner/repo name is how a cloned GitHub repository is configured.
+  return /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(task.repositoryName?.trim() ?? '');
+};
+
 export type BacklogStatus =
   'pending' | 'dispatched' | 'paused' | 'completed' | 'failed' | 'canceled';
 export const BacklogStatusSchema = z

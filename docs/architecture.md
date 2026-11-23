@@ -107,6 +107,8 @@ Continuation tasks are designed to be executed strictly on designated runner mac
 
 Sensitive tokens (Discord Bot Token, Language Server CSRF headers, webhook secrets) stored in SQLite are encrypted before being written to disk using native Node 26 `node:crypto` AES-256-GCM authenticated encryption (`enc:v1:<iv>:<tag>:<ciphertext>`). On all REST API routes (`GET /api/config`), secret values are masked (`••••••••`) to prevent accidental credential leakage in browser network logs or client inspection.
 
+The GitHub PAT is a coordinator secret under the same rules: `enc:v1` at rest, masked in `GET /api/config`, settable or clearable from the dashboard without a restart, and resolved as the SQLite override before the coordinator's own `GITHUB_TOKEN` environment variable. Runners never persist it — the credential is leased per task (§7.1).
+
 ### 3.3. AI Overcharge & Credit Safety Floor
 
 A task is blocked from dispatch when the headroom of its chosen pool is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), protecting against billable AI overages.
@@ -320,6 +322,12 @@ Coordinator (Homelab / Cloud)
    - The coordinator blocks a dispatch when headroom is **strictly below** `MIN_DISPATCH_HEADROOM_PERCENT` (default `10%`), and equally when headroom is **unknown** (no readable pool for the requested group, stale telemetry, or an unparseable fraction). Unknown is never treated as full headroom. Both refusals reach the caller as HTTP 400 with `OVERAGE_PROTECTION_TRIGGERED` or `TELEMETRY_UNAVAILABLE`; `allowOverage: true` is the documented override.
 7. **Alerting-First Operational Mode**:
    - `COORDINATOR_ENABLED=false` (the default) runs Agylity in pure sentry mode: dispatch attempts cleanly return `COORDINATOR_DISABLED` and no execution resources are initialised.
+8. **Single GitHub Credential, Leased Per Task**:
+   - `GITHUB_TOKEN` exists on the coordinator only, as the `githubToken` config secret. No runner is configured with a GitHub token, and no runner state file carries one.
+   - `POST /api/tasks/poll` attaches the token to the lease response in memory, for the single task that runner just claimed. It is never written to `swarm_tasks`, to `runner.json`, or to a log — there is nothing to scrub after the run.
+   - The runner passes the leased token to git auth, the `gh` CLI and the spawned `agy` child environment for that task, and to nothing else. `redactGitSecrets()` strips the token and its base64 basic-auth form from every git stdout/stderr path before it reaches a log, a heartbeat or a status report.
+   - The poll and runner-list payloads carry `credentialsAvailable`, which reports the coordinator's own state rather than the runner's. While it is `false` no GitHub-remote task is leased to any runner unless `allowTokenlessRunner` is on, which is only correct for a non-GitHub remote; the dashboard badges an idle runner `NO CREDENTIALS` in the STATUS column.
+   - A runner still carrying `GITHUB_TOKEN` in its own environment logs a warning that the variable is ignored, and its boot no longer depends on the variable being set.
 
 ### 7.2. Task Taxonomy: Three Tiers
 
@@ -422,6 +430,12 @@ actually needs, so deleting the mirror later cannot corrupt a working tree. If a
 path fails, the runner removes the half-written target and falls back to a plain `git clone`. The cache
 directory is container-local in Docker and is not persisted by the shipped compose file, so the first
 task after a container restart pays for one cold clone to rebuild it.
+
+Clone and push authenticate with the token leased alongside the task, not with runner configuration:
+it arrives in the poll response, is used for git auth and the `gh` CLI, and is dropped when the task
+settles. `redactGitSecrets()` rewrites both the raw token and its base64 basic-auth form out of clone
+and push stdout/stderr, so a failing `git` command cannot print the credential into the runner log or
+the status report the coordinator stores.
 
 ---
 

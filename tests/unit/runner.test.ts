@@ -790,7 +790,7 @@ describe('Runner: local bare mirror and reference clone', () => {
     }
   });
 
-  it('carries the git credentials into the mirror fetch so a private remote stays fresh', async () => {
+  it('carries the leased git credentials into the mirror fetch so a private remote stays fresh', async () => {
     const { dir, cleanup } = makeTempDir('runner_mirror_auth_');
     const mirrorRoot = path.join(dir, 'mirrors');
     const mirrorPath = path.join(
@@ -802,8 +802,7 @@ describe('Runner: local bare mirror and reference clone', () => {
 
     const repoPath = path.join(dir, 'work', 'agylity');
     const { task, db } = enqueueTask(dir, { repositoryPath: repoPath, cloneUrl: CLONE_URL });
-    const previousToken = process.env.GITHUB_TOKEN;
-    process.env.GITHUB_TOKEN = 'ghp_mirrorauthtoken123456';
+    const leasedToken = 'ghp_leased_mirror_token_123456';
 
     try {
       const fetchCalls: string[][] = [];
@@ -821,7 +820,7 @@ describe('Runner: local bare mirror and reference clone', () => {
         },
       });
 
-      const result = await executor.execute(task);
+      const result = await executor.execute(task, { githubToken: leasedToken });
 
       assert.equal(result.success, true);
       assert.equal(fetchCalls.length, 1);
@@ -831,9 +830,13 @@ describe('Runner: local bare mirror and reference clone', () => {
         true,
         'the mirror fetch ran without the credentials the clone uses'
       );
+      const expectedBasic = Buffer.from(`x-access-token:${leasedToken}`, 'utf8').toString('base64');
+      assert.equal(
+        fetchCalls[0]?.some((arg) => arg.includes(expectedBasic)),
+        true,
+        'the mirror fetch must carry the leased token, not a runner-local one'
+      );
     } finally {
-      if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previousToken;
       db.close();
       cleanup();
     }
@@ -1303,24 +1306,37 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(exec.pushed(), true);
   });
 
-  it('reports a rejected push as a failed run and names the missing credential', async () => {
-    const previous = process.env.GITHUB_TOKEN;
-    delete process.env.GITHUB_TOKEN;
-    try {
-      const { result } = await runWithWorkspace(
-        {},
-        {
-          onPush: () => {
-            throw new Error("fatal: could not read Username for 'https://github.com'");
-          },
-        }
-      );
+  it('reports a rejected push as a failed run and names the missing lease', async () => {
+    const { result } = await runWithWorkspace(
+      {},
+      {
+        onPush: () => {
+          throw new Error("fatal: could not read Username for 'https://github.com'");
+        },
+      }
+    );
 
-      assert.equal(result.success, false);
-      assert.match(String(result.error), /Git push to origin\/agy\//);
-      assert.match(String(result.error), /no GITHUB_TOKEN set/);
+    assert.equal(result.success, false);
+    assert.match(String(result.error), /Git push to origin\/agy\//);
+    assert.match(String(result.error), /coordinator leased no GitHub token/);
+  });
+
+  it('never authenticates from a legacy runner GITHUB_TOKEN', async () => {
+    const previous = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'ghp_legacy_runner_token_123456';
+    try {
+      const { result, exec } = await runWithWorkspace({}, { onGh: () => '' });
+
+      assert.equal(result.success, true);
+      const gitCalls = exec.calls.filter((call) => call[0] === 'git');
+      assert.equal(
+        gitCalls.some((call) => call.includes('-c')),
+        false,
+        'a legacy runner token must not reach git auth'
+      );
     } finally {
-      if (previous !== undefined) process.env.GITHUB_TOKEN = previous;
+      if (previous === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previous;
     }
   });
 

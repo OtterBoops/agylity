@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {
   RawEnvSchema,
   booleanEnv,
@@ -14,7 +15,7 @@ import {
 import { ConfigStore } from '../../src/config/store.js';
 import { warnDeprecatedEnvVars } from '../../src/config/deprecated.js';
 import { logger } from '../../src/logs/logger.js';
-import { createMemorySink } from '../e2e/harness/index.js';
+import { createMemorySink, makeTempDir } from '../e2e/harness/index.js';
 
 describe('Zod Configuration Schema & Preprocessors', () => {
   it('parses valid environment variables with correct coerced types', () => {
@@ -346,6 +347,123 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
     assert.equal(changeEvents.length, 3);
 
     store.close();
+  });
+});
+
+describe('Coordinator GitHub token configuration', () => {
+  it('resolves githubToken from the env spelling, then a SQLite override that wins, and to undefined when unset', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_');
+
+    try {
+      const envConfig = parseRawEnv({ GITHUB_TOKEN: ' ghp_env_token ' });
+      assert.equal(envConfig.githubToken, 'ghp_env_token');
+
+      const store = new ConfigStore(path.join(dir, 'test.db'), envConfig);
+      try {
+        assert.equal(store.resolveConfig().githubToken, 'ghp_env_token');
+        assert.equal(store.get('githubToken'), 'ghp_env_token');
+        assert.equal(store.getSources().githubToken, 'env');
+
+        store.setOverride('githubToken', 'ghp_override_token');
+        assert.equal(store.resolveConfig().githubToken, 'ghp_override_token');
+        assert.equal(store.get('githubToken'), 'ghp_override_token');
+        assert.equal(store.getSources().githubToken, 'override');
+      } finally {
+        store.close();
+      }
+
+      const unset = new ConfigStore(path.join(dir, 'unset.db'), {});
+      try {
+        assert.equal(unset.resolveConfig().githubToken, undefined);
+        assert.equal(unset.get('githubToken'), undefined);
+      } finally {
+        unset.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('persists githubToken as enc:v1 at rest and reads the plaintext back', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_secret_');
+    const dbPath = path.join(dir, 'test.db');
+    const plaintext = 'ghp_at_rest_plaintext';
+
+    try {
+      const store = new ConfigStore(dbPath, {});
+      try {
+        store.setOverride('githubToken', plaintext);
+
+        const raw = store.getDatabase().getRaw('githubToken');
+        assert.ok(raw, 'githubToken must be written to the settings table');
+        assert.match(raw, /^"enc:v1:/);
+        assert.equal(raw.includes(plaintext), false, 'the raw row must not contain the token');
+        assert.equal(store.get('githubToken'), plaintext);
+        assert.equal(store.resolveConfig().githubToken, plaintext);
+      } finally {
+        store.close();
+      }
+
+      const reopened = new ConfigStore(dbPath, {});
+      try {
+        assert.equal(reopened.get('githubToken'), plaintext);
+        assert.equal(reopened.resolveConfig().githubToken, plaintext);
+      } finally {
+        reopened.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('falls back to the env token when the githubToken override is cleared', () => {
+    const { dir, cleanup } = makeTempDir('config_github_token_clear_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), { githubToken: 'ghp_env_token' });
+
+    try {
+      store.setOverride('githubToken', 'ghp_override_token');
+      assert.equal(store.get('githubToken'), 'ghp_override_token');
+
+      store.removeOverride('githubToken');
+      assert.equal(store.resolveConfig().githubToken, 'ghp_env_token');
+      assert.equal(store.get('githubToken'), 'ghp_env_token');
+      assert.equal(store.getDatabase().getRaw('githubToken'), undefined);
+    } finally {
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('defaults allowTokenlessRunner to false and honours both env and override', () => {
+    const { dir, cleanup } = makeTempDir('config_allow_tokenless_');
+
+    try {
+      assert.equal(parseRawEnv({ ALLOW_TOKENLESS_RUNNER: 'true' }).allowTokenlessRunner, true);
+
+      const defaults = new ConfigStore(path.join(dir, 'defaults.db'), {});
+      try {
+        assert.equal(defaults.resolveConfig().allowTokenlessRunner, false);
+        assert.equal(defaults.get('allowTokenlessRunner'), false);
+      } finally {
+        defaults.close();
+      }
+
+      const store = new ConfigStore(path.join(dir, 'env.db'), { allowTokenlessRunner: true });
+      try {
+        assert.equal(store.resolveConfig().allowTokenlessRunner, true);
+
+        store.setOverride('allowTokenlessRunner', false);
+        assert.equal(store.resolveConfig().allowTokenlessRunner, false);
+        assert.equal(store.get('allowTokenlessRunner'), false);
+
+        store.removeOverride('allowTokenlessRunner');
+        assert.equal(store.resolveConfig().allowTokenlessRunner, true);
+      } finally {
+        store.close();
+      }
+    } finally {
+      cleanup();
+    }
   });
 });
 

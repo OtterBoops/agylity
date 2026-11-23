@@ -144,11 +144,26 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Whether usage past 0% quota may draw purchased credits. The language server does not report this, so set it to match your account.',
   },
   {
+    key: 'githubToken',
+    label: 'GitHub token',
+    type: 'password',
+    colSpan: 2,
+    hint: 'Encrypted at rest with AES-256-GCM. Used for branch pushes, pull requests, issue filing and backlog sync. The coordinator leases it to runners per task, so runners no longer need their own copy.',
+  },
+  {
     key: 'runnerSharedSecret',
     label: 'Fallback shared runner secret (optional)',
     type: 'password',
     colSpan: 2,
     hint: 'Encrypted at rest with AES-256-GCM. Optional fallback token alongside per-runner registration tokens.',
+  },
+  {
+    key: 'allowTokenlessRunner',
+    label: 'Allow tokenless runners',
+    type: 'boolean',
+    onLabel: 'Allowed',
+    offLabel: 'Blocked',
+    hint: 'Only applies to remotes that are not GitHub. Leave this off for GitHub repositories: their rounds need the coordinator-held token.',
   },
 ];
 
