@@ -2,7 +2,7 @@ import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { faTimes } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { DiscardStrip } from './tasks/DiscardStrip';
 
 export interface SlideOverDrawerHandle {
@@ -88,6 +88,8 @@ export const SlideOverDrawer = ({
     if (dialog && !dialog.open) dialog.showModal();
   }, []);
 
+  useDialogScrollLock(true);
+
   useEffect(() => {
     open();
   }, [open]);
@@ -147,7 +149,7 @@ export const SlideOverDrawer = ({
         requestClose();
       }}
       onClick={dialogBackdropClickHandler(dialogRef, requestClose)}
-      class={`fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-none overflow-hidden rounded-none border-l border-pine-highlight bg-pine-surface p-0 text-pine-text transition-transform duration-200 ease-out backdrop:bg-black/50 backdrop:transition-opacity backdrop:duration-200 motion-reduce:transition-none motion-reduce:backdrop:duration-0 starting:translate-x-full backdrop:starting:opacity-0 ${
+      class={`fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-full max-w-none overflow-hidden overscroll-contain rounded-none border-l border-pine-highlight bg-pine-surface p-0 text-pine-text transition-transform duration-200 ease-out backdrop:bg-black/50 backdrop:transition-opacity backdrop:duration-200 motion-reduce:transition-none motion-reduce:backdrop:duration-0 starting:translate-x-full backdrop:starting:opacity-0 ${
         closing ? 'translate-x-full backdrop:opacity-0' : 'translate-x-0'
       } ${width === 'composer' ? 'md:max-w-2xl' : 'md:max-w-3xl'}`}
     >
@@ -155,7 +157,7 @@ export const SlideOverDrawer = ({
         <div
           ref={bodyRef}
           tabIndex={-1}
-          class="flex min-h-0 flex-1 flex-col overflow-y-auto outline-hidden"
+          class="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain outline-hidden"
         >
           <header class="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-pine-highlight bg-pine-surface px-4 py-3">
             <h2 class="font-mono text-xs tracking-wider text-pine-subtle uppercase">{label}</h2>

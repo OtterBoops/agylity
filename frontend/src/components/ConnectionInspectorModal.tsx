@@ -8,7 +8,7 @@ import {
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { Icon } from './Icon';
 import { checkHealth } from '../api';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
@@ -75,6 +75,8 @@ export const ConnectionInspectorModal = ({
     };
   }, [isOpen]);
 
+  useDialogScrollLock(isOpen);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -127,7 +129,7 @@ export const ConnectionInspectorModal = ({
       onClose={onClose}
       onCancel={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+      class="fixed inset-0 m-auto flex max-h-[85vh] w-[calc(100%-2rem)] max-w-lg flex-col overflow-y-auto overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
       <div class="flex items-center justify-between gap-3 border-b border-pine-highlight pb-4">
         <div class="flex min-w-0 items-center gap-2.5">
