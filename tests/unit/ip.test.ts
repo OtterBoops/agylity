@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type http from 'node:http';
-import { normalizeIp, isIpAllowed, isLoopbackIp, extractClientIp } from '../../src/web/ip.js';
+import {
+  normalizeIp,
+  parseSubnet,
+  isIpAllowed,
+  isLoopbackIp,
+  extractClientIp,
+} from '../../src/web/ip.js';
 
 describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
   describe('normalizeIp', () => {
@@ -14,6 +20,14 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(normalizeIp('::ffff:7f00:1'), '127.0.0.1');
       assert.equal(normalizeIp('::ffff:c0a8:0101'), '192.168.1.1');
       assert.equal(normalizeIp('::ffff:192.168.1.1'), '192.168.1.1');
+    });
+
+    it('strips IPv6 zone IDs while preserving invalid addresses', () => {
+      assert.equal(normalizeIp('fe80::1%eth0'), 'fe80::1');
+      assert.equal(normalizeIp('fe80::1%eth0/64'), 'fe80::1/64');
+      assert.equal(normalizeIp('::ffff:192.168.1.1%eth0'), '192.168.1.1');
+      assert.equal(normalizeIp('fe80::1%'), 'fe80::1%');
+      assert.equal(normalizeIp('127.0.0.1%eth0'), '127.0.0.1%eth0');
     });
   });
 
@@ -84,6 +98,16 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       const whitelist = ['2001:db8::/32'];
       assert.equal(isIpAllowed('2001:db8:ffff::1', whitelist), true);
       assert.equal(isIpAllowed('2001:db9::1', whitelist), false);
+    });
+
+    it('matches link-local IPv6 addresses with zone IDs', () => {
+      assert.equal(isIpAllowed('fe80::1%eth0', ['fe80::/10']), true);
+      assert.equal(isIpAllowed('fe80::1%eth0', ['fe80::1']), true);
+      assert.equal(isIpAllowed('fe80::1%eth0', ['2001:db8::/32']), false);
+      assert.notEqual(parseSubnet('fe80::1%eth0'), null);
+      assert.notEqual(parseSubnet('fe80::1%eth0/64'), null);
+      assert.equal(isIpAllowed('fe80::1%', ['fe80::/10']), false);
+      assert.equal(isIpAllowed('127.0.0.1%eth0', ['127.0.0.0/8']), false);
     });
   });
 

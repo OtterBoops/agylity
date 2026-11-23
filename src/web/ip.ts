@@ -15,18 +15,22 @@ const hexPairToDotted = (tail: string): string | null => {
 // turned the equally valid ::ffff:7f00:1 into "7f00:1", which is no address at all.
 export const normalizeIp = (ip: string): string => {
   const trimmed = ip.trim();
-  if (!trimmed.toLowerCase().startsWith(MAPPED_V4_PREFIX)) {
-    return trimmed;
+  const slashIdx = trimmed.indexOf('/');
+  const rawAddr = slashIdx === -1 ? trimmed : trimmed.slice(0, slashIdx);
+  const prefixSuffix = slashIdx === -1 ? '' : trimmed.slice(slashIdx);
+
+  // Strip IPv6 zone IDs (e.g. fe80::1%eth0 -> fe80::1) only when Node recognizes a valid IPv6 address.
+  const pctIdx = rawAddr.indexOf('%');
+  const addr = pctIdx !== -1 && net.isIP(rawAddr) === 6 ? rawAddr.slice(0, pctIdx) : rawAddr;
+
+  if (!addr.toLowerCase().startsWith(MAPPED_V4_PREFIX)) {
+    return addr + prefixSuffix;
   }
 
-  const rest = trimmed.slice(MAPPED_V4_PREFIX.length);
-  const slashIdx = rest.indexOf('/');
-  const address = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
-  const prefixSuffix = slashIdx === -1 ? '' : rest.slice(slashIdx);
-
+  const address = addr.slice(MAPPED_V4_PREFIX.length);
   if (net.isIP(address) === 4) return address + prefixSuffix;
   const dotted = hexPairToDotted(address);
-  return dotted === null ? trimmed : dotted + prefixSuffix;
+  return dotted === null ? addr + prefixSuffix : dotted + prefixSuffix;
 };
 
 const ipv4ToBigInt = (ip: string): bigint | null => {
