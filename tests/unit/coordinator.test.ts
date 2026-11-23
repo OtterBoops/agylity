@@ -11,7 +11,7 @@ import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { ConnectRpcQuotaClient, extractCliJsonPayload } from '../../src/sentry/client.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import { createNotifier } from '../../src/notify/factory.js';
-import type { InfoNotice } from '../../src/notify/types.js';
+import type { DispatchStatusUpdate, InfoNotice } from '../../src/notify/types.js';
 import {
   assertRunnerGitCredentials,
   buildContinuationBranchName,
@@ -529,7 +529,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(invocations[5]?.file, 'agy');
         assert.deepEqual(invocations[5]?.args, [
           '-p',
-          'Implement swarm poller unit tests\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
+          'Implement swarm poller unit tests\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
           '--mode',
           'auto',
           '--dangerously-skip-permissions',
@@ -2012,6 +2012,106 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         assert.equal(later?.applied, false);
         assert.equal(queue.getTask(task.id)?.status, 'no_changes');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('persists issueUrls on a completed run, forwards them to the notifier, and closes the task to further patches', async () => {
+      const { dir, cleanup } = makeTempDir('orch_issues_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const updates: DispatchStatusUpdate[] = [];
+        const coordinator = new Coordinator({
+          configStore: new ConfigStore(db),
+          notifier: {
+            channelName: 'test',
+            initialize: async () => {},
+            notifyQuotaAlert: async () => ({ delivered: true, results: {} }),
+            notifyDispatchStatus: async (update) => {
+              updates.push(update);
+            },
+            notifyInfo: async () => {},
+            shutdown: async () => {},
+          },
+        });
+
+        const queue = coordinator.queue;
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'Review the discord bot modals and file the follow-up issues',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-1' });
+
+        const issueUrls = ['https://github.com/o/r/issues/14', 'https://github.com/o/r/issues/15'];
+        const result = await coordinator.reportTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          issueUrls,
+        });
+        assert.equal(result?.applied, true);
+
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.status, 'completed');
+        assert.deepEqual(stored?.issueUrls, issueUrls);
+        // Issues are the deliverable of their own: no branch PR accompanies them.
+        assert.equal(stored?.prUrl, undefined);
+
+        const completedUpdate = updates.find((update) => update.status === 'completed');
+        assert.ok(completedUpdate, 'the completion notice must reach the notifier');
+        assert.deepEqual(completedUpdate.issueUrls, issueUrls);
+
+        // Terminal means closed: a later patch must be refused, exactly as for no_changes.
+        const later = queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+        });
+        assert.equal(later?.applied, false);
+        const reread = queue.getTask(task.id);
+        assert.equal(reread?.status, 'completed');
+        assert.deepEqual(reread?.issueUrls, issueUrls);
+        assert.equal(reread?.prUrl, undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('keeps stored issueUrls when a later non-terminal patch omits the field', () => {
+      const { dir, cleanup } = makeTempDir('orch_issues_retain_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'File the follow-up issues while the run continues',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-1' });
+
+        const issueUrls = ['https://github.com/o/r/issues/14'];
+        const first = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          runnerId: 'runner-1',
+          issueUrls,
+        });
+        assert.equal(first?.applied, true);
+        assert.deepEqual(queue.getTask(task.id)?.issueUrls, issueUrls);
+
+        // A later report that says nothing about issues must not clear the ones already filed.
+        const second = queue.updateTaskStatus(task.id, {
+          status: 'executing',
+          runnerId: 'runner-1',
+          branchName: 'agy/task-abc-file-follow-ups',
+        });
+        assert.equal(second?.applied, true);
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.status, 'executing');
+        assert.deepEqual(stored?.issueUrls, issueUrls);
       } finally {
         db.close();
         cleanup();

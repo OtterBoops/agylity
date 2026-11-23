@@ -200,6 +200,7 @@ export interface SwarmTask {
   branchName?: string;
   autoCreatePr?: boolean;
   prUrl?: string;
+  issueUrls?: string[];
   output?: string;
   error?: string;
   durationMs: number;

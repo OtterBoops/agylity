@@ -14,6 +14,7 @@ export interface DispatchStatusUpdate {
   repositoryPath?: string;
   prompt?: string;
   branchName?: string;
+  issueUrls?: string[];
   output?: string;
   error?: string;
   durationMs?: number;

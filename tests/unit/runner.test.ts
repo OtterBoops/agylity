@@ -1421,12 +1421,168 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(exec.has('-D'), true);
   });
 
-  it('never applies the autonomous policy to an immediate dispatch', async () => {
+  it('applies the policy to an immediate dispatch as well', async () => {
     const { result, exec } = await runWithWorkspace({ prPolicy: 'none' });
 
     assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.match(String(result.output), /PR policy is 'none'/);
+    assert.equal(exec.pushed(), false);
+    assert.equal(exec.has('-D'), true);
+  });
+
+  it('gates an immediate dispatch under docs_only when it touched code', async () => {
+    const { result, exec } = await runWithWorkspace(
+      { prPolicy: 'docs_only' },
+      { diffNameOnly: () => 'src/web/server.ts\n' }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.equal(exec.pushed(), false);
+    assert.equal(exec.has('-D'), true);
+  });
+
+  const runZeroDiffWithGh = async (onGh: (args: readonly string[]) => string) => {
+    const { dir, cleanup } = makeTempDir('runner_issue_deliverable_');
+    const { task, db } = enqueueTask(dir, {
+      repositoryName: 'OtterBoops/agylity',
+      prPolicy: 'issues_only',
+    });
+    const { spawnFn } = recordSpawn((call) => finishChild(call.child, 0, 'analysis done\n'));
+    const exec = createWorkspaceExecFile({ status: () => '', revList: () => '0\n', onGh });
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task);
+      return { result, exec };
+    } finally {
+      db.close();
+      cleanup();
+    }
+  };
+
+  it('reports filed GitHub issues as the deliverable of a zero-diff run', async () => {
+    const duringRun = new Date(Date.now() + 60_000).toISOString();
+    const { result, exec } = await runZeroDiffWithGh((args) => {
+      if (args[0] !== 'issue') return '';
+      return JSON.stringify([
+        {
+          number: 14,
+          url: 'https://github.com/OtterBoops/agylity/issues/14',
+          body: 'Root cause found.\n\n---\n*Dispatched via Agylity (backlog) — please review carefully.*',
+          createdAt: duringRun,
+        },
+        {
+          number: 15,
+          url: 'https://github.com/OtterBoops/agylity/issues/15',
+          body: 'Filed by a human while the run was in flight.',
+          createdAt: duringRun,
+        },
+        {
+          number: 9,
+          url: 'https://github.com/OtterBoops/agylity/issues/9',
+          body: '*Dispatched via Agylity (routine) — please review carefully.*',
+          createdAt: '2020-01-01T00:00:00.000Z',
+        },
+      ]);
+    });
+
+    assert.equal(result.success, true);
     assert.equal(result.noChanges, undefined);
-    assert.equal(exec.pushed(), true);
+    assert.deepEqual(result.issueUrls, ['https://github.com/OtterBoops/agylity/issues/14']);
+    assert.match(String(result.output), /\[Deliverable\] Filed GitHub issues/);
+    assert.equal(exec.pushed(), false);
+  });
+
+  it('keeps a zero-diff run as no_changes when the window holds no Agylity issues', async () => {
+    const { result } = await runZeroDiffWithGh((args) =>
+      args[0] === 'issue'
+        ? JSON.stringify([
+            {
+              number: 15,
+              url: 'https://github.com/OtterBoops/agylity/issues/15',
+              body: 'Filed by a human during the run.',
+              createdAt: new Date(Date.now() + 60_000).toISOString(),
+            },
+          ])
+        : ''
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.equal(result.issueUrls, undefined);
+  });
+
+  it('treats an unreadable GitHub issue listing as no deliverable rather than a failed run', async () => {
+    const { result } = await runZeroDiffWithGh(() => {
+      throw new Error('gh: not authenticated');
+    });
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.equal(result.issueUrls, undefined);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Policy directives are part of every prompt                                  */
+/* -------------------------------------------------------------------------- */
+
+describe('Runner: policy directives', () => {
+  const promptForPolicy = async (prPolicy: string): Promise<string> => {
+    const { dir, cleanup } = makeTempDir('runner_policy_prompt_');
+    const { task, db } = enqueueTask(dir, { prPolicy });
+    const { spawnFn, calls } = recordSpawn((call) => finishChild(call.child, 0, 'done\n'));
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+    });
+
+    try {
+      await executor.execute(task);
+      return promptOf(calls[0]);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  };
+
+  it('asks the model to implement the work under the all policy', async () => {
+    const prompt = await promptForPolicy('all');
+
+    assert.match(prompt, /\[Policy: Implement the requested changes directly in the working tree/);
+    assert.doesNotMatch(prompt, /Do NOT modify repository files/);
+  });
+
+  it('restricts the working tree to documentation under docs_only', async () => {
+    const prompt = await promptForPolicy('docs_only');
+
+    assert.match(prompt, /\[Policy: Documentation only/);
+    assert.match(prompt, /do NOT modify source code/);
+  });
+
+  it('forbids file edits and PRs under issues_only', async () => {
+    const prompt = await promptForPolicy('issues_only');
+
+    assert.match(prompt, /\[Policy: Issues Only/);
+    assert.match(prompt, /GitHub Issues only/);
+  });
+
+  it('asks for read-only analysis under none', async () => {
+    const prompt = await promptForPolicy('none');
+
+    assert.match(prompt, /\[Policy: Read-only analysis/);
+    assert.match(prompt, /do NOT modify repository files/);
   });
 });
 

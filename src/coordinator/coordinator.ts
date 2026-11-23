@@ -1489,6 +1489,7 @@ export class Coordinator {
       repositoryPath: updated.repositoryPath,
       prompt: updated.prompt,
       branchName: updated.branchName,
+      issueUrls: updated.issueUrls,
       model: updated.model,
       effort: modelSupportsEffort(updated.model) ? updated.effort : undefined,
       output: updated.output,

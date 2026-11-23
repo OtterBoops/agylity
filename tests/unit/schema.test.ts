@@ -28,7 +28,7 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
         version: number;
       }>
     ).map((row) => row.version);
-    assert.deepEqual(versions, [1, 2, 3, 4, 5], 'every migration must be applied, in order');
+    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6], 'every migration must be applied, in order');
 
     // pr_policy is a NOT NULL sentinel column on all three tiers.
     for (const table of ['swarm_tasks', 'backlog_tasks', 'routine_tasks']) {
@@ -316,7 +316,7 @@ test('re-running migrations on a v5 database is a no-op', () => {
   }
 });
 
-test('opening AppDatabase alone applies v1..v5 and creates the coordinator and sentry tables', () => {
+test('opening AppDatabase alone applies v1..v6 and creates the coordinator and sentry tables', () => {
   const { dir, cleanup } = makeTempDir('schema_db_owner_');
   const db = new AppDatabase(path.join(dir, 'test.db'));
   try {
@@ -327,7 +327,11 @@ test('opening AppDatabase alone applies v1..v5 and creates the coordinator and s
         version: number;
       }>
     ).map((row) => Number(row.version));
-    assert.deepEqual(versions, [1, 2, 3, 4, 5], 'AppDatabase must take the database to v5 on open');
+    assert.deepEqual(
+      versions,
+      [1, 2, 3, 4, 5, 6],
+      'AppDatabase must take the database to v6 on open'
+    );
 
     const tables = new Set(
       (

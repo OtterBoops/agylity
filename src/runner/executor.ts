@@ -55,6 +55,8 @@ export interface TaskExecutionResult {
   noChanges?: boolean;
   branchName?: string;
   prUrl?: string;
+  /** GitHub issues filed by the run, which are the deliverable when the branch stayed empty. */
+  issueUrls?: string[];
   output: string;
   error?: string;
   durationMs: number;
@@ -71,6 +73,30 @@ export interface TaskExecutionTelemetry {
   inputTokens?: number;
   outputTokens?: number;
 }
+
+// Every policy states its own directive: an empty suffix would let the model choose a default that
+// no gate then enforces, and the policy now binds every tier.
+const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
+  all: '\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]',
+  docs_only:
+    '\n\n[Policy: Documentation only — modify documentation files in the working tree only; do NOT modify source code or other non-documentation files.]',
+  issues_only:
+    '\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]',
+  none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
+};
+
+const GITHUB_SLUG_FROM_URL_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
+const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
+// The footer the prompt asks the agent to append, which marks an issue as this fleet's deliverable.
+const AGYLITY_FOOTER_MARKER = 'Dispatched via Agylity';
+const ISSUE_DELIVERABLE_LIMIT = 50;
+const ISSUE_DELIVERABLE_MAX_URLS = 10;
+
+const parseGithubSlug = (value: string | undefined): string | undefined => {
+  if (!value) return undefined;
+  const match = GITHUB_SLUG_FROM_URL_RE.exec(value.trim());
+  return match ? `${match[1]}/${match[2]}` : undefined;
+};
 
 const finiteNumber = (value: unknown): number | undefined => {
   if (value === null || value === undefined || value === '') return undefined;
@@ -756,10 +782,7 @@ export class TaskExecutor {
     tierLabel: string,
     effort: CascadeHop['effort'] | undefined
   ): { prompt: string; policySuffix: string; attributionSuffix: string } {
-    const policySuffix =
-      prPolicy === 'issues_only'
-        ? `\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]`
-        : '';
+    const policySuffix = PR_POLICY_DIRECTIVES[prPolicy];
     const effortNote = effort ? ` (${effort} reasoning)` : '';
     const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
     return {
@@ -1075,10 +1098,11 @@ export class TaskExecutor {
   }
 
   /**
-   * Applies the autonomous PR policy to a finished branch.
+   * Applies the PR policy to a finished branch.
    *
    * Returns the terminal result when the policy suppresses the branch, or null when the branch may
-   * be pushed. An immediate dispatch is a human asking for exactly this work, so it is never policed.
+   * be pushed. Every tier is policed: a human dispatch is a request for this work, not permission to
+   * bypass the configured policy.
    */
   private async applyPrPolicy(
     task: SwarmTask,
@@ -1092,7 +1116,6 @@ export class TaskExecutor {
     }
   ): Promise<TaskExecutionResult | null> {
     const { branchName, baseBranch, output, prPolicy, telemetry, startMs } = context;
-    if (task.tier === 'immediate') return null;
 
     const suppress = async (detail: string): Promise<TaskExecutionResult> => {
       await this.discardBranch(task.repositoryPath, baseBranch, branchName);
@@ -1159,6 +1182,105 @@ export class TaskExecutor {
     return suppress(
       `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only', so only documentation changes ship. Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`
     );
+  }
+
+  /** Resolves the task repository's GitHub owner/repo slug from configuration or its origin remote. */
+  private async resolveGithubRepoSlug(task: SwarmTask): Promise<string | undefined> {
+    const fromCloneUrl = parseGithubSlug(task.cloneUrl);
+    if (fromCloneUrl) return fromCloneUrl;
+    const configuredName = task.repositoryName?.trim();
+    if (configuredName && OWNER_REPO_SLUG_RE.test(configuredName)) return configuredName;
+    try {
+      const { stdout } = await this.execFileFn(
+        'git',
+        ['-C', task.repositoryPath, 'remote', 'get-url', 'origin'],
+        { timeout: 5000 }
+      );
+      return parseGithubSlug(stdout);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Finds the GitHub issues this run filed, which are the deliverable of a zero-diff run.
+   *
+   * The listing is ground truth from the GitHub API: issues created at or after the run started that
+   * carry the Agylity footer. A URL the agent merely mentions in prose is not evidence it created
+   * anything, so prose is never scraped.
+   */
+  private async collectIssueDeliverables(task: SwarmTask, sinceMs: number): Promise<string[]> {
+    const slug = await this.resolveGithubRepoSlug(task);
+    if (!slug) {
+      this.log.warn(
+        'Cannot resolve a GitHub owner/repo slug for %s; no issue deliverable can be reported',
+        task.id
+      );
+      return [];
+    }
+
+    let stdout = '';
+    try {
+      const listing = await this.execFileFn(
+        'gh',
+        [
+          'issue',
+          'list',
+          '--repo',
+          slug,
+          '--state',
+          'all',
+          '--limit',
+          String(ISSUE_DELIVERABLE_LIMIT),
+          '--json',
+          'number,url,body,createdAt',
+        ],
+        {
+          cwd: task.repositoryPath,
+          timeout: 20000,
+          env: { ...process.env, GITHUB_TOKEN: process.env.GITHUB_TOKEN?.trim() || '' },
+        }
+      );
+      stdout = listing.stdout || '';
+    } catch (listErr: unknown) {
+      this.log.warn(
+        'Could not query GitHub issues for %s: %s',
+        slug,
+        listErr instanceof Error ? listErr.message : String(listErr)
+      );
+      return [];
+    }
+
+    let parsed: unknown = [];
+    try {
+      parsed = stdout.trim() ? JSON.parse(stdout) : [];
+    } catch (parseErr: unknown) {
+      this.log.warn(
+        'Could not parse the GitHub issue listing for %s: %s',
+        slug,
+        parseErr instanceof Error ? parseErr.message : String(parseErr)
+      );
+      return [];
+    }
+    if (!Array.isArray(parsed)) return [];
+
+    const created: Array<{ url: string; createdAt: number }> = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as { url?: unknown; body?: unknown; createdAt?: unknown };
+      const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+      const body = typeof entry.body === 'string' ? entry.body : '';
+      const createdAt = typeof entry.createdAt === 'string' ? Date.parse(entry.createdAt) : NaN;
+      if (!url || !Number.isFinite(createdAt) || createdAt < sinceMs) continue;
+      if (!body.includes(AGYLITY_FOOTER_MARKER)) continue;
+      if (created.some((existing) => existing.url === url)) continue;
+      created.push({ url, createdAt });
+    }
+
+    return created
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(0, ISSUE_DELIVERABLE_MAX_URLS)
+      .map((entry) => entry.url);
   }
 
   public async execute(
@@ -1231,6 +1353,23 @@ export class TaskExecutor {
       const commitsProduced = await this.commitWorkingTree(task, branchName, baseBranch);
       if (!commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
+        const issueUrls = await this.collectIssueDeliverables(task, startMs);
+        if (issueUrls.length > 0) {
+          this.log.info(
+            'Task %s produced no commits but filed %d GitHub issue(s); reporting them as the deliverable',
+            task.id,
+            issueUrls.length
+          );
+          return {
+            success: true,
+            branchName: undefined,
+            issueUrls,
+            output:
+              `${capturedOutput}\n\n[Deliverable] Filed GitHub issues: ${issueUrls.join(' ')}`.trim(),
+            durationMs: Date.now() - startMs,
+            ...this.telemetryFields(telemetry),
+          };
+        }
         this.log.info(
           'Zero diff produced for task %s; cleaned up local branch %s',
           task.id,

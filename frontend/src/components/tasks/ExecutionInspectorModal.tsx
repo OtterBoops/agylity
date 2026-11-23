@@ -15,6 +15,7 @@ import { dialogBackdropClickHandler } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { isActiveTaskStatus, isLiveTaskStatus, taskBadgeClass } from './badges';
+import { githubIssueLabel } from './executionRow';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -304,6 +305,27 @@ export const ExecutionInspectorContent = ({
                 <span class="text-pine-subtle">
                   {live.autoCreatePr === false ? 'Off' : '\u2014'}
                 </span>
+              )}
+            </DetailItem>
+            <DetailItem label="Issues">
+              {live.issueUrls && live.issueUrls.length > 0 ? (
+                <span class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  {live.issueUrls.map((url) => (
+                    <a
+                      key={url}
+                      href={url}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open issue ${githubIssueLabel(url)}`}
+                      class="inline-flex items-center gap-1 text-pine-iris hover:underline"
+                    >
+                      <span>{githubIssueLabel(url)}</span>
+                      <Icon icon={faExternalLinkAlt} class="size-2.5" />
+                    </a>
+                  ))}
+                </span>
+              ) : (
+                <span class="text-pine-subtle">{'\u2014'}</span>
               )}
             </DetailItem>
             <DetailItem label="PR Policy">

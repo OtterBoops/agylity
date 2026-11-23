@@ -38,3 +38,36 @@ export const formatCompactDateTime = (
   const hour12 = hours % 12 === 0 ? 12 : hours % 12;
   return `${datePart} ${pad(hour12)}:${minutes} ${suffix}`;
 };
+
+export interface IssueLink {
+  url: string;
+  label: string;
+}
+
+export interface IssueLinkSummary {
+  links: IssueLink[];
+  overflow: number;
+}
+
+const MAX_VISIBLE_ISSUE_LINKS = 3;
+
+// Issue URLs end in the issue number, so the short label is just the last path segment.
+export const githubIssueLabel = (url: string): string => {
+  const path = url.split(/[?#]/)[0] ?? '';
+  const segment = path
+    .split('/')
+    .filter((part) => part !== '')
+    .pop();
+  return segment ? `#${segment}` : url;
+};
+
+// Rows and cards stay one line tall: three links plus a count for the rest.
+export const summarizeIssueLinks = (urls: readonly string[] | undefined): IssueLinkSummary => {
+  const list = urls ?? [];
+  return {
+    links: list
+      .slice(0, MAX_VISIBLE_ISSUE_LINKS)
+      .map((url) => ({ url, label: githubIssueLabel(url) })),
+    overflow: Math.max(0, list.length - MAX_VISIBLE_ISSUE_LINKS),
+  };
+};

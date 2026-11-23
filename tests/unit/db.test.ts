@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { DatabaseSync } from 'node:sqlite';
+import { applyMigrations } from '../../src/storage/migrations.js';
+import { TaskQueue } from '../../src/coordinator/index.js';
 import {
   AppDatabase,
   encryptSecret,
@@ -158,6 +161,106 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
     const pragma = busyDb.getRawDb().prepare('PRAGMA busy_timeout;').get() as { timeout: number };
     assert.equal(pragma.timeout, 2500);
     busyDb.close();
+  });
+});
+
+describe('Schema migration v6: swarm_tasks issue deliverables', () => {
+  const issueColumn = (raw: DatabaseSync) =>
+    (
+      raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{
+        name?: string;
+        notnull?: number;
+        dflt_value?: string | null;
+      }>
+    ).find((column) => column.name === 'issue_urls_json');
+
+  const appliedVersions = (raw: DatabaseSync): number[] =>
+    (
+      raw.prepare('SELECT version FROM schema_migrations ORDER BY version ASC').all() as Array<{
+        version?: number;
+      }>
+    ).map((row) => Number(row.version));
+
+  it('reaches version 6 with issue_urls_json defaulting to an empty array on an enqueued task', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const raw = db.getRawDb();
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6]);
+
+      const column = issueColumn(raw);
+      assert.ok(column, 'swarm_tasks.issue_urls_json must exist at head');
+      assert.equal(column.notnull, 1);
+      assert.equal(column.dflt_value, "'[]'");
+
+      // A run that filed no issues must read back as absent, not as the literal '[]'.
+      const queue = new TaskQueue(db);
+      const task = queue.enqueue({
+        repositoryName: 'agylity',
+        prompt: 'Enqueue without issue deliverables',
+        cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+      });
+      assert.equal(task.issueUrls, undefined);
+
+      const row = raw
+        .prepare('SELECT issue_urls_json FROM swarm_tasks WHERE id = ?')
+        .get(task.id) as { issue_urls_json?: string } | undefined;
+      assert.equal(row?.issue_urls_json, '[]');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('treats a second applyMigrations run on a head database as a no-op', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const raw = db.getRawDb();
+      const before = appliedVersions(raw);
+
+      assert.doesNotThrow(() => applyMigrations(raw));
+
+      assert.deepEqual(appliedVersions(raw), before);
+      assert.equal(Math.max(...appliedVersions(raw)), 6);
+      assert.ok(issueColumn(raw), 'the re-run must leave the column in place');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('upgrades a v5 database by adding issue_urls_json and backfilling existing tasks', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const raw = db.getRawDb();
+      const queue = new TaskQueue(db);
+      const task = queue.enqueue({
+        repositoryName: 'agylity',
+        prompt: 'Task written before the issue column existed',
+        cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+      });
+
+      // Rewind to the v5 shape rather than inventing a fixture: drop the v6 column and its record.
+      raw.exec('ALTER TABLE swarm_tasks DROP COLUMN issue_urls_json');
+      raw.prepare('DELETE FROM schema_migrations WHERE version = 6').run();
+      assert.equal(issueColumn(raw), undefined);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5]);
+
+      applyMigrations(raw);
+
+      const column = issueColumn(raw);
+      assert.ok(column, 'the v6 migration must restore the column');
+      assert.equal(column.dflt_value, "'[]'");
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6]);
+
+      const row = raw
+        .prepare('SELECT issue_urls_json FROM swarm_tasks WHERE id = ?')
+        .get(task.id) as { issue_urls_json?: string } | undefined;
+      assert.equal(row?.issue_urls_json, '[]');
+      assert.equal(queue.getTask(task.id)?.issueUrls, undefined);
+    } finally {
+      db.close();
+    }
   });
 });
 

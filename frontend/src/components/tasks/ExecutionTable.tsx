@@ -4,7 +4,7 @@ import { formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { TableHeadRow, TableRow, TableShell, TH } from '../TableShell';
 import { ACTIVE_TASK_STATUSES } from './badges';
-import { formatCompactDateTime, statusDotTextClass } from './executionRow';
+import { formatCompactDateTime, statusDotTextClass, summarizeIssueLinks } from './executionRow';
 import { statusLabel } from './statusLabels';
 import { moveRowIndex, resolveRowKey } from './TaskKeyboardNav';
 
@@ -140,6 +140,7 @@ export const ExecutionTable = ({
             tasks.map((task, index) => {
               const isActive = task.id === activeTaskId;
               const tabbable = isActive || (activeTaskId === null && index === 0);
+              const issues = summarizeIssueLinks(task.issueUrls);
               return (
                 <TableRow
                   key={task.id}
@@ -218,6 +219,28 @@ export const ExecutionTable = ({
                           >
                             <Icon icon={faExternalLinkAlt} class="size-4" />
                           </a>
+                        )}
+                        {issues.links.map((issue) => (
+                          <a
+                            key={issue.url}
+                            href={issue.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                            aria-label={`Open issue ${issue.label}`}
+                            title={`Open issue ${issue.label}`}
+                            class="inline-flex shrink-0 items-center font-mono text-xs text-pine-iris hover:text-pine-foam"
+                          >
+                            {issue.label}
+                          </a>
+                        ))}
+                        {issues.overflow > 0 && (
+                          <span
+                            class="shrink-0 font-mono text-xs text-pine-subtle"
+                            title={`${issues.overflow} more issue${issues.overflow === 1 ? '' : 's'}`}
+                          >
+                            +{issues.overflow}
+                          </span>
                         )}
                       </span>
                     )}

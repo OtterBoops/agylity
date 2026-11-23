@@ -439,6 +439,7 @@ export class RemoteSwarmRunner {
         runnerId: this.runnerId,
         branchName: result.branchName,
         prUrl: result.prUrl,
+        issueUrls: result.issueUrls,
         output: result.output,
         error: result.error,
         durationMs: result.durationMs,

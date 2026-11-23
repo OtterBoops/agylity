@@ -57,6 +57,7 @@ export interface SwarmTask {
   pushBranch: boolean;
   autoCreatePr: boolean;
   prUrl?: string;
+  issueUrls?: string[];
   expiresAt?: string;
   verifyCommand?: string;
   status: TaskStatus;
@@ -113,6 +114,7 @@ export interface TaskStatusPatch {
   runnerId?: string;
   branchName?: string;
   prUrl?: string;
+  issueUrls?: string[];
   output?: string;
   error?: string;
   durationMs?: number;
@@ -276,6 +278,20 @@ const coerceTrimmedString = (value: unknown, fallback: string): string => {
   if (typeof value !== 'string') return fallback;
   const trimmed = value.trim();
   return trimmed === '' ? fallback : trimmed;
+};
+
+const parseIssueUrls = (raw: unknown): string[] | undefined => {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const urls = parsed.filter(
+      (entry): entry is string => typeof entry === 'string' && entry !== ''
+    );
+    return urls.length > 0 ? urls : undefined;
+  } catch {
+    return undefined;
+  }
 };
 
 const parseCycleMap = (raw: unknown): Record<string, string> => {
@@ -1026,6 +1042,13 @@ export class TaskQueue {
 
     const branchName = patch.branchName ?? existing.branchName ?? null;
     const prUrl = patch.prUrl ?? existing.prUrl ?? null;
+    // The column is NOT NULL DEFAULT '[]', so "no issues" is an empty array, never NULL.
+    const issueUrlsJson =
+      patch.issueUrls !== undefined
+        ? JSON.stringify(patch.issueUrls)
+        : existing.issueUrls
+          ? JSON.stringify(existing.issueUrls)
+          : '[]';
     const output = patch.output !== undefined ? capOutput(patch.output) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
     const runnerId = patch.runnerId ?? existing.runnerId ?? null;
@@ -1048,6 +1071,7 @@ export class TaskQueue {
              runner_id = ?,
              branch_name = ?,
              pr_url = ?,
+             issue_urls_json = ?,
              output = ?,
              error = ?,
              duration_ms = ?,
@@ -1066,6 +1090,7 @@ export class TaskQueue {
         runnerId,
         branchName,
         prUrl,
+        issueUrlsJson,
         output,
         error,
         durationMs,
@@ -1360,6 +1385,7 @@ export class TaskQueue {
       pushBranch: row.push_branch === 1,
       autoCreatePr: row.auto_create_pr !== 0,
       prUrl: row.pr_url ? String(row.pr_url) : undefined,
+      issueUrls: parseIssueUrls(row.issue_urls_json),
       expiresAt: row.expires_at ? String(row.expires_at) : undefined,
       verifyCommand: row.verify_command ? String(row.verify_command) : undefined,
       status: (row.status as TaskStatus) || 'queued',

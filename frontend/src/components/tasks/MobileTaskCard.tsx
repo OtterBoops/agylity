@@ -1,7 +1,7 @@
 import type { SwarmTask } from '../../types';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { ACTIVE_TASK_STATUSES } from './badges';
-import { formatCompactDateTime, statusDotTextClass } from './executionRow';
+import { formatCompactDateTime, statusDotTextClass, summarizeIssueLinks } from './executionRow';
 import { statusLabel } from './statusLabels';
 
 interface MobileTaskCardProps {
@@ -29,6 +29,8 @@ export const MobileTaskCard = ({
 }: MobileTaskCardProps) => {
   const [timeFormat] = useTimeFormat();
   const stoppable = ACTIVE_TASK_STATUSES.has(task.status);
+  // Anchors cannot nest inside the card's open-task button, so issues live in the action row.
+  const issues = summarizeIssueLinks(task.issueUrls);
 
   return (
     <article
@@ -82,7 +84,7 @@ export const MobileTaskCard = ({
         </button>
       </div>
 
-      <div class="mt-2.5 flex items-center gap-2">
+      <div class="mt-2.5 flex flex-wrap items-center gap-2">
         {stoppable ? (
           <button
             type="button"
@@ -101,6 +103,31 @@ export const MobileTaskCard = ({
           >
             Retry
           </button>
+        )}
+        {issues.links.length > 0 && (
+          <span class="flex min-w-0 flex-wrap items-center gap-1 font-mono text-xs">
+            <span class="text-pine-subtle">Issues</span>
+            {issues.links.map((issue) => (
+              <a
+                key={issue.url}
+                href={issue.url}
+                target="_blank"
+                rel="noreferrer"
+                aria-label={`Open issue ${issue.label}`}
+                class="inline-flex min-h-11 items-center px-2 text-pine-iris hover:bg-pine-overlay hover:text-pine-foam"
+              >
+                {issue.label}
+              </a>
+            ))}
+            {issues.overflow > 0 && (
+              <span
+                class="text-pine-subtle"
+                title={`${issues.overflow} more issue${issues.overflow === 1 ? '' : 's'}`}
+              >
+                +{issues.overflow}
+              </span>
+            )}
+          </span>
         )}
       </div>
     </article>
