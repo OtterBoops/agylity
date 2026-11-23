@@ -142,6 +142,7 @@ export const ExecutionInspectorContent = ({
         })
         .catch((err: unknown) => {
           if (cancelled) return;
+          console.error('[agylity] live refresh failed', err);
           setError(`Live refresh failed: ${err instanceof Error ? err.message : String(err)}`);
         });
     }, POLL_INTERVAL_MS);

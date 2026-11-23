@@ -2,6 +2,7 @@ import { faCopy } from '@fortawesome/free-solid-svg-icons';
 import { useState } from 'preact/hooks';
 import type { RunnerRegistrationTokenResult } from '../types';
 import { createRegistrationToken } from '../api';
+import { pushErrorToast } from '../state/toastStore';
 import { Icon } from './Icon';
 
 interface RunnerRegistrationPanelProps {
@@ -14,7 +15,6 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
   const [isGeneratingToken, setIsGeneratingToken] = useState(false);
   const [generatedReg, setGeneratedReg] = useState<RunnerRegistrationTokenResult | null>(null);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const inputClass =
     'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris';
@@ -22,7 +22,6 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
   const handleGenerateRegistrationToken = async (e: Event) => {
     e.preventDefault();
     setIsGeneratingToken(true);
-    setError(null);
     try {
       const labels = runnerLabelsInput
         .split(',')
@@ -34,7 +33,10 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
       });
       setGeneratedReg(res);
     } catch (err: any) {
-      setError(err?.message || 'Failed to generate runner registration token');
+      pushErrorToast(
+        'Could not generate registration token',
+        err?.message || 'Failed to generate runner registration token'
+      );
     } finally {
       setIsGeneratingToken(false);
     }
@@ -92,15 +94,6 @@ export const RunnerRegistrationPanel = ({ coordinatorOrigin }: RunnerRegistratio
         it on first boot for a unique persistent credential stored in{' '}
         <code class="font-mono text-pine-foam">runner.json</code>.
       </p>
-
-      {error && (
-        <div
-          role="alert"
-          class="mt-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
-        >
-          {error}
-        </div>
-      )}
 
       <form
         onSubmit={handleGenerateRegistrationToken}

@@ -1,6 +1,7 @@
 import { faPause, faPlay, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useState } from 'preact/hooks';
 import { checkHealth } from '../api';
+import { pushErrorToast } from '../state/toastStore';
 import type { SwarmRunnerRecord } from '../types';
 import { Icon } from './Icon';
 import { runnerStatusBadgeClass } from '../utils/status';
@@ -18,7 +19,6 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
   const [coordinatorAgyVersion, setCoordinatorAgyVersion] = useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
   const [mutatingId, setMutatingId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,11 +34,13 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
 
   const handleToggle = async (r: SwarmRunnerRecord) => {
     setMutatingId(r.runnerId);
-    setError(null);
     try {
       await onToggleEnabled(r);
     } catch (err: any) {
-      setError(err?.message || 'Failed to update runner status');
+      pushErrorToast(
+        'Could not update runner status',
+        err?.message || 'Failed to update runner status'
+      );
     } finally {
       setMutatingId(null);
     }
@@ -46,12 +48,11 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
 
   const handleRevoke = async (r: SwarmRunnerRecord) => {
     setMutatingId(r.runnerId);
-    setError(null);
     try {
       await onRevoke(r);
       setConfirmRevokeId(null);
     } catch (err: any) {
-      setError(err?.message || 'Failed to revoke runner');
+      pushErrorToast('Could not revoke runner', err?.message || 'Failed to revoke runner');
     } finally {
       setMutatingId(null);
     }
@@ -64,15 +65,6 @@ export const SwarmRunnersGrid = ({ runners, onToggleEnabled, onRevoke }: SwarmRu
           Registered Swarm Runners ({runners.length})
         </h3>
       </div>
-
-      {error && (
-        <div
-          role="alert"
-          class="mb-3 rounded-lg border border-pine-love/40 bg-pine-love/10 p-2.5 text-xs text-pine-love"
-        >
-          {error}
-        </div>
-      )}
 
       {runners.length === 0 ? (
         <div class="rounded-lg border border-pine-highlight bg-pine-overlay/25 p-4 text-xs text-pine-subtle">

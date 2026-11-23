@@ -95,11 +95,6 @@ export interface ConfigData {
   sources?: Record<string, 'override' | 'env' | 'default'>;
 }
 
-export interface ToastState {
-  type: 'success' | 'error';
-  message: string;
-}
-
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 export interface LogEntry {

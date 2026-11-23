@@ -1,6 +1,7 @@
 import { faLink, faRobot } from '@fortawesome/free-solid-svg-icons';
 import { useState, useEffect, useMemo } from 'preact/hooks';
-import type { ConfigData, ToastState } from '../types';
+import type { ConfigData } from '../types';
+import { pushSuccessToast, pushErrorToast } from '../state/toastStore';
 import { updateConfig, testNotification, deleteConfigOverride } from '../api';
 import { DiscordChannelForm } from '../components/DiscordChannelForm';
 import { WebhookChannelForm } from '../components/WebhookChannelForm';
@@ -11,7 +12,6 @@ import {
 } from '../components/NotificationChannelCard';
 import { NotificationActionBar } from '../components/NotificationActionBar';
 import { SettingsLayout } from '../components/SettingsLayout';
-import { StatusBanner } from '../components/StatusBanner';
 
 interface NotificationsViewProps {
   config: ConfigData;
@@ -114,7 +114,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const [webhookUrl, setWebhookUrl] = useState('');
   const [webhookSecret, setWebhookSecret] = useState('');
 
-  const [toast, setToast] = useState<ToastState | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [testingChannel, setTestingChannel] = useState<string | null>(null);
   const [testDiagnostics, setTestDiagnostics] = useState<{
@@ -231,13 +230,11 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     setWebhookPingOwner(serverWebhookPingOwner);
     setWebhookUrl('');
     setWebhookSecret('');
-    setToast(null);
   };
 
   const handleSave = async (e?: Event) => {
     if (e) e.preventDefault();
     setIsSaving(true);
-    setToast(null);
 
     const overrideDeletes: string[] = [];
     const channelsList = [...enabledChannels];
@@ -297,22 +294,23 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         await deleteConfigOverride(key);
       }
       await updateConfig(payload);
-      setToast({
-        type: 'success',
-        message:
-          channelsList.length === 0
-            ? 'Silent Sentry mode enabled (all push destinations turned off).'
-            : `Notification channels updated (${channelsList.length} active)!`,
-      });
+      if (channelsList.length === 0) {
+        pushSuccessToast('Silent Sentry mode enabled', 'All push destinations are turned off.');
+      } else {
+        pushSuccessToast(
+          'Notification channels updated',
+          `${channelsList.length} channel${channelsList.length === 1 ? '' : 's'} active.`
+        );
+      }
       setDiscordToken('');
       setWebhookUrl('');
       setWebhookSecret('');
       onSaved();
     } catch (err: any) {
-      setToast({
-        type: 'error',
-        message: err?.message || 'Failed to save configuration',
-      });
+      pushErrorToast(
+        'Could not save notification channels',
+        err?.message || 'Failed to save configuration'
+      );
     } finally {
       setIsSaving(false);
     }
@@ -320,7 +318,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
   const handleSendTest = (channel: ChannelId) => {
     setTestingChannel(channel);
-    setToast(null);
 
     const overrides: Record<string, unknown> = {};
     if (channel === 'webhook') {
@@ -360,10 +357,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
     testNotification(channel, overrides)
       .then((data) => {
-        setToast({
-          type: 'success',
-          message: data.message || `Test ${channel} notification dispatched successfully!`,
-        });
+        pushSuccessToast('Test notification sent', data.message);
         setTestDiagnostics({
           channel,
           success: true,
@@ -372,10 +366,10 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         });
       })
       .catch((err) => {
-        setToast({
-          type: 'error',
-          message: err.message || `Test ${channel} notification delivery failed.`,
-        });
+        pushErrorToast(
+          'Test notification failed',
+          err.message || 'Delivery failed or target unreachable'
+        );
         setTestDiagnostics({
           channel,
           success: false,
@@ -389,51 +383,42 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
   const handleClearWebhook = async () => {
     try {
       await deleteConfigOverride('notificationWebhookUrl');
-      setToast({
-        type: 'success',
-        message: 'Saved webhook URL override removed successfully.',
-      });
+      pushSuccessToast('Webhook URL cleared', 'Saved override removed.');
       setWebhookUrl('');
       onSaved();
     } catch (err: any) {
-      setToast({
-        type: 'error',
-        message: err?.message || 'Failed to clear webhook URL override',
-      });
+      pushErrorToast(
+        'Could not clear webhook URL',
+        err?.message || 'Failed to clear webhook URL override'
+      );
     }
   };
 
   const handleClearWebhookSecret = async () => {
     try {
       await deleteConfigOverride('webhookSecret');
-      setToast({
-        type: 'success',
-        message: 'Saved HMAC secret key override removed successfully.',
-      });
+      pushSuccessToast('Webhook secret cleared', 'Saved override removed.');
       setWebhookSecret('');
       onSaved();
     } catch (err: any) {
-      setToast({
-        type: 'error',
-        message: err?.message || 'Failed to clear HMAC secret key override',
-      });
+      pushErrorToast(
+        'Could not clear webhook secret',
+        err?.message || 'Failed to clear HMAC secret key override'
+      );
     }
   };
 
   const handleClearDiscordToken = async () => {
     try {
       await deleteConfigOverride('discordToken');
-      setToast({
-        type: 'success',
-        message: 'Saved Discord Bot Token override removed successfully.',
-      });
+      pushSuccessToast('Discord token cleared', 'Saved override removed.');
       setDiscordToken('');
       onSaved();
     } catch (err: any) {
-      setToast({
-        type: 'error',
-        message: err?.message || 'Failed to clear Discord Bot Token override',
-      });
+      pushErrorToast(
+        'Could not clear Discord token',
+        err?.message || 'Failed to clear Discord Bot Token override'
+      );
     }
   };
 
@@ -559,8 +544,6 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
         })}
 
         <NotificationActionBar isDirty={isDirty} isSaving={isSaving} onReset={handleReset} />
-
-        {toast && <StatusBanner status={toast} />}
       </form>
     </SettingsLayout>
   );

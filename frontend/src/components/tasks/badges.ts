@@ -1,8 +1,6 @@
 import type { RoutineEligibility, RoutineEligibilityState, RoutineTaskRecord } from '../../types';
 import { taskStatusBadgeClass, toneBadgeClass } from '../../utils/status';
 
-export type NotifyTone = 'success' | 'error';
-
 export const ACTIVE_TASK_STATUSES: ReadonlySet<string> = new Set([
   'queued',
   'claimed',

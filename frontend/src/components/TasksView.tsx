@@ -26,7 +26,8 @@ import {
 import { BulkActionBar } from './BulkActionBar';
 import { Icon } from './Icon';
 import { configStore, useStore } from '../state';
-import { ACTIVE_TASK_STATUSES, type NotifyTone } from './tasks/badges';
+import { pushErrorToast, pushToast, type ToastTone } from '../state/toastStore';
+import { ACTIVE_TASK_STATUSES } from './tasks/badges';
 import { ActiveRunCard } from './tasks/ActiveRunsBanner';
 import { BacklogCard } from './tasks/BacklogCard';
 import { ExecutionInspectorContent } from './tasks/ExecutionInspectorModal';
@@ -104,11 +105,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [syncingGithub, setSyncingGithub] = useState(false);
 
-  const [notification, setNotification] = useState<{
-    type: 'success' | 'error';
-    message: string;
-  } | null>(null);
-  const notificationTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Tracks in-flight routine toggle requests so 4s polls never flicker the switch back.
@@ -119,10 +115,8 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const githubSyncConfigured = repos.length > 0;
   const routinesEnabled = config.resolved?.routinesEnabled !== false;
 
-  const showNotification = useCallback((type: NotifyTone, message: string) => {
-    setNotification({ type, message });
-    if (notificationTimer.current) clearTimeout(notificationTimer.current);
-    notificationTimer.current = setTimeout(() => setNotification(null), 4000);
+  const showNotification = useCallback((tone: ToastTone, title: string, message?: string) => {
+    pushToast({ tone, title, message });
   }, []);
 
   const markLoading = useCallback((taskId: string) => {
@@ -139,7 +133,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
   useEffect(
     () => () => {
-      if (notificationTimer.current) clearTimeout(notificationTimer.current);
       if (abortConfirmTimer.current) clearTimeout(abortConfirmTimer.current);
       if (highlightTimer.current) clearTimeout(highlightTimer.current);
     },
@@ -155,6 +148,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
         setExecutionsInitialLoaded(true);
       })
       .catch((err) => {
+        console.error('[agylity] could not load executions', err);
         setLoadError(err?.message || String(err));
         setExecutionsInitialLoaded(true);
       });
@@ -165,6 +159,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       setBacklogTasks(await getBacklogTasks());
       setLoadError(null);
     } catch (err: any) {
+      console.error('[agylity] could not load backlog', err);
       setLoadError(err?.message || String(err));
     } finally {
       setBacklogInitialLoaded(true);
@@ -182,6 +177,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       );
       setLoadError(null);
     } catch (err: any) {
+      console.error('[agylity] could not load routines', err);
       setLoadError(err?.message || String(err));
     } finally {
       setRoutinesInitialLoaded(true);
@@ -443,16 +439,25 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       const res = await syncGithubBacklog();
       await loadBacklog();
       const canceled = res.canceledCount ? `, ${res.canceledCount} closed upstream` : '';
-      const failureDetail = res.failures?.length
-        ? res.failures.map((failure) => `${failure.repositoryId}: ${failure.reason}`).join('; ')
-        : res.failedRepos?.join(', ');
-      const failed = failureDetail ? ` — failed: ${failureDetail}` : '';
-      showNotification(
-        res.success ? 'success' : 'error',
-        `GitHub sync: imported ${res.importedCount} new issue(s) matching label '${res.label}'${canceled}${failed}`
-      );
+      if (res.success) {
+        pushToast({
+          tone: 'success',
+          title: `GitHub sync imported ${res.importedCount} issue(s)`,
+          message: `Label '${res.label}'${canceled}`,
+        });
+      } else {
+        const failureLines = res.failures?.length
+          ? res.failures.map((failure) => `${failure.repositoryId}: ${failure.reason}`)
+          : res.failedRepos?.length
+            ? [`Failed: ${res.failedRepos.join(', ')}`]
+            : [];
+        pushErrorToast(
+          `GitHub sync failed (${res.importedCount} imported${canceled})`,
+          failureLines.join('\n') || `Label '${res.label}'`
+        );
+      }
     } catch (err: any) {
-      showNotification('error', `GitHub sync failed: ${err?.message || String(err)}`);
+      pushErrorToast('GitHub sync failed', err?.message || String(err));
     } finally {
       setSyncingGithub(false);
     }
@@ -595,18 +600,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
   return (
     <div class="flex flex-col gap-5 2xl:gap-7">
-      {notification && (
-        <div
-          class={`fixed right-5 bottom-5 z-50 flex items-center gap-2 rounded-lg px-4 py-3 text-xs font-medium backdrop-blur-md sm:text-sm ${
-            notification.type === 'success'
-              ? 'border border-pine-foam/30 bg-pine-surface/95 text-pine-foam'
-              : 'border border-pine-love/30 bg-pine-surface/95 text-pine-love'
-          }`}
-        >
-          <span>{notification.message}</span>
-        </div>
-      )}
-
       <div class="flex flex-wrap items-center gap-2 border-b border-pine-highlight pb-4">
         <button
           type="button"

@@ -1,14 +1,13 @@
 import { useState, useEffect } from 'preact/hooks';
-import { pushErrorToast } from '../../state/toastStore';
+import { pushSuccessToast, pushErrorToast } from '../../state/toastStore';
 import { faGlobe, faNetworkWired } from '@fortawesome/free-solid-svg-icons';
-import type { ConfigData, ToastState } from '../../types';
+import type { ConfigData } from '../../types';
 import { updateConfig, deleteConfigOverride } from '../../api';
 import { Icon } from '../../components/Icon';
 import { ToggleSwitch } from '../../components/ToggleSwitch';
 import { GeneralSettingsCard } from '../../components/GeneralSettingsCard';
 import { SettingsForm } from '../../components/SettingsForm';
 import { SettingsLayout } from '../../components/SettingsLayout';
-import { StatusBanner } from '../../components/StatusBanner';
 import { SENTRY_GENERAL_FIELDS } from '../../config/fields';
 
 interface GeneralViewProps {
@@ -23,7 +22,6 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
   const serverBaseUrl = String(config.resolved?.baseUrl || '');
   const [baseUrl, setBaseUrl] = useState(serverBaseUrl);
   const [isSaving, setIsSaving] = useState(false);
-  const [toast, setToast] = useState<ToastState | null>(null);
 
   useEffect(() => {
     setBaseUrl(serverBaseUrl);
@@ -49,20 +47,22 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
     if (!isDirty) return;
 
     setIsSaving(true);
-    setToast(null);
 
     const value = baseUrl.trim().replace(/\/+$/, '');
     try {
       if (value === '' && config.overrides?.baseUrl !== undefined) {
         await deleteConfigOverride('baseUrl');
-        setToast({ type: 'success', message: 'Base URL override cleared.' });
+        pushSuccessToast('Base URL override cleared');
       } else {
         await updateConfig({ baseUrl: value });
-        setToast({ type: 'success', message: 'Instance Base URL saved.' });
+        pushSuccessToast('Instance Base URL saved');
       }
       onChanged();
     } catch (err: any) {
-      setToast({ type: 'error', message: err?.message || 'Failed to save Instance Base URL' });
+      pushErrorToast(
+        'Could not save Instance Base URL',
+        err?.message || 'Failed to save Instance Base URL'
+      );
     } finally {
       setIsSaving(false);
     }
@@ -122,8 +122,6 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
             Trailing slashes are stripped. Must be a full origin including scheme and port.
           </span>
         </div>
-
-        {toast && <StatusBanner status={toast} />}
       </form>
 
       <GeneralSettingsCard />
