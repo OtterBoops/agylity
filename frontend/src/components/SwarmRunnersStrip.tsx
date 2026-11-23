@@ -44,21 +44,21 @@ export const SwarmRunnersStrip = ({
 
   return (
     <TableShell>
-      <table class="w-full table-fixed text-left">
+      <table class="w-full min-w-[620px] table-fixed text-left">
         <colgroup>
-          <col class="w-[28%]" />
-          <col class="w-[12%]" />
-          <col class="w-[14%]" />
+          <col class="w-[26%]" />
+          <col class="w-[13%]" />
+          <col class="w-[19%]" />
+          <col class="w-[20%]" />
           <col class="w-[22%]" />
-          <col class="w-[24%]" />
         </colgroup>
         <thead>
           <TableHeadRow>
-            <TH>Runner</TH>
-            <TH>Status</TH>
-            <TH>Active task</TH>
-            <TH>Host</TH>
-            <TH>Last seen</TH>
+            <TH class="whitespace-nowrap">Runner</TH>
+            <TH class="whitespace-nowrap">Status</TH>
+            <TH class="whitespace-nowrap">Active task</TH>
+            <TH class="whitespace-nowrap">Host</TH>
+            <TH class="whitespace-nowrap">Last seen</TH>
           </TableHeadRow>
         </thead>
         <tbody>

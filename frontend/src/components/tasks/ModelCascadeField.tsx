@@ -80,7 +80,7 @@ const EffortPills = ({
   <div
     role="group"
     aria-label={`${name} effort`}
-    class="hidden shrink-0 items-center gap-0.5 rounded-md border border-pine-highlight bg-pine-base/40 p-0.5 sm:flex"
+    class="flex shrink-0 flex-wrap items-center gap-0.5 rounded-md border border-pine-highlight bg-pine-base/40 p-0.5"
   >
     {efforts.map((effort) => {
       const active = effort === value;
@@ -101,36 +101,8 @@ const EffortPills = ({
   </div>
 );
 
-const EffortCycleBadge = ({
-  name,
-  efforts,
-  value,
-  onChange,
-}: {
-  name: string;
-  efforts: ReasoningEffort[];
-  value: ReasoningEffort;
-  onChange: (next: ReasoningEffort) => void;
-}) => {
-  const next = efforts[(efforts.indexOf(value) + 1) % efforts.length];
-  return (
-    <button
-      type="button"
-      onClick={() => onChange(next)}
-      aria-label={`${name} effort ${labelFor(value)}. Set to ${labelFor(next)}`}
-      title={`Effort ${labelFor(value)} — tap for ${labelFor(next)}`}
-      class="flex min-h-9 min-w-9 shrink-0 cursor-pointer items-center justify-center rounded-md border border-pine-iris/40 bg-pine-iris/15 font-mono text-xs font-bold text-pine-iris transition-colors hover:border-pine-iris focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:hidden"
-    >
-      {EFFORT_CODES[value] ?? value}
-    </button>
-  );
-};
-
 const EffortFixed = ({ effort }: { effort: ReasoningEffort }) => (
-  <span class={staticEffortClass}>
-    <span class="sm:hidden">{EFFORT_CODES[effort] ?? effort}</span>
-    <span class="hidden sm:inline">{labelFor(effort)}</span>
-  </span>
+  <span class={staticEffortClass}>{labelFor(effort)}</span>
 );
 
 /** Dispatch walks the list until a pool clears its floor, so row order is the whole point. */
@@ -209,20 +181,12 @@ export const ModelCascadeField = ({
                     {headroom}%
                   </span>
                 )}
-                {hasChoices && (
-                  <EffortPills
-                    name={name}
-                    efforts={efforts}
-                    value={hop.effort}
-                    onChange={(effort) => setEffort(index, effort)}
-                  />
-                )}
-                <span class="flex w-full items-center gap-2 sm:w-auto">
+                <span class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap">
                   {fixed ? (
                     <EffortFixed effort={efforts[0]} />
                   ) : (
                     hasChoices && (
-                      <EffortCycleBadge
+                      <EffortPills
                         name={name}
                         efforts={efforts}
                         value={hop.effort}
