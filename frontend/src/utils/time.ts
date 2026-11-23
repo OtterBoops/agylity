@@ -48,10 +48,10 @@ export const formatDateTime = (
   if (isNaN(d.getTime())) return '';
   const fmt = options?.timeFormat ?? getTimeFormat();
   const hour12 = fmt === '12h';
-  return d.toLocaleString([], {
-    year: 'numeric',
-    month: 'numeric',
+  return d.toLocaleString('en-GB', {
     day: 'numeric',
+    month: 'short',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
