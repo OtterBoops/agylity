@@ -268,6 +268,9 @@ export const toTrimmedStringOrUndefined = (value: unknown): string | undefined =
 export const isSafetyBlockCode = (code?: string): boolean =>
   code === 'OVERAGE_PROTECTION_TRIGGERED' || code === 'TELEMETRY_UNAVAILABLE';
 
+export const dispatchHttpStatus = (code?: string): number =>
+  code === 'ORIGIN_ALREADY_ACTIVE' ? 409 : isSafetyBlockCode(code) ? 400 : 200;
+
 export const toStringArray = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : undefined;
 

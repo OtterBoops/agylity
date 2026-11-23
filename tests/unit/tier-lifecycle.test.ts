@@ -99,18 +99,62 @@ describe('Tier lifecycle: backlog origins are never stranded', () => {
     }
   });
 
-  it('settles the backlog origin when the task is cancelled through the coordinator', async () => {
+  it('settles an unclaimed cancelled backlog task to paused without burning an attempt', async () => {
     const { dir, cleanup } = makeTempDir('tier_cancel_');
     const { db, coordinator } = makeCoordinator(dir);
     try {
       const { backlog, task } = dispatchBacklogTask(coordinator, dir);
       const cancelled = await coordinator.cancelTask(task.id);
       assert.equal(cancelled?.applied, true);
-      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'pending');
+      const settled = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(settled?.status, 'paused');
+      assert.equal(settled?.attemptCount, 0);
+      assert.equal(settled?.swarmTaskId, undefined);
+      assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
 
       // A second cancel is refused, and a refusal must be observable to the caller.
       const again = await coordinator.cancelTask(task.id);
       assert.equal(again?.applied, false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('settles a claimed cancelled backlog task to paused while keeping attemptCount, and settles paused origins when their in-flight run finishes', async () => {
+    const { dir, cleanup } = makeTempDir('tier_cancel_claimed_paused_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      const { backlog: b1, task: t1 } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
+      const cancelled = await coordinator.cancelTask(t1.id);
+      assert.equal(cancelled?.applied, true);
+      const afterClaimedCancel = coordinator.queue.getBacklogTask(b1.id);
+      assert.equal(afterClaimedCancel?.status, 'paused');
+      assert.equal(afterClaimedCancel?.attemptCount, 1);
+      assert.equal(afterClaimedCancel?.swarmTaskId, undefined);
+
+      // Bulk-paused dispatched backlog item still settles and clears swarmTaskId when its run completes
+      const { backlog: b2, task: t2 } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.updateBacklogTask(b2.id, { status: 'paused' });
+      await coordinator.reportTaskStatus(t2.id, { status: 'completed' });
+      const afterPausedComplete = coordinator.queue.getBacklogTask(b2.id);
+      assert.equal(afterPausedComplete?.status, 'completed');
+      assert.equal(afterPausedComplete?.swarmTaskId, undefined);
+
+      // Bulk-paused dispatched backlog item clears swarmTaskId and keeps paused on cancel
+      const { backlog: b3, task: t3 } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.updateBacklogTask(b3.id, { status: 'paused' });
+      await coordinator.cancelTask(t3.id);
+      const afterPausedCancel = coordinator.queue.getBacklogTask(b3.id);
+      assert.equal(afterPausedCancel?.status, 'paused');
+      assert.equal(afterPausedCancel?.attemptCount, 0);
+      assert.equal(afterPausedCancel?.swarmTaskId, undefined);
     } finally {
       db.close();
       cleanup();
@@ -497,6 +541,121 @@ describe('Tier lifecycle: HTTP contracts', () => {
       assert.equal(claimed?.id, body.taskId);
       assert.equal(claimed?.scheduleMode, 'pre_reset');
       assert.equal(claimed?.tier, 'immediate');
+    } finally {
+      await closeWebServer(server);
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('rejects duplicate backlog/routine dispatches and conflicting retries with 409, increments attemptCount on retry, and resolves repo metadata + expiresAt', async () => {
+    const { dir, cleanup } = makeTempDir('tier_http_conflicts_');
+    const { db, configStore, coordinator } = makeCoordinator(dir, {
+      repositories: [{ id: 'short-id', name: 'Owner/RepoSlug', path: dir, defaultBranch: 'main' }],
+    });
+    const { server, port } = await startWebServer({
+      configStore,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 5)]);
+
+      // 1. Backlog manual dispatch resolves owner/repo name, sets expiresAt, and blocks duplicates with 409
+      const b1 = await ky
+        .post(`${base}/api/backlog`, {
+          json: { title: 'B1', prompt: 'Do B1', repositoryId: 'short-id' },
+        })
+        .json<{ id: string }>();
+      const b2 = await ky
+        .post(`${base}/api/backlog`, {
+          json: { title: 'B2', prompt: 'Do B2', repositoryId: 'short-id' },
+        })
+        .json<{ id: string }>();
+
+      const d1 = await ky
+        .post(`${base}/api/backlog/${encodeURIComponent(b1.id)}/dispatch`, {
+          throwHttpErrors: false,
+        })
+        .json<{ success: boolean; taskId?: string; repo?: string }>();
+      assert.equal(d1.success, true);
+      assert.equal(d1.repo, 'Owner/RepoSlug');
+
+      const spawnedTask = coordinator.queue.getTask(d1.taskId!);
+      assert.equal(spawnedTask?.repositoryName, 'Owner/RepoSlug');
+      assert.ok(spawnedTask?.expiresAt, 'backlog manual dispatch must set expiresAt');
+
+      const dupBacklog = await ky.post(
+        `${base}/api/backlog/${encodeURIComponent(b1.id)}/dispatch`,
+        { throwHttpErrors: false }
+      );
+      assert.equal(dupBacklog.status, 409);
+
+      const concurrentOther = await ky.post(
+        `${base}/api/backlog/${encodeURIComponent(b2.id)}/dispatch`,
+        { throwHttpErrors: false }
+      );
+      assert.equal(concurrentOther.status, 409);
+
+      // 2. Fail attempt 1 -> retry increments attemptCount to 2; if another run is active, retry returns 409
+      await coordinator.reportTaskStatus(d1.taskId!, { status: 'failed', error: 'boom' });
+      const b1AfterFail = coordinator.queue.getBacklogTask(b1.id);
+      assert.equal(b1AfterFail?.status, 'pending');
+      assert.equal(b1AfterFail?.attemptCount, 1);
+
+      const retried = await ky.post(`${base}/api/tasks/${encodeURIComponent(d1.taskId!)}/retry`, {
+        throwHttpErrors: false,
+      });
+      assert.equal(retried.status, 200);
+      const retryBody = (await retried.json()) as { success: boolean; taskId?: string };
+      assert.equal(retryBody.success, true);
+
+      const b1AfterRetry = coordinator.queue.getBacklogTask(b1.id);
+      assert.equal(b1AfterRetry?.status, 'dispatched');
+      assert.equal(b1AfterRetry?.attemptCount, 2);
+      assert.equal(b1AfterRetry?.swarmTaskId, retryBody.taskId);
+
+      // Retrying the old failed task again while attempt 2 is active must 409
+      const dupRetry = await ky.post(`${base}/api/tasks/${encodeURIComponent(d1.taskId!)}/retry`, {
+        throwHttpErrors: false,
+      });
+      assert.equal(dupRetry.status, 409);
+
+      // 3. Routine manual trigger resolves owner/repo name, sets expiresAt, and blocks duplicate with 409
+      const rt = await ky
+        .post(`${base}/api/routines`, {
+          json: {
+            title: 'R1',
+            prompt: 'Sweep',
+            repositoryId: 'short-id',
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          },
+        })
+        .json<{ id: string }>();
+
+      const rtTrig = await ky.post(`${base}/api/routines/${encodeURIComponent(rt.id)}/trigger`, {
+        throwHttpErrors: false,
+      });
+      assert.equal(rtTrig.status, 200);
+      const rtTrigBody = (await rtTrig.json()) as {
+        success: boolean;
+        taskId?: string;
+        repo?: string;
+      };
+      assert.equal(rtTrigBody.success, true);
+      assert.equal(rtTrigBody.repo, 'Owner/RepoSlug');
+
+      const rtTask = coordinator.queue.getTask(rtTrigBody.taskId!);
+      assert.equal(rtTask?.repositoryName, 'Owner/RepoSlug');
+      assert.ok(rtTask?.expiresAt, 'routine manual trigger must set expiresAt');
+
+      const dupRoutine = await ky.post(
+        `${base}/api/routines/${encodeURIComponent(rt.id)}/trigger`,
+        { throwHttpErrors: false }
+      );
+      assert.equal(dupRoutine.status, 409);
     } finally {
       await closeWebServer(server);
       db.close();

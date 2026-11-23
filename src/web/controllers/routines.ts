@@ -6,7 +6,7 @@ import {
   toStringOrUndefined,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
-  isSafetyBlockCode,
+  dispatchHttpStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { parseCascadeRequest, resolveCoordinator, knownModelIds } from './dispatch.js';
@@ -160,11 +160,26 @@ export const handleRoutineTaskById = async (
     const rt = coordinator.queue.getRoutineTask(id);
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
 
+    if (coordinator.queue.hasActiveTaskForOrigin(rt.id)) {
+      return sendJson(res, 409, {
+        success: false,
+        error: `Routine task ${rt.id} already has an active run in flight`,
+        code: 'ORIGIN_ALREADY_ACTIVE',
+      });
+    }
+
     const resolved = options.configStore.resolveConfig();
+    const matchedRepo = resolved.repositories.find(
+      (r) =>
+        r.id.toLowerCase() === rt.repositoryId.toLowerCase() ||
+        r.name.toLowerCase() === rt.repositoryId.toLowerCase()
+    );
 
     const dispatchRes = await coordinator.dispatch({
       repositoryId: rt.repositoryId,
-      repositoryName: rt.repositoryId,
+      repositoryName: matchedRepo?.name ?? rt.repositoryId,
+      repositoryPath: matchedRepo?.path,
+      cloneUrl: matchedRepo?.cloneUrl,
       prompt: rt.prompt,
       title: rt.title,
       tier: 'routine',
@@ -177,29 +192,10 @@ export const handleRoutineTaskById = async (
       verifyCommand: rt.verifyCommand,
       scheduleMode: 'immediate',
       requestedBy: `routine:${rt.id}`,
+      burnRoutineCycle: true,
     });
 
-    if (dispatchRes.success && dispatchRes.taskId) {
-      const pool = coordinator
-        .getActivePools()
-        .find((p) => p.poolGroup === dispatchRes.poolGroup || p.poolId === dispatchRes.poolGroup);
-      if (pool?.resetTime) {
-        // A manual trigger burns the same per-pool cycle stamp the coordinator honours.
-        const burnedPoolKey = pool.poolId || pool.poolGroup;
-        coordinator.queue.updateRoutineTask(rt.id, {
-          lastTaskId: dispatchRes.taskId,
-          lastTriggeredResetTime: pool.resetTime,
-          lastTriggeredCycles: {
-            ...(rt.lastTriggeredCycles ?? {}),
-            [burnedPoolKey]: pool.resetTime,
-          },
-        });
-      } else {
-        coordinator.queue.updateRoutineTask(rt.id, { lastTaskId: dispatchRes.taskId });
-      }
-    }
-
-    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
+    return sendJson(res, dispatchHttpStatus(dispatchRes.code), dispatchRes);
   }
 
   if (method === 'GET') {

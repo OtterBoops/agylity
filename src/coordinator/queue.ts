@@ -553,6 +553,41 @@ export class TaskQueue {
     return this.getTask(id)!;
   }
 
+  public spawnRoutineTask(
+    input: EnqueueTaskInput,
+    origin: { id: string; burnedPoolKey?: string; resetTime?: string }
+  ): SwarmTask {
+    const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    this.inTransaction(() => {
+      const existing = this.getRoutineTask(origin.id);
+      if (!existing) {
+        throw new Error(`Routine origin ${origin.id} no longer exists`);
+      }
+      this.insertTaskRow(id, input);
+      const now = new Date().toISOString();
+      const nextResetTime = origin.resetTime ?? existing.lastTriggeredResetTime ?? null;
+      const nextCycles =
+        origin.resetTime && origin.burnedPoolKey
+          ? { ...(existing.lastTriggeredCycles ?? {}), [origin.burnedPoolKey]: origin.resetTime }
+          : (existing.lastTriggeredCycles ?? {});
+      const settled = this.rawDb
+        .prepare(
+          `UPDATE routine_tasks
+           SET last_task_id = ?, last_triggered_reset_time = ?, last_triggered_cycles_json = ?,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(id, nextResetTime, JSON.stringify(nextCycles), now, origin.id) as unknown as {
+        changes?: number;
+      };
+      if ((settled?.changes ?? 0) === 0) {
+        throw new Error(`Routine origin ${origin.id} no longer exists`);
+      }
+    });
+    this.pruneOldTasks();
+    return this.getTask(id)!;
+  }
+
   // Assumes the caller holds the write transaction, so a spawn can add its own origin write to it.
   private insertTaskRow(id: string, input: EnqueueTaskInput): void {
     const now = new Date().toISOString();

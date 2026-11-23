@@ -4983,7 +4983,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           scheduleMode: 'immediate',
           requestedBy: `routine:${rt.id}`,
         });
-        const run2 = await coordinator.dispatch({
+        const run2 = coordinator.queue.enqueue({
           repositoryId: rt.repositoryId,
           repositoryName: rt.repositoryId,
           prompt: rt.prompt,
@@ -4997,7 +4997,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           requestedBy: `routine:${rt.id}`,
         });
         assert.equal(run1.success, true);
-        assert.equal(run2.success, true);
+        assert.ok(run2.id);
 
         const claimed1 = await coordinator.pollForTask({
           runnerId: 'runner-1',
@@ -5025,7 +5025,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const claimed2 = await pollPromise;
         controller.abort();
 
-        assert.equal(claimed2?.id, run2.taskId);
+        assert.equal(claimed2?.id, run2.id);
         assert.ok(Date.now() - startedAt < 2000, 'runner-2 should wake before the 5s poll timeout');
       } finally {
         db.close();

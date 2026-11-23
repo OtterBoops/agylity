@@ -7,7 +7,7 @@ import {
   toStringOrUndefined,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
-  isSafetyBlockCode,
+  dispatchHttpStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import {
@@ -120,11 +120,27 @@ export const handleBacklogTaskById = async (
     const task = coordinator.queue.getBacklogTask(id);
     if (!task) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
 
+    if (task.status === 'dispatched' || coordinator.queue.hasActiveTaskForOrigin(task.id)) {
+      return sendJson(res, 409, {
+        success: false,
+        error: `Backlog task ${task.id} already has an active run in flight`,
+        code: 'ORIGIN_ALREADY_ACTIVE',
+        status: task.status,
+      });
+    }
+
     const resolved = options.configStore.resolveConfig();
+    const matchedRepo = resolved.repositories.find(
+      (r) =>
+        r.id.toLowerCase() === task.repositoryId.toLowerCase() ||
+        r.name.toLowerCase() === task.repositoryId.toLowerCase()
+    );
 
     const dispatchRes = await coordinator.dispatch({
       repositoryId: task.repositoryId,
-      repositoryName: task.repositoryId,
+      repositoryName: matchedRepo?.name ?? task.repositoryId,
+      repositoryPath: matchedRepo?.path,
+      cloneUrl: matchedRepo?.cloneUrl,
       prompt: task.prompt,
       title: task.title,
       tier: 'backlog',
@@ -140,19 +156,15 @@ export const handleBacklogTaskById = async (
     });
 
     if (dispatchRes.success && dispatchRes.taskId) {
-      coordinator.queue.updateBacklogTask(task.id, {
-        status: 'dispatched',
-        attemptCount: task.attemptCount + 1,
-        swarmTaskId: dispatchRes.taskId,
-        lastError: null,
-      });
       return sendJson(res, 200, dispatchRes);
     }
 
-    coordinator.queue.updateBacklogTask(task.id, {
-      lastError: dispatchRes.error || 'Dispatch refused',
-    });
-    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
+    if (dispatchRes.code !== 'ORIGIN_ALREADY_ACTIVE') {
+      coordinator.queue.updateBacklogTask(task.id, {
+        lastError: dispatchRes.error || 'Dispatch refused',
+      });
+    }
+    return sendJson(res, dispatchHttpStatus(dispatchRes.code), dispatchRes);
   }
 
   if (method === 'GET') {

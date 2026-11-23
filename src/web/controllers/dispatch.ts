@@ -10,6 +10,7 @@ import {
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
   isSafetyBlockCode,
+  dispatchHttpStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import type { RunnersResponse } from '../../shared/contracts.js';
@@ -596,15 +597,17 @@ export const handleTaskRetry = async (
       status: task.status,
     });
   }
+  if (task.originId && coordinator.queue.hasActiveTaskForOrigin(task.originId)) {
+    return sendJson(res, 409, {
+      success: false,
+      error: `Origin task ${task.originId} already has an active run in flight`,
+      code: 'ORIGIN_ALREADY_ACTIVE',
+    });
+  }
 
   const retryRes = await coordinator.retryTask(task);
 
-  // A retry is a dispatch, so a safety-floor refusal is a 4xx here too, not a 200 body.
-  if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {
-    return sendJson(res, 400, retryRes);
-  }
-
-  return sendJson(res, 200, retryRes);
+  return sendJson(res, dispatchHttpStatus(retryRes.code), retryRes);
 };
 
 export const handleGetRunners = (
