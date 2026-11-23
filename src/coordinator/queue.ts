@@ -129,14 +129,7 @@ const TASK_LIST_COLUMNS = SWARM_TASK_COLUMNS.filter((column) => column.name !== 
   .map((column) => column.name)
   .join(', ');
 
-const OUTPUT_CAP = 512 * 1024;
-
-/** Keeps the tail, which is where a failure explains itself, and says how much was dropped. */
-const capOutput = (text: string, cap: number = OUTPUT_CAP): string => {
-  if (text.length <= cap) return text;
-  const kept = text.slice(-cap);
-  return `[truncated ${text.length - kept.length} bytes]\n${kept}`;
-};
+export const OUTPUT_CAP = 512 * 1024;
 
 /** The last `cap` UTF-16 units, nudged off a surrogate pair so the head never renders as U+FFFD. */
 export const tailWindow = (text: string, cap: number): string => {
@@ -146,6 +139,13 @@ export const tailWindow = (text: string, cap: number): string => {
     if (code >= 0xdc00 && code <= 0xdfff) start -= 1;
   }
   return text.slice(start);
+};
+
+/** Keeps the tail, which is where a failure explains itself, and says how much was dropped. */
+export const capOutput = (text: string, cap: number = OUTPUT_CAP): string => {
+  if (text.length <= cap) return text;
+  const kept = tailWindow(text, cap);
+  return `[truncated ${text.length - kept.length} characters]\n${kept}`;
 };
 
 const REGISTRATION_TOKEN_RETENTION = 50;

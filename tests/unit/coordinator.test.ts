@@ -25,6 +25,7 @@ import {
   RemoteSwarmRunner,
 } from '../../src/coordinator/index.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
+import { capOutput, OUTPUT_CAP } from '../../src/coordinator/queue.js';
 import type { Logger } from '../../src/logs/logger.js';
 import {
   DiscordNotifier,
@@ -4852,6 +4853,47 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(resettled?.attemptCount, 0);
         assert.equal(resettled?.swarmTaskId, undefined);
         assert.equal(coordinator.queue.getNextEligibleBacklogTask()?.id, origin.id);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('capOutput preserves surrogate pairs across the truncation boundary and reports dropped characters', () => {
+      assert.equal(capOutput('hello', 5), 'hello');
+
+      const hasLoneSurrogate = (s: string): boolean =>
+        /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
+
+      // 5 prefix chars + 2-unit emoji + 4 suffix chars = 11 UTF-16 units; cap=5 lands on the low surrogate.
+      const sample = `${'a'.repeat(5)}🚀${'b'.repeat(4)}`;
+      const truncated = capOutput(sample, 5);
+      assert.equal(truncated, `[truncated 5 characters]\n🚀${'b'.repeat(4)}`);
+      assert.equal(hasLoneSurrogate(truncated), false);
+
+      const { dir, cleanup } = makeTempDir('coord_cap_output_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          prompt: 'Large output task',
+          repositoryName: 'agylity',
+          scheduleMode: 'immediate',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        });
+        queue.claimNext({ runnerId: 'runner-cap' });
+
+        const oversized = `${'x'.repeat(5)}🚀${'y'.repeat(OUTPUT_CAP - 1)}`;
+        const result = queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-cap',
+          output: oversized,
+        });
+        assert.equal(result?.applied, true);
+        const stored = result?.task?.output ?? '';
+        assert.ok(stored.startsWith('[truncated 5 characters]\n🚀'));
+        assert.equal(stored.length, `[truncated 5 characters]\n`.length + OUTPUT_CAP + 1);
+        assert.equal(hasLoneSurrogate(stored), false);
       } finally {
         db.close();
         cleanup();
