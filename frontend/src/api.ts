@@ -409,20 +409,22 @@ export const dispatchBacklogTask = (
     .post(`backlog/${encodeURIComponent(id)}/dispatch`)
     .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
-export const syncGithubBacklog = (): Promise<{
+export interface GithubSyncFailure {
+  repositoryId: string;
+  reason: string;
+}
+
+export interface GithubSyncResult {
   success: boolean;
   importedCount: number;
   canceledCount?: number;
   label: string;
   failedRepos?: string[];
-}> =>
-  api.post('backlog/sync-github').json<{
-    success: boolean;
-    importedCount: number;
-    canceledCount?: number;
-    label: string;
-    failedRepos?: string[];
-  }>();
+  failures?: GithubSyncFailure[];
+}
+
+export const syncGithubBacklog = (): Promise<GithubSyncResult> =>
+  api.post('backlog/sync-github').json<GithubSyncResult>();
 
 export const getDispatchEligibility = (params: { model?: string; allowOverage?: boolean } = {}) => {
   const query = new URLSearchParams();

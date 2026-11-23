@@ -172,7 +172,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `GET /api/backlog`                     | Bearer | Backlog items.                                                    |
 | `POST /api/backlog`                    | Bearer | Creates one backlog item.                                         |
 | `PATCH /api/backlog/bulk`              | Bearer | Pause/resume up to 200 ids (`{action, ids}`).                     |
-| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues into the backlog.                           |
+| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues in; per-repo `failures` reasons.            |
 | `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
 | `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
 | `DELETE /api/backlog/:id`              | Bearer | Deletes the item.                                                 |

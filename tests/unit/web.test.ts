@@ -13,9 +13,11 @@ import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
 import {
   handleSyncGithubBacklog,
+  listOpenIssues,
   resolveGithubRepoSlug,
 } from '../../src/web/controllers/backlog.js';
 import { Coordinator } from '../../src/coordinator/coordinator.js';
+import type { Logger } from '../../src/logs/logger.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
   /* ==================================================================== */
@@ -3778,6 +3780,9 @@ describe('Web: Antigravity CLI version reporting', () => {
         assert.equal(body.success, false);
         assert.equal(body.importedCount, 0);
         assert.deepEqual(body.failedRepos, ['local-only']);
+        assert.equal(body.failures.length, 1);
+        assert.equal(body.failures[0].repositoryId, 'local-only');
+        assert.match(body.failures[0].reason, /cannot resolve GitHub owner\/repo/);
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -3841,6 +3846,7 @@ describe('Web: Antigravity CLI version reporting', () => {
               requestedSlugs.push(slug);
               if (slug === 'OtterBoops/repo-one') {
                 return {
+                  ok: true,
                   truncated: false,
                   issues: [
                     { number: 10, title: 'Reopened issue', body: 'Should re-import' },
@@ -3849,6 +3855,7 @@ describe('Web: Antigravity CLI version reporting', () => {
                 };
               }
               return {
+                ok: true,
                 truncated: false,
                 issues: [{ number: 20, title: 'From git origin', body: 'Origin body' }],
               };
@@ -3864,6 +3871,7 @@ describe('Web: Antigravity CLI version reporting', () => {
           canceledCount: 0,
           label: 'backlog',
           failedRepos: [],
+          failures: [],
         });
 
         const tasks = coordinator.queue.listBacklogTasks();
@@ -3885,6 +3893,241 @@ describe('Web: Antigravity CLI version reporting', () => {
           (t) => t.repositoryId === 'repo-by-git' && t.githubIssueNumber === 20
         );
         assert.equal(fromOrigin.length, 1);
+      } finally {
+        store.close();
+        cleanup();
+      }
+    });
+
+    const makeLoggerStub = () => {
+      const warns: unknown[][] = [];
+      const logger = {
+        namespace: undefined,
+        debug: () => {},
+        info: () => {},
+        warn: (...args: unknown[]) => {
+          warns.push(args);
+        },
+        error: () => {},
+        child: () => logger,
+        setLevel: () => {},
+        getLevel: () => 'info',
+        addSink: () => () => {},
+        removeSink: () => {},
+        clearSinks: () => {},
+        setSinks: () => {},
+      } as unknown as Logger;
+      return { logger, warns };
+    };
+
+    it('uses the authenticated GitHub REST API when GITHUB_TOKEN is set', async () => {
+      const originalFetch = globalThis.fetch;
+      let capturedAuth: string | null = null;
+      let ghCliCalls = 0;
+      globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+        const req = input instanceof Request ? input : new Request(input, init);
+        capturedAuth = req.headers.get('authorization');
+        return new Response(
+          JSON.stringify([
+            {
+              number: 42,
+              title: 'Real issue',
+              body: 'body',
+              html_url: 'https://github.com/OtterBoops/agylity/issues/42',
+            },
+            {
+              number: 43,
+              title: 'Pull request item',
+              pull_request: { url: 'https://api.github.com/repos/OtterBoops/agylity/pulls/43' },
+            },
+          ]),
+          { status: 200, headers: { 'content-type': 'application/json' } }
+        );
+      }) as typeof fetch;
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_test',
+          undefined,
+          async () => {
+            ghCliCalls++;
+            throw new Error('gh should not run when the REST call succeeds');
+          }
+        );
+
+        assert.equal(capturedAuth, 'Bearer ghp_test');
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+        assert.equal(result.truncated, false);
+        assert.deepEqual(
+          result.issues.map((issue) => issue.number),
+          [42]
+        );
+        assert.equal(ghCliCalls, 0);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('falls back to the gh CLI when the authenticated REST call fails', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ message: 'Bad credentials' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch;
+
+      let ghArgs: readonly string[] = [];
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_expired',
+          undefined,
+          async (cmd: string, args: readonly string[]) => {
+            assert.equal(cmd, 'gh');
+            ghArgs = args;
+            return {
+              stdout: JSON.stringify([{ number: 7, title: 'From CLI', body: 'body', url: 'u' }]),
+              stderr: '',
+            };
+          }
+        );
+
+        assert.deepEqual(ghArgs.slice(0, 4), ['issue', 'list', '--repo', 'OtterBoops/agylity']);
+        assert.equal(result.ok, true);
+        if (!result.ok) return;
+        assert.deepEqual(
+          result.issues.map((issue) => issue.number),
+          [7]
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('reports a reason when GITHUB_TOKEN is unset and the gh CLI is unavailable', async () => {
+      const originalFetch = globalThis.fetch;
+      let restCalls = 0;
+      globalThis.fetch = (async () => {
+        restCalls++;
+        return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+      }) as typeof fetch;
+      const { logger, warns } = makeLoggerStub();
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          undefined,
+          logger,
+          async () => {
+            throw new Error('spawn gh ENOENT');
+          }
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.match(result.reason, /GITHUB_TOKEN is unset/);
+        assert.match(result.reason, /spawn gh ENOENT/);
+        assert.equal(restCalls, 0, 'must not call GitHub REST without a token');
+        assert.equal(warns.length, 1, 'the failure must be logged at warn level');
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('reports both REST and gh CLI errors when both fail with a token', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async () =>
+        new Response(JSON.stringify({ message: 'Bad credentials' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })) as typeof fetch;
+
+      try {
+        const result = await listOpenIssues(
+          'OtterBoops/agylity',
+          'backlog',
+          'ghp_expired',
+          undefined,
+          async () => {
+            throw new Error('gh: not authenticated');
+          }
+        );
+
+        assert.equal(result.ok, false);
+        if (result.ok) return;
+        assert.match(result.reason, /GitHub REST API failed/);
+        assert.match(result.reason, /gh: not authenticated/);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('surfaces per-repo failure reasons from POST /api/backlog/sync-github', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_failures_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        githubBacklogLabel: 'backlog',
+        repositories: [
+          {
+            id: 'OtterBoops/broken',
+            name: 'OtterBoops/broken',
+            path: path.join(dir, 'broken'),
+            defaultBranch: 'main',
+          },
+          {
+            id: 'local-only',
+            name: 'local-only',
+            path: path.join(dir, 'missing'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const coordinator = new Coordinator({ configStore: store });
+      const { logger, warns } = makeLoggerStub();
+
+      try {
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator, logger },
+          'POST',
+          {
+            execFileAsync: async () => {
+              throw new Error('not a git repo');
+            },
+            listOpenIssues: async () => ({
+              ok: false,
+              reason: 'GITHUB_TOKEN is unset and the gh CLI is unavailable (spawn gh ENOENT)',
+            }),
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        assert.deepEqual(mockRes.getBody(), {
+          success: false,
+          importedCount: 0,
+          canceledCount: 0,
+          label: 'backlog',
+          failedRepos: ['OtterBoops/broken', 'local-only'],
+          failures: [
+            {
+              repositoryId: 'OtterBoops/broken',
+              reason: 'GITHUB_TOKEN is unset and the gh CLI is unavailable (spawn gh ENOENT)',
+            },
+            {
+              repositoryId: 'local-only',
+              reason:
+                'cannot resolve GitHub owner/repo from repository name, clone URL, or git origin remote',
+            },
+          ],
+        });
+        assert.ok(warns.length >= 1, 'slug resolution failures must be logged at warn level');
       } finally {
         store.close();
         cleanup();

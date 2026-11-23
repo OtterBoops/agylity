@@ -38,6 +38,8 @@ services:
       - DISCORD_PING_OWNER=${DISCORD_PING_OWNER:-true}
       - NOTIFICATION_WEBHOOK_URL=${NOTIFICATION_WEBHOOK_URL}
       - WEBHOOK_SECRET=${WEBHOOK_SECRET}
+      # GitHub token for authenticated backlog sync (POST /api/backlog/sync-github)
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
 
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8484/api/health']

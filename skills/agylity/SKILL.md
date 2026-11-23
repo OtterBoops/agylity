@@ -244,6 +244,7 @@ Three tiers, and only the first is human-initiated per run:
 - **Both autonomous tiers carry an ordered `models[]`** and dispatch the first candidate whose pool clears the floor (`evaluateModelPreferenceChain`); the manual dispatch routes pass the same chain to `coordinator.dispatch`. A model id mapping to no pool is refused, never charged to another group.
 - **Origin settlement has two call sites** — the runner status report and `reconcileBacklogOrigins` — both strictly funneled through `applyBacklogOutcome`. Backlog rows never mutate terminal states (`completed`, `failed`, `canceled`) on late runner callbacks or redundant sweeps. A backlog row left on `dispatched` is picked by nothing.
 - **Every refusal is a 4xx.** A safety-floor or telemetry block on a dispatch is HTTP 400; a cancel of an already-terminal task is 409.
+- **GitHub label sync authenticates or fails loudly.** `POST /api/backlog/sync-github` prefers authenticated GitHub REST when `GITHUB_TOKEN` is set and falls back to the `gh` CLI otherwise; there is no unauthenticated REST path, and every failed repo comes back in `failures` with its reason.
 
 ---
 

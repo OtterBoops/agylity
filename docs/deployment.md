@@ -40,7 +40,7 @@ Access the web dashboard at `http://localhost:8484` (when `WEB_UI_ENABLED=true`)
 
 The shipped `docker-compose.yaml` runs **both** services, so a plain `docker compose up -d` gives you a coordinator _and_ a runner. Without a runner the coordinator still polls quota and raises alerts, but every dispatched task stays `queued`.
 
-Minimum keys in `.env` for that stack: `WEB_UI_AUTH_TOKEN` (the control plane refuses to start on a non-loopback `WEB_UI_HOST` without it), `GITHUB_TOKEN` (branch pushes and pull requests), and a runner credential — `RUNNER_TOKEN`, or a registration token if you enrol the runner through the API instead. See `docs/configuration.md` for the full surface.
+Minimum keys in `.env` for that stack: `WEB_UI_AUTH_TOKEN` (the control plane refuses to start on a non-loopback `WEB_UI_HOST` without it), `GITHUB_TOKEN` (branch pushes and pull requests, plus authenticated backlog sync from the coordinator), and a runner credential — `RUNNER_TOKEN`, or a registration token if you enrol the runner through the API instead. See `docs/configuration.md` for the full surface.
 
 ---
 
@@ -63,6 +63,10 @@ For homelabs managed via GitOps, Portainer, or Dockge:
          - agylity-gemini:/home/node/.gemini
        env_file:
          - /opt/agylity/.env
+       environment:
+         # The coordinator authenticates to the GitHub REST API for backlog sync, so the token
+         # must be named here as well — `env_file` alone does not put it in the container environment.
+         - GITHUB_TOKEN=${GITHUB_TOKEN}
 
      agylity-runner:
        image: ghcr.io/otterboops/agylity-runner:latest

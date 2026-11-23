@@ -443,7 +443,10 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       const res = await syncGithubBacklog();
       await loadBacklog();
       const canceled = res.canceledCount ? `, ${res.canceledCount} closed upstream` : '';
-      const failed = res.failedRepos?.length ? ` — failed: ${res.failedRepos.join(', ')}` : '';
+      const failureDetail = res.failures?.length
+        ? res.failures.map((failure) => `${failure.repositoryId}: ${failure.reason}`).join('; ')
+        : res.failedRepos?.join(', ');
+      const failed = failureDetail ? ` — failed: ${failureDetail}` : '';
       showNotification(
         res.success ? 'success' : 'error',
         `GitHub sync: imported ${res.importedCount} new issue(s) matching label '${res.label}'${canceled}${failed}`
