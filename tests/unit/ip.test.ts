@@ -85,6 +85,18 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(isIpAllowed('2001:db8:ffff::1', whitelist), true);
       assert.equal(isIpAllowed('2001:db9::1', whitelist), false);
     });
+
+    it('matches IPv6 addresses with embedded IPv4 tails', () => {
+      assert.equal(isIpAllowed('64:ff9b::1.2.3.4', ['64:ff9b::/96']), true);
+      assert.equal(isIpAllowed('64:ff9b::1.2.3.4', ['64:ff9b:0:0:0:0:102:304']), true);
+      assert.equal(isIpAllowed('64:ff9b:0:0:0:0:102:304', ['64:ff9b::1.2.3.4']), true);
+      assert.equal(isIpAllowed('64:ff9b::1.2.3.5', ['64:ff9b::1.2.3.4']), false);
+
+      assert.equal(isIpAllowed('2001:db8::1.2.3.4', ['2001:db8::/32']), true);
+      assert.equal(isIpAllowed('2001:db8:0:0:0:0:1.2.3.4', ['2001:db8::1.2.3.4']), true);
+      assert.equal(isIpAllowed('2001:db8::1:1.2.3.4', ['2001:db8::1:102:304']), true);
+      assert.equal(isIpAllowed('::1.2.3.4', ['::102:304']), true);
+    });
   });
 
   describe('extractClientIp', () => {

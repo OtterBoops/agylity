@@ -47,10 +47,10 @@ const ipv6ToBigInt = (ip: string): bigint | null => {
     const ipv4Part = ip.slice(lastColon + 1);
     const v4Num = ipv4ToBigInt(ipv4Part);
     if (v4Num === null) return null;
-    const v6Prefix = ip.slice(0, lastColon);
+    const v6Prefix = ip.slice(0, lastColon + 1);
     const highPart = ((v4Num >> 16n) & 0xffffn).toString(16);
     const lowPart = (v4Num & 0xffffn).toString(16);
-    ip = `${v6Prefix}:${highPart}:${lowPart}`;
+    ip = `${v6Prefix}${highPart}:${lowPart}`;
   }
 
   const doubleColonIdx = ip.indexOf('::');
