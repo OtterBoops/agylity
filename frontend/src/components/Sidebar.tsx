@@ -285,7 +285,7 @@ export const Sidebar = ({
           setMobileOpen(false);
           mobileToggleRef.current?.focus();
         }}
-        class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-r border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 md:hidden"
+        class="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-72 max-w-[85vw] translate-x-full border-l border-pine-highlight bg-pine-surface p-0 text-pine-text opacity-0 transition-[translate,opacity,display,overlay] transition-discrete duration-200 ease-out backdrop:bg-black/0 backdrop:transition-[background-color,display,overlay] backdrop:transition-discrete backdrop:duration-200 open:translate-x-0 open:opacity-100 open:backdrop:bg-black/60 motion-reduce:transition-none motion-reduce:backdrop:transition-none md:hidden starting:open:translate-x-full starting:open:opacity-0 starting:open:backdrop:bg-black/0"
         onClick={dialogBackdropClickHandler(mobileNavRef, closeMobileNav)}
       >
         <div class="flex size-full flex-col gap-4 overflow-y-auto p-4">
