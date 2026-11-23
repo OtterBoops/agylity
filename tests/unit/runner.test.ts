@@ -26,6 +26,7 @@ import {
   sumAgyTelemetry,
   type SpawnFn,
 } from '../../src/runner/index.js';
+import { GITHUB_ISSUE_TITLE_PREFIX } from '../../src/runner/policy.js';
 
 const TELEMETRY_LINE = '{"num_turns":4,"usage":{"total_tokens":1234,"thinking_tokens":321}}';
 
@@ -63,7 +64,8 @@ describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
 
         assert.equal(result.success, true);
         assert.equal(result.noChanges, true);
-        assert.equal(result.branchName, undefined);
+        // A discarded branch is reported as null so the coordinator clears the column.
+        assert.equal(result.branchName, null);
         assert.deepEqual(
           {
             numTurns: result.numTurns,
@@ -1016,6 +1018,32 @@ describe('Runner: pr policy and documentation classification', () => {
 
     assert.equal(buildContinuationBranchName('task-1-abc', ''), 'agy/abc-work');
   });
+
+  it('slugs the resolved title and strips a GitHub issue label prefix first', () => {
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', '[GH #12] Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+    // A resolved plain title needs no prefix handling and still slugs from its own words, not from
+    // the raw prompt the caller no longer passes.
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', 'Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+    // The prefix also has to survive stray padding and lowercase spelling from the label sync.
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', '  [gh #7]   Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+
+    // The rule lives in one place so the issue sync and the slugger cannot drift apart.
+    assert.equal(GITHUB_ISSUE_TITLE_PREFIX.test('[GH #12] Fix the parser'), true);
+    assert.equal(GITHUB_ISSUE_TITLE_PREFIX.test('Fix the parser'), false);
+    assert.equal(
+      '[GH #12] Fix the parser'.replace(GITHUB_ISSUE_TITLE_PREFIX, ''),
+      'Fix the parser'
+    );
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1029,6 +1057,7 @@ interface WorkspaceFakeOptions {
   diffNameOnly?: () => string;
   onClone?: () => void;
   onPush?: () => void;
+  onLog?: () => string;
   onGh?: (args: readonly string[]) => string;
 }
 
@@ -1050,6 +1079,7 @@ const createWorkspaceExecFile = (options: WorkspaceFakeOptions = {}) => {
     }
     if (cmd === 'status') return { stdout: options.status?.() ?? '', stderr: '' };
     if (cmd === 'rev-list') return { stdout: options.revList?.() ?? '0\n', stderr: '' };
+    if (cmd === 'log') return { stdout: options.onLog?.() ?? '', stderr: '' };
     if (cmd === 'diff' && args[1] === '--stat')
       return { stdout: options.diffStat ?? '', stderr: '' };
     if (cmd === 'diff' && args[1] === '--name-only') {
@@ -1280,6 +1310,19 @@ describe('Runner: push, pull request and policy guards', () => {
     }
   };
 
+  // `createWorkspaceExecFile` records each call as `[file, ...args]`.
+  const prCreateFrom = (exec: { calls: string[][] }) => {
+    const call = exec.calls.find(
+      (entry) => entry[0] === 'gh' && entry[1] === 'pr' && entry[2] === 'create'
+    );
+    assert.ok(call, 'expected a gh pr create invocation');
+    const flag = (name: string): string | undefined => {
+      const index = call!.indexOf(name);
+      return index === -1 ? undefined : call![index + 1];
+    };
+    return { title: flag('--title'), body: flag('--body') };
+  };
+
   it('pushes the branch and reports the pull request URL the CLI printed', async () => {
     const { result, exec } = await runWithWorkspace(
       {},
@@ -1289,6 +1332,100 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/42');
     assert.equal(exec.pushed(), true);
+  });
+
+  it('titles the pull request with the resolved task title instead of an id-prefixed prompt slice', async () => {
+    const { result, exec } = await runWithWorkspace(
+      {
+        title: 'Fix the flaky scheduler test',
+        prompt: '## Fix the flaky scheduler test\n\nIt re-armed a cycle that had already settled.',
+      },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/11\n' }
+    );
+
+    assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/11');
+    const { title } = prCreateFrom(exec);
+    assert.equal(title, 'Fix the flaky scheduler test');
+    assert.equal(
+      title?.includes('[Agylity]'),
+      false,
+      `title still carries the old prefix: ${title}`
+    );
+    assert.equal(title?.includes('task-'), false, `title still carries the task id: ${title}`);
+  });
+
+  it('names the branch after the resolved title with the GitHub issue prefix stripped', async () => {
+    const { result } = await runWithWorkspace(
+      { title: '[GH #12] Fix the parser' },
+      { onGh: () => '' }
+    );
+
+    assert.equal(result.success, true);
+    // The executor passes the resolved title, not the prompt, so the label prefix is all that is
+    // stripped and the issue number never reaches the branch name.
+    assert.match(String(result.branchName), /^agy\/[0-9a-f]{6}-fix-the-parser$/);
+    assert.equal(String(result.branchName).includes('12'), false);
+  });
+
+  it('appends the dispatch footer once to a prompt that does not already carry one', async () => {
+    const prompt = 'Investigate the outage and file a report.';
+    const { exec } = await runWithWorkspace(
+      { prompt },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/12\n' }
+    );
+
+    assert.equal(
+      prCreateFrom(exec).body,
+      [
+        prompt,
+        '',
+        '---',
+        '*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*',
+      ].join('\n')
+    );
+  });
+
+  it('does not append a second dispatch footer when the prompt already ends with one', async () => {
+    const prompt = [
+      'Root cause: the scheduler re-armed a settled cycle.',
+      '',
+      '---',
+      '*Dispatched via Agylity (backlog) with `gemini-4-argon` — please review carefully.*',
+    ].join('\n');
+    const { exec } = await runWithWorkspace(
+      { prompt, tier: 'backlog' },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/13\n' }
+    );
+
+    const body = prCreateFrom(exec).body ?? '';
+    assert.equal(body, prompt);
+    assert.equal(body.split('Dispatched via Agylity').length - 1, 1, `body was: ${body}`);
+  });
+
+  it('uses the resolved title as the commit subject', async () => {
+    const { exec } = await runWithWorkspace({
+      title: 'Fix the flaky scheduler test',
+      prompt: '## Fix the flaky scheduler test\n\nIt re-armed a cycle that had already settled.',
+    });
+
+    const commit = exec.calls.find((call) => call[0] === 'git' && call[1] === 'commit');
+    assert.ok(commit, 'expected a git commit');
+    assert.equal(commit![commit!.indexOf('-m') + 1], 'Fix the flaky scheduler test');
+  });
+
+  it('derives the commit subject from the prompt when the task carries no title', async () => {
+    const { exec } = await runWithWorkspace({
+      prompt: '## Re-run the embed snapshot\n\nbody text',
+    });
+
+    const commit = exec.calls.find((call) => call[0] === 'git' && call[1] === 'commit');
+    assert.ok(commit, 'expected a git commit');
+    assert.equal(commit![commit!.indexOf('-m') + 1], 'Re-run the embed snapshot');
+    assert.equal(
+      commit!.some((arg) => arg.startsWith('Complete Antigravity continuation task')),
+      false,
+      `commit subject still uses the old wording: ${commit!.join(' ')}`
+    );
   });
 
   it('keeps a successful run successful when only the pull request call fails', async () => {
@@ -1544,6 +1681,170 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.noChanges, true);
     assert.equal(result.issueUrls, undefined);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Deliverable-settled titles and branch names                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('Runner: deliverable-settled titles', () => {
+  const runDeliverable = async (
+    input: Record<string, unknown>,
+    options: WorkspaceFakeOptions = {}
+  ) => {
+    const { dir, cleanup } = makeTempDir('runner_deliverable_');
+    const { task, db } = enqueueTask(dir, input);
+    const exec = createWorkspaceExecFile({
+      status: () => '',
+      revList: () => '1\n',
+      onGh: () => 'https://github.com/OtterBoops/agylity/pull/77\n',
+      ...options,
+    });
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn: recordSpawn((call) => finishChild(call.child, 0, 'done\n')).spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      return { result: await executor.execute(task), exec };
+    } finally {
+      db.close();
+      cleanup();
+    }
+  };
+
+  // `calls` entries are `[file, ...args]`.
+  const branchRename = (exec: { calls: string[][] }) =>
+    exec.calls.find((call) => call[0] === 'git' && call[1] === 'branch' && call[2] === '-m');
+  const prTitleFrom = (exec: { calls: string[][] }): string | undefined => {
+    const call = exec.calls.find(
+      (entry) => entry[0] === 'gh' && entry[1] === 'pr' && entry[2] === 'create'
+    );
+    return call?.[call.indexOf('--title') + 1];
+  };
+
+  it('settles an untitled run on the commit the agent authored and renames the branch for it', async () => {
+    const { result, exec } = await runDeliverable({}, { onLog: () => 'Add the lease reaper\n' });
+
+    assert.equal(result.success, true);
+    assert.equal(result.resolvedTitle, 'Add the lease reaper');
+    assert.match(String(result.branchName), /^agy\/[0-9a-f]{6}-add-the-lease-reaper$/);
+
+    const rename = branchRename(exec);
+    assert.ok(rename, 'expected a git branch -m before publishing');
+    assert.notEqual(rename![3], rename![4]);
+    assert.equal(rename![4], result.branchName);
+
+    const push = exec.calls.find(
+      (call) => call[0] === 'git' && call.includes('push') && call.includes('origin')
+    );
+    assert.equal(push?.includes(String(result.branchName)), true);
+    // The rename must land before the push, or the old name is what upstream receives.
+    assert.ok(
+      exec.calls.indexOf(rename!) < exec.calls.indexOf(push!),
+      'branch rename happened after the push'
+    );
+
+    assert.equal(prTitleFrom(exec), 'Add the lease reaper');
+  });
+
+  it('settles a routine run from its deliverable, keeping the routine name on its origin', async () => {
+    const { result, exec } = await runDeliverable(
+      { tier: 'routine', title: 'Nightly sweep' },
+      { onLog: () => 'Refresh the dependency lockfile\n' }
+    );
+
+    assert.equal(result.resolvedTitle, 'Refresh the dependency lockfile');
+    assert.match(String(result.branchName), /-refresh-the-dependency-lockfile$/);
+    assert.ok(branchRename(exec), 'a routine run still renames its branch from the deliverable');
+    assert.equal(prTitleFrom(exec), 'Refresh the dependency lockfile');
+  });
+
+  it('keeps a human-typed title and never renames the branch for it', async () => {
+    const { result, exec } = await runDeliverable(
+      { title: 'Human picked this', tier: 'immediate' },
+      { onLog: () => 'Agent wrote this instead\n' }
+    );
+
+    assert.equal(result.resolvedTitle, undefined);
+    assert.equal(branchRename(exec), undefined);
+    assert.match(String(result.branchName), /-human-picked-this$/);
+    assert.equal(prTitleFrom(exec), 'Human picked this');
+  });
+
+  it('settles the title from a filed issue and clears the discarded branch', async () => {
+    const duringRun = new Date(Date.now() + 60_000).toISOString();
+    const { result, exec } = await runDeliverable(
+      { repositoryName: 'OtterBoops/agylity', prPolicy: 'issues_only' },
+      {
+        revList: () => '0\n',
+        onGh: (args) =>
+          args[0] === 'issue'
+            ? JSON.stringify([
+                {
+                  number: 21,
+                  title: 'Parser drops the trailing token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/21',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+              ])
+            : '',
+      }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.resolvedTitle, 'Parser drops the trailing token');
+    assert.deepEqual(result.issueUrls, ['https://github.com/OtterBoops/agylity/issues/21']);
+    // A discarded branch is cleared to NULL rather than left pointing at a branch that is gone.
+    assert.equal(result.branchName, null);
+    assert.equal(exec.pushed(), false);
+  });
+
+  it('counts the extra issues in the settled title', async () => {
+    const duringRun = new Date(Date.now() + 60_000).toISOString();
+    const { result } = await runDeliverable(
+      { repositoryName: 'OtterBoops/agylity', prPolicy: 'issues_only' },
+      {
+        revList: () => '0\n',
+        onGh: (args) =>
+          args[0] === 'issue'
+            ? JSON.stringify([
+                {
+                  number: 21,
+                  title: 'Parser drops the trailing token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/21',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+                {
+                  number: 22,
+                  title: 'Tokenizer drops the leading token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/22',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+              ])
+            : '',
+      }
+    );
+
+    assert.equal(result.resolvedTitle, 'Parser drops the trailing token (+1)');
+    assert.equal(result.issueUrls?.length, 2);
+    assert.equal(result.branchName, null);
+  });
+
+  it('clears the branch name when a policy suppresses the run', async () => {
+    const { result, exec } = await runDeliverable({ prPolicy: 'none' });
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.equal(result.branchName, null);
+    assert.equal(exec.has('-D'), true);
   });
 });
 

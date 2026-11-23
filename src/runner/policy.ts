@@ -1,23 +1,28 @@
 import path from 'node:path';
-import type { PrPolicy } from '../config/schema.js';
+import { PR_POLICY_VALUES, type PrPolicy } from '../shared/contracts.js';
 
-const PR_POLICIES: ReadonlySet<string> = new Set(['none', 'docs_only', 'issues_only', 'all']);
+const PR_POLICY_SET: ReadonlySet<string> = new Set(PR_POLICY_VALUES);
 
 // An unrecognised policy string (a typo or a blank compose var) must never read as "no restriction".
 export const normalizePrPolicy = (value?: string): PrPolicy | undefined => {
   const normalized = value?.trim().toLowerCase();
-  return normalized && PR_POLICIES.has(normalized) ? (normalized as PrPolicy) : undefined;
+  return normalized && PR_POLICY_SET.has(normalized) ? (normalized as PrPolicy) : undefined;
 };
 
+// The title already carries a GitHub label-sync prefix (`[GH #12] ...`) when the backlog row came
+// from an issue; it is a reference, not part of the branch name.
+export const GITHUB_ISSUE_TITLE_PREFIX = /^\s*\[GH\s*#\d+\]\s*/i;
+
 // Never returns 'main' or 'master'.
-export const buildContinuationBranchName = (taskId: string, prompt: string): string => {
+export const buildContinuationBranchName = (taskId: string, titleOrPrompt: string): string => {
   const shortId =
     taskId
       .replace(/^task-\d+-/, '')
       .replace(/[^a-zA-Z0-9]/g, '')
       .slice(0, 8) || 'cont';
 
-  const words = prompt
+  const words = titleOrPrompt
+    .replace(GITHUB_ISSUE_TITLE_PREFIX, '')
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')

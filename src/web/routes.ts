@@ -40,6 +40,7 @@ import {
 } from './controllers/backlog.js';
 import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
 import { clearAuthFailures, isIpRateLimited, recordAuthFailure } from './authFailures.js';
+import { normalizeBuildCommit, resolveBuildChannel } from '../shared/build.js';
 
 export type { WebServerOptions };
 
@@ -166,6 +167,8 @@ export const handleRequest = async (
         timestamp: new Date().toISOString(),
         authRequired,
         agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
+        buildChannel: resolveBuildChannel(process.env.BUILD_CHANNEL),
+        buildCommit: normalizeBuildCommit(process.env.BUILD_COMMIT),
       });
     }
 

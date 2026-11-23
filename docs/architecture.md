@@ -153,7 +153,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 | Route                                  | Auth   | Notes                                                             |
 | :------------------------------------- | :----- | :---------------------------------------------------------------- |
-| `GET /api/health`                      | public | Liveness only; reports `authRequired`.                            |
+| `GET /api/health`                      | public | Liveness; reports `authRequired` and build provenance.            |
 | `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
 | `GET /api/summary`                     | Bearer | Per-group headroom percentages and the cached `agy` version.      |
 | `GET /api/alerts`                      | Bearer | Active alert state.                                               |
@@ -196,6 +196,8 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 "Bearer" means the `WEB_UI_AUTH_TOKEN` control-plane check; "Runner" means the request carries a runner credential and is exempt from the web token. The HTML shell and hashed assets are served unauthenticated — the client-side `<ControlPlaneGate />` (§3.9) is what withholds the dashboard DOM, so no API data is reachable without the token.
 
+`GET /api/health` also carries **build provenance**: `buildChannel` (`release` | `main` | `dev`, failing open to `dev` when `BUILD_CHANNEL` is unset or unrecognised) and `buildCommit` (the 7-character short SHA, or `null`). Both are baked into the coordinator image as Docker build args, which CI supplies per ref — `release` on tag builds, `main` on branch builds. The dashboard reads them to label the sidebar version indicator: a `main` build renders `main · <sha>` and compares its SHA against the newest commit on `main` (a different short SHA is the update signal, since commits have no ordering to compare), while `release` and `dev` builds keep the `v{APP_VERSION}` label and the GitHub Releases semver comparison. `src/shared/build.ts` owns the validation and label rules for both sides.
+
 ### 3.9. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
 
 In the Web UI, unauthenticated requests or active lockouts completely unmount the application shell:
@@ -225,12 +227,13 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 ## 5. Subsystem Breakdown
 
-1. **Configuration Store (`src/config/`)**: Manages the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`). Emits granular change events over an in-memory event bus.
+1. **Configuration Store (`src/config/`)**: `schema.ts` holds `CONFIG_REGISTRY`, the single declaration of every knob (env spelling, validator, built-in default, secret flag, description), from which `BUILTIN_DEFAULTS`, the env↔key maps, the secret list and the env parser are all derived; `docs.ts` renders the env reference table and `.env.example` from that same table. `store.ts` applies the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`) and emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
 3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`). Mutation feedback routes through `frontend/src/state/toastStore.ts` (`pushToast`, `pushSuccessToast`, `pushErrorToast`), and an error toast also writes to `console.error`; view-level load failures stay inline in the view so an empty or degraded surface still explains itself.
-6. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
+6. **Shared Wire Contracts (`src/shared/`)**: `contracts.ts` declares every payload the HTTP API emits (`SwarmTask`, `BacklogTaskRecord`, `RoutineTaskRecord`, `QuotaSnapshot`, `SentryAlertState`, `AlertEvent`, log entries, and the PR/tier/status enums) and `policies.ts` owns the PR-policy table (value, select label, hint). Both are type-only and free of runtime imports so the Vite client bundles them directly; backend modules re-export the declarations and `frontend/src/types.ts` is a pure re-export of the contract plus genuinely frontend-only shapes. Zod schemas stay beside their producers purely as validators.
+7. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
 
 ---
 
@@ -436,6 +439,22 @@ dashboard task rows, the inspector and the completion embed's Deliverables field
 quoted in the agent's prose are never scraped — the deliverable comes from the API, filtered by creation
 window and footer, so a mention in the output cannot be mistaken for a filed issue.
 
+The deliverable also names the task. A run that carries no human-typed title adopts one from what it
+produced: the subject of the newest commit the agent wrote (read before the runner's own fallback
+commit, whose message is derived from the dispatch rather than from the work) or the title of the issue
+it filed, rendered as `<first title> (+N)` when several were. That settled title becomes the PR title,
+and the branch is renamed to `buildContinuationBranchName(task.id, resolvedTitle)` with `git branch -m`
+immediately before the push, so the branch slug, the commit subject and the PR title describe the same
+work. An explicit title typed on an immediate or backlog dispatch outranks all of it, and every routine
+run settles this way because the routine's own name is preserved on `origin_title`. A branch that is
+discarded — a zero-diff run, an `issues_only` run that filed its issues, or any policy suppression —
+reports `branchName: null`, which clears `swarm_tasks.branch_name` to `NULL` instead of leaving the row
+pointing at a branch that no longer exists.
+
+The dashboard renders that outcome as a derived status rather than a new one: a `completed` task with
+issue deliverables and no PR shows `Issue Filed` (or `Issues Filed`) in the iris tone, while still
+belonging to the Completed filter, because the stored status remains `completed`.
+
 ### 7.4. Repository Clone Strategy
 
 Runners clone through a local bare mirror cache keyed by the clone URL:
@@ -550,6 +569,7 @@ agylity/
 │   ├── sentry/                 # Connect-RPC client, model pools & evaluator
 │   ├── storage/                # Native node:sqlite database & AES-256-GCM crypto
 │   ├── web/                    # Native HTTP server & REST API routes
+│   ├── shared/                 # Wire contracts, PR policies & model catalog shared with the client
 │   ├── version.ts              # Shared version constant, read from package.json
 │   ├── runner-cli.ts           # Standalone headless swarm runner CLI
 │   └── index.ts                # Daemon bootstrap & graceful shutdown coordinator

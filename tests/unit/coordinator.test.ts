@@ -423,6 +423,79 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         cleanup();
       }
     });
+
+    it('derives the queue title from the prompt when no title is supplied', () => {
+      const { dir, cleanup } = makeTempDir('orch_title_enqueue_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const cascade = [{ model: 'gemini-4-argon', effort: 'high' }] as const;
+
+        // The dashboard row and the branch/commit/PR surfaces share one title, so a dispatch prompt
+        // written as a Markdown heading must land as the readable title, markers stripped.
+        const derived = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: '## Fix the parser\n\nThe body is not the title.',
+          cascade,
+        });
+        assert.equal(derived.title, 'Fix the parser');
+
+        // An explicit title still wins over the prompt's heading.
+        const explicit = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Explicit queue title',
+          prompt: '## Ignored heading\n\nbody',
+          cascade,
+        });
+        assert.equal(explicit.title, 'Explicit queue title');
+
+        // The old literal fallback is gone: a prompt with nothing to say yields the shared default.
+        const blank = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: '   \n\n\t',
+          cascade,
+        });
+        assert.equal(blank.title, 'Untitled task');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('maps a legacy blank-title row through the shared title helper', () => {
+      const { dir, cleanup } = makeTempDir('orch_title_legacy_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const cascade = [{ model: 'gemini-4-argon', effort: 'high' }] as const;
+        const markdown = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Placeholder',
+          prompt: '## Fix the parser\n\nbody',
+          cascade,
+        });
+        const empty = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Placeholder',
+          prompt: '   ',
+          cascade,
+        });
+
+        // Rows written before every task carried a title store an empty string, not NULL.
+        const blankTitle = db.getRawDb().prepare('UPDATE swarm_tasks SET title = ? WHERE id = ?');
+        blankTitle.run('', markdown.id);
+        blankTitle.run('', empty.id);
+
+        // Neither the first 100 chars of the prompt nor the literal 'Task' may come back.
+        assert.equal(queue.getTask(markdown.id)?.title, 'Fix the parser');
+        assert.equal(queue.getTask(empty.id)?.title, 'Untitled task');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

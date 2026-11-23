@@ -112,6 +112,10 @@ CMD ["node", "--no-warnings", "dist/runner-cli.js"]
 # ------------------------------------------------------------------------------
 FROM ${BASE_IMAGE} AS coordinator
 
+# Build provenance for the dashboard's version indicator; CI passes one channel per ref.
+ARG BUILD_CHANNEL=dev
+ARG BUILD_COMMIT=
+
 # Copy package manifests and production dependencies directly from prod-deps stage (instant)
 COPY --chown=node:node package*.json ./
 COPY --chown=node:node --from=prod-deps /app/node_modules ./node_modules
@@ -135,7 +139,9 @@ ENV NODE_ENV=production \
     QUOTA_STATE_FILE_PATH=/app/data/state.json \
     WEB_UI_ENABLED=true \
     WEB_UI_PORT=8484 \
-    WEB_UI_HOST=0.0.0.0
+    WEB_UI_HOST=0.0.0.0 \
+    BUILD_CHANNEL=$BUILD_CHANNEL \
+    BUILD_COMMIT=$BUILD_COMMIT
 
 # Persistent volume for SQLite database and state
 VOLUME ["/app/data"]

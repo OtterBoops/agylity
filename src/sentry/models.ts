@@ -1,5 +1,15 @@
 import { z } from 'zod';
 import { POOL_GROUP_LABELS, upgradePoolGroupId, type PoolGroup } from '../shared/models.js';
+import type {
+  BurnSample,
+  QuotaBucket,
+  QuotaBurnProjection,
+  QuotaSnapshot,
+} from '../shared/contracts.js';
+
+// Quota payloads are declared once in the shared wire contracts; the schemas below validate the
+// language-server and state-file shapes that feed them.
+export type { BurnSample, QuotaBucket, QuotaBurnProjection, QuotaSnapshot };
 
 export const QuotaInfoSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
@@ -62,9 +72,7 @@ export const QuotaBucketSchema = z.object({
   hoursUntilReset: z.number().min(0).nullable().optional(),
   description: z.string().optional(),
   disabled: z.boolean().optional(),
-});
-
-export type QuotaBucket = z.infer<typeof QuotaBucketSchema>;
+}) satisfies z.ZodType<QuotaBucket>;
 
 export const QuotaSnapshotSchema = z.object({
   poolId: z.string(),
@@ -86,9 +94,7 @@ export const QuotaSnapshotSchema = z.object({
       hoursUntilFloor: z.number().nullable(),
     })
     .optional(),
-});
-
-export type QuotaSnapshot = z.infer<typeof QuotaSnapshotSchema>;
+}) satisfies z.ZodType<QuotaSnapshot>;
 
 export const RawQuotaBucketSchema = z.object({
   bucketId: z.string(),
@@ -180,18 +186,6 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   const hours = diffMs / (1000 * 60 * 60);
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
 };
-
-export interface BurnSample {
-  at: string;
-  remainingFraction: number;
-  resetTime: string;
-}
-
-export interface QuotaBurnProjection {
-  burnRatePerHour: number;
-  projectedRemainingAtResetPercent: number;
-  hoursUntilFloor: number | null;
-}
 
 export const BURN_FLOOR_PERCENT = 10;
 

@@ -17,6 +17,12 @@ import {
   resolveGithubRepoSlug,
 } from '../../src/web/controllers/backlog.js';
 import { Coordinator } from '../../src/coordinator/coordinator.js';
+import {
+  formatBuildLabel,
+  isNewerMainCommit,
+  normalizeBuildCommit,
+  resolveBuildChannel,
+} from '../../src/shared/build.js';
 import type { Logger } from '../../src/logs/logger.js';
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
@@ -2459,6 +2465,80 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('persists a settled title, issue URLs, and a cleared branch name', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_deliverable_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: {
+              repositoryId: 'agylity',
+              prompt: 'Report findings as issues',
+              allowOverage: true,
+            },
+          })
+          .json<any>();
+
+        // The claim is the coordinator's, so the runner's later reports are the ones under test.
+        await ky.post(`${baseUrl}/api/tasks/poll`, {
+          headers: authHeaders,
+          json: { runnerId: 'runner-a', timeoutMs: 0 },
+        });
+
+        const executing = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'executing',
+              runnerId: 'runner-a',
+              branchName: 'agy/abc12345-report-findings',
+            },
+          })
+          .json<any>();
+        assert.equal(executing.task.branchName, 'agy/abc12345-report-findings');
+
+        const issueUrls = ['https://github.com/OtterBoops/agylity/issues/21'];
+        const reported = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'completed',
+              runnerId: 'runner-a',
+              branchName: null,
+              title: 'Parser drops the trailing token',
+              issueUrls,
+            },
+          })
+          .json<any>();
+
+        assert.equal(reported.success, true);
+        assert.equal(reported.task.title, 'Parser drops the trailing token');
+        assert.deepEqual(reported.task.issueUrls, issueUrls);
+        // A discarded branch is cleared, not merely left at whatever the executing report said.
+        assert.equal(reported.task.branchName, undefined);
+
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.title, 'Parser drops the trailing token');
+        assert.deepEqual(task?.issueUrls, issueUrls);
+        assert.equal(task?.branchName, undefined);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
@@ -4290,5 +4370,97 @@ describe('Web: Antigravity CLI version reporting', () => {
         cleanup();
       }
     });
+  });
+});
+
+describe('Web: build channel reporting', () => {
+  const withBuildEnv = async (
+    channel: string | undefined,
+    commit: string | undefined,
+    fn: (port: number) => Promise<void>
+  ): Promise<void> => {
+    const { dir, cleanup } = makeTempDir('web_build_channel_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const previous = { channel: process.env.BUILD_CHANNEL, commit: process.env.BUILD_COMMIT };
+    let server: http.Server | undefined;
+
+    try {
+      if (channel === undefined) delete process.env.BUILD_CHANNEL;
+      else process.env.BUILD_CHANNEL = channel;
+      if (commit === undefined) delete process.env.BUILD_COMMIT;
+      else process.env.BUILD_COMMIT = commit;
+
+      const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+      server = started.server;
+      await fn(started.port);
+    } finally {
+      if (server) await closeWebServer(server);
+      if (previous.channel === undefined) delete process.env.BUILD_CHANNEL;
+      else process.env.BUILD_CHANNEL = previous.channel;
+      if (previous.commit === undefined) delete process.env.BUILD_COMMIT;
+      else process.env.BUILD_COMMIT = previous.commit;
+      store.close();
+      cleanup();
+    }
+  };
+
+  it('reports a main build channel with a seven-character commit on /api/health', async () => {
+    await withBuildEnv('main', '32789fb995558b4a3f017182ed58bbef2c41ed06', async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.status, 'ok');
+      assert.equal(health.buildChannel, 'main');
+      assert.equal(health.buildCommit, '32789fb');
+    });
+  });
+
+  it('reports the release channel unchanged', async () => {
+    await withBuildEnv('release', 'abc1234', async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.buildChannel, 'release');
+      assert.equal(health.buildCommit, 'abc1234');
+    });
+  });
+
+  it('falls back to the dev channel and a null commit when the build args are absent', async () => {
+    await withBuildEnv(undefined, undefined, async (port) => {
+      const health = await ky.get(`http://127.0.0.1:${port}/api/health`).json<any>();
+      assert.equal(health.buildChannel, 'dev');
+      assert.equal(health.buildCommit, null);
+    });
+  });
+});
+
+describe('Shared: build channel helpers', () => {
+  it('accepts only the three known channels and fails open to dev', () => {
+    assert.equal(resolveBuildChannel('release'), 'release');
+    assert.equal(resolveBuildChannel('MAIN'), 'main');
+    assert.equal(resolveBuildChannel('dev'), 'dev');
+    assert.equal(resolveBuildChannel('nightly'), 'dev');
+    assert.equal(resolveBuildChannel(''), 'dev');
+    assert.equal(resolveBuildChannel(undefined), 'dev');
+  });
+
+  it('normalises a commit to seven lowercase hex characters', () => {
+    assert.equal(normalizeBuildCommit('32789FB995558B4A3F017182ED58BBEF2C41ED06'), '32789fb');
+    assert.equal(normalizeBuildCommit('32789fb'), '32789fb');
+    assert.equal(normalizeBuildCommit('32789f'), null);
+    assert.equal(normalizeBuildCommit('not-a-sha'), null);
+    assert.equal(normalizeBuildCommit(null), null);
+  });
+
+  it('labels a main build with its short SHA and every other channel with the version', () => {
+    assert.equal(formatBuildLabel('main', '0.6.6', '32789fb'), 'main · 32789fb');
+    assert.equal(formatBuildLabel('main', '0.6.6', null), 'v0.6.6');
+    assert.equal(formatBuildLabel('release', '0.6.6', '32789fb'), 'v0.6.6');
+    assert.equal(formatBuildLabel('dev', '0.6.6', '32789fb'), 'v0.6.6');
+  });
+
+  it('treats any different main commit as newer, never as an ordering', () => {
+    assert.equal(isNewerMainCommit('32789fb', '9e1c0aa'), true);
+    assert.equal(isNewerMainCommit('9e1c0aa', '32789fb'), true);
+    assert.equal(isNewerMainCommit('32789fb', '32789fb'), false);
+    assert.equal(isNewerMainCommit('32789fb', '32789fb0000000000'), false);
+    assert.equal(isNewerMainCommit('32789fb', null), false);
+    assert.equal(isNewerMainCommit(null, '9e1c0aa'), false);
   });
 });

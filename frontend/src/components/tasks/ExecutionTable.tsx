@@ -1,11 +1,12 @@
 import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../../types';
+import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { TableHeadRow, TableRow, TableShell, TH } from '../TableShell';
 import { ACTIVE_TASK_STATUSES } from './badges';
-import { formatCompactDateTime, statusDotTextClass, summarizeIssueLinks } from './executionRow';
-import { statusLabel } from './statusLabels';
+import { formatCompactDateTime, githubPrLabel, summarizeIssueLinks } from './executionRow';
+import { taskDisplayDotTextClass, taskDisplayStatusLabel } from './statusLabels';
 import { moveRowIndex, resolveRowKey } from './TaskKeyboardNav';
 
 interface ExecutionTableProps {
@@ -83,12 +84,14 @@ export const ExecutionTable = ({
         <caption class="sr-only">Execution history</caption>
         <colgroup>
           {selectable && <col class="w-[36px]" />}
-          <col class="w-[64px]" />
+          <col class="w-[56px]" />
           <col />
-          <col class="w-[131px]" />
-          <col class="w-[128px]" />
-          <col class="w-[150px]" />
-          <col class="w-[230px]" />
+          <col class="w-[124px]" />
+          <col class="w-[120px]" />
+          <col class="w-[140px]" />
+          <col class="w-[165px]" />
+          <col class="w-[72px]" />
+          <col class="w-[88px]" />
         </colgroup>
         <thead>
           <TableHeadRow>
@@ -108,14 +111,16 @@ export const ExecutionTable = ({
             <TH>Status</TH>
             <TH>When</TH>
             <TH>Repo</TH>
-            <TH>Model &middot; Duration</TH>
+            <TH>Model</TH>
+            <TH class="text-right">Duration</TH>
+            <TH class="text-right">Output</TH>
           </TableHeadRow>
         </thead>
         <tbody>
           {tasks.length === 0 ? (
             <tr>
               <td
-                colSpan={selectable ? 7 : 6}
+                colSpan={selectable ? 9 : 8}
                 class="px-2.5 py-[32px] text-center text-sm text-pine-subtle"
               >
                 {loadError ? (
@@ -141,6 +146,7 @@ export const ExecutionTable = ({
               const isActive = task.id === activeTaskId;
               const tabbable = isActive || (activeTaskId === null && index === 0);
               const issues = summarizeIssueLinks(task.issueUrls);
+              const title = resolveTaskTitle(task.title, task.prompt);
               return (
                 <TableRow
                   key={task.id}
@@ -173,19 +179,19 @@ export const ExecutionTable = ({
                   <td class={`${CELL} font-mono text-xs text-pine-muted`}>
                     #{task.taskNumber ?? 0}
                   </td>
-                  <td class={`${CELL} text-sm text-pine-text`} title={task.title || task.prompt}>
-                    {task.title || 'Task'}
+                  <td class={`${CELL} text-sm text-pine-text`} title={title}>
+                    {title}
                   </td>
                   <td class={CELL}>
                     <span class="flex items-center gap-1.5">
-                      <span class={statusDotTextClass(task.status)}>
+                      <span class={taskDisplayDotTextClass(task)}>
                         <span class="inline-block size-1.5 rounded-full bg-current" />
                       </span>
                       <span
                         class="min-w-0 truncate text-xs tracking-wider text-pine-subtle uppercase"
                         title={task.status}
                       >
-                        {statusLabel(task.status)}
+                        {taskDisplayStatusLabel(task)}
                       </span>
                     </span>
                   </td>
@@ -201,49 +207,57 @@ export const ExecutionTable = ({
                         press x again to abort
                       </span>
                     ) : (
-                      <span class="flex min-w-0 items-center gap-1.5">
-                        <span class="min-w-0 flex-1 truncate font-mono text-xs text-pine-text">
-                          {task.model}
-                        </span>
-                        <span class="shrink-0 font-mono text-xs text-pine-subtle tabular-nums">
-                          {formatDuration(task.durationMs)}
-                        </span>
-                        {task.prUrl && (
-                          <a
-                            href={task.prUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(event) => event.stopPropagation()}
-                            aria-label="Open pull request"
-                            class="inline-flex shrink-0 items-center text-pine-iris hover:text-pine-foam"
-                          >
-                            <Icon icon={faExternalLinkAlt} class="size-4" />
-                          </a>
-                        )}
-                        {issues.links.map((issue) => (
-                          <a
-                            key={issue.url}
-                            href={issue.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            onClick={(event) => event.stopPropagation()}
-                            aria-label={`Open issue ${issue.label}`}
-                            title={`Open issue ${issue.label}`}
-                            class="inline-flex shrink-0 items-center font-mono text-xs text-pine-iris hover:text-pine-foam"
-                          >
-                            {issue.label}
-                          </a>
-                        ))}
-                        {issues.overflow > 0 && (
-                          <span
-                            class="shrink-0 font-mono text-xs text-pine-subtle"
-                            title={`${issues.overflow} more issue${issues.overflow === 1 ? '' : 's'}`}
-                          >
-                            +{issues.overflow}
-                          </span>
-                        )}
+                      <span class="block truncate font-mono text-xs text-pine-text">
+                        {task.model}
                       </span>
                     )}
+                  </td>
+                  <td class={`${CELL} text-right font-mono text-xs text-pine-subtle tabular-nums`}>
+                    {formatDuration(task.durationMs)}
+                  </td>
+                  <td class={`${CELL} text-right`}>
+                    <div class="flex items-center justify-end gap-1.5">
+                      {task.prUrl ? (
+                        <a
+                          href={task.prUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label="Open pull request"
+                          class="inline-flex items-center gap-1 font-mono text-xs text-pine-iris hover:text-pine-foam"
+                        >
+                          {githubPrLabel(task.prUrl)}
+                          <Icon icon={faExternalLinkAlt} class="size-3.5" />
+                        </a>
+                      ) : issues.links.length > 0 ? (
+                        <>
+                          {issues.links.map((issue) => (
+                            <a
+                              key={issue.url}
+                              href={issue.url}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={(event) => event.stopPropagation()}
+                              aria-label={`Open issue ${issue.label}`}
+                              title={`Open issue ${issue.label}`}
+                              class="inline-flex shrink-0 items-center font-mono text-xs text-pine-iris hover:text-pine-foam"
+                            >
+                              {issue.label}
+                            </a>
+                          ))}
+                          {issues.overflow > 0 && (
+                            <span
+                              class="shrink-0 font-mono text-xs text-pine-subtle"
+                              title={`${issues.overflow} more issue${issues.overflow === 1 ? '' : 's'}`}
+                            >
+                              +{issues.overflow}
+                            </span>
+                          )}
+                        </>
+                      ) : (
+                        <span class="text-pine-subtle">{'\u2014'}</span>
+                      )}
+                    </div>
                   </td>
                 </TableRow>
               );

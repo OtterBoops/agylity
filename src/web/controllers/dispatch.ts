@@ -12,6 +12,7 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
+import type { RunnersResponse } from '../../shared/contracts.js';
 import { extractClientIp } from '../ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
@@ -516,8 +517,11 @@ export const handleTaskStatus = async (
   const result = await coordinator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
     runnerId: auth.runner?.runnerId ?? toStringOrUndefined(payload.runnerId),
-    branchName: toStringOrUndefined(payload.branchName),
+    // A runner that discarded its branch sends null, which clears the column instead of keeping it.
+    branchName: payload.branchName === null ? null : toStringOrUndefined(payload.branchName),
     prUrl: toStringOrUndefined(payload.prUrl),
+    issueUrls: Array.isArray(payload.issueUrls) ? toStringArray(payload.issueUrls) : undefined,
+    title: toStringOrUndefined(payload.title),
     output: toStringOrUndefined(payload.output),
     error: toStringOrUndefined(payload.error),
     durationMs: toFiniteNumberOrUndefined(payload.durationMs),
@@ -613,7 +617,8 @@ export const handleGetRunners = (
   const coordinator = resolveCoordinator(options);
   const runners = coordinator.listRunners();
   const credentialsAvailable = Boolean(options.configStore.resolveConfig().githubToken?.trim());
-  return sendJson(res, 200, { runners, credentialsAvailable }, { 'Cache-Control': 'no-store' });
+  const payload: RunnersResponse = { runners, credentialsAvailable };
+  return sendJson(res, 200, payload, { 'Cache-Control': 'no-store' });
 };
 
 export const handleCreateRegistrationToken = async (

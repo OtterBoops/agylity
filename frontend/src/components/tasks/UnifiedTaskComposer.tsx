@@ -1,5 +1,6 @@
 import { faChevronDown } from '@fortawesome/free-solid-svg-icons';
 import { useEffect, useState } from 'preact/hooks';
+import { PR_POLICY_HINTS } from '../../../../src/shared/policies.ts';
 import { PR_POLICY_OPTIONS, resolveModelEffort } from '../../config/fields';
 import { useModelCatalog } from '../../state/modelCatalogStore';
 import type {
@@ -85,13 +86,6 @@ const fieldClass =
   'w-full rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text transition-colors outline-none focus:border-pine-iris';
 const labelClass = 'text-xs font-medium text-pine-subtle';
 const hintClass = 'text-xs text-pine-subtle';
-
-const PR_POLICY_HINTS: Record<PrPolicy, string> = {
-  docs_only: 'PRs allowed for docs only — code changes ship as an issue',
-  issues_only: 'issues only — no code changes or PRs; file GitHub Issues',
-  all: 'all files — code and doc changes open a PR',
-  none: 'none — no pull requests, no branch pushes',
-};
 
 const parseBounded = (raw: string, min: number, max: number): number | null => {
   const trimmed = raw.trim();

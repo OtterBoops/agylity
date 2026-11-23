@@ -46,6 +46,16 @@ variable "BASE_IMAGE" {
   default = "base"
 }
 
+# Baked into the coordinator image so /api/health can report which channel it was built from.
+# CI sets both per ref: `release` on tags, `main` on main-branch pushes.
+variable "BUILD_CHANNEL" {
+  default = "dev"
+}
+
+variable "BUILD_COMMIT" {
+  default = ""
+}
+
 group "default" {
   targets = ["coordinator", "runner"]
 }
@@ -55,7 +65,9 @@ target "_common" {
   dockerfile = "Dockerfile"
   contexts   = DIST_CONTEXT == "" ? {} : { dist = DIST_CONTEXT }
   args = {
-    BASE_IMAGE = BASE_IMAGE
+    BASE_IMAGE    = BASE_IMAGE
+    BUILD_CHANNEL = BUILD_CHANNEL
+    BUILD_COMMIT  = BUILD_COMMIT
   }
   output     = ["type=image,push=${PUSH},compression=zstd,oci-mediatypes=true"]
   labels = {

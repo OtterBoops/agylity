@@ -6,6 +6,8 @@ import {
   DEFAULT_DISPATCH_MODEL,
   modelSupportsEffort,
 } from '../../../src/shared/models.ts';
+import type { PrPolicy } from '../../../src/shared/contracts.ts';
+import { PR_POLICIES } from '../../../src/shared/policies.ts';
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = CANONICAL_AGY_MODELS.map(
   (model) => ({ value: model.id, label: model.label })
@@ -30,15 +32,9 @@ export const EFFORT_CODES: Record<ReasoningEffort, string> = {
   xhigh: 'XH',
 };
 
-export const PR_POLICY_OPTIONS: Array<{
-  value: 'docs_only' | 'issues_only' | 'all' | 'none';
-  label: string;
-}> = [
-  { value: 'all', label: 'All files (Allow code & doc PRs)' },
-  { value: 'docs_only', label: 'Documentation only (*.md, docs/)' },
-  { value: 'issues_only', label: 'Issues only (No PRs or code changes)' },
-  { value: 'none', label: 'None (Disable autonomous PRs & branch pushes)' },
-];
+export const PR_POLICY_OPTIONS: Array<{ value: PrPolicy; label: string }> = PR_POLICIES.map(
+  (policy) => ({ value: policy.value, label: policy.label })
+);
 
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
 

@@ -17,8 +17,24 @@ import {
   type IconDefinition,
 } from '@fortawesome/free-solid-svg-icons';
 import { Icon } from './Icon';
+import { checkHealth } from '../api';
 import { describeProbe } from '../utils/probe';
-import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
+import {
+  APP_VERSION,
+  fetchLatestMainCommit,
+  fetchLatestRelease,
+  isNewerVersion,
+  mainCommitUrl,
+  mainCompareUrl,
+} from '../utils/version';
+import {
+  DEFAULT_BUILD_CHANNEL,
+  formatBuildLabel,
+  isNewerMainCommit,
+  normalizeBuildCommit,
+  resolveBuildChannel,
+  type BuildChannel,
+} from '../../../src/shared/build.ts';
 import { formatTime, useTimeFormat } from '../utils/time';
 import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
@@ -100,32 +116,68 @@ export const Sidebar = ({
     });
   };
 
+  // Provenance lives on the coordinator, not the bundle: one client build serves every channel.
+  const [build, setBuild] = useState<{
+    channel: BuildChannel;
+    commit: string | null;
+  } | null>(null);
+
   const [updateInfo, setUpdateInfo] = useState<{
     hasUpdate: boolean;
-    latestVersion: string | null;
-    releaseUrl: string | null;
+    label: string | null;
+    title: string | null;
+    url: string | null;
   }>({
     hasUpdate: false,
-    latestVersion: null,
-    releaseUrl: null,
+    label: null,
+    title: null,
+    url: null,
   });
 
   useEffect(() => {
     let mounted = true;
-    fetchLatestRelease().then((rel) => {
+    checkHealth().then((health) => {
       if (!mounted) return;
-      if (rel && isNewerVersion(APP_VERSION, rel.latest)) {
-        setUpdateInfo({
-          hasUpdate: true,
-          latestVersion: rel.latest,
-          releaseUrl: rel.url,
-        });
-      }
+      setBuild({
+        channel: resolveBuildChannel(health.buildChannel),
+        commit: normalizeBuildCommit(health.buildCommit),
+      });
     });
     return () => {
       mounted = false;
     };
   }, []);
+
+  // A main build compares commits; every other channel compares release tags.
+  useEffect(() => {
+    if (!build) return;
+    let mounted = true;
+    if (build.channel === 'main' && build.commit) {
+      const current = build.commit;
+      fetchLatestMainCommit().then((latest) => {
+        if (!mounted || !latest || !isNewerMainCommit(current, latest.sha)) return;
+        setUpdateInfo({
+          hasUpdate: true,
+          label: latest.sha,
+          title: `New main build ${latest.sha} available`,
+          url: mainCompareUrl(current, latest.sha),
+        });
+      });
+    } else {
+      fetchLatestRelease().then((rel) => {
+        if (!mounted || !rel || !isNewerVersion(APP_VERSION, rel.latest)) return;
+        setUpdateInfo({
+          hasUpdate: true,
+          label: `v${rel.latest}`,
+          title: `New version v${rel.latest} available`,
+          url: rel.url,
+        });
+      });
+    }
+    return () => {
+      mounted = false;
+    };
+  }, [build]);
 
   const monitorItems: NavItem[] = [
     { href: '/overview', label: 'Overview', icon: faChartPie },
@@ -172,8 +224,18 @@ export const Sidebar = ({
   const probeAtLabel = lastProbeAt
     ? formatTime(lastProbeAt, { includeSeconds: false, timeFormat })
     : null;
-  const railTitle = `${probeStatus} · ${probeAtLabel ? `last probe ${probeAtLabel}` : 'no probe yet'} · v${APP_VERSION}${
-    updateInfo.hasUpdate ? ` · update v${updateInfo.latestVersion} available` : ''
+  const buildChannel = build?.channel ?? DEFAULT_BUILD_CHANNEL;
+  const buildCommit = build?.commit ?? null;
+  const versionLabel = formatBuildLabel(buildChannel, APP_VERSION, buildCommit);
+  // The 4rem rail cannot fit `main · <sha>`, so it shows the bare SHA and leaves the full
+  // channel label to the tooltip and the expanded footer.
+  const railVersionLabel = buildChannel === 'main' && buildCommit ? buildCommit : `v${APP_VERSION}`;
+  const versionHref =
+    buildChannel === 'main' && buildCommit
+      ? mainCommitUrl(buildCommit)
+      : 'https://github.com/OtterBoops/agylity/releases';
+  const railTitle = `${probeStatus} · ${probeAtLabel ? `last probe ${probeAtLabel}` : 'no probe yet'} · ${versionLabel}${
+    updateInfo.title ? ` · ${updateInfo.title}` : ''
   }`;
 
   const renderNavSection = (
@@ -277,7 +339,7 @@ export const Sidebar = ({
           setMobileOpen(false);
           mobileToggleRef.current?.focus();
         }}
-        class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] overscroll-contain border-r border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 md:hidden"
+        class="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-72 max-w-[85vw] translate-x-full overscroll-contain border-l border-pine-highlight bg-pine-surface p-0 text-pine-text opacity-0 transition-[translate,opacity,display,overlay] transition-discrete duration-200 ease-out backdrop:bg-black/0 backdrop:transition-[background-color,display,overlay] backdrop:transition-discrete backdrop:duration-200 open:translate-x-0 open:opacity-100 open:backdrop:bg-black/60 motion-reduce:transition-none motion-reduce:backdrop:transition-none md:hidden starting:open:translate-x-full starting:open:opacity-0 starting:open:backdrop:bg-black/0"
         onClick={dialogBackdropClickHandler(mobileNavRef, closeMobileNav)}
       >
         <div class="flex size-full flex-col gap-4 overflow-y-auto overscroll-contain p-4">
@@ -324,23 +386,22 @@ export const Sidebar = ({
 
             <div class="flex items-center justify-between border-t border-pine-highlight/60 pt-2 font-mono text-xs text-pine-muted">
               <a
-                href="https://github.com/OtterBoops/agylity/releases"
+                href={versionHref}
                 target="_blank"
                 rel="noopener noreferrer"
                 class="hover:text-pine-text"
               >
-                v{APP_VERSION}
+                {versionLabel}
               </a>
               {updateInfo.hasUpdate ? (
                 <a
-                  href={
-                    updateInfo.releaseUrl || 'https://github.com/OtterBoops/agylity/releases/latest'
-                  }
+                  href={updateInfo.url || 'https://github.com/OtterBoops/agylity/releases/latest'}
                   target="_blank"
                   rel="noopener noreferrer"
+                  title={updateInfo.title ?? undefined}
                   class="flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris hover:bg-pine-iris/30"
                 >
-                  <span>Update v{updateInfo.latestVersion}</span>
+                  <span>Update {updateInfo.label}</span>
                   <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
                 </a>
               ) : (
@@ -433,27 +494,28 @@ export const Sidebar = ({
 
               <div class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle">
                 <a
-                  href="https://github.com/OtterBoops/agylity/releases"
+                  href={versionHref}
                   target="_blank"
                   rel="noopener noreferrer"
                   class="inline-flex items-center gap-1 transition-colors hover:text-pine-text"
-                  title="Agylity Releases on GitHub"
+                  title={
+                    buildChannel === 'main' && buildCommit
+                      ? `Commit ${buildCommit} on main`
+                      : 'Agylity Releases on GitHub'
+                  }
                 >
-                  <span>v{APP_VERSION}</span>
+                  <span>{versionLabel}</span>
                 </a>
 
                 {updateInfo.hasUpdate ? (
                   <a
-                    href={
-                      updateInfo.releaseUrl ||
-                      'https://github.com/OtterBoops/agylity/releases/latest'
-                    }
+                    href={updateInfo.url || 'https://github.com/OtterBoops/agylity/releases/latest'}
                     target="_blank"
                     rel="noopener noreferrer"
                     class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris transition-colors hover:bg-pine-iris/30"
-                    title={`New version v${updateInfo.latestVersion} available`}
+                    title={updateInfo.title ?? undefined}
                   >
-                    <span>Update v{updateInfo.latestVersion}</span>
+                    <span>Update {updateInfo.label}</span>
                     <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
                   </a>
                 ) : (
@@ -483,7 +545,7 @@ export const Sidebar = ({
                 <span class={`relative inline-flex size-2.5 rounded-full ${probeColor}`} />
               </span>
               <span class="max-w-full truncate font-mono text-xs leading-none text-pine-subtle">
-                v{APP_VERSION}
+                {railVersionLabel}
               </span>
             </div>
           )}

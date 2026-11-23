@@ -52,6 +52,7 @@ import {
 } from './queue.js';
 import { buildContinuationBranchName } from '../runner/policy.js';
 import { upgradePoolGroupId } from '../shared/models.js';
+import { resolveTaskTitle } from '../shared/titles.js';
 import type { ModelCatalogProvider } from './catalog.js';
 
 // A queued backlog task that no runner claims in this window returns to its origin, so a pool dip or
@@ -1126,7 +1127,10 @@ export class Coordinator {
       verifyCommand: req.verifyCommand,
     });
 
-    const plannedBranch = buildContinuationBranchName(task.id, task.prompt);
+    const plannedBranch = buildContinuationBranchName(
+      task.id,
+      resolveTaskTitle(task.title, task.prompt)
+    );
 
     this.log.info(
       'Task %s enqueued for %s (scheduleMode=%s, model=%s)',
