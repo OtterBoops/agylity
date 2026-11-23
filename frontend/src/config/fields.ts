@@ -118,6 +118,13 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     hint: 'Minimum remaining pool quota required to trigger scheduled maintenance routines (default: 30%).',
   },
   {
+    key: 'backlogMinHeadroomPercent',
+    label: 'Backlog minimum headroom (%)',
+    type: 'number',
+    placeholder: '40',
+    hint: 'Minimum remaining pool quota required to spawn a backlog task (default: 40%). The global AI safety floor still applies whenever it is higher.',
+  },
+  {
     key: 'githubBacklogLabel',
     label: 'GitHub backlog label',
     type: 'text',

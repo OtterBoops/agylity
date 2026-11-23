@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
+import type { AppConfig } from '../../src/config/schema.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import {
@@ -13,20 +14,26 @@ import {
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
-const pool = (
+const poolAt = (
   poolGroup: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
-  fraction: number
+  fraction: number,
+  hoursUntilReset: number
 ): QuotaSnapshot =>
   ({
     poolId: poolGroup,
     poolGroup,
     displayName: poolGroup,
     remainingFraction: fraction,
-    resetTime: new Date(Date.now() + 5 * 3600_000).toISOString(),
-    hoursUntilReset: 5,
+    resetTime: new Date(Date.now() + hoursUntilReset * 3600_000).toISOString(),
+    hoursUntilReset,
   }) as QuotaSnapshot;
 
-const makeCoordinator = (dir: string) => {
+const pool = (
+  poolGroup: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
+  fraction: number
+): QuotaSnapshot => poolAt(poolGroup, fraction, 5);
+
+const makeCoordinator = (dir: string, overrides: Partial<AppConfig> = {}) => {
   const db = new AppDatabase(path.join(dir, 'test.db'));
   const configStore = new ConfigStore(db, {
     coordinatorEnabled: true,
@@ -36,6 +43,7 @@ const makeCoordinator = (dir: string) => {
       'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
       'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
     },
+    ...overrides,
   });
   const coordinator = new Coordinator({ configStore });
   return { db, configStore, coordinator };
@@ -245,6 +253,42 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     }
   });
 
+  it('spawns a routine inside its own 24h window even when the global 4h/30% pair refuses it', async () => {
+    const { dir, cleanup } = makeTempDir('tier_routine_window_');
+    const { db, coordinator } = makeCoordinator(dir, {
+      quotaBurnMaxHours: 4,
+      quotaBurnMinHeadroomPercent: 30,
+      minDispatchHeadroomPercent: 10,
+    });
+    try {
+      coordinator.queue.createRoutineTask({
+        title: 'Wide-window sweep',
+        prompt: 'Sweep the repo',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        triggerBeforeResetHours: 24,
+        minHeadroomPercent: 10,
+      });
+
+      // 20h to reset at 20%: outside the global 4h window and below its 30% floor, so the old
+      // claim-time gate would have parked the task forever. The routine's own 24h/10% pair wins.
+      const spawned = await coordinator.triggerEligibleAutonomousTasks([
+        poolAt('gemini-hydrogen', 0.2, 20),
+      ]);
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0]?.tier, 'routine');
+      assert.equal(spawned[0]?.scheduleMode, 'immediate');
+
+      const claimed = await coordinator.pollForTask({ runnerId: 'runner-1', timeoutMs: 0 });
+      assert.equal(claimed?.id, spawned[0]?.id);
+      assert.equal(claimed?.tier, 'routine');
+      assert.equal(claimed?.scheduleMode, 'immediate');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
   it("dispatches a cascade's first hop with that hop's own effort", async () => {
     const { dir, cleanup } = makeTempDir('tier_cascade_first_');
     const { db, coordinator } = makeCoordinator(dir);
@@ -406,6 +450,59 @@ describe('Tier lifecycle: HTTP contracts', () => {
         { throwHttpErrors: false }
       );
       assert.equal(refused.status, 409);
+    } finally {
+      await closeWebServer(server);
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('queues a manual pre_reset dispatch outside the window and claims it once the window opens', async () => {
+    const { dir, cleanup } = makeTempDir('tier_pre_reset_http_');
+    const { db, configStore, coordinator } = makeCoordinator(dir, {
+      quotaBurnMaxHours: 4,
+      quotaBurnMinHeadroomPercent: 30,
+      minDispatchHeadroomPercent: 10,
+    });
+    const { server, port } = await startWebServer({
+      configStore,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      // 40h to reset at 90%: far outside the burn window, so the POST must park the task.
+      coordinator.onQuotaUpdated([poolAt('gemini-hydrogen', 0.9, 40)]);
+
+      const res = await ky.post(`http://127.0.0.1:${port}/api/dispatch`, {
+        json: {
+          repositoryId: 'agylity',
+          prompt: 'Burn the rest of the weekly quota',
+          scheduleMode: 'pre_reset',
+        },
+      });
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as {
+        success: boolean;
+        status?: string;
+        code?: string;
+        taskId?: string;
+      };
+      assert.equal(body.success, true);
+      assert.equal(body.status, 'queued');
+      assert.equal(body.code, 'QUOTA_BURN_QUEUED');
+
+      // Outside the window a runner must get nothing, so the queued burn cannot spend early.
+      const early = await coordinator.pollForTask({ runnerId: 'runner-1', timeoutMs: 0 });
+      assert.equal(early, null);
+
+      // 2h to reset at 65%: inside the 4h window and above the 30% burn floor.
+      coordinator.onQuotaUpdated([poolAt('gemini-hydrogen', 0.65, 2)]);
+
+      const claimed = await coordinator.pollForTask({ runnerId: 'runner-1', timeoutMs: 0 });
+      assert.equal(claimed?.id, body.taskId);
+      assert.equal(claimed?.scheduleMode, 'pre_reset');
+      assert.equal(claimed?.tier, 'immediate');
     } finally {
       await closeWebServer(server);
       db.close();

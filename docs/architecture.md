@@ -304,8 +304,9 @@ Coordinator (Homelab / Cloud)
    - Runner machines connect outbound via HTTPS to `/api/tasks/poll`.
    - Zero inbound listening ports, dynamic DNS punch-through, or port forwarding are required on runner nodes.
 2. **Task Scheduling**: every task carries a `scheduleMode`.
-   - **`immediate`**: run as soon as a matching runner polls.
-   - **`pre_reset`**: opportunistic quota-burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
+   - **`immediate`**: run as soon as a matching runner polls. Both autonomous tiers enqueue this way: the tier's own window and headroom gate have already run at spawn, so a spawned backlog or routine task must be claimable by an idle runner rather than waiting for a reset it was never gated on.
+   - **`pre_reset`**: opportunistic quota-burn, and the mode of an explicit manual `POST /api/dispatch` burn. The task is enqueued immediately but stays unclaimed until the reset deadline is imminent and headroom is ample, so free allowance is used rather than forfeited. Until then it reports `QUOTA_BURN_QUEUED`.
+   - The gate that decides whether to dispatch runs once, at spawn, inside the autonomous evaluator. Claim time enforces only live safety: the `MIN_DISPATCH_HEADROOM_PERCENT` floor (or `allowOverage`), `poolGroupPolicies.dispatchEnabled`, the runner's `leaseGithubTasks` scope, and the task's own `expiresAt`.
 3. **Target Routing by Labels and Repository**:
    - A task declares `requiredLabels`; a runner claims it only if it holds **all** of them, and only if the task's repository is in the runner's own scope. A runner's scope comes from its registration — the poll payload may narrow it, never widen it.
 4. **One Active Task per Runner**:
@@ -335,7 +336,7 @@ Coordinator (Homelab / Cloud)
 | :---------- | :-------------- | :------------------------------------------------------ | :-------------------------------------------------------- |
 | `immediate` | `swarm_tasks`   | Web UI, Discord, `POST /api/dispatch`                   | `coordinator.dispatch`                                    |
 | `backlog`   | `backlog_tasks` | `POST /api/backlog`, GitHub label sync                  | autonomous evaluator, or `POST /api/backlog/:id/dispatch` |
-| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | pre-reset evaluator, or `POST /api/routines/:id/trigger`  |
+| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | autonomous evaluator, or `POST /api/routines/:id/trigger` |
 
 Every `swarm_tasks` row carries `tier`, `origin_id`, `origin_number` and `origin_title`, which is what
 lets the dashboard link a run back to the item that produced it.
@@ -350,20 +351,30 @@ lets the dashboard link a run back to the item that produced it.
 - **Autonomy quench**: the autonomous evaluator runs on each quota probe but stays quiet for two hours
   after an `immediate`-tier dispatch (a human started it now). The timestamp lives in `runtime_state`, so a
   redeploy does not re-arm autonomous work.
-- **Tier 2 (backlog)**: at most one item per probe, gated on effective headroom of at least
-  `max(40, MIN_DISPATCH_HEADROOM_PERCENT)`.
+- **Tier 2 (backlog)**: one run in flight at a time, counted over the queue's terminal-status set
+  (`countActiveBacklogTasks`), and gated once at spawn on `COORDINATOR_ENABLED`, the two-hour autonomy
+  quench, and effective headroom of at least
+  `max(BACKLOG_MIN_HEADROOM_PERCENT, MIN_DISPATCH_HEADROOM_PERCENT)` — the configurable floor defaults
+  to `40`, and the global safety floor still wins when it is higher. The spawn is ready-to-run:
+  `scheduleMode` `immediate` with a two-hour queued deadline, so an idle runner claims it straight
+  away. The `swarm_tasks` insert and the origin's `dispatched` write commit in one transaction
+  (`spawnBacklogTask`), so a crash between them cannot strand an origin behind a run nothing will
+  settle.
 - **Tier 3 (routine)**: sequential looping inside one pool reset cycle — a routine re-triggers as soon
   as its previous run reaches `completed`, while the window and headroom still hold. At most one run is
   in flight per routine at any time (checked against `origin_id`, so a manual trigger counts too), and a
   `failed`/`aborted` run burns the rest of the cycle: `last_triggered_reset_time` plus the terminal
-  status of `last_task_id` is the gate. Released only inside `trigger_before_reset_hours` and only while
-  headroom is at least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`. Needs
+  status of `last_task_id` is the gate. Released at spawn only inside the routine's own
+  `trigger_before_reset_hours` (falling back to `QUOTA_BURN_MAX_HOURS`) and only while headroom is at
+  least `max(routine.min_headroom_percent, MIN_DISPATCH_HEADROOM_PERCENT)`; the task is then enqueued
+  ready-to-run (`immediate`) with `expiresAt` still bounded by the pool reset deadline. Needs
   `COORDINATOR_ENABLED` and `ROUTINES_ENABLED`.
-- **Burn kick notice**: the first time a pool's pre-reset window opens in a reset cycle — whether from a
-  routine or from an opportunistic `pre_reset` task being claimed — one silent `[Notice]` is delivered
-  through every configured channel. It is informational by construction: no owner mention, so it cannot
-  page anyone. The announced cycle per pool is recorded in `runtime_state` (`burnKickAnnouncedCycles`),
-  so looping inside the same cycle does not repeat it and a redeploy does not re-announce it.
+- **Burn kick notice**: the first time a pool's pre-reset window opens in a reset cycle — from a routine
+  spawn or from an opportunistic `pre_reset` task being claimed — one silent `[Notice]` is delivered
+  through every configured channel. A ready-to-run backlog spawn is not a burn and announces nothing.
+  It is informational by construction: no owner mention, so it cannot page anyone. The announced cycle
+  per pool is recorded in `runtime_state` (`burnKickAnnouncedCycles`), so looping inside the same cycle
+  does not repeat it and a redeploy does not re-announce it.
 - **Model preference chains**: both autonomous tiers store an ordered `models[]` and dispatch the
   first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
   to no pool is refused rather than charged to another group's headroom; an id the active catalog
@@ -371,7 +382,13 @@ lets the dashboard link a run back to the item that produced it.
 - **Origin settlement**: a backlog item closes on `completed`/`no_changes`, returns to `pending` while
   `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
   from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
-  user cancel — none of those produce a runner report.
+  user cancel — none of those produce a runner report. A queued task that expires unclaimed returns its
+  origin to `pending` with `attempt_count` restored and `swarm_task_id` cleared, so no retry is burned
+  for a run no runner ever received. Expiry is enforced both lazily at claim time and by a sweep inside
+  `reapStaleClaims`, so an offline runner or a pool dip cannot wedge the backlog tier behind a task
+  nothing will claim. The two expiries read differently to the operator: an unclaimed queued task
+  reports `no runner claimed the task within its queue window`, while a `pre_reset` or routine task
+  reports the weekly reset window passing.
 - **Routes**: `GET|POST /api/backlog`, `PATCH /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
   `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
   `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor

@@ -11,6 +11,7 @@ import {
   BUILTIN_DEFAULTS,
   DEFAULT_MILESTONE_HOURS,
   DEFAULT_QUOTA_BURN_MAX_HOURS,
+  DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
 } from '../../src/config/schema.js';
 import { ConfigStore } from '../../src/config/store.js';
 import { warnDeprecatedEnvVars } from '../../src/config/deprecated.js';
@@ -574,5 +575,80 @@ describe('Antigravity CLI update scheduling configuration', () => {
     assert.equal(warnings.length, 2);
     assert.ok(warnings[0]?.includes('NOTIFICATION_CHANNELS'));
     assert.ok(warnings[1]?.includes('AGYLITY_SECRET_KEY'));
+  });
+});
+
+describe('Backlog dispatch headroom configuration', () => {
+  it('defaults backlogMinHeadroomPercent to 40 and parses the env spelling, including 0 and 100', () => {
+    assert.equal(BUILTIN_DEFAULTS.backlogMinHeadroomPercent, 40);
+    assert.equal(DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT, 40);
+
+    // Unset env leaves the field absent so the default applies downstream.
+    assert.equal(parseRawEnv({}).backlogMinHeadroomPercent, undefined);
+
+    assert.equal(
+      RawEnvSchema.parse({ BACKLOG_MIN_HEADROOM_PERCENT: '55' }).BACKLOG_MIN_HEADROOM_PERCENT,
+      55
+    );
+    assert.equal(parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '55' }).backlogMinHeadroomPercent, 55);
+
+    // Boundary values are valid: 0 defers to the global safety floor, 100 is the strictest.
+    assert.equal(parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '0' }).backlogMinHeadroomPercent, 0);
+    assert.equal(
+      parseRawEnv({ BACKLOG_MIN_HEADROOM_PERCENT: '100' }).backlogMinHeadroomPercent,
+      100
+    );
+  });
+
+  it('lets a SQLite override outrank both the env value and the built-in default', () => {
+    const { dir, cleanup } = makeTempDir('config_backlog_headroom_');
+
+    try {
+      const defaults = new ConfigStore(path.join(dir, 'defaults.db'), {});
+      try {
+        assert.equal(defaults.resolveConfig().backlogMinHeadroomPercent, 40);
+        assert.equal(defaults.getSources().backlogMinHeadroomPercent, 'default');
+      } finally {
+        defaults.close();
+      }
+
+      const store = new ConfigStore(path.join(dir, 'env.db'), {
+        backlogMinHeadroomPercent: 60,
+      });
+      try {
+        // Level 2 beats the built-in default.
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 60);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'env');
+
+        // Level 1 beats both env and the default.
+        store.setOverride('backlogMinHeadroomPercent', 25);
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 25);
+        assert.equal(store.get('backlogMinHeadroomPercent'), 25);
+        assert.equal(store.get('BACKLOG_MIN_HEADROOM_PERCENT'), 25);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'override');
+
+        // Clearing the override falls back to the env value.
+        store.deleteOverride('backlogMinHeadroomPercent');
+        assert.equal(store.resolveConfig().backlogMinHeadroomPercent, 60);
+        assert.equal(store.getSources().backlogMinHeadroomPercent, 'env');
+      } finally {
+        store.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('rejects out-of-range overrides but accepts a value inside 0-100', () => {
+    assert.equal(
+      validateConfigOverridePatch({ backlogMinHeadroomPercent: 55 }).backlogMinHeadroomPercent,
+      55
+    );
+
+    assert.throws(() => validateConfigOverridePatch({ backlogMinHeadroomPercent: 101 }), /Too big/);
+    assert.throws(
+      () => validateConfigOverridePatch({ backlogMinHeadroomPercent: -1 }),
+      /Too small/
+    );
   });
 });

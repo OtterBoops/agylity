@@ -25,6 +25,8 @@ export const DEFAULT_MILESTONE_HOURS = [48, 24, 12];
 
 export const DEFAULT_QUOTA_BURN_MAX_HOURS = 4;
 
+export const DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT = 40;
+
 export const milestoneHoursEnv = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val.map(Number).filter((n) => !Number.isNaN(n) && n > 0);
@@ -191,6 +193,7 @@ export const RawEnvSchema = z.object({
   PR_POLICY: PrPolicyEnum.optional(),
   QUOTA_BURN_MAX_HOURS: z.coerce.number().positive().optional(),
   QUOTA_BURN_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
+  BACKLOG_MIN_HEADROOM_PERCENT: z.coerce.number().min(0).max(100).optional(),
 
   WEB_UI_ENABLED: z.string().optional(),
   ALLOW_OVERAGE: z.string().optional(),
@@ -247,6 +250,7 @@ export interface AppConfig {
   prPolicy: PrPolicy;
   quotaBurnMaxHours: number;
   quotaBurnMinHeadroomPercent: number;
+  backlogMinHeadroomPercent: number;
 
   webUiEnabled: boolean;
   baseUrl?: string;
@@ -295,6 +299,7 @@ export const CONFIG_KEY_ENV_NAMES: Partial<Record<keyof AppConfig, string>> = {
   prPolicy: 'PR_POLICY',
   quotaBurnMaxHours: 'QUOTA_BURN_MAX_HOURS',
   quotaBurnMinHeadroomPercent: 'QUOTA_BURN_MIN_HEADROOM_PERCENT',
+  backlogMinHeadroomPercent: 'BACKLOG_MIN_HEADROOM_PERCENT',
   webUiEnabled: 'WEB_UI_ENABLED',
   allowOverage: 'ALLOW_OVERAGE',
   allowTokenlessRunner: 'ALLOW_TOKENLESS_RUNNER',
@@ -372,6 +377,7 @@ export const BUILTIN_DEFAULTS: AppConfig = {
   prPolicy: 'all',
   quotaBurnMaxHours: DEFAULT_QUOTA_BURN_MAX_HOURS,
   quotaBurnMinHeadroomPercent: 30,
+  backlogMinHeadroomPercent: DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
 
   webUiEnabled: false,
   allowOverage: false,
@@ -555,6 +561,9 @@ export const parseRawEnv = (env: Record<string, string | undefined>): Partial<Ap
   if (parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT !== undefined) {
     result.quotaBurnMinHeadroomPercent = parsed.QUOTA_BURN_MIN_HEADROOM_PERCENT;
   }
+  if (parsed.BACKLOG_MIN_HEADROOM_PERCENT !== undefined) {
+    result.backlogMinHeadroomPercent = parsed.BACKLOG_MIN_HEADROOM_PERCENT;
+  }
 
   if (parsed.WEB_UI_ENABLED !== undefined && parsed.WEB_UI_ENABLED.trim() !== '') {
     try {
@@ -631,6 +640,7 @@ const CONFIG_FIELD_SCHEMAS: Record<keyof AppConfig, z.ZodTypeAny> = {
   prPolicy: PrPolicyEnum,
   quotaBurnMaxHours: z.number().positive(),
   quotaBurnMinHeadroomPercent: z.number().min(0).max(100),
+  backlogMinHeadroomPercent: z.number().min(0).max(100),
   webUiEnabled: z.boolean(),
   allowOverage: z.boolean(),
   allowTokenlessRunner: z.boolean(),

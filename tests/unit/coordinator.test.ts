@@ -3110,7 +3110,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(task.tier, 'routine');
         assert.equal(task.originId, rt.id);
         assert.equal(task.model, 'claude-sonnet-5-5');
-        assert.equal(task.scheduleMode, 'pre_reset');
+        // The routine's own window already gated the spawn, so the queue must hand it out at once
+        // rather than re-check it against the global pre-reset window at claim time.
+        assert.equal(task.scheduleMode, 'immediate');
         assert.equal(task.status, 'queued');
 
         // Verify routine task was stamped with lastTriggeredResetTime and lastTaskId
@@ -4540,6 +4542,243 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           queue.updateBacklogTask(backlog.id, { prompt: ' Rewritten prompt ' })?.prompt,
           'Rewritten prompt'
         );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+  });
+
+  /* ==================================================================== */
+  /* 14. Backlog Tier Gating, Immediate Claimability & Unclaimed Expiry    */
+  /* ==================================================================== */
+  describe('14. Backlog tier gating, immediate claimability & unclaimed expiry', () => {
+    // 100h out is deliberately far outside any pre-reset burn window, so a spawn here can only be
+    // the backlog tier's own path.
+    const hydrogenPools = (remainingFraction: number, hoursUntilReset = 100): QuotaSnapshot[] => [
+      {
+        poolId: 'gemini-hydrogen',
+        poolGroup: 'gemini-hydrogen',
+        displayName: 'Gemini Flash',
+        remainingFraction,
+        resetTime: new Date(Date.now() + hoursUntilReset * 3600 * 1000).toISOString(),
+        hoursUntilReset,
+        models: ['gemini-4-hydrogen'],
+      },
+    ];
+
+    const backlogConfig = (dir: string) => ({
+      coordinatorEnabled: true,
+      defaultDispatchModel: 'gemini-4-hydrogen',
+      repositories: [
+        {
+          id: 'agylity',
+          name: 'OtterBoops/agylity',
+          path: dir,
+          cloneUrl: 'https://example.invalid/agylity.git',
+          defaultBranch: 'main',
+        },
+      ],
+    });
+
+    const createOrigin = (coordinator: Coordinator, title: string, priorityOrder: number) =>
+      coordinator.queue.createBacklogTask({
+        title,
+        prompt: `Prompt for ${title}`,
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        priorityOrder,
+      });
+
+    it('runs one backlog task at a time and only picks the next item once the first is terminal', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_gate_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+
+        const first = createOrigin(coordinator, 'First backlog item', 1);
+        const second = createOrigin(coordinator, 'Second backlog item', 2);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'pending');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+
+        const firstTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(firstTick.length, 1);
+        const run = firstTick[0]!;
+        assert.equal(run.tier, 'backlog');
+        assert.equal(run.originId, first.id);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'dispatched');
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.attemptCount, 1);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.swarmTaskId, run.id);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 1);
+
+        // One in flight: a queued backlog run must hold the tier even though another row is pending.
+        const queuedTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(queuedTick.length, 0);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'pending');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.attemptCount, 0);
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 1);
+
+        coordinator.queue.updateTaskStatus(run.id, { status: 'completed', durationMs: 25 });
+        assert.equal(coordinator.reconcileBacklogOrigins(), 1);
+        assert.equal(coordinator.queue.getBacklogTask(first.id)?.status, 'completed');
+        assert.equal(coordinator.queue.countActiveBacklogTasks(), 0);
+
+        const thirdTick = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(thirdTick.length, 1);
+        assert.equal(thirdTick[0]?.originId, second.id);
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.status, 'dispatched');
+        assert.equal(coordinator.queue.getBacklogTask(second.id)?.attemptCount, 1);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('gates the backlog tier on the configured floor while the global safety floor still wins', async () => {
+      const cases: Array<{
+        label: string;
+        overrides: Record<string, number>;
+        expected: number;
+      }> = [
+        {
+          label: 'an override above the live headroom blocks the spawn',
+          overrides: { backlogMinHeadroomPercent: 60 },
+          expected: 0,
+        },
+        {
+          label: 'an override at the live headroom allows the spawn',
+          overrides: { backlogMinHeadroomPercent: 40 },
+          expected: 1,
+        },
+        {
+          label: 'a higher global floor blocks a lower backlog override',
+          overrides: { backlogMinHeadroomPercent: 20, minDispatchHeadroomPercent: 55 },
+          expected: 0,
+        },
+      ];
+
+      for (const testCase of cases) {
+        const { dir, cleanup } = makeTempDir('coord_backlog_headroom_');
+        const db = new AppDatabase(path.join(dir, 'test.db'));
+
+        try {
+          const configStore = new ConfigStore(db, backlogConfig(dir));
+          for (const [key, value] of Object.entries(testCase.overrides)) {
+            configStore.setOverride(key, value);
+          }
+          const coordinator = new Coordinator({ configStore });
+          const origin = createOrigin(coordinator, 'Headroom item', 1);
+
+          const spawned = await coordinator.triggerEligibleAutonomousTasks(hydrogenPools(0.5));
+          assert.equal(spawned.length, testCase.expected, testCase.label);
+
+          const row = coordinator.queue.getBacklogTask(origin.id);
+          assert.equal(
+            row?.status,
+            testCase.expected === 1 ? 'dispatched' : 'pending',
+            testCase.label
+          );
+          assert.equal(row?.attemptCount, testCase.expected, testCase.label);
+          assert.equal(coordinator.queue.countActiveBacklogTasks(), testCase.expected);
+        } finally {
+          db.close();
+          cleanup();
+        }
+      }
+    });
+
+    it('leaves a spawned backlog task immediately claimable outside any pre-reset window', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_claim_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        createOrigin(coordinator, 'Claimable backlog item', 1);
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(hydrogenPools(0.8));
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0]?.scheduleMode, 'immediate');
+
+        // The pool resets 100h away, yet an immediate backlog task must not wait for a burn window.
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-backlog',
+          timeoutMs: 0,
+        });
+        assert.ok(claimed, 'a queued backlog task must be claimable');
+        assert.equal(claimed?.id, spawned[0]!.id);
+        assert.equal(claimed?.tier, 'backlog');
+        assert.equal(claimed?.scheduleMode, 'immediate');
+        assert.equal(claimed?.status, 'claimed');
+        assert.equal(claimed?.runnerId, 'runner-backlog');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('settles an unclaimed expired backlog run back to pending without burning a retry', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_expiry_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+        const origin = createOrigin(coordinator, 'Expiring backlog item', 1);
+        const pastIso = new Date(Date.now() - 60_000).toISOString();
+
+        // Path 1: the coordinator sweep reaps a deadline that passed with no runner polling at all.
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(spawned.length, 1);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.attemptCount, 1);
+
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+          .run(pastIso, spawned[0]!.id);
+        coordinator.reapStaleClaims();
+
+        const aborted = coordinator.queue.getTask(spawned[0]!.id);
+        assert.equal(aborted?.status, 'aborted');
+        assert.match(aborted?.error ?? '', /queue window/);
+        assert.doesNotMatch(aborted?.error ?? '', /weekly/i);
+
+        const settled = coordinator.queue.getBacklogTask(origin.id);
+        assert.equal(settled?.status, 'pending');
+        // The run never reached a runner, so the attempt is handed back rather than burned.
+        assert.equal(settled?.attemptCount, 0);
+        assert.equal(settled?.swarmTaskId, undefined);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask()?.id, origin.id);
+
+        // Path 2: a runner polling past the deadline expires it lazily and gets nothing.
+        const respawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(respawned.length, 1);
+        assert.equal(respawned[0]?.originId, origin.id);
+        assert.equal(coordinator.queue.getBacklogTask(origin.id)?.attemptCount, 1);
+
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+          .run(pastIso, respawned[0]!.id);
+        const claimed = await coordinator.pollForTask({
+          runnerId: 'runner-backlog',
+          timeoutMs: 0,
+        });
+        assert.equal(claimed, null);
+
+        const lazilyAborted = coordinator.queue.getTask(respawned[0]!.id);
+        assert.equal(lazilyAborted?.status, 'aborted');
+        assert.match(lazilyAborted?.error ?? '', /queue window/);
+        assert.doesNotMatch(lazilyAborted?.error ?? '', /weekly/i);
+
+        const resettled = coordinator.queue.getBacklogTask(origin.id);
+        assert.equal(resettled?.status, 'pending');
+        assert.equal(resettled?.attemptCount, 0);
+        assert.equal(resettled?.swarmTaskId, undefined);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask()?.id, origin.id);
       } finally {
         db.close();
         cleanup();

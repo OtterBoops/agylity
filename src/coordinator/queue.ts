@@ -615,6 +615,41 @@ export class TaskQueue {
 
   public enqueue(input: EnqueueTaskInput): SwarmTask {
     const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    this.inTransaction(() => this.insertTaskRow(id, input));
+    this.pruneOldTasks();
+    return this.getTask(id)!;
+  }
+
+  // A tier that must also settle its origin row commits both writes here, because a crash between
+  // them strands the origin and wedges the tier behind a run nothing will ever settle.
+  public spawnBacklogTask(
+    input: EnqueueTaskInput,
+    origin: { id: string; attemptCount: number }
+  ): SwarmTask {
+    const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
+    this.inTransaction(() => {
+      this.insertTaskRow(id, input);
+      const settled = this.rawDb
+        .prepare(
+          `UPDATE backlog_tasks
+           SET status = 'dispatched', attempt_count = ?, swarm_task_id = ?, last_error = NULL,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(origin.attemptCount, id, new Date().toISOString(), origin.id) as unknown as {
+        changes?: number;
+      };
+      // Neither write may land alone, so a vanished origin rolls the task insert back with it.
+      if ((settled?.changes ?? 0) === 0) {
+        throw new Error(`Backlog origin ${origin.id} no longer exists`);
+      }
+    });
+    this.pruneOldTasks();
+    return this.getTask(id)!;
+  }
+
+  // Assumes the caller holds the write transaction, so a spawn can add its own origin write to it.
+  private insertTaskRow(id: string, input: EnqueueTaskInput): void {
     const now = new Date().toISOString();
     const repoId = (input.repositoryId || input.repositoryName).trim();
     const repoName = input.repositoryName.trim();
@@ -645,55 +680,50 @@ export class TaskQueue {
 
     // Two concurrent enqueues must never pick the same number, so the max read and the insert share
     // one write transaction.
-    this.inTransaction(() => {
-      const maxNumberRow = this.rawDb
-        .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
-        .get() as { max_num?: number } | undefined;
-      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
-      this.rawDb
-        .prepare(
-          `INSERT INTO swarm_tasks (
-          id, task_number, title, tier, origin_id, origin_number, origin_title,
-          created_at, updated_at, repository_id, repository_name, repository_path,
-          clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
-          required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
-          push_branch, auto_create_pr, expires_at, verify_command, status
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
-        )
-        .run(
-          id,
-          taskNumber,
-          title,
-          tier,
-          originId,
-          originNumber,
-          originTitle,
-          now,
-          now,
-          repoId,
-          repoName,
-          repoPath,
-          input.cloneUrl ?? null,
-          defaultBranch,
-          prompt,
-          requestedBy,
-          prPolicy,
-          scheduleMode,
-          JSON.stringify(requiredLabels),
-          model,
-          JSON.stringify(cascade),
-          poolGroup,
-          effort,
-          allowOverage ? 1 : 0,
-          pushBranch ? 1 : 0,
-          autoCreatePr ? 1 : 0,
-          input.expiresAt ?? null,
-          input.verifyCommand ?? null
-        );
-    });
-
-    this.pruneOldTasks();
-    return this.getTask(id)!;
+    const maxNumberRow = this.rawDb
+      .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
+      .get() as { max_num?: number } | undefined;
+    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+    this.rawDb
+      .prepare(
+        `INSERT INTO swarm_tasks (
+        id, task_number, title, tier, origin_id, origin_number, origin_title,
+        created_at, updated_at, repository_id, repository_name, repository_path,
+        clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
+        required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
+        push_branch, auto_create_pr, expires_at, verify_command, status
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+      )
+      .run(
+        id,
+        taskNumber,
+        title,
+        tier,
+        originId,
+        originNumber,
+        originTitle,
+        now,
+        now,
+        repoId,
+        repoName,
+        repoPath,
+        input.cloneUrl ?? null,
+        defaultBranch,
+        prompt,
+        requestedBy,
+        prPolicy,
+        scheduleMode,
+        JSON.stringify(requiredLabels),
+        model,
+        JSON.stringify(cascade),
+        poolGroup,
+        effort,
+        allowOverage ? 1 : 0,
+        pushBranch ? 1 : 0,
+        autoCreatePr ? 1 : 0,
+        input.expiresAt ?? null,
+        input.verifyCommand ?? null
+      );
   }
 
   public pruneOldTasks(keepTerminalCount = 250): void {
@@ -769,6 +799,18 @@ export class TaskQueue {
       )
       .get(originId) as { active?: number } | undefined;
     return row?.active === 1;
+  }
+
+  // The backlog tier runs one task at a time, counted over the same terminal set the reconciler
+  // settles on: an inline status list here would drift and leave two runs in flight.
+  public countActiveBacklogTasks(): number {
+    const row = this.rawDb
+      .prepare(
+        `SELECT COUNT(*) AS active FROM swarm_tasks
+         WHERE tier = 'backlog' AND status NOT IN (${TERMINAL_STATUS_SQL})`
+      )
+      .get() as { active?: number } | undefined;
+    return Number(row?.active ?? 0);
   }
 
   // `q` is a LIKE term: `%%` would match every row and a stray `_` would silently widen a wildcard,
@@ -901,16 +943,7 @@ export class TaskQueue {
         if (task.expiresAt) {
           const expEpoch = Date.parse(task.expiresAt);
           if (!Number.isNaN(expEpoch) && nowEpoch >= expEpoch) {
-            this.rawDb
-              .prepare(
-                `UPDATE swarm_tasks
-                 SET status = 'aborted',
-                     error = 'Expired: weekly quota reset window passed',
-                     completed_at = ?,
-                     updated_at = ?
-                 WHERE id = ? AND status = 'queued'`
-              )
-              .run(now, now, task.id);
+            this.expireQueuedTask(task, now);
             continue;
           }
         }
@@ -1171,6 +1204,59 @@ export class TaskQueue {
 
     this.registerRunnerHeartbeat({ runnerId, activeTaskId: taskId, status: 'busy' });
     return { task: this.getTask(taskId) ?? existing, applied: true };
+  }
+
+  // A queued row is settled by the coordinator alone, so the runner that never received it is not
+  // blamed and an unclaimed backlog origin returns to pending without burning a retry it never used.
+  private expireQueuedTask(task: SwarmTask, now: string): boolean {
+    // A pre-reset or routine task expires with the reset window it was queued for; a backlog or
+    // immediate task expires because no runner claimed it. The two tell the operator different things.
+    const resetWindowExpired = task.scheduleMode === 'pre_reset' || task.tier === 'routine';
+    const error = resetWindowExpired
+      ? 'Expired: weekly quota reset window passed'
+      : 'Expired: no runner claimed the task within its queue window';
+
+    const result = this.rawDb
+      .prepare(
+        `UPDATE swarm_tasks
+         SET status = 'aborted', error = ?, completed_at = ?, updated_at = ?
+         WHERE id = ? AND status = 'queued'`
+      )
+      .run(error, now, now, task.id) as unknown as { changes?: number };
+    if ((result?.changes ?? 0) === 0) return false;
+
+    if (!task.originId || task.claimedAt) return true;
+    const origin = this.getBacklogTask(task.originId);
+    if (!origin || origin.status !== 'dispatched' || origin.swarmTaskId !== task.id) return true;
+    this.rawDb
+      .prepare(
+        `UPDATE backlog_tasks
+         SET status = 'pending', attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(Math.max(0, origin.attemptCount - 1), error, now, origin.id);
+    return true;
+  }
+
+  // The claim path expires lazily, which never runs when no runner polls at all; this sweep is what
+  // stops an offline runner or a pool dip from wedging the backlog tier indefinitely.
+  public reapExpiredQueuedTasks(nowMs = Date.now()): SwarmTask[] {
+    const rows = this.rawDb
+      .prepare("SELECT * FROM swarm_tasks WHERE status = 'queued' AND expires_at IS NOT NULL")
+      .all() as Array<Record<string, any>>;
+
+    const now = new Date(nowMs).toISOString();
+    const expired: SwarmTask[] = [];
+    for (const row of rows) {
+      const task = this.mapRowToTask(row);
+      const expEpoch = task.expiresAt ? Date.parse(task.expiresAt) : NaN;
+      if (Number.isNaN(expEpoch) || nowMs < expEpoch) continue;
+      if (this.expireQueuedTask(task, now)) {
+        const reaped = this.getTask(task.id);
+        if (reaped) expired.push(reaped);
+      }
+    }
+    return expired;
   }
 
   public reapStaleClaims(leaseTimeoutMs = 10 * 60 * 1000, nowMs = Date.now()): SwarmTask[] {

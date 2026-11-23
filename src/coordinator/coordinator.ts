@@ -1,7 +1,10 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import type { PrPolicy } from '../config/schema.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import {
+  DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
+  DEFAULT_QUOTA_BURN_MAX_HOURS,
+} from '../config/schema.js';
 import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import {
   calculateHoursUntilReset,
@@ -50,6 +53,10 @@ import {
 import { buildContinuationBranchName } from '../runner/policy.js';
 import { upgradePoolGroupId } from '../shared/models.js';
 import type { ModelCatalogProvider } from './catalog.js';
+
+// A queued backlog task that no runner claims in this window returns to its origin, so a pool dip or
+// an offline runner cannot wedge the tier behind a run nothing will ever pick up.
+const BACKLOG_QUEUE_TTL_MS = 2 * 60 * 60 * 1000;
 
 // A pool id is either the group id or `<group>:<slug>`; only the prefix names the group.
 const poolGroupOfPoolId = (poolId: string): string => {
@@ -290,6 +297,11 @@ export class Coordinator {
   }
 
   public reapStaleClaims(): SwarmTask[] {
+    // The claim path expires a queued task lazily, which never runs while no runner polls at all.
+    const expiredQueued = this.queue.reapExpiredQueuedTasks();
+    if (expiredQueued.length > 0) {
+      this.log.info('Reaped %d unclaimed queued task(s) past their deadline', expiredQueued.length);
+    }
     const expiredTasks = this.queue.reapStaleClaims();
     this.reconcileBacklogOrigins();
     if (expiredTasks.length > 0) {
@@ -437,13 +449,24 @@ export class Coordinator {
     const spawned: SwarmTask[] = [];
 
     try {
-      const nextBacklog = this.queue.getNextEligibleBacklogTask();
-      if (nextBacklog && !this.queue.hasActiveTaskForOrigin(nextBacklog.id)) {
+      // The tier gates at spawn and dispenses with the pre-reset window, so claim time only has to
+      // enforce the live safety floor. One backlog run in flight, and headroom clearing both the
+      // configurable backlog floor and the global safety floor.
+      const headroomFloor = Math.max(
+        resolved.backlogMinHeadroomPercent ?? DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
+        resolved.minDispatchHeadroomPercent ?? 0
+      );
+      const nextBacklog =
+        this.queue.countActiveBacklogTasks() === 0
+          ? this.queue.getNextEligibleBacklogTask()
+          : undefined;
+
+      if (nextBacklog) {
         const modelChoice = evaluateModelPreferenceChain({
           cascade: nextBacklog.cascade,
           defaultModel: resolved.defaultDispatchModel,
           pools: snapshots,
-          minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
+          minHeadroomPercent: headroomFloor,
           isPoolDispatchEnabled: (poolGroup) =>
             resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
           catalog: this.activeModelCatalog(),
@@ -463,48 +486,41 @@ export class Coordinator {
           const cloneUrl = matchedRepo?.cloneUrl;
           const defaultBranch = matchedRepo?.defaultBranch || 'main';
 
-          const created = this.queue.enqueue({
-            repositoryId: nextBacklog.repositoryId,
-            repositoryName: matchedRepo?.name || nextBacklog.repositoryId,
-            repositoryPath: repoPath,
-            cloneUrl,
-            defaultBranch,
-            prompt: nextBacklog.prompt,
-            title: nextBacklog.title,
-            tier: 'backlog',
-            originId: nextBacklog.id,
-            originNumber: nextBacklog.taskNumber,
-            originTitle: nextBacklog.title,
-            requestedBy: `backlog:${nextBacklog.id}`,
-            prPolicy: resolved.prPolicy,
-            scheduleMode: 'pre_reset',
-            expiresAt: this.preResetExpiry(
-              snapshots.find(
-                (pool) =>
-                  pool.poolGroup === resolvePoolGroupForModel(modelChoice.selectedModel!) ||
-                  pool.poolId === modelChoice.selectedModel
-              )
-            ),
-            cascade: this.resolveFallbackCascade({
-              cascade: nextBacklog.cascade,
-              selectedModel: modelChoice.selectedModel,
-              selectedEffort: modelChoice.selectedEffort,
-              pools: snapshots,
-              minHeadroomPercent: resolved.minDispatchHeadroomPercent ?? 10,
-              isPoolDispatchEnabled: (poolGroup) =>
-                resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
-              defaultModel: resolved.defaultDispatchModel,
-              catalog: this.activeModelCatalog(),
-            }),
-            autoCreatePr: nextBacklog.autoCreatePr,
-            verifyCommand: nextBacklog.verifyCommand,
-          });
-
-          this.queue.updateBacklogTask(nextBacklog.id, {
-            status: 'dispatched',
-            attemptCount: nextBacklog.attemptCount + 1,
-            swarmTaskId: created.id,
-          });
+          // Ready to run: the spawn already cleared headroom, so a queued backlog task must be
+          // claimable by an idle runner and must not wait for a reset window it was never gated on.
+          const created = this.queue.spawnBacklogTask(
+            {
+              repositoryId: nextBacklog.repositoryId,
+              repositoryName: matchedRepo?.name || nextBacklog.repositoryId,
+              repositoryPath: repoPath,
+              cloneUrl,
+              defaultBranch,
+              prompt: nextBacklog.prompt,
+              title: nextBacklog.title,
+              tier: 'backlog',
+              originId: nextBacklog.id,
+              originNumber: nextBacklog.taskNumber,
+              originTitle: nextBacklog.title,
+              requestedBy: `backlog:${nextBacklog.id}`,
+              prPolicy: resolved.prPolicy,
+              scheduleMode: 'immediate',
+              expiresAt: new Date(now + BACKLOG_QUEUE_TTL_MS).toISOString(),
+              cascade: this.resolveFallbackCascade({
+                cascade: nextBacklog.cascade,
+                selectedModel: modelChoice.selectedModel,
+                selectedEffort: modelChoice.selectedEffort,
+                pools: snapshots,
+                minHeadroomPercent: headroomFloor,
+                isPoolDispatchEnabled: (poolGroup) =>
+                  resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false,
+                defaultModel: resolved.defaultDispatchModel,
+                catalog: this.activeModelCatalog(),
+              }),
+              autoCreatePr: nextBacklog.autoCreatePr,
+              verifyCommand: nextBacklog.verifyCommand,
+            },
+            { id: nextBacklog.id, attemptCount: nextBacklog.attemptCount + 1 }
+          );
 
           spawned.push(created);
           this.log.info(
@@ -701,7 +717,9 @@ export class Coordinator {
         autoCreatePr: rt.autoCreatePr,
         prPolicy: rt.prPolicy ?? resolved.prPolicy,
         verifyCommand: rt.verifyCommand,
-        scheduleMode: 'pre_reset',
+        // The routine's own window and headroom floor already gated this spawn, so the queue must not
+        // re-litigate it against the global burn window; the reset deadline still bounds the wait.
+        scheduleMode: 'immediate',
         expiresAt: this.preResetExpiry(targetPool),
         requestedBy: `routine:${rt.id}`,
       });
