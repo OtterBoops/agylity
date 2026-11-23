@@ -1,5 +1,6 @@
 import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../../types';
+import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { TableHeadRow, TableRow, TableShell, TH } from '../TableShell';
@@ -141,6 +142,7 @@ export const ExecutionTable = ({
               const isActive = task.id === activeTaskId;
               const tabbable = isActive || (activeTaskId === null && index === 0);
               const issues = summarizeIssueLinks(task.issueUrls);
+              const title = resolveTaskTitle(task.title, task.prompt);
               return (
                 <TableRow
                   key={task.id}
@@ -173,8 +175,8 @@ export const ExecutionTable = ({
                   <td class={`${CELL} font-mono text-xs text-pine-muted`}>
                     #{task.taskNumber ?? 0}
                   </td>
-                  <td class={`${CELL} text-sm text-pine-text`} title={task.title || task.prompt}>
-                    {task.title || 'Task'}
+                  <td class={`${CELL} text-sm text-pine-text`} title={title}>
+                    {title}
                   </td>
                   <td class={CELL}>
                     <span class="flex items-center gap-1.5">

@@ -14,6 +14,7 @@ import {
   type CascadeHop,
 } from '../coordinator/models.js';
 import type { PrPolicy } from '../config/schema.js';
+import { resolveTaskTitle } from '../shared/titles.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
   ALLOWED_TEST_RUNNERS,
@@ -996,21 +997,17 @@ export class TaskExecutor {
         await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
         const authorName = process.env.GIT_AUTHOR_NAME || task.requestedBy || 'User';
         const authorEmail = process.env.GIT_AUTHOR_EMAIL || 'user@users.noreply.github.com';
-        await this.execFileFn(
-          'git',
-          ['commit', '-m', `Complete Antigravity continuation task ${task.id}`],
-          {
-            cwd,
-            timeout: 30000,
-            env: {
-              ...process.env,
-              GIT_AUTHOR_NAME: authorName,
-              GIT_AUTHOR_EMAIL: authorEmail,
-              GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
-              GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
-            },
-          }
-        );
+        await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
+          cwd,
+          timeout: 30000,
+          env: {
+            ...process.env,
+            GIT_AUTHOR_NAME: authorName,
+            GIT_AUTHOR_EMAIL: authorEmail,
+            GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME || authorName,
+            GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL || authorEmail,
+          },
+        });
         committed = true;
       }
     } catch (commitErr: any) {
@@ -1083,12 +1080,17 @@ export class TaskExecutor {
       const tierLabel = task.tier || 'immediate';
       // A failover hop is the model that actually wrote the branch, so the footer names that one.
       const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      const prBody = [
-        task.prompt,
-        '',
-        '---',
-        `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
-      ].join('\n');
+      const prTitle = resolveTaskTitle(task.title, task.prompt);
+      // Avoid stacking a second Agylity footer when the source prompt/issue already ends with one.
+      const hasDispatchFooter = /---\s*\n\*Dispatched via Agylity[^\n]*\*\s*$/i.test(task.prompt);
+      const prBody = hasDispatchFooter
+        ? task.prompt
+        : [
+            task.prompt,
+            '',
+            '---',
+            `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
+          ].join('\n');
 
       const { stdout: prOut } = await this.execFileFn(
         'gh',
@@ -1100,7 +1102,7 @@ export class TaskExecutor {
           '--head',
           branchName,
           '--title',
-          `[Agylity] Task ${task.id}: ${task.prompt.slice(0, 70)}`,
+          prTitle,
           '--body',
           prBody,
         ],
@@ -1319,7 +1321,9 @@ export class TaskExecutor {
     const startMs = Date.now();
     // Scoped to this call so nothing can leak the lease into a later task on the same executor.
     const githubToken = options.githubToken?.trim() || undefined;
-    const branchName = task.branchName || buildContinuationBranchName(task.id, task.prompt);
+    const branchName =
+      task.branchName ||
+      buildContinuationBranchName(task.id, resolveTaskTitle(task.title, task.prompt));
 
     if (branchName === 'main' || branchName === 'master') {
       return this.failureResult(

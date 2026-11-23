@@ -1,4 +1,5 @@
 import type { SwarmTask } from '../../types';
+import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { ACTIVE_TASK_STATUSES } from './badges';
 import { formatCompactDateTime, statusDotTextClass, summarizeIssueLinks } from './executionRow';
@@ -29,6 +30,7 @@ export const MobileTaskCard = ({
 }: MobileTaskCardProps) => {
   const [timeFormat] = useTimeFormat();
   const stoppable = ACTIVE_TASK_STATUSES.has(task.status);
+  const title = resolveTaskTitle(task.title, task.prompt);
   // Anchors cannot nest inside the card's open-task button, so issues live in the action row.
   const issues = summarizeIssueLinks(task.issueUrls);
 
@@ -70,7 +72,7 @@ export const MobileTaskCard = ({
             </span>
           </div>
 
-          <h3 class="line-clamp-2 text-sm font-medium text-pine-text">{task.title || 'Task'}</h3>
+          <h3 class="line-clamp-2 text-sm font-medium text-pine-text">{title}</h3>
 
           <div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 font-mono text-xs text-pine-subtle">
             <span class="max-w-full truncate">{task.repositoryName}</span>

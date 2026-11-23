@@ -11,6 +11,7 @@ import {
 import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
+import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
 import { getTask } from '../../api';
 import { dialogBackdropClickHandler } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
@@ -159,6 +160,14 @@ export const ExecutionInspectorContent = ({
   const liveStatus = isLiveTaskStatus(live.status);
   const canAbort = isActiveTaskStatus(live.status) || live.status === 'claimed';
   const canRetry = TERMINAL_STATUSES.has(live.status);
+  // resolveTaskTitle owns the prompt fallback, so the ID heading is only for a task with neither.
+  const title = resolveTaskTitle(live.title, live.prompt);
+  const heading =
+    title === 'Untitled task'
+      ? live.taskNumber
+        ? `Task #${live.taskNumber}`
+        : 'Task details'
+      : title;
 
   return (
     <>
@@ -171,7 +180,7 @@ export const ExecutionInspectorContent = ({
               data-drawer-focus
               class="text-base font-bold wrap-break-word text-pine-text"
             >
-              {live.title || (live.taskNumber ? `Task #${live.taskNumber}` : 'Task details')}
+              {heading}
             </h2>
             <span
               class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(live.status)}`}

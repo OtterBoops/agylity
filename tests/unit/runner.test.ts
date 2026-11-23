@@ -26,6 +26,7 @@ import {
   sumAgyTelemetry,
   type SpawnFn,
 } from '../../src/runner/index.js';
+import { GITHUB_ISSUE_TITLE_PREFIX } from '../../src/runner/policy.js';
 
 const TELEMETRY_LINE = '{"num_turns":4,"usage":{"total_tokens":1234,"thinking_tokens":321}}';
 
@@ -1016,6 +1017,32 @@ describe('Runner: pr policy and documentation classification', () => {
 
     assert.equal(buildContinuationBranchName('task-1-abc', ''), 'agy/abc-work');
   });
+
+  it('slugs the resolved title and strips a GitHub issue label prefix first', () => {
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', '[GH #12] Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+    // A resolved plain title needs no prefix handling and still slugs from its own words, not from
+    // the raw prompt the caller no longer passes.
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', 'Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+    // The prefix also has to survive stray padding and lowercase spelling from the label sync.
+    assert.equal(
+      buildContinuationBranchName('task-1700000000000-abc12345', '  [gh #7]   Fix the parser'),
+      'agy/abc12345-fix-the-parser'
+    );
+
+    // The rule lives in one place so the issue sync and the slugger cannot drift apart.
+    assert.equal(GITHUB_ISSUE_TITLE_PREFIX.test('[GH #12] Fix the parser'), true);
+    assert.equal(GITHUB_ISSUE_TITLE_PREFIX.test('Fix the parser'), false);
+    assert.equal(
+      '[GH #12] Fix the parser'.replace(GITHUB_ISSUE_TITLE_PREFIX, ''),
+      'Fix the parser'
+    );
+  });
 });
 
 /* -------------------------------------------------------------------------- */
@@ -1280,6 +1307,19 @@ describe('Runner: push, pull request and policy guards', () => {
     }
   };
 
+  // `createWorkspaceExecFile` records each call as `[file, ...args]`.
+  const prCreateFrom = (exec: { calls: string[][] }) => {
+    const call = exec.calls.find(
+      (entry) => entry[0] === 'gh' && entry[1] === 'pr' && entry[2] === 'create'
+    );
+    assert.ok(call, 'expected a gh pr create invocation');
+    const flag = (name: string): string | undefined => {
+      const index = call!.indexOf(name);
+      return index === -1 ? undefined : call![index + 1];
+    };
+    return { title: flag('--title'), body: flag('--body') };
+  };
+
   it('pushes the branch and reports the pull request URL the CLI printed', async () => {
     const { result, exec } = await runWithWorkspace(
       {},
@@ -1289,6 +1329,100 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/42');
     assert.equal(exec.pushed(), true);
+  });
+
+  it('titles the pull request with the resolved task title instead of an id-prefixed prompt slice', async () => {
+    const { result, exec } = await runWithWorkspace(
+      {
+        title: 'Fix the flaky scheduler test',
+        prompt: '## Fix the flaky scheduler test\n\nIt re-armed a cycle that had already settled.',
+      },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/11\n' }
+    );
+
+    assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/11');
+    const { title } = prCreateFrom(exec);
+    assert.equal(title, 'Fix the flaky scheduler test');
+    assert.equal(
+      title?.includes('[Agylity]'),
+      false,
+      `title still carries the old prefix: ${title}`
+    );
+    assert.equal(title?.includes('task-'), false, `title still carries the task id: ${title}`);
+  });
+
+  it('names the branch after the resolved title with the GitHub issue prefix stripped', async () => {
+    const { result } = await runWithWorkspace(
+      { title: '[GH #12] Fix the parser' },
+      { onGh: () => '' }
+    );
+
+    assert.equal(result.success, true);
+    // The executor passes the resolved title, not the prompt, so the label prefix is all that is
+    // stripped and the issue number never reaches the branch name.
+    assert.match(String(result.branchName), /^agy\/[0-9a-f]{6}-fix-the-parser$/);
+    assert.equal(String(result.branchName).includes('12'), false);
+  });
+
+  it('appends the dispatch footer once to a prompt that does not already carry one', async () => {
+    const prompt = 'Investigate the outage and file a report.';
+    const { exec } = await runWithWorkspace(
+      { prompt },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/12\n' }
+    );
+
+    assert.equal(
+      prCreateFrom(exec).body,
+      [
+        prompt,
+        '',
+        '---',
+        '*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*',
+      ].join('\n')
+    );
+  });
+
+  it('does not append a second dispatch footer when the prompt already ends with one', async () => {
+    const prompt = [
+      'Root cause: the scheduler re-armed a settled cycle.',
+      '',
+      '---',
+      '*Dispatched via Agylity (backlog) with `gemini-4-argon` — please review carefully.*',
+    ].join('\n');
+    const { exec } = await runWithWorkspace(
+      { prompt, tier: 'backlog' },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/13\n' }
+    );
+
+    const body = prCreateFrom(exec).body ?? '';
+    assert.equal(body, prompt);
+    assert.equal(body.split('Dispatched via Agylity').length - 1, 1, `body was: ${body}`);
+  });
+
+  it('uses the resolved title as the commit subject', async () => {
+    const { exec } = await runWithWorkspace({
+      title: 'Fix the flaky scheduler test',
+      prompt: '## Fix the flaky scheduler test\n\nIt re-armed a cycle that had already settled.',
+    });
+
+    const commit = exec.calls.find((call) => call[0] === 'git' && call[1] === 'commit');
+    assert.ok(commit, 'expected a git commit');
+    assert.equal(commit![commit!.indexOf('-m') + 1], 'Fix the flaky scheduler test');
+  });
+
+  it('derives the commit subject from the prompt when the task carries no title', async () => {
+    const { exec } = await runWithWorkspace({
+      prompt: '## Re-run the embed snapshot\n\nbody text',
+    });
+
+    const commit = exec.calls.find((call) => call[0] === 'git' && call[1] === 'commit');
+    assert.ok(commit, 'expected a git commit');
+    assert.equal(commit![commit!.indexOf('-m') + 1], 'Re-run the embed snapshot');
+    assert.equal(
+      commit!.some((arg) => arg.startsWith('Complete Antigravity continuation task')),
+      false,
+      `commit subject still uses the old wording: ${commit!.join(' ')}`
+    );
   });
 
   it('keeps a successful run successful when only the pull request call fails', async () => {

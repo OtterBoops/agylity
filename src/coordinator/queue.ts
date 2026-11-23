@@ -4,6 +4,7 @@ import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { resolveTaskTitle } from '../shared/titles.js';
 import type {
   BacklogTaskRecord,
   PrPolicy,
@@ -572,8 +573,7 @@ export class TaskQueue {
     const pushBranch = input.pushBranch !== false;
     const autoCreatePr = input.autoCreatePr !== false;
 
-    const firstLinePrompt = (prompt.split('\n')[0] ?? '').trim().slice(0, 100);
-    const title = (input.title || firstLinePrompt || 'Task').trim();
+    const title = resolveTaskTitle(input.title, prompt);
     const tier: TaskTier = input.tier ?? 'immediate';
     const originId = input.originId ?? null;
     const originNumber = input.originNumber ?? null;
@@ -1330,15 +1330,10 @@ export class TaskQueue {
       ...normalizeCascade(storedCascade, primaryModel).filter((hop) => hop.model !== primaryModel),
     ];
 
-    const firstLinePrompt = (
+    const title = resolveTaskTitle(
+      typeof row.title === 'string' ? row.title : '',
       String(row.prompt || '')
-        .trim()
-        .split('\n')[0] ?? ''
-    )
-      .trim()
-      .slice(0, 100);
-    const storedTitle = typeof row.title === 'string' ? row.title.trim() : '';
-    const title = storedTitle !== '' ? storedTitle : firstLinePrompt || 'Task';
+    );
 
     return {
       id: String(row.id),
