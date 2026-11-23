@@ -20,7 +20,7 @@ import { Icon } from './Icon';
 import { describeProbe } from '../utils/probe';
 import { APP_VERSION, fetchLatestRelease, isNewerVersion } from '../utils/version';
 import { formatTime, useTimeFormat } from '../utils/time';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
 interface SidebarProps {
@@ -61,15 +61,7 @@ export const Sidebar = ({
     if (dialog?.open) dialog.close();
   }, []);
 
-  useEffect(() => {
-    // A modal dialog blocks pointer input but not page scroll.
-    if (!mobileOpen) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previous;
-    };
-  }, [mobileOpen]);
+  useDialogScrollLock(mobileOpen);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -285,10 +277,10 @@ export const Sidebar = ({
           setMobileOpen(false);
           mobileToggleRef.current?.focus();
         }}
-        class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] border-r border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 md:hidden"
+        class="fixed inset-y-0 left-0 m-0 h-dvh max-h-none w-72 max-w-[85vw] overscroll-contain border-r border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 md:hidden"
         onClick={dialogBackdropClickHandler(mobileNavRef, closeMobileNav)}
       >
-        <div class="flex size-full flex-col gap-4 overflow-y-auto p-4">
+        <div class="flex size-full flex-col gap-4 overflow-y-auto overscroll-contain p-4">
           <div class="flex items-center justify-between gap-2">
             <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">
               Navigation

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { route } from 'preact-router';
 import { getBacklogTasks, getRoutines, getTasks } from '../api';
 import type { BacklogTaskRecord, RoutineTaskRecord, SwarmTask } from '../types';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import {
   faBell,
   faChartPie,
@@ -300,6 +300,8 @@ export const CommandPalette = ({
     ...executionCommands,
   ];
 
+  useDialogScrollLock(isOpen);
+
   useEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
@@ -407,7 +409,7 @@ export const CommandPalette = ({
       onClose={onClose}
       onCancel={onClose}
       onClick={handleDialogClick}
-      class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+      class="fixed inset-0 m-auto mt-20 flex w-full max-w-xl flex-col overflow-hidden overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-0 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs"
     >
       <div class="flex items-center gap-3 border-b border-pine-highlight px-4 py-3">
         <Icon icon={faSearch} class="size-4 text-pine-muted" />
@@ -428,7 +430,7 @@ export const CommandPalette = ({
         </kbd>
       </div>
 
-      <div class="max-h-80 overflow-y-auto p-2">
+      <div class="max-h-80 overflow-y-auto overscroll-contain p-2">
         {filtered.length === 0 ? (
           <div class="px-4 py-8 text-center text-xs text-pine-muted">
             No commands matching &quot;{query}&quot;

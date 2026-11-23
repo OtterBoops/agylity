@@ -11,7 +11,7 @@ import {
 import type { PrPolicy, SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { getTask } from '../../api';
-import { dialogBackdropClickHandler } from '../../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { isActiveTaskStatus, isLiveTaskStatus, taskBadgeClass } from './badges';
@@ -353,7 +353,7 @@ export const ExecutionInspectorContent = ({
               {copiedPrompt ? 'Copied' : 'Copy'}
             </button>
           </div>
-          <div class="max-h-40 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-overlay p-3 font-mono wrap-break-word break-all whitespace-pre-wrap">
+          <div class="max-h-40 overflow-y-auto overscroll-contain rounded-lg border border-pine-highlight bg-pine-overlay p-3 font-mono wrap-break-word break-all whitespace-pre-wrap">
             {live.prompt}
           </div>
         </div>
@@ -361,7 +361,7 @@ export const ExecutionInspectorContent = ({
         {live.error && (
           <div>
             <h4 class="mb-1 text-xs font-semibold text-pine-love uppercase">Failure Diagnostic</h4>
-            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
+            <div class="max-h-36 min-w-0 overflow-x-hidden overflow-y-auto overscroll-contain rounded-lg border border-pine-love/40 bg-pine-love/15 p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-love">
               {live.error}
             </div>
           </div>
@@ -384,7 +384,7 @@ export const ExecutionInspectorContent = ({
                 stickToBottom.current =
                   el.scrollHeight - el.scrollTop - el.clientHeight <= AUTOSCROLL_SLACK_PX;
               }}
-              class="m-0 max-h-48 overflow-y-auto rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam"
+              class="m-0 max-h-48 overflow-y-auto overscroll-contain rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam"
             >
               {live.output}
             </pre>
@@ -410,6 +410,8 @@ export const ExecutionInspectorModal = ({
 }: ExecutionInspectorModalProps) => {
   const dialogRef = useRef<HTMLDialogElement>(null);
 
+  useDialogScrollLock(true);
+
   useEffect(() => {
     dialogRef.current?.showModal();
   }, []);
@@ -422,7 +424,7 @@ export const ExecutionInspectorModal = ({
       ref={dialogRef}
       onClose={onClose}
       onClick={dialogBackdropClickHandler(dialogRef, onClose)}
-      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
+      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
     >
       <ExecutionInspectorContent
         task={task}
