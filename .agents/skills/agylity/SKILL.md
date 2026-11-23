@@ -13,7 +13,7 @@ description: >-
 - **Repository Root:** every path in this playbook is relative to the repository root (`src/`, `frontend/`, `tests/`, `data/`). No machine-specific absolute path is required to use the repo.
 - **Runtime:** Pure TypeScript targeting Node 26 (`node:26-slim`).
 - **Zero-CVE Minimal Dependency Surface:**
-  - Runtime dependencies: `discord.js@^14.27.0`, `ky@^2.2.0`, `zod@^4.6.7`.
+  - Runtime dependencies are locked to `discord.js`, `ky`, and `zod` (see `package.json` for exact versions).
   - Storage: Native `node:sqlite` (`data/agylity.db`) in WAL mode with `PRAGMA busy_timeout = 5000;`.
   - Process Execution: Native `node:child_process.execFile` with array arguments.
 - **Zod v4 API Invariant:**
@@ -47,7 +47,7 @@ description: >-
   - **Baked Container Binaries:** Coordinator and runner images bake their required toolchains (`agy`, Node 26, git, curl) directly inside the image layers. Never bind-mount host binaries (e.g. the host's `agy` binary) into containers.
   - **Coordinator Isolation:** The coordinator operates as a control plane with baked telemetry binaries and its own persistent volumes (`agylity-data:/app/data`). It does not run task loops, git commands, or agent processes, and binds no host credential paths.
   - **The coordinator is credentialed and probes on its own.** `docker-compose.yaml` mounts the shared `agylity-gemini:/home/node/.gemini` volume into _both_ services, so the baked `agy` is authenticated in the coordinator too. A container has no `language_server` to discover, so Connect-RPC fails and `fallbackToCli()` (`agy --output-format json -p /usage`) supplies the quota groups, reporting probe source `cli` or `cli_fallback`. Never assume the containerised sentry is blind: check the compose volumes and `src/sentry/client.ts` fallback before designing anything around unavailable telemetry.
-  - **Runner as an Extra Container:** On container hosts (e.g. a homelab Docker host or any GitOps-managed stack), the runner is simply an extra container (`agylity-runner:main`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `RUNNER_SHARED_SECRET` in `.env`.
+  - **Runner as an Extra Container:** On container hosts (e.g. a homelab Docker host or any GitOps-managed stack), the runner is simply an extra container (`agylity-runner`) in the Compose stack. It communicates with the coordinator via `COORDINATOR_URL` and authenticates via `RUNNER_SHARED_SECRET` in `.env`.
   - **Zero Host Credential Mounts:** Runners execute headless tasks against git repos via `cloneUrl` (with ephemeral container storage) or dedicated mounted repository volumes. Never _bind_ host credential paths (`~/.gemini`, host `~/.gitconfig`) into containers; a Docker-managed volume (the shared `agylity-gemini` session) is the sanctioned way to give `agy` an authenticated session.
   - **Host Diagnostics:** Probing host processes and listening ports (e.g. sniffing local IDE Connect-RPC tokens/ports on developer workstations) is supported for host/desktop runners, but containers rely on explicit environment variables and internal network resolution.
   - **Lightweight Healthcheck:** Container healthchecks must strictly use native `curl -fsS http://127.0.0.1:8484/api/health`. Never spawn Node.js or Python runtime processes inside container healthchecks.
@@ -175,7 +175,7 @@ Coordinator (Homelab / Cloud)
   └── Runner API (/api/tasks/poll, /api/runners/register)
         ▲
         │ (Outbound HTTPS Long-Poll via ky)
-        ├── Container Runner (agylity-runner:latest) -> Unattended tasks
+        ├── Container Runner (agylity-runner) -> Unattended tasks
         └── Host / Desktop Runner (dist/runner-cli.js) -> Supervised desktop tasks
 ```
 
@@ -284,15 +284,15 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
 - **Database Path:** `data/agylity.db` (enforces `PRAGMA journal_mode = WAL;` and `PRAGMA busy_timeout = 5000;`).
 - **Configuration Hierarchy:**
   $$\text{Resolved Value} = \text{SQLite UI Overrides} \succ \text{Environment Variables (.env)} \succ \text{Built-in Defaults}$$
-- **Key Tables & State:**
-  - `settings`: `(key TEXT PRIMARY KEY, value TEXT, updated_at TEXT)` - stores persistent UI configuration overrides.
-  - `swarm_tasks`: `(id TEXT PRIMARY KEY, task_number, title, tier, origin_id, origin_number, origin_title, created_at, updated_at, repository_id, repository_name, repository_path, clone_url, default_branch, prompt, requested_by, pr_policy DEFAULT 'inherit', schedule_mode, required_labels_json, model, candidate_models_json, pool_group, effort DEFAULT 'high', allow_overage, push_branch, auto_create_pr, pr_url, issue_urls_json, expires_at, verify_command, status, runner_id, claimed_at, heartbeat_at, completed_at, branch_name, output, error, duration_ms, num_turns, total_tokens, thinking_tokens)` - the swarm task queue and execution lifecycle. `title` exists (defaults to `''`), `tier` defaults to `immediate`, and `task_number` carries a unique index.
-  - `backlog_tasks`: `(id, task_number, title, prompt, repository_id, models_json, verify_command, auto_create_pr, pr_policy DEFAULT 'inherit', priority_order, status, attempt_count, max_attempts DEFAULT 2, last_error, swarm_task_id, github_issue_number, github_issue_url, created_at, updated_at)` - queued autonomous work; `attempt_count`/`max_attempts` bound retries and `github_issue_number` is the nullable label-sync link.
-  - `routine_tasks`: `(id, task_number, title, prompt, repository_id, models_json, verify_command, auto_create_pr, pr_policy DEFAULT 'inherit', enabled, sort_order, trigger_before_reset_hours, min_headroom_percent DEFAULT 10, last_triggered_reset_time, last_triggered_cycles_json, last_task_id, created_at, updated_at)` - recurring templates (supersedes the old `standing_tasks` table, which no longer exists in the schema). `last_task_id` is the most recent run, and a routine re-arms only when that run reached `completed` (a `failed`/`aborted` run ends the reset cycle).
-  - `swarm_runners`: `(runner_id TEXT PRIMARY KEY, name, token_hash, labels_json, repositories_json, system_info_json, enabled, active_task_id, status, registered_at, last_seen_at)` - registered runner nodes and heartbeat telemetry. Labels and repositories are JSON columns, not `labels`/`worker_mode`.
+- **Key Tables & State** (canonical column definitions live in `src/storage/migrations.ts`):
+  - `settings`: persistent UI configuration overrides (`key`, `value`, `updated_at`).
+  - `swarm_tasks`: swarm task queue and execution lifecycle (`title` defaults to `''`, `tier` defaults to `immediate`, `pr_policy` defaults to `'inherit'`, `task_number` carries a unique index, `issue_urls_json` stores created GitHub issue deliverables).
+  - `backlog_tasks`: queued autonomous work (`attempt_count`/`max_attempts` bound retries; `github_issue_number` is the nullable label-sync link).
+  - `routine_tasks`: recurring templates (supersedes the removed `standing_tasks` table); `last_task_id` tracks the most recent run, and a routine re-arms only when that run reached `completed` (a `failed`/`aborted` run ends the reset cycle).
+  - `swarm_runners`: registered runner nodes and heartbeat telemetry (labels, repositories, and system info are JSON columns: `labels_json`, `repositories_json`, `system_info_json`).
   - `swarm_runner_registrations`: one row per one-time registration token; consumed and expired rows are pruned by `pruneRegistrationTokens()`.
   - Legacy leftovers from an older schema (`dispatches`, and the `dispatch_id`, `priority`, `priority_rank`, `worker_mode` columns) are no longer written and are intentionally not dropped.
-  - **Schema migration must be checked, not assumed:** one registry owns every table. `src/storage/migrations.ts` holds the `v1..v6` forward-only set plus `applyMigrations()`, and `AppDatabase` runs it on open (after `ensureTableSchema(db, 'settings', ...)`), so coordinator and sentry tables reach the head version without a `TaskQueue` existing yet; `TaskQueue.initSchema()` and `SentryStateManager` only delegate. Each table is built by `ensureTableSchema()`: `CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that `ALTER TABLE ADD COLUMN`s anything missing. The CREATE alone never upgrades a database written by an earlier schema, and the failure surfaces only when a user tries to dispatch (`table swarm_tasks has no column named schedule_mode`) while `/api/health` stays green. Diff `PRAGMA table_info` against the source definitions before trusting an existing `data/agylity.db`. Never apply a DDL change outside the registry, and never edit a shipped migration — add a new version.
+  - **Schema migration must be checked, not assumed:** one registry owns every table. `src/storage/migrations.ts` holds the forward-only migration set plus `applyMigrations()`, and `AppDatabase` runs it on open (after `ensureTableSchema(db, 'settings', ...)`), so coordinator and sentry tables reach the head version without a `TaskQueue` existing yet; `TaskQueue.initSchema()` and `SentryStateManager` only delegate. Each table is built by `ensureTableSchema()`: `CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that `ALTER TABLE ADD COLUMN`s anything missing. The CREATE alone never upgrades a database written by an earlier schema, and the failure surfaces only when a user tries to dispatch (`table swarm_tasks has no column named schedule_mode`) while `/api/health` stays green. Diff `PRAGMA table_info` against the source definitions before trusting an existing `data/agylity.db`. Never apply a DDL change outside the registry, and never edit a shipped migration — add a new version.
   - **Fail-Closed Startup:** the web server refuses to start when no `WEB_UI_AUTH_TOKEN` is configured and the bind host is not loopback (`127.0.0.1`/`::1`/`localhost`); a loopback bind without a token starts with a warning. Never re-introduce a silent skip of the auth block - that turned the shipped compose file, which binds `0.0.0.0:8484`, into an unauthenticated control plane.
   - **Strict CIDR prefixes:** an empty prefix such as `1.2.3.4/` must be rejected, never parsed as `/0`, which would silently allow every client.
   - Sentry Alert State: Persisted in SQLite (`pool_state`, `pool_milestones`, `pool_samples`, `runtime_state`) across restarts (with legacy `data/state.json` supported only for fallback/migration).
@@ -330,4 +330,4 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
 - **Test Suite Handle Hygiene & Isolation:**
   - Any test binding an HTTP server, child process, daemon, or database MUST guarantee teardown inside `try ... finally` or `t.after()`.
   - Tests must NEVER write into repository `./data/` directories; strictly allocate temporary directories with `os.tmpdir()` and clean up on teardown.
-  - Zero real wall-clock multi-second sleeps in unit tests (keep unit tests fast; the full suite including E2E git fixtures runs in ~10–15s).
+  - Zero real wall-clock multi-second sleeps in unit tests (use event hooks, short timeouts, or fake clocks instead).
