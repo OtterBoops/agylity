@@ -22,6 +22,11 @@ description: >-
   - In SQLite schema update patches and mappers, optional external numeric identifiers (such as `github_issue_number`) must strictly distinguish `undefined` (retain existing), `null` (explicitly unlinked), and positive integers (`> 0`).
   - Never use naive default coercion `coerceNumber(val, existing ?? 0)` on nullable foreign keys or external IDs, as storing `0` creates false-positive issue references (`#0`) in UI badges and search queries.
 - **Frontend Stack:** Vite + Preact + Tailwind CSS (`frontend/`) serving a strictly decoupled dashboard. If `WEB_UI_ENABLED=false`, zero HTTP server or listener is bound.
+- **Build Provenance & Version Indicator Invariant:**
+  - `GET /api/health` reports `buildChannel` (`release` | `main` | `dev`) and `buildCommit` (7-character short SHA or `null`), read from the `BUILD_CHANNEL` / `BUILD_COMMIT` env vars baked into the coordinator image. `docker-bake.hcl` forwards both as build args and CI sets `release` on tags, `main` on branch builds.
+  - `src/shared/build.ts` owns validation and labels for both sides: an unknown channel fails open to `dev`, a commit normalises to seven lowercase hex characters, and `formatBuildLabel` renders `main · <sha>` only for a main build that has a commit.
+  - A `main` build compares its short SHA against the newest commit on `main` (`fetchLatestMainCommit`, 10-minute `localStorage` cache) and flags any inequality — never an ordering. `release`/`dev` keep the `v{APP_VERSION}` label and the GitHub Releases semver comparison.
+  - The channel is baked into the image config, so a tag build must not reuse a `main` `sha-<hash>` image for retagging; the workflow reads the baked `BUILD_CHANNEL` and only reuses a match.
 - **Single-Source Model Catalog Invariant:**
   - `src/shared/models.ts` is the only place the agy model catalog, effort list (`ALL_EFFORTS`) and dispatch default exist. It must stay import-free and erasable-syntax-only, because the frontend bundles it directly.
   - `src/coordinator/models.ts` re-exports it for backend callers and keeps the zod schemas; `frontend/src/config/fields.ts` derives `MODEL_OPTIONS` and the pre-load effort fallback from it. Never re-type a model or effort table in the UI.

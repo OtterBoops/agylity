@@ -140,6 +140,8 @@ Agylity container images published to GitHub Container Registry (`ghcr.io/otterb
 | `edge` / `main` | **Development**    | Both are published from the tip of the `main` branch on every commit. Carries intermediate changes between formal releases without touching `latest` or any version tag.           |
 | `sha-<hash>`    | **Immutable**      | Commit-specific immutable tag (e.g. `sha-9d62b78`). Never repointed; use it for reproducible pins and rollbacks.                                                                   |
 
+Every coordinator image records the channel it was built from. `docker-bake.hcl` passes `BUILD_CHANNEL` (`release` on tag builds, `main` on branch builds, `dev` for a plain local `docker build`) and the 7-character `BUILD_COMMIT`, and `GET /api/health` reports both. The dashboard labels a `main` image `main · <sha>` in the sidebar and flags newer `main` commits, while a release image keeps the `vX.Y.Z` label and the release-tag comparison. Because the channel is baked into the image config, a tag build only retags an existing `sha-<hash>` image when that image was itself built as a release; otherwise it rebuilds so the reported channel matches the tag.
+
 ---
 
 ## 3. Option C: Standalone Native Node 26 Daemon

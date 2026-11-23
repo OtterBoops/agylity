@@ -1,9 +1,19 @@
 declare const __APP_VERSION__: string;
 
+import { normalizeBuildCommit } from '../../../src/shared/build.ts';
+
 export const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const MAIN_COMMIT_CACHE_KEY = 'agylity_main_commit_cache';
+const MAIN_COMMIT_TTL_MS = 10 * 60 * 1000; // main moves per commit, so it outdates faster than a tag
+
+export const mainCommitUrl = (sha: string): string =>
+  `https://github.com/${GITHUB_REPO}/commit/${sha}`;
+
+export const mainCompareUrl = (current: string, latest: string): string =>
+  `https://github.com/${GITHUB_REPO}/compare/${current}...${latest}`;
 
 export const isNewerVersion = (current: string, latest: string): boolean => {
   const clean = (v: string) => v.replace(/^v/, '').trim();
@@ -67,4 +77,54 @@ export const fetchLatestRelease = (): Promise<{ latest: string; url: string } | 
   });
 
   return inFlightRelease;
+};
+
+let inFlightMainCommit: Promise<{ sha: string; url: string } | null> | null = null;
+
+/** Newest commit on `main`, or null when GitHub is unreachable or rate limited (no indicator). */
+export const fetchLatestMainCommit = (): Promise<{ sha: string; url: string } | null> => {
+  if (inFlightMainCommit) return inFlightMainCommit;
+  inFlightMainCommit = (async () => {
+    try {
+      const cached = localStorage.getItem(MAIN_COMMIT_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Date.now() - parsed.timestamp < MAIN_COMMIT_TTL_MS && parsed.sha) {
+          return { sha: parsed.sha, url: parsed.url };
+        }
+      }
+    } catch {}
+
+    try {
+      const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/commits/main`, {
+        headers: {
+          Accept: 'application/vnd.github.v3+json',
+        },
+      });
+
+      if (!res.ok) return null;
+      const data = await res.json();
+      const sha = normalizeBuildCommit(data.sha);
+      if (!sha) return null;
+      const url = data.html_url || mainCommitUrl(sha);
+
+      try {
+        localStorage.setItem(
+          MAIN_COMMIT_CACHE_KEY,
+          JSON.stringify({
+            sha,
+            url,
+            timestamp: Date.now(),
+          })
+        );
+      } catch {}
+      return { sha, url };
+    } catch {}
+
+    return null;
+  })().finally(() => {
+    inFlightMainCommit = null;
+  });
+
+  return inFlightMainCommit;
 };

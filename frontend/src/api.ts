@@ -50,6 +50,8 @@ export interface HealthStatus {
   timestamp?: string;
   authRequired?: boolean;
   agyVersion?: string | null;
+  buildChannel?: string;
+  buildCommit?: string | null;
 }
 
 export const checkHealth = async (): Promise<HealthStatus> => {

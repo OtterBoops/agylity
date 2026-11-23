@@ -153,7 +153,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 | Route                                  | Auth   | Notes                                                             |
 | :------------------------------------- | :----- | :---------------------------------------------------------------- |
-| `GET /api/health`                      | public | Liveness only; reports `authRequired`.                            |
+| `GET /api/health`                      | public | Liveness; reports `authRequired` and build provenance.            |
 | `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
 | `GET /api/summary`                     | Bearer | Per-group headroom percentages and the cached `agy` version.      |
 | `GET /api/alerts`                      | Bearer | Active alert state.                                               |
@@ -195,6 +195,8 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `POST /api/runners/register`           | Runner | Exchanges a registration token for a runner id.                   |
 
 "Bearer" means the `WEB_UI_AUTH_TOKEN` control-plane check; "Runner" means the request carries a runner credential and is exempt from the web token. The HTML shell and hashed assets are served unauthenticated — the client-side `<ControlPlaneGate />` (§3.9) is what withholds the dashboard DOM, so no API data is reachable without the token.
+
+`GET /api/health` also carries **build provenance**: `buildChannel` (`release` | `main` | `dev`, failing open to `dev` when `BUILD_CHANNEL` is unset or unrecognised) and `buildCommit` (the 7-character short SHA, or `null`). Both are baked into the coordinator image as Docker build args, which CI supplies per ref — `release` on tag builds, `main` on branch builds. The dashboard reads them to label the sidebar version indicator: a `main` build renders `main · <sha>` and compares its SHA against the newest commit on `main` (a different short SHA is the update signal, since commits have no ordering to compare), while `release` and `dev` builds keep the `v{APP_VERSION}` label and the GitHub Releases semver comparison. `src/shared/build.ts` owns the validation and label rules for both sides.
 
 ### 3.9. Zero-DOM-Leak Control Plane Gate (`<ControlPlaneGate />`)
 
