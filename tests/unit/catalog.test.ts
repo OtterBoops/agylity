@@ -139,15 +139,23 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
       assert.equal(byId.get('gpt-oss-120b')?.defaultEffort, 'medium');
     });
 
-    it('names gemini-4-hydrogen the gemini-hydrogen pool default', () => {
-      const flashDefaults = grouped.models.filter(
-        (m) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
+    it('names gemini-4-hydrogen the merged gemini pool default', () => {
+      const geminiDefaults = grouped.models.filter(
+        (m) => m.poolGroup === 'gemini' && m.defaultForGroup
       );
       assert.deepEqual(
-        flashDefaults.map((m) => m.id),
+        geminiDefaults.map((m) => m.id),
         ['gemini-4-hydrogen']
       );
-      assert.equal(DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'], 'gemini-4-hydrogen');
+      assert.equal(DEFAULT_MODEL_BY_POOL_GROUP['gemini'], 'gemini-4-hydrogen');
+    });
+
+    it('keeps every Gemini codename inside the one gemini pool group', () => {
+      for (const model of grouped.models) {
+        if (!model.id.startsWith('gemini-')) continue;
+        assert.equal(model.poolGroup, 'gemini', `${model.id} must bill the merged gemini pool`);
+      }
+      assert.ok(grouped.models.every((m) => m.poolGroup === 'gemini' || m.poolGroup === 'claude'));
     });
 
     it('confines xhigh to models that advertise it', () => {
@@ -162,20 +170,19 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
   });
 
   describe('bundled catalog covers orchestrator routes', () => {
-    it('lists both orchestrator routes with no effort support', () => {
+    it('lists all three orchestrator routes, split only by pool id, with no effort support', () => {
       const routes = CANONICAL_AGY_MODELS.filter((m) => isOrchestratorModelId(m.id));
       assert.deepEqual(routes.map((m) => m.id).sort(), [
-        'gemini-pro-orchestrator-g1-pro',
+        'gemini-pro-orchestrator',
+        'gemini-pro-orchestrator-argon',
         'gemini-pro-orchestrator-neon',
       ]);
       for (const route of routes) {
         assert.deepEqual(route.supportedEfforts, [], `${route.id} takes no --effort`);
         assert.equal(modelSupportsEffort(route.id, route.supportedEfforts), false);
+        // One merged gemini pool now bills all three routes; only the route id tells them apart.
+        assert.equal(route.poolGroup, 'gemini');
       }
-      const byId = new Map(routes.map((m) => [m.id, m]));
-      // agy bills each route to the pool its codename names.
-      assert.equal(byId.get('gemini-pro-orchestrator-neon')?.poolGroup, 'gemini-hydrogen');
-      assert.equal(byId.get('gemini-pro-orchestrator-g1-pro')?.poolGroup, 'gemini-argon');
     });
 
     it('never picks a route as a group default when the listing lacks the default model', () => {
@@ -188,9 +195,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
           ])
         )
       );
-      const defaults = grouped.models.filter(
-        (m) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
-      );
+      const defaults = grouped.models.filter((m) => m.poolGroup === 'gemini' && m.defaultForGroup);
       assert.deepEqual(
         defaults.map((m) => m.id),
         ['gemini-3.8-flash']
@@ -199,7 +204,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
   });
 
   describe('4. Pool group resolution for new codenames', () => {
-    it('groups Gemini 4 Carbon with Hydrogen without bundling it', () => {
+    it('groups Gemini 4 Carbon with the merged gemini pool and bundles it', () => {
       const grouped = groupAgyModels(
         parseAgyModelsOutput(
           jsonEnvelope([
@@ -213,11 +218,17 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
         grouped.models.map((m) => m.id),
         ['gemini-4-carbon']
       );
-      assert.equal(grouped.models[0]?.poolGroup, 'gemini-hydrogen');
-      assert.ok(!CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-4-carbon'));
+      assert.equal(grouped.models[0]?.poolGroup, 'gemini');
+
+      // Carbon ships in the bundle now: a member of the pool, never its default.
+      const bundled = CANONICAL_AGY_MODELS.find((m) => m.id === 'gemini-4-carbon');
+      assert.equal(bundled?.poolGroup, 'gemini');
+      assert.equal(bundled?.defaultEffort, 'high');
+      assert.deepEqual(bundled?.supportedEfforts, ['low', 'medium', 'high']);
+      assert.ok(!bundled?.defaultForGroup, 'Carbon must not claim the group default');
     });
 
-    it('groups Gemini 4 Neon and Orchestrator (Neon) with Hydrogen', () => {
+    it('groups Gemini 4 Neon and Orchestrator (Neon) with the gemini pool', () => {
       const grouped = groupAgyModels([
         { id: 'gemini-4-neon-low', label: 'Gemini 4 Neon (Low)' },
         { id: 'gemini-4-neon-medium', label: 'Gemini 4 Neon (Medium)' },
@@ -228,9 +239,9 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 
       const neon = grouped.models.find((m) => m.id === 'gemini-4-neon');
       const orch = grouped.models.find((m) => m.id === 'gemini-pro-orchestrator-neon');
-      assert.equal(neon?.poolGroup, 'gemini-hydrogen');
+      assert.equal(neon?.poolGroup, 'gemini');
       assert.deepEqual(neon?.supportedEfforts, ['low', 'medium', 'high', 'xhigh']);
-      assert.equal(orch?.poolGroup, 'gemini-hydrogen');
+      assert.equal(orch?.poolGroup, 'gemini');
       assert.deepEqual(orch?.supportedEfforts, []);
       assert.deepEqual(grouped.unattributed, []);
       assert.equal(resolveReasoningEffortForModel('gemini-4-neon', 'xhigh'), 'xhigh');
@@ -278,7 +289,7 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
         } as never,
       });
 
-    it('publishes Gemini 4 Carbon from the live probe while keeping it out of the bundle', async () => {
+    it('publishes Gemini 4 Carbon from the live probe as a bundled gemini member', async () => {
       const provider = makeCatalog(async () => ({
         stdout: jsonEnvelope([
           ...LIVE_MODELS,
@@ -291,10 +302,11 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 
       const models = provider.getModels();
       const carbon = models.find((m) => m.id === 'gemini-4-carbon');
-      assert.equal(carbon?.poolGroup, 'gemini-hydrogen');
+      assert.equal(carbon?.poolGroup, 'gemini');
       assert.equal(carbon?.defaultForGroup, false);
       // Hydrogen's bundled default still wins over a dynamically discovered sibling.
       assert.equal(models.find((m) => m.id === 'gemini-4-hydrogen')?.defaultForGroup, true);
+      assert.ok(CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-4-carbon'));
       assert.deepEqual(provider.getUnattributedModels(), []);
     });
 
@@ -375,14 +387,14 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
   describe('7. Effortless models', () => {
     it('emits no supported efforts for a model listed without an effort suffix', () => {
       const grouped = groupAgyModels([
-        { id: 'gemini-pro-orchestrator-g1-pro', label: 'Orchestrator (Argon)' },
+        { id: 'gemini-pro-orchestrator-argon', label: 'Orchestrator (Argon)' },
         { id: 'gemini-pro-orchestrator', label: 'Orchestrator (Carbon)' },
       ]);
       const byId = new Map(grouped.models.map((m) => [m.id, m]));
 
-      assert.deepEqual(byId.get('gemini-pro-orchestrator-g1-pro')?.supportedEfforts, []);
+      assert.deepEqual(byId.get('gemini-pro-orchestrator-argon')?.supportedEfforts, []);
       assert.deepEqual(byId.get('gemini-pro-orchestrator')?.supportedEfforts, []);
-      assert.equal(byId.get('gemini-pro-orchestrator-g1-pro')?.defaultEffort, 'medium');
+      assert.equal(byId.get('gemini-pro-orchestrator-argon')?.defaultEffort, 'medium');
     });
 
     it('keeps the bundled declaration when the probe lists a known model with no suffix', () => {
@@ -399,11 +411,13 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
     });
 
     it('reports effort support for an orchestrator route as false', () => {
-      assert.equal(modelSupportsEffort('gemini-pro-orchestrator-g1-pro'), false);
+      assert.equal(modelSupportsEffort('gemini-pro-orchestrator-argon'), false);
       assert.equal(modelSupportsEffort('gemini-pro-orchestrator'), false);
       assert.equal(modelSupportsEffort('gemini-pro-orchestrator-neon'), false);
       assert.equal(modelSupportsEffort('gemini-4-carbon', []), false);
       assert.equal(modelSupportsEffort('gemini-4-hydrogen'), true);
+      // Carbon is bundled, so its declaration alone proves it takes an effort.
+      assert.equal(modelSupportsEffort('gemini-4-carbon'), true);
       assert.equal(modelSupportsEffort('gemini-4-carbon', ['low', 'high']), true);
       // The pool card splits its member list on this predicate, so a route must not read as a model.
       assert.equal(isOrchestratorModelId('gemini-pro-orchestrator-neon'), true);
@@ -413,13 +427,22 @@ describe('Dynamic Model Catalog: agy models parsing, grouping & pool attribution
 });
 
 describe('GET /api/models: dynamic catalog annotation', () => {
+  // A model the CLI can start serving before this build bundles it.
+  const DYNAMIC_ONLY_MODEL = {
+    id: 'gemini-5-titanium-medium',
+    label: 'Gemini 5 Titanium (Medium)',
+  };
+
   const withServer = async (
     run: (ctx: { baseUrl: string; store: ConfigStore }) => Promise<void>
   ): Promise<void> => {
     const { dir, cleanup } = makeTempDir('catalog_web_');
     const store = new ConfigStore(path.join(dir, 'test.db'), {});
     const provider = new DynamicModelCatalog({
-      execFileFn: async () => ({ stdout: jsonEnvelope(LIVE_MODELS), stderr: '' }),
+      execFileFn: async () => ({
+        stdout: jsonEnvelope([...LIVE_MODELS, DYNAMIC_ONLY_MODEL]),
+        stderr: '',
+      }),
     });
     await provider.refreshModels();
 
@@ -439,26 +462,32 @@ describe('GET /api/models: dynamic catalog annotation', () => {
     }
   };
 
-  it('returns models the CLI reports but this build never bundled', async () => {
+  it('annotates CLI-reported models, bundled or not, with the merged pool group', async () => {
     await withServer(async ({ baseUrl }) => {
       const body: any = await ky.get(`${baseUrl}/api/models`).json();
       const hydrogen = body.models.find((m: any) => m.id === 'gemini-4-hydrogen');
       assert.ok(hydrogen, 'dynamic catalog must expose Gemini 4 Hydrogen');
       assert.equal(hydrogen.label, 'Gemini 4 Hydrogen');
-      assert.equal(hydrogen.poolGroup, 'gemini-hydrogen');
+      assert.equal(hydrogen.poolGroup, 'gemini');
       assert.ok(hydrogen.supportedEfforts.includes('xhigh'));
+
+      const titanium = body.models.find((m: any) => m.id === 'gemini-5-titanium');
+      assert.ok(titanium, 'dynamic catalog must expose a model this build never bundled');
+      assert.equal(titanium.label, 'Gemini 5 Titanium');
+      assert.equal(titanium.poolGroup, 'gemini');
+      assert.ok(!CANONICAL_AGY_MODELS.some((m) => m.id === 'gemini-5-titanium'));
     });
   });
 
-  it('advertises gemini-4-hydrogen as the gemini-hydrogen default', async () => {
+  it('advertises gemini-4-hydrogen as the gemini group default', async () => {
     await withServer(async ({ baseUrl }) => {
       const body: any = await ky.get(`${baseUrl}/api/models`).json();
       assert.equal(body.defaultModel, 'gemini-4-hydrogen');
-      const flashDefaults = body.models.filter(
-        (m: any) => m.poolGroup === 'gemini-hydrogen' && m.defaultForGroup
+      const geminiDefaults = body.models.filter(
+        (m: any) => m.poolGroup === 'gemini' && m.defaultForGroup
       );
       assert.deepEqual(
-        flashDefaults.map((m: any) => m.id),
+        geminiDefaults.map((m: any) => m.id),
         ['gemini-4-hydrogen']
       );
     });

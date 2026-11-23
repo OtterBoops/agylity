@@ -15,7 +15,7 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
 const poolAt = (
-  poolGroup: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
+  poolGroup: 'gemini' | 'gemini' | 'claude',
   fraction: number,
   hoursUntilReset: number
 ): QuotaSnapshot =>
@@ -28,10 +28,8 @@ const poolAt = (
     hoursUntilReset,
   }) as QuotaSnapshot;
 
-const pool = (
-  poolGroup: 'gemini-hydrogen' | 'gemini-argon' | 'claude',
-  fraction: number
-): QuotaSnapshot => poolAt(poolGroup, fraction, 5);
+const pool = (poolGroup: 'gemini' | 'gemini' | 'claude', fraction: number): QuotaSnapshot =>
+  poolAt(poolGroup, fraction, 5);
 
 const makeCoordinator = (dir: string, overrides: Partial<AppConfig> = {}) => {
   const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -40,8 +38,7 @@ const makeCoordinator = (dir: string, overrides: Partial<AppConfig> = {}) => {
     repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
     poolGroupPolicies: {
       claude: { alertsEnabled: true, dispatchEnabled: true },
-      'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-      'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+      gemini: { alertsEnabled: true, dispatchEnabled: true },
     },
     ...overrides,
   });
@@ -177,8 +174,8 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
   it('locks dispatch for a model that maps to no pool', () => {
     const result = evaluateModelDispatchEligibility({
-      requestedModel: 'gemini-9-turbo',
-      pools: [pool('gemini-argon', 0.9)],
+      requestedModel: 'quantum-9-turbo',
+      pools: [pool('gemini', 0.9)],
       minDispatchHeadroomPercent: 10,
     });
     assert.equal(result.allowed, false);
@@ -186,7 +183,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     assert.equal(result.poolGroup, null);
   });
 
-  it('burns a routine cycle per pool, so another pool cannot re-arm it', async () => {
+  it('burns a routine cycle per pool group, so another group cannot re-arm it', async () => {
     const { dir, cleanup } = makeTempDir('tier_routine_cycles_');
     const { db, coordinator } = makeCoordinator(dir);
 
@@ -203,7 +200,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
         minHeadroomPercent: 10,
       });
 
-      const flash = pool('gemini-hydrogen', 0.8);
+      const flash = pool('gemini', 0.8);
       const claude = pool('claude', 0.8);
       const farOut = new Date(Date.now() + 48 * 3600_000).toISOString();
       const inWindow = new Date(Date.now() + 5 * 3600_000).toISOString();
@@ -234,7 +231,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       assert.match(second[0]?.model ?? '', /claude/);
 
       const stamped = coordinator.queue.getRoutineTask(routine.id);
-      assert.equal(stamped?.lastTriggeredCycles['gemini-hydrogen'], inWindow);
+      assert.equal(stamped?.lastTriggeredCycles['gemini'], inWindow);
       assert.equal(stamped?.lastTriggeredCycles.claude, inWindow);
 
       // 4. Flash is back inside its window on the same cycle: it must stay burned, even though
@@ -272,9 +269,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
       // 20h to reset at 20%: outside the global 4h window and below its 30% floor, so the old
       // claim-time gate would have parked the task forever. The routine's own 24h/10% pair wins.
-      const spawned = await coordinator.triggerEligibleAutonomousTasks([
-        poolAt('gemini-hydrogen', 0.2, 20),
-      ]);
+      const spawned = await coordinator.triggerEligibleAutonomousTasks([poolAt('gemini', 0.2, 20)]);
       assert.equal(spawned.length, 1);
       assert.equal(spawned[0]?.tier, 'routine');
       assert.equal(spawned[0]?.scheduleMode, 'immediate');
@@ -293,7 +288,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const { dir, cleanup } = makeTempDir('tier_cascade_first_');
     const { db, coordinator } = makeCoordinator(dir);
     try {
-      coordinator.onQuotaUpdated([pool('gemini-hydrogen', 0.8), pool('claude', 0.8)]);
+      coordinator.onQuotaUpdated([pool('gemini', 0.8), pool('claude', 0.8)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'first hop wins',
@@ -305,7 +300,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
 
       assert.equal(res.success, true);
       assert.equal(res.model, 'gemini-4-hydrogen');
-      assert.equal(res.poolGroup, 'gemini-hydrogen');
+      assert.equal(res.poolGroup, 'gemini');
 
       const queued = coordinator.queue.getTask(res.taskId!);
       assert.equal(queued?.model, 'gemini-4-hydrogen');
@@ -327,7 +322,7 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
     const { db, coordinator } = makeCoordinator(dir);
     try {
       // claude is below the floor, flash is healthy: hop 0 can never run.
-      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini-hydrogen', 0.8)]);
+      coordinator.onQuotaUpdated([pool('claude', 0.05), pool('gemini', 0.8)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'second hop wins',
@@ -365,14 +360,13 @@ describe('Tier lifecycle: untyped patches and unknown models', () => {
       repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
       poolGroupPolicies: {
         claude: { alertsEnabled: true, dispatchEnabled: false },
-        'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-        'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+        gemini: { alertsEnabled: true, dispatchEnabled: true },
       },
     });
     const coordinator = new Coordinator({ configStore });
     try {
       // Both pools are healthy, so only the dispatch switch can reject hop 0.
-      coordinator.onQuotaUpdated([pool('claude', 0.9), pool('gemini-hydrogen', 0.9)]);
+      coordinator.onQuotaUpdated([pool('claude', 0.9), pool('gemini', 0.9)]);
       const res = await coordinator.dispatch({
         repositoryId: 'agylity',
         prompt: 'disabled pool wins nothing',
@@ -472,7 +466,7 @@ describe('Tier lifecycle: HTTP contracts', () => {
     });
     try {
       // 40h to reset at 90%: far outside the burn window, so the POST must park the task.
-      coordinator.onQuotaUpdated([poolAt('gemini-hydrogen', 0.9, 40)]);
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
 
       const res = await ky.post(`http://127.0.0.1:${port}/api/dispatch`, {
         json: {
@@ -497,7 +491,7 @@ describe('Tier lifecycle: HTTP contracts', () => {
       assert.equal(early, null);
 
       // 2h to reset at 65%: inside the 4h window and above the 30% burn floor.
-      coordinator.onQuotaUpdated([poolAt('gemini-hydrogen', 0.65, 2)]);
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.65, 2)]);
 
       const claimed = await coordinator.pollForTask({ runnerId: 'runner-1', timeoutMs: 0 });
       assert.equal(claimed?.id, body.taskId);

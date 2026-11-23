@@ -181,12 +181,12 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       }>
     ).map((row) => Number(row.version));
 
-  it('reaches version 6 with issue_urls_json defaulting to an empty array on an enqueued task', () => {
+  it('reaches version 7 with issue_urls_json defaulting to an empty array on an enqueued task', () => {
     const db = new AppDatabase(':memory:');
 
     try {
       const raw = db.getRawDb();
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7]);
 
       const column = issueColumn(raw);
       assert.ok(column, 'swarm_tasks.issue_urls_json must exist at head');
@@ -221,7 +221,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       assert.doesNotThrow(() => applyMigrations(raw));
 
       assert.deepEqual(appliedVersions(raw), before);
-      assert.equal(Math.max(...appliedVersions(raw)), 6);
+      assert.equal(Math.max(...appliedVersions(raw)), 7);
       assert.ok(issueColumn(raw), 'the re-run must leave the column in place');
     } finally {
       db.close();
@@ -240,9 +240,10 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
         cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
       });
 
-      // Rewind to the v5 shape rather than inventing a fixture: drop the v6 column and its record.
+      // Rewind to the v5 shape rather than inventing a fixture: drop the v6 column and its record,
+      // and rewind v7 with it so the next apply runs the whole v6..v7 tail.
       raw.exec('ALTER TABLE swarm_tasks DROP COLUMN issue_urls_json');
-      raw.prepare('DELETE FROM schema_migrations WHERE version = 6').run();
+      raw.prepare('DELETE FROM schema_migrations WHERE version IN (6, 7)').run();
       assert.equal(issueColumn(raw), undefined);
       assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5]);
 
@@ -251,7 +252,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       const column = issueColumn(raw);
       assert.ok(column, 'the v6 migration must restore the column');
       assert.equal(column.dflt_value, "'[]'");
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7]);
 
       const row = raw
         .prepare('SELECT issue_urls_json FROM swarm_tasks WHERE id = ?')
@@ -498,7 +499,7 @@ describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
           roundTrips('required_labels_json', task.requiredLabels, ['linux', 'gpu']),
         model: () => roundTrips('model', task.model, 'gemini-4-argon'),
         candidate_models_json: () => roundTrips('candidate_models_json', task.cascade, cascade),
-        pool_group: () => roundTrips('pool_group', task.poolGroup, 'gemini-argon'),
+        pool_group: () => roundTrips('pool_group', task.poolGroup, 'gemini'),
         effort: () => roundTrips('effort', task.effort, 'high'),
         allow_overage: () => roundTrips('allow_overage', task.allowOverage, true),
         push_branch: () => roundTrips('push_branch', task.pushBranch, false),

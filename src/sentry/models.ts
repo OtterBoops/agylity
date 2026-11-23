@@ -76,7 +76,7 @@ export const QuotaBucketSchema = z.object({
 
 export const QuotaSnapshotSchema = z.object({
   poolId: z.string(),
-  poolGroup: z.enum(['claude', 'gemini-argon', 'gemini-hydrogen']),
+  poolGroup: z.enum(['gemini', 'claude']),
   displayName: z.string(),
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
@@ -235,20 +235,20 @@ export const computeBurnProjection = (input: {
 };
 
 export const POOL_GROUP_ORDER: Record<PoolGroup, number> = {
-  'gemini-hydrogen': 0,
-  'gemini-argon': 1,
-  claude: 2,
+  gemini: 0,
+  claude: 1,
 };
 
 // Prototype-free table: an arbitrary state-file key such as `constructor` must not resolve to an inherited member.
 export const POOL_GROUP_ALIASES: Record<string, PoolGroup> = Object.assign(Object.create(null), {
-  'gemini-argon': 'gemini-argon',
-  argon: 'gemini-argon',
-  'gemini-hydrogen': 'gemini-hydrogen',
-  hydrogen: 'gemini-hydrogen',
-  // Legacy key from state files and pool ids written before the pool group was renamed.
-  'gemini-flash': 'gemini-hydrogen',
-  flash: 'gemini-hydrogen',
+  gemini: 'gemini',
+  // Every Gemini pool key ever shipped, from state files and pool ids written before they were merged.
+  'gemini-hydrogen': 'gemini',
+  hydrogen: 'gemini',
+  'gemini-flash': 'gemini',
+  flash: 'gemini',
+  'gemini-argon': 'gemini',
+  argon: 'gemini',
   claude: 'claude',
   sonnet: 'claude',
   '3p': 'claude',
@@ -257,8 +257,13 @@ export const POOL_GROUP_ALIASES: Record<string, PoolGroup> = Object.assign(Objec
 export const POOL_GROUP_DISPLAY_NAMES: Record<PoolGroup, string> = POOL_GROUP_LABELS;
 
 export const POOL_GROUP_DEFAULT_MODELS: Record<PoolGroup, string[]> = {
-  'gemini-hydrogen': ['Gemini 4 Hydrogen', 'Gemini 4 Neon', 'Gemini 3.8 Flash'],
-  'gemini-argon': ['Gemini 4 Argon'],
+  gemini: [
+    'Gemini 4 Hydrogen',
+    'Gemini 4 Neon',
+    'Gemini 4 Carbon',
+    'Gemini 4 Argon',
+    'Gemini 3.8 Flash',
+  ],
   claude: ['Claude Opus', 'Claude Sonnet', 'GPT-OSS'],
 };
 
@@ -311,43 +316,25 @@ export const poolGroupForModelConfig = (config: {
   // A `-disabled` id is a listing placeholder with no quota; it belongs to no pool.
   if (mid.endsWith('-disabled')) return null;
 
-  if (mid.includes('argon') || lbl.includes('argon')) {
-    return { poolGroup: 'gemini-argon', displayName: POOL_GROUP_DISPLAY_NAMES['gemini-argon'] };
-  }
-
-  // Carbon and Neon run on Hydrogen and match before the orchestrator prefix, which spans both pools.
+  // Every Gemini pool is one group now, so the brand alone attributes a model — including one the
+  // live listing reports that this build never bundled. agy still rejects an id it does not serve.
   if (
+    mid.includes('gemini') ||
+    lbl.includes('gemini') ||
+    mid.includes('argon') ||
+    lbl.includes('argon') ||
     mid.includes('carbon') ||
     lbl.includes('carbon') ||
     mid.includes('neon') ||
-    lbl.includes('neon')
+    lbl.includes('neon') ||
+    mid.includes('hydro') ||
+    lbl.includes('hydro') ||
+    mid.includes('flash') ||
+    lbl.includes('flash') ||
+    mid.includes('orchestrator') ||
+    lbl.includes('orchestrator')
   ) {
-    return {
-      poolGroup: 'gemini-hydrogen',
-      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
-    };
-  }
-
-  // Only the G1 Pro route bills Argon; a bare `gemini-pro-orchestrator` is the Carbon route.
-  if (mid.includes('orchestrator') || lbl.includes('orchestrator')) {
-    const poolGroup: PoolGroup = mid.includes('g1-pro') ? 'gemini-argon' : 'gemini-hydrogen';
-    return { poolGroup, displayName: POOL_GROUP_DISPLAY_NAMES[poolGroup] };
-  }
-
-  // Hydrogen shares the Flash pool and matches before the flash branch, so `gemini-4-hydrogen-*` needs no pool of its own.
-  if (mid.includes('hydrogen') || lbl.includes('hydrogen')) {
-    return {
-      poolGroup: 'gemini-hydrogen',
-      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
-    };
-  }
-
-  // No bare 'pro' branch: `gemini-pro-orchestrator-g1-pro` is not a Flash model, so a substring match would charge the wrong pool.
-  if (mid.includes('flash') || lbl.includes('flash')) {
-    return {
-      poolGroup: 'gemini-hydrogen',
-      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
-    };
+    return { poolGroup: 'gemini', displayName: POOL_GROUP_DISPLAY_NAMES.gemini };
   }
 
   if (
@@ -382,13 +369,6 @@ export const resolvePoolGroupForQuotaGroup = (
   defaultModels: string[];
 } | null => {
   const name = groupName.toLowerCase();
-  if (name.includes('argon')) {
-    return {
-      poolGroup: 'gemini-argon',
-      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-argon'],
-      defaultModels: POOL_GROUP_DEFAULT_MODELS['gemini-argon'],
-    };
-  }
   if (name.includes('claude') || name.includes('gpt')) {
     return {
       poolGroup: 'claude',
@@ -396,11 +376,13 @@ export const resolvePoolGroupForQuotaGroup = (
       defaultModels: POOL_GROUP_DEFAULT_MODELS.claude,
     };
   }
-  if (name.includes('gemini')) {
+  // The probe reports the Gemini pools as separate groups (weekly, Argon WTU); they all bill one
+  // pool group and are told apart by pool id.
+  if (name.includes('gemini') || name.includes('argon')) {
     return {
-      poolGroup: 'gemini-hydrogen',
-      displayName: POOL_GROUP_DISPLAY_NAMES['gemini-hydrogen'],
-      defaultModels: POOL_GROUP_DEFAULT_MODELS['gemini-hydrogen'],
+      poolGroup: 'gemini',
+      displayName: POOL_GROUP_DISPLAY_NAMES.gemini,
+      defaultModels: POOL_GROUP_DEFAULT_MODELS.gemini,
     };
   }
   return null;

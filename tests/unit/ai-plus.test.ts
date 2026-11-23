@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import {
   CANONICAL_AGY_MODELS,
+  POOL_GROUPS,
   type AgyModelCatalogEntry,
   type PoolGroup,
 } from '../../src/shared/models.js';
@@ -28,7 +29,10 @@ const canonicalEntry = (id: string): AgyModelCatalogEntry => {
 
 const catalogOf = (...ids: string[]): AgyModelCatalogEntry[] => ids.map(canonicalEntry);
 
-/** AI Plus serves one Gemini model and one Claude model; no Argon pool and no Gemini 4 Hydrogen. */
+/**
+ * AI Plus serves one Gemini model and one Claude model. Every Gemini codename now bills the single
+ * merged gemini pool, so Hydrogen is withheld here rather than moved to a pool of its own.
+ */
 const AI_PLUS_CATALOG = catalogOf('gemini-3.8-flash', 'claude-sonnet-5-5');
 
 const resetTime = new Date(Date.now() + 20 * 3600 * 1000).toISOString();
@@ -53,24 +57,24 @@ const poolSnapshot = (poolGroup: PoolGroup, remainingFraction = 0.8): QuotaSnaps
 
 describe('AI Plus edge cases', () => {
   describe('quota grid columns', () => {
-    it('keeps one column list for every account shape', () => {
-      assert.equal(QUOTA_GRID_COLUMNS, 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3');
+    it('renders one cell per merged pool group in a two-column grid', () => {
+      assert.deepEqual(POOL_GROUPS, ['gemini', 'claude']);
+      assert.equal(QUOTA_GRID_COLUMNS, 'grid-cols-1 md:grid-cols-2');
     });
 
-    it('fills a short last row with placeholders per breakpoint', () => {
-      const visible = (count: number): { md: number; xl: number } => {
-        const slots = quotaGridPlaceholders(count);
-        return {
-          md: slots.filter((slot) => slot.className.includes('md:flex')).length,
-          xl: slots.filter((slot) => slot.className.endsWith('xl:flex')).length,
-        };
-      };
+    it('fills an odd row with a single placeholder that only shows at the two-column breakpoint', () => {
+      for (const count of [2, 4, 6]) {
+        assert.deepEqual(quotaGridPlaceholders(count), [], `${count} cells fill every row`);
+      }
 
-      // Three cells (two pools plus the absent group) fill the row at three columns.
-      assert.deepEqual(visible(3), { md: 1, xl: 0 });
-      assert.deepEqual(visible(4), { md: 0, xl: 2 });
-      assert.deepEqual(visible(5), { md: 1, xl: 1 });
-      assert.deepEqual(visible(7), { md: 1, xl: 2 });
+      for (const count of [1, 3, 5]) {
+        const slots = quotaGridPlaceholders(count);
+        assert.equal(slots.length, 1, `${count} cells leave one gap in the last row`);
+        assert.deepEqual(
+          slots.map((slot) => slot.className),
+          ['hidden md:flex']
+        );
+      }
     });
   });
 
@@ -86,6 +90,12 @@ describe('AI Plus edge cases', () => {
       );
     });
 
+    it('resolves an Argon codename inside the merged gemini pool rather than off it', () => {
+      // Argon and Hydrogen now bill one pool, so the tier's one Gemini model serves both.
+      assert.equal(resolveDefaultDispatchModel('argon', AI_PLUS_CATALOG), 'gemini-3.8-flash');
+      assert.equal(resolveAvailableModelId('gemini-4-argon', AI_PLUS_CATALOG), 'gemini-3.8-flash');
+    });
+
     it('leaves a served model and the full catalog untouched', () => {
       assert.equal(
         resolveDefaultDispatchModel('gemini-4-hydrogen', CANONICAL_AGY_MODELS),
@@ -97,9 +107,15 @@ describe('AI Plus edge cases', () => {
       );
     });
 
-    it('never moves a withheld model onto another pool group', () => {
-      // Argon has no candidate at all here, so the id survives and eligibility locks instead.
-      assert.equal(resolveAvailableModelId('gemini-4-argon', AI_PLUS_CATALOG), 'gemini-4-argon');
+    it('leaves a model alone when its own pool group has no live pool', () => {
+      const geminiOnly = catalogOf('gemini-3.8-flash');
+      // The claude group has no candidate at all here, so the id survives and eligibility locks.
+      assert.equal(resolveAvailableModelId('claude-opus-5-5', geminiOnly), 'claude-opus-5-5');
+      // A route is never swapped for a model, or dispatch would silently leave the route.
+      assert.equal(
+        resolveAvailableModelId('gemini-pro-orchestrator-argon', AI_PLUS_CATALOG),
+        'gemini-pro-orchestrator-argon'
+      );
     });
 
     it('picks the newest model in the group and ignores orchestrator routes', () => {
@@ -108,50 +124,52 @@ describe('AI Plus edge cases', () => {
         {
           id: 'gemini-pro-orchestrator',
           label: 'Gemini Pro Orchestrator',
-          poolGroup: 'gemini-hydrogen' as const,
+          poolGroup: 'gemini' as const,
           defaultEffort: 'medium' as const,
         },
       ];
-      assert.equal(highestAvailableModelForPoolGroup('gemini-hydrogen', catalog), 'gemini-4-neon');
+      assert.equal(highestAvailableModelForPoolGroup('gemini', catalog), 'gemini-4-neon');
       assert.equal(
-        highestAvailableModelForPoolGroup('gemini-hydrogen', AI_PLUS_CATALOG),
+        highestAvailableModelForPoolGroup('gemini', AI_PLUS_CATALOG),
         'gemini-3.8-flash'
       );
     });
   });
 
   describe('pool group eligibility', () => {
-    it('authorises the substituted model against the hydrogen pool', () => {
+    it('authorises the substituted model against the one gemini pool', () => {
       const result = evaluateModelDispatchEligibility({
         requestedModel: 'gemini-4-hydrogen',
-        pools: [poolSnapshot('gemini-hydrogen')],
+        pools: [poolSnapshot('gemini')],
         catalog: AI_PLUS_CATALOG,
       });
       assert.equal(result.allowed, true);
       assert.equal(result.resolvedModel, 'gemini-3.8-flash');
-      assert.equal(result.poolGroup, 'gemini-hydrogen');
+      assert.equal(result.poolGroup, 'gemini');
     });
 
     it('resolves a preference chain onto the model the tier actually serves', () => {
       const result = evaluateModelPreferenceChain({
         cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
-        pools: [poolSnapshot('gemini-hydrogen')],
+        pools: [poolSnapshot('gemini')],
         minHeadroomPercent: 10,
         catalog: AI_PLUS_CATALOG,
       });
       assert.equal(result.allowed, true);
       assert.equal(result.selectedModel, 'gemini-3.8-flash');
+      assert.equal(result.poolGroup, 'gemini');
     });
 
     it('still refuses a pool group the account holds no pool for', () => {
       const result = evaluateModelPreferenceChain({
-        cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
-        pools: [poolSnapshot('gemini-hydrogen'), poolSnapshot('claude')],
+        cascade: [{ model: 'claude-opus-5-5', effort: 'high' }],
+        pools: [poolSnapshot('gemini')],
         minHeadroomPercent: 10,
         catalog: AI_PLUS_CATALOG,
       });
       assert.equal(result.allowed, false);
       assert.match(result.reason ?? '', /no telemetry pool/);
+      assert.match(result.reason ?? '', /claude-sonnet-5-5 \(claude\)/);
     });
   });
 
@@ -161,24 +179,24 @@ describe('AI Plus edge cases', () => {
       const db = new AppDatabase(join(dir, 'pools.db'));
       const manager = new SentryStateManager({ db });
       try {
-        manager.updatePoolQuota('gemini-hydrogen', 0.9, resetTime);
-        manager.updatePoolQuota('gemini-argon', 0.5, resetTime);
-        manager.recordMilestoneFired('gemini-argon', 24);
+        manager.updatePoolQuota('gemini', 0.9, resetTime);
+        manager.updatePoolQuota('claude', 0.5, resetTime);
+        manager.recordMilestoneFired('claude', 24);
         assert.equal(snapshotsFromSentryState(manager.getState()).length, 2);
 
-        const retired = manager.reconcilePools(['gemini-hydrogen', 'gemini-hydrogen']);
+        const retired = manager.reconcilePools(['gemini']);
 
-        assert.deepEqual(retired, ['gemini-argon']);
-        assert.deepEqual(Object.keys(manager.getState().pools), ['gemini-hydrogen']);
+        assert.deepEqual(retired, ['claude']);
+        assert.deepEqual(Object.keys(manager.getState().pools), ['gemini']);
         assert.deepEqual(
           snapshotsFromSentryState(manager.getState()).map((snapshot) => snapshot.poolId),
-          ['gemini-hydrogen']
+          ['gemini']
         );
 
         const raw = db.getRawDb();
         for (const table of ['pool_state', 'pool_milestones', 'pool_samples']) {
           const row = raw
-            .prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE pool_id = 'gemini-argon'`)
+            .prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE pool_id = 'claude'`)
             .get() as { c: number };
           assert.equal(row.c, 0, `${table} must not keep the retired pool`);
         }
@@ -193,14 +211,11 @@ describe('AI Plus edge cases', () => {
       const db = new AppDatabase(join(dir, 'pools.db'));
       const manager = new SentryStateManager({ db });
       try {
-        manager.updatePoolQuota('gemini-hydrogen', 0.9, resetTime);
-        manager.updatePoolQuota('gemini-argon', 0.5, resetTime);
+        manager.updatePoolQuota('gemini', 0.9, resetTime);
+        manager.updatePoolQuota('claude', 0.5, resetTime);
 
         assert.deepEqual(manager.reconcilePools([]), []);
-        assert.deepEqual(Object.keys(manager.getState().pools).sort(), [
-          'gemini-argon',
-          'gemini-hydrogen',
-        ]);
+        assert.deepEqual(Object.keys(manager.getState().pools).sort(), ['claude', 'gemini']);
       } finally {
         db.close();
         cleanup();
@@ -216,15 +231,15 @@ describe('AI Plus edge cases', () => {
         alertThresholdPercent: 25,
       });
       try {
-        manager.updatePoolQuota('gemini-argon', 0.5, resetTime);
+        manager.updatePoolQuota('claude', 0.5, resetTime);
 
         const failedProbe = evaluator.evaluateWithPlan([], manager);
         assert.deepEqual(failedProbe.retiredPools, []);
-        assert.ok(manager.getState().pools['gemini-argon']);
+        assert.ok(manager.getState().pools['claude']);
 
-        const probe = evaluator.evaluateWithPlan([poolSnapshot('gemini-hydrogen')], manager);
-        assert.deepEqual(probe.retiredPools, ['gemini-argon']);
-        assert.deepEqual(Object.keys(manager.getState().pools), ['gemini-hydrogen']);
+        const probe = evaluator.evaluateWithPlan([poolSnapshot('gemini')], manager);
+        assert.deepEqual(probe.retiredPools, ['claude']);
+        assert.deepEqual(Object.keys(manager.getState().pools), ['gemini']);
       } finally {
         db.close();
         cleanup();
@@ -236,10 +251,10 @@ describe('AI Plus edge cases', () => {
       const db = new AppDatabase(join(dir, 'pools.db'));
       const manager = new SentryStateManager({ db });
       try {
-        manager.updatePoolQuota('gemini-argon', 0.5, resetTime);
+        manager.updatePoolQuota('claude', 0.5, resetTime);
         manager.recordEarlyResetNotice([
           {
-            poolId: 'gemini-argon',
+            poolId: 'claude',
             previousRemainingFraction: 0.2,
             remainingFraction: 0.9,
             previousResetTime: resetTime,
@@ -247,7 +262,7 @@ describe('AI Plus edge cases', () => {
           },
         ]);
 
-        manager.reconcilePools(['gemini-hydrogen']);
+        manager.reconcilePools(['gemini']);
 
         assert.equal(manager.getEarlyResetNotice(), null);
       } finally {

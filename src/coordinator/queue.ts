@@ -1398,7 +1398,7 @@ export class TaskQueue {
       requiredLabels,
       model: String(row.model),
       cascade,
-      poolGroup: (row.pool_group as PoolGroup) || 'gemini-argon',
+      poolGroup: (row.pool_group as PoolGroup) || 'gemini',
       effort: primaryEffort,
       allowOverage: row.allow_overage === 1,
       pushBranch: row.push_branch === 1,

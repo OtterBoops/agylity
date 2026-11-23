@@ -293,8 +293,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       const mockQuotaClient: QuotaClient = {
         fetchQuota: async (): Promise<QuotaSnapshot[]> => [
           {
-            poolId: 'gemini-hydrogen',
-            poolGroup: 'gemini-hydrogen',
+            poolId: 'gemini',
+            poolGroup: 'gemini',
             displayName: 'Gemini Flash',
             remainingFraction: 0.7,
             resetTime: new Date(Date.now() + 6 * 3600 * 1000).toISOString(),
@@ -318,7 +318,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           .get(`http://127.0.0.1:${started.port}/api/quota`)
           .json<QuotaSnapshot[]>();
         assert.equal(quotas.length, 1);
-        assert.deepEqual(quotas[0]?.models, ['Gemini 3.8 Flash', 'Gemini 4 Hydrogen']);
+        assert.deepEqual(quotas[0]?.models, [
+          'Gemini 3.8 Flash',
+          'Gemini 4 Hydrogen',
+          'Gemini 4 Argon',
+        ]);
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -335,7 +339,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: '2026-10-19T14:00:00.000Z',
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-argon': {
+          gemini: {
             resetTime: '2026-10-20T00:00:00.000Z',
             remainingFraction: 0.45,
             firedMilestones: ['12h'],
@@ -358,7 +362,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const alerts = await ky.get(`http://127.0.0.1:${started.port}/api/alerts`).json<any>();
         assert.equal(alerts.version, 1);
         assert.equal(alerts.lastProbeSource, 'connect_rpc');
-        assert.deepEqual(alerts.pools['gemini-argon'].firedMilestones, ['12h']);
+        assert.deepEqual(alerts.pools.gemini.firedMilestones, ['12h']);
       } finally {
         if (server) await closeWebServer(server);
         store.close();
@@ -379,7 +383,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           detectedAt: '2026-10-19T13:30:00.000Z',
           pools: [
             {
-              poolId: 'gemini-argon',
+              poolId: 'gemini',
               displayName: 'Gemini Argon',
               previousRemainingFraction: 0.2,
               remainingFraction: 0.95,
@@ -404,7 +408,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
         const before = await ky.get(`${base}/api/alerts`).json<any>();
         assert.equal(before.earlyResetNotice.pools.length, 1);
-        assert.equal(before.earlyResetNotice.pools[0].poolId, 'gemini-argon');
+        assert.equal(before.earlyResetNotice.pools[0].poolId, 'gemini');
 
         const res = await ky.post(`${base}/api/alerts/dismiss`, { retry: 0 });
         assert.equal(res.status, 200);
@@ -1032,7 +1036,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-hydrogen': {
+          gemini: {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -1741,7 +1745,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-hydrogen': {
+          gemini: {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -2289,7 +2293,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-hydrogen': {
+          gemini: {
             resetTime: new Date(Date.now() + 3600000).toISOString(),
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -2556,7 +2560,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         lastProbeAt: new Date().toISOString(),
         lastProbeSource: 'connect_rpc',
         pools: {
-          'gemini-hydrogen': {
+          gemini: {
             resetTime,
             remainingFraction: 0.8,
             firedMilestones: [],
@@ -3551,7 +3555,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       lastProbeAt: new Date().toISOString(),
       lastProbeSource: 'connect_rpc' as const,
       pools: {
-        'gemini-hydrogen': {
+        gemini: {
           resetTime,
           remainingFraction,
           firedMilestones: [],
@@ -3570,7 +3574,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       try {
         for (let i = 0; i < 3; i++) {
           sentryState.recordDeliveredAlert({
-            poolId: i === 1 ? 'claude' : 'gemini-hydrogen',
+            poolId: i === 1 ? 'claude' : 'gemini',
             resetTime,
             milestoneHours: 12 - i,
             headroomPercent: 40 + i,
@@ -3592,7 +3596,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(firstPage.events.length, 2);
         assert.equal(firstPage.events[0].kind, 'milestone');
         assert.equal(firstPage.events[0].milestoneHours, 10);
-        assert.equal(firstPage.events[0].poolId, 'gemini-hydrogen');
+        assert.equal(firstPage.events[0].poolId, 'gemini');
         assert.equal(firstPage.events[0].firedAt, '2026-11-20T12:00:00.000Z');
         assert.equal(firstPage.events[0].headroomPercent, 42);
         assert.equal(firstPage.events[0].resetTime, resetTime);
@@ -3693,13 +3697,13 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(blocked.code, 'OVERAGE_PROTECTION_TRIGGERED');
         assert.ok(blocked.reason);
         assert.equal(blocked.model, 'gemini-4-hydrogen');
-        assert.equal(blocked.poolGroup, 'gemini-hydrogen');
+        assert.equal(blocked.poolGroup, 'gemini');
         assert.equal(blocked.floorPercent, 10);
         assert.equal(blocked.allowOverage, false);
         assert.equal(blocked.willRunNow, true);
         assert.equal(blocked.runners.online, 1);
         assert.deepEqual(blocked.warnings, []);
-        assert.equal(blocked.pool.poolId, 'gemini-hydrogen');
+        assert.equal(blocked.pool.poolId, 'gemini');
         assert.equal(blocked.pool.effectivePercent, 5);
         assert.equal(blocked.pool.limitingWindow, 'weekly');
         assert.equal(blocked.pool.resetTime, resetTime);
@@ -3821,13 +3825,13 @@ describe('Web: Antigravity CLI version reporting', () => {
     }
   });
 
-  it('serves flat pool percentages and agyVersion on GET /api/summary', async () => {
+  it('serves flat pool-group percentages and agyVersion on GET /api/summary', async () => {
     const { dir, cleanup } = makeTempDir('web_summary_');
     const store = new ConfigStore(path.join(dir, 'test.db'), {});
     const state = new SentryStateManager(path.join(dir, 'state.json'));
     const resetTime = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
-    state.updatePoolQuota('gemini-hydrogen', 0.874, resetTime);
-    state.updatePoolQuota('gemini-argon', 0.5, resetTime);
+    // Gemini's former hydrogen/argon pools now report as one merged pool group.
+    state.updatePoolQuota('gemini', 0.874, resetTime);
     state.updatePoolQuota('claude', 0.25, resetTime);
     let server: http.Server | undefined;
 
@@ -3843,8 +3847,7 @@ describe('Web: Antigravity CLI version reporting', () => {
 
       const summary = await ky.get(`http://127.0.0.1:${started.port}/api/summary`).json<any>();
       assert.deepEqual(summary, {
-        hydrogenPercent: 87,
-        argonPercent: 50,
+        geminiPercent: 87,
         claudePercent: 25,
         agyVersion: '1.5.11',
       });

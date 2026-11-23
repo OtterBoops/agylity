@@ -94,8 +94,7 @@ export const handleGetSummary = (
     res,
     200,
     {
-      hydrogenPercent: percentFor('gemini-hydrogen'),
-      argonPercent: percentFor('gemini-argon'),
+      geminiPercent: percentFor('gemini'),
       claudePercent: percentFor('claude'),
       agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
     },

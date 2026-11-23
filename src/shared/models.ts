@@ -3,24 +3,22 @@
 
 export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
 
-export type PoolGroup = 'claude' | 'gemini-argon' | 'gemini-hydrogen';
+export type PoolGroup = 'gemini' | 'claude';
 
 export const ALL_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
 // Every pool group the build knows about, in display order. The quota grid renders one cell per
 // group, so a plan that lacks one still shows it rather than leaving a hole in the row.
-export const POOL_GROUPS: readonly PoolGroup[] = ['gemini-hydrogen', 'gemini-argon', 'claude'];
+export const POOL_GROUPS: readonly PoolGroup[] = ['gemini', 'claude'];
 
 export const POOL_GROUP_LABELS: Record<PoolGroup, string> = {
-  'gemini-hydrogen': 'Gemini Hydrogen',
-  'gemini-argon': 'Gemini Argon',
+  gemini: 'Gemini Models',
   claude: 'Claude and GPT models',
 };
 
-// Card titles name the bucket, so they use the codename alone: "Hydrogen pool", "Claude pool".
+// Card titles name the bucket, so they use the short label alone: "Gemini pool", "Claude pool".
 export const POOL_GROUP_SHORT_LABELS: Record<PoolGroup, string> = {
-  'gemini-hydrogen': 'Hydrogen',
-  'gemini-argon': 'Argon',
+  gemini: 'Gemini',
   claude: 'Claude',
 };
 
@@ -28,10 +26,17 @@ export const DEFAULT_DISPATCH_MODEL = 'gemini-4-hydrogen';
 
 export const DEFAULT_DISPATCH_EFFORT: ReasoningEffort = 'medium';
 
-// Pool groups that were renamed after shipping. A pool id is either the group id or `<group>:<slug>`,
-// so only the prefix carries the group name and only the prefix may be rewritten.
+// Pool groups that were merged or renamed after shipping. A pool id is either the group id or
+// `<group>:<slug>`, so only the prefix carries the group name and only the prefix may be rewritten.
+// Order matters: when a legacy database still holds several of these, the first one listed claims
+// the merged id and the later duplicates collapse into it.
 export const LEGACY_POOL_GROUPS: Readonly<Record<string, PoolGroup>> = {
-  'gemini-flash': 'gemini-hydrogen',
+  'gemini-hydrogen': 'gemini',
+  'gemini-flash': 'gemini',
+  hydrogen: 'gemini',
+  flash: 'gemini',
+  'gemini-argon': 'gemini',
+  argon: 'gemini',
 };
 
 export const upgradePoolGroupId = (poolId: string): string => {
@@ -58,14 +63,14 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   {
     id: 'gemini-3.8-flash',
     label: 'Gemini 3.8 Flash',
-    poolGroup: 'gemini-hydrogen',
+    poolGroup: 'gemini',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high'],
   },
   {
     id: 'gemini-4-hydrogen',
     label: 'Gemini 4 Hydrogen',
-    poolGroup: 'gemini-hydrogen',
+    poolGroup: 'gemini',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
     defaultForGroup: true,
@@ -73,30 +78,43 @@ export const CANONICAL_AGY_MODELS: readonly AgyModelCatalogEntry[] = [
   {
     id: 'gemini-4-neon',
     label: 'Gemini 4 Neon',
-    poolGroup: 'gemini-hydrogen',
+    poolGroup: 'gemini',
     defaultEffort: 'medium',
     supportedEfforts: ['low', 'medium', 'high', 'xhigh'],
   },
   {
-    id: 'gemini-4-argon',
-    label: 'Gemini 4 Argon',
-    poolGroup: 'gemini-argon',
+    id: 'gemini-4-carbon',
+    label: 'Gemini 4 Carbon',
+    poolGroup: 'gemini',
     defaultEffort: 'high',
     supportedEfforts: ['low', 'medium', 'high'],
-    defaultForGroup: true,
+  },
+  {
+    id: 'gemini-4-argon',
+    label: 'Gemini 4 Argon',
+    poolGroup: 'gemini',
+    defaultEffort: 'high',
+    supportedEfforts: ['low', 'medium', 'high'],
   },
   // Orchestrator routes carry no effort variants, and agy bills them to the pool they name.
   {
     id: 'gemini-pro-orchestrator-neon',
     label: 'Orchestrator (Neon)',
-    poolGroup: 'gemini-hydrogen',
+    poolGroup: 'gemini',
     defaultEffort: 'medium',
     supportedEfforts: [],
   },
   {
-    id: 'gemini-pro-orchestrator-g1-pro',
+    id: 'gemini-pro-orchestrator',
+    label: 'Orchestrator (Carbon)',
+    poolGroup: 'gemini',
+    defaultEffort: 'medium',
+    supportedEfforts: [],
+  },
+  {
+    id: 'gemini-pro-orchestrator-argon',
     label: 'Orchestrator (Argon)',
-    poolGroup: 'gemini-argon',
+    poolGroup: 'gemini',
     defaultEffort: 'medium',
     supportedEfforts: [],
   },

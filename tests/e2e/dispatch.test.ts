@@ -72,7 +72,7 @@ const runDispatchE2e = async (): Promise<void> => {
       lastProbeAt: new Date().toISOString(),
       lastProbeSource: 'connect_rpc',
       pools: {
-        'gemini-hydrogen': {
+        gemini: {
           resetTime: new Date(Date.now() + 3600000).toISOString(),
           remainingFraction: 0.8,
           firedMilestones: [],
@@ -91,7 +91,7 @@ const runDispatchE2e = async (): Promise<void> => {
     const baseUrl = `http://127.0.0.1:${port}`;
     console.log(`[E2E Test] Coordinator listening on ${baseUrl}`);
 
-    // Verify Coordinator models endpoint returns default flash medium
+    // Verify Coordinator models endpoint returns the configured default hydrogen medium
     const modelsRes = await ky.get(`${baseUrl}/api/models`).json<any>();
     console.log(
       `[E2E Test] Models endpoint default: ${modelsRes.defaultModel} (effort: ${modelsRes.defaultEffort})`
