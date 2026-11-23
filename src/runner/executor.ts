@@ -83,9 +83,9 @@ export interface TaskExecutionTelemetry {
 // Every policy states its own directive: an empty suffix would let the model choose a default that
 // no gate then enforces, and the policy now binds every tier.
 const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
-  all: '\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]',
+  all: '\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT push or open a pull request yourself.]',
   docs_only:
-    '\n\n[Policy: Documentation only — modify documentation files in the working tree only; do NOT modify source code or other non-documentation files.]',
+    '\n\n[Policy: Documentation only — modify documentation files only (do NOT modify source code or other non-documentation files) and commit your changes with a concise, descriptive commit message. Do NOT push or open a pull request yourself.]',
   issues_only:
     '\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]',
   none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
@@ -102,6 +102,26 @@ const AGYLITY_FOOTER_TAIL_RE = new RegExp(
 );
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
+const ROUTINE_PR_BODY_CAP = 4000;
+
+/**
+ * Routine prompts are multi-branch meta-instructions rather than a description of the diff, so a
+ * routine PR opens with the agent's own summary instead of dumping its instructions.
+ */
+export const buildPullRequestBody = (
+  task: Pick<SwarmTask, 'tier' | 'prompt'>,
+  title: string,
+  capturedOutput: string
+): string => {
+  if (task.tier !== 'routine') return task.prompt;
+  const trimmed = capturedOutput.trim();
+  if (!trimmed) return title;
+  if (trimmed.length <= ROUTINE_PR_BODY_CAP) return trimmed;
+  let start = trimmed.length - ROUTINE_PR_BODY_CAP;
+  const code = trimmed.charCodeAt(start);
+  if (code >= 0xdc00 && code <= 0xdfff && start > 0) start -= 1;
+  return `…\n${trimmed.slice(start).trimStart()}`;
+};
 
 const parseGithubSlug = (value: string | undefined): string | undefined => {
   if (!value) return undefined;
@@ -1116,18 +1136,20 @@ export class TaskExecutor {
     baseBranch: string,
     hop: CascadeHop,
     githubToken: string | undefined,
-    title: string
+    title: string,
+    capturedOutput: string
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
       // A failover hop is the model that actually wrote the branch, so the footer names that one.
       const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      // Avoid stacking a second Agylity footer when the source prompt/issue already ends with one.
-      const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(task.prompt);
+      const rawBody = buildPullRequestBody(task, title, capturedOutput);
+      // Avoid stacking a second Agylity footer when the source prompt/output already ends with one.
+      const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(rawBody);
       const prBody = hasDispatchFooter
-        ? task.prompt
+        ? rawBody
         : [
-            task.prompt,
+            rawBody,
             '',
             '---',
             `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
@@ -1540,7 +1562,8 @@ export class TaskExecutor {
             baseBranch,
             agent.executedHop,
             githubToken,
-            resolvedTitle ?? resolveTaskTitle(task.title, task.prompt)
+            resolvedTitle ?? resolveTaskTitle(task.title, task.prompt),
+            capturedOutput
           );
         }
       }

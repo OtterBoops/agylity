@@ -603,7 +603,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(invocations[5]?.file, 'agy');
         assert.deepEqual(invocations[5]?.args, [
           '-p',
-          'Implement swarm poller unit tests\n\n[Policy: Implement the requested changes directly in the working tree on this branch, then run the relevant checks.]\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
+          'Implement swarm poller unit tests\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT push or open a pull request yourself.]\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (immediate) with `gemini-4-argon` (high reasoning) — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]',
           '--mode',
           'auto',
           '--dangerously-skip-permissions',

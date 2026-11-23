@@ -11,6 +11,7 @@ import { makeTempDir } from '../e2e/harness/index.js';
 import { createLogger } from '../../src/logs/logger.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import { TaskQueue, type SwarmTask } from '../../src/coordinator/queue.js';
+import { buildPullRequestBody } from '../../src/runner/executor.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
 import {
   RemoteSwarmRunner,
@@ -1874,10 +1875,11 @@ describe('Runner: policy directives', () => {
     }
   };
 
-  it('asks the model to implement the work under the all policy', async () => {
+  it('asks the model to implement and commit the work under the all policy', async () => {
     const prompt = await promptForPolicy('all');
 
-    assert.match(prompt, /\[Policy: Implement the requested changes directly in the working tree/);
+    assert.match(prompt, /\[Policy: Implement the requested changes on this branch/);
+    assert.match(prompt, /commit your changes/);
     assert.doesNotMatch(prompt, /Do NOT modify repository files/);
   });
 
@@ -2303,5 +2305,34 @@ describe('Runner: idle-only agy update', () => {
       db.close();
       cleanup();
     }
+  });
+});
+
+describe('Runner: PR body selection', () => {
+  it('uses the agent summary instead of the meta-prompt for routine PRs', () => {
+    const body = buildPullRequestBody(
+      { tier: 'routine', prompt: 'Step 1: list issues\nStep 2: branch' },
+      'Prevent capOutput surrogate split (#20)',
+      'Fixed capOutput to use tailWindow. Closes #20.'
+    );
+    assert.equal(body, 'Fixed capOutput to use tailWindow. Closes #20.');
+  });
+
+  it('falls back to the resolved title when a routine produces no captured output', () => {
+    const body = buildPullRequestBody(
+      { tier: 'routine', prompt: 'Step 1: list issues' },
+      'Prevent capOutput surrogate split (#20)',
+      '   \n  '
+    );
+    assert.equal(body, 'Prevent capOutput surrogate split (#20)');
+  });
+
+  it('keeps the original task prompt for non-routine PRs', () => {
+    const body = buildPullRequestBody(
+      { tier: 'immediate', prompt: 'Fix the header wrapping in SwarmRunnersStrip' },
+      'Fix header wrapping',
+      'Done.'
+    );
+    assert.equal(body, 'Fix the header wrapping in SwarmRunnersStrip');
   });
 });
