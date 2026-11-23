@@ -1,6 +1,6 @@
 import type { TaskStatus } from '../types';
 
-type Tone = 'good' | 'bad' | 'busy' | 'neutral';
+type Tone = 'good' | 'bad' | 'busy' | 'issue' | 'neutral';
 
 export const toneBadgeClass = (tone: Tone): string =>
   tone === 'good'
@@ -9,7 +9,9 @@ export const toneBadgeClass = (tone: Tone): string =>
       ? 'border-pine-love/40 bg-pine-love/15 text-pine-love'
       : tone === 'busy'
         ? 'border-pine-gold/40 bg-pine-gold/15 text-pine-gold'
-        : 'border-pine-highlight bg-pine-overlay/60 text-pine-subtle';
+        : tone === 'issue'
+          ? 'border-pine-iris/40 bg-pine-iris/15 text-pine-iris'
+          : 'border-pine-highlight bg-pine-overlay/60 text-pine-subtle';
 
 export const taskStatusBadgeClass = (status: TaskStatus | string): string =>
   status === 'executing'

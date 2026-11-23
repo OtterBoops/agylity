@@ -64,7 +64,8 @@ describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
 
         assert.equal(result.success, true);
         assert.equal(result.noChanges, true);
-        assert.equal(result.branchName, undefined);
+        // A discarded branch is reported as null so the coordinator clears the column.
+        assert.equal(result.branchName, null);
         assert.deepEqual(
           {
             numTurns: result.numTurns,
@@ -1056,6 +1057,7 @@ interface WorkspaceFakeOptions {
   diffNameOnly?: () => string;
   onClone?: () => void;
   onPush?: () => void;
+  onLog?: () => string;
   onGh?: (args: readonly string[]) => string;
 }
 
@@ -1077,6 +1079,7 @@ const createWorkspaceExecFile = (options: WorkspaceFakeOptions = {}) => {
     }
     if (cmd === 'status') return { stdout: options.status?.() ?? '', stderr: '' };
     if (cmd === 'rev-list') return { stdout: options.revList?.() ?? '0\n', stderr: '' };
+    if (cmd === 'log') return { stdout: options.onLog?.() ?? '', stderr: '' };
     if (cmd === 'diff' && args[1] === '--stat')
       return { stdout: options.diffStat ?? '', stderr: '' };
     if (cmd === 'diff' && args[1] === '--name-only') {
@@ -1678,6 +1681,170 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.noChanges, true);
     assert.equal(result.issueUrls, undefined);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Deliverable-settled titles and branch names                                 */
+/* -------------------------------------------------------------------------- */
+
+describe('Runner: deliverable-settled titles', () => {
+  const runDeliverable = async (
+    input: Record<string, unknown>,
+    options: WorkspaceFakeOptions = {}
+  ) => {
+    const { dir, cleanup } = makeTempDir('runner_deliverable_');
+    const { task, db } = enqueueTask(dir, input);
+    const exec = createWorkspaceExecFile({
+      status: () => '',
+      revList: () => '1\n',
+      onGh: () => 'https://github.com/OtterBoops/agylity/pull/77\n',
+      ...options,
+    });
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn: recordSpawn((call) => finishChild(call.child, 0, 'done\n')).spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      return { result: await executor.execute(task), exec };
+    } finally {
+      db.close();
+      cleanup();
+    }
+  };
+
+  // `calls` entries are `[file, ...args]`.
+  const branchRename = (exec: { calls: string[][] }) =>
+    exec.calls.find((call) => call[0] === 'git' && call[1] === 'branch' && call[2] === '-m');
+  const prTitleFrom = (exec: { calls: string[][] }): string | undefined => {
+    const call = exec.calls.find(
+      (entry) => entry[0] === 'gh' && entry[1] === 'pr' && entry[2] === 'create'
+    );
+    return call?.[call.indexOf('--title') + 1];
+  };
+
+  it('settles an untitled run on the commit the agent authored and renames the branch for it', async () => {
+    const { result, exec } = await runDeliverable({}, { onLog: () => 'Add the lease reaper\n' });
+
+    assert.equal(result.success, true);
+    assert.equal(result.resolvedTitle, 'Add the lease reaper');
+    assert.match(String(result.branchName), /^agy\/[0-9a-f]{6}-add-the-lease-reaper$/);
+
+    const rename = branchRename(exec);
+    assert.ok(rename, 'expected a git branch -m before publishing');
+    assert.notEqual(rename![3], rename![4]);
+    assert.equal(rename![4], result.branchName);
+
+    const push = exec.calls.find(
+      (call) => call[0] === 'git' && call.includes('push') && call.includes('origin')
+    );
+    assert.equal(push?.includes(String(result.branchName)), true);
+    // The rename must land before the push, or the old name is what upstream receives.
+    assert.ok(
+      exec.calls.indexOf(rename!) < exec.calls.indexOf(push!),
+      'branch rename happened after the push'
+    );
+
+    assert.equal(prTitleFrom(exec), 'Add the lease reaper');
+  });
+
+  it('settles a routine run from its deliverable, keeping the routine name on its origin', async () => {
+    const { result, exec } = await runDeliverable(
+      { tier: 'routine', title: 'Nightly sweep' },
+      { onLog: () => 'Refresh the dependency lockfile\n' }
+    );
+
+    assert.equal(result.resolvedTitle, 'Refresh the dependency lockfile');
+    assert.match(String(result.branchName), /-refresh-the-dependency-lockfile$/);
+    assert.ok(branchRename(exec), 'a routine run still renames its branch from the deliverable');
+    assert.equal(prTitleFrom(exec), 'Refresh the dependency lockfile');
+  });
+
+  it('keeps a human-typed title and never renames the branch for it', async () => {
+    const { result, exec } = await runDeliverable(
+      { title: 'Human picked this', tier: 'immediate' },
+      { onLog: () => 'Agent wrote this instead\n' }
+    );
+
+    assert.equal(result.resolvedTitle, undefined);
+    assert.equal(branchRename(exec), undefined);
+    assert.match(String(result.branchName), /-human-picked-this$/);
+    assert.equal(prTitleFrom(exec), 'Human picked this');
+  });
+
+  it('settles the title from a filed issue and clears the discarded branch', async () => {
+    const duringRun = new Date(Date.now() + 60_000).toISOString();
+    const { result, exec } = await runDeliverable(
+      { repositoryName: 'OtterBoops/agylity', prPolicy: 'issues_only' },
+      {
+        revList: () => '0\n',
+        onGh: (args) =>
+          args[0] === 'issue'
+            ? JSON.stringify([
+                {
+                  number: 21,
+                  title: 'Parser drops the trailing token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/21',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+              ])
+            : '',
+      }
+    );
+
+    assert.equal(result.success, true);
+    assert.equal(result.resolvedTitle, 'Parser drops the trailing token');
+    assert.deepEqual(result.issueUrls, ['https://github.com/OtterBoops/agylity/issues/21']);
+    // A discarded branch is cleared to NULL rather than left pointing at a branch that is gone.
+    assert.equal(result.branchName, null);
+    assert.equal(exec.pushed(), false);
+  });
+
+  it('counts the extra issues in the settled title', async () => {
+    const duringRun = new Date(Date.now() + 60_000).toISOString();
+    const { result } = await runDeliverable(
+      { repositoryName: 'OtterBoops/agylity', prPolicy: 'issues_only' },
+      {
+        revList: () => '0\n',
+        onGh: (args) =>
+          args[0] === 'issue'
+            ? JSON.stringify([
+                {
+                  number: 21,
+                  title: 'Parser drops the trailing token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/21',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+                {
+                  number: 22,
+                  title: 'Tokenizer drops the leading token',
+                  url: 'https://github.com/OtterBoops/agylity/issues/22',
+                  body: '*Dispatched via Agylity (backlog) — please review carefully.*',
+                  createdAt: duringRun,
+                },
+              ])
+            : '',
+      }
+    );
+
+    assert.equal(result.resolvedTitle, 'Parser drops the trailing token (+1)');
+    assert.equal(result.issueUrls?.length, 2);
+    assert.equal(result.branchName, null);
+  });
+
+  it('clears the branch name when a policy suppresses the run', async () => {
+    const { result, exec } = await runDeliverable({ prPolicy: 'none' });
+
+    assert.equal(result.success, true);
+    assert.equal(result.noChanges, true);
+    assert.equal(result.branchName, null);
+    assert.equal(exec.has('-D'), true);
   });
 });
 

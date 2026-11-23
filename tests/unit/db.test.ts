@@ -264,6 +264,75 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
   });
 });
 
+describe('swarm_tasks title settlement and branch clearing', () => {
+  it('settles a non-empty title and writes a real NULL when a branch is discarded', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const queue = new TaskQueue(db);
+      const enqueued = queue.enqueue({
+        repositoryName: 'OtterBoops/agylity',
+        repositoryPath: 'clones/agylity-settlement',
+        prompt: 'Report findings as issues',
+      });
+      queue.claimNext({ runnerId: 'runner-settlement' });
+
+      const executing = queue.updateTaskStatus(enqueued.id, {
+        status: 'executing',
+        runnerId: 'runner-settlement',
+        branchName: 'agy/abc12345-report-findings',
+      });
+      assert.ok(executing?.applied);
+      assert.equal(executing?.task.branchName, 'agy/abc12345-report-findings');
+
+      const settled = queue.updateTaskStatus(enqueued.id, {
+        status: 'no_changes',
+        runnerId: 'runner-settlement',
+        branchName: null,
+        title: 'Parser drops the trailing token',
+      });
+      assert.ok(settled?.applied);
+      assert.equal(settled?.task.title, 'Parser drops the trailing token');
+      // The mapper reports a NULL branch as absent, so the discarded branch is gone from the row.
+      assert.equal(settled?.task.branchName, undefined);
+
+      const row = db
+        .getRawDb()
+        .prepare('SELECT title, branch_name FROM swarm_tasks WHERE id = ?')
+        .get(enqueued.id) as { title?: string; branch_name?: string | null } | undefined;
+      assert.equal(row?.title, 'Parser drops the trailing token');
+      assert.equal(row?.branch_name, null);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('never erases a stored title with a blank one', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      const queue = new TaskQueue(db);
+      const enqueued = queue.enqueue({
+        title: 'Human picked this',
+        repositoryName: 'OtterBoops/agylity',
+        repositoryPath: 'clones/agylity-blank-title',
+        prompt: 'Do the human-typed thing',
+      });
+      queue.claimNext({ runnerId: 'runner-blank-title' });
+
+      const reported = queue.updateTaskStatus(enqueued.id, {
+        status: 'completed',
+        runnerId: 'runner-blank-title',
+        title: '   ',
+      });
+      assert.ok(reported?.applied);
+      assert.equal(reported?.task.title, 'Human picked this');
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe('Secret encryption failure surfacing (AES-256-GCM)', () => {
   it('throws SecretDecryptionError for corrupted ciphertext and a mismatched key', () => {
     const key = Buffer.alloc(32, 1);

@@ -61,6 +61,18 @@ export const githubIssueLabel = (url: string): string => {
   return segment ? `#${segment}` : url;
 };
 
+// A PR URL carries its number after `/pull/`; a browser may append a tab path such as `/files`.
+export const githubPrLabel = (url: string): string => {
+  const path = url.split(/[?#]/)[0] ?? '';
+  const match = /\/pull\/(\d+)/.exec(path);
+  if (match?.[1]) return `PR #${match[1]}`;
+  const segment = path
+    .split('/')
+    .filter((part) => part !== '')
+    .pop();
+  return segment ? `PR #${segment}` : url;
+};
+
 // Rows and cards stay one line tall: three links plus a count for the rest.
 export const summarizeIssueLinks = (urls: readonly string[] | undefined): IssueLinkSummary => {
   const list = urls ?? [];

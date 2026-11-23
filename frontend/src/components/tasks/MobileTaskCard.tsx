@@ -2,8 +2,8 @@ import type { SwarmTask } from '../../types';
 import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { ACTIVE_TASK_STATUSES } from './badges';
-import { formatCompactDateTime, statusDotTextClass, summarizeIssueLinks } from './executionRow';
-import { statusLabel } from './statusLabels';
+import { formatCompactDateTime, summarizeIssueLinks } from './executionRow';
+import { taskDisplayDotTextClass, taskDisplayStatusLabel } from './statusLabels';
 
 interface MobileTaskCardProps {
   task: SwarmTask;
@@ -63,11 +63,11 @@ export const MobileTaskCard = ({
           <div class="flex items-center justify-between gap-2">
             <span class="font-mono text-xs text-pine-muted">#{task.taskNumber ?? 0}</span>
             <span class="flex min-w-0 items-center gap-1.5">
-              <span class={statusDotTextClass(task.status)}>
+              <span class={taskDisplayDotTextClass(task)}>
                 <span class="inline-block size-[6px] rounded-full bg-current" />
               </span>
               <span class="min-w-0 truncate text-xs tracking-wider text-pine-subtle uppercase">
-                {statusLabel(task.status)}
+                {taskDisplayStatusLabel(task)}
               </span>
             </span>
           </div>

@@ -11,14 +11,14 @@ import {
 import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
-import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
+import { resolveTaskTitle, UNTITLED_TASK_TITLE } from '../../../../src/shared/titles.ts';
 import { getTask } from '../../api';
 import { dialogBackdropClickHandler } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
-import { taskStatusBadgeClass } from '../../utils/status';
 import { Icon } from '../Icon';
 import { isActiveTaskStatus, isLiveTaskStatus } from './badges';
 import { githubIssueLabel } from './executionRow';
+import { taskDisplayBadgeClass, taskDisplayStatusLabel } from './statusLabels';
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -163,7 +163,7 @@ export const ExecutionInspectorContent = ({
   // resolveTaskTitle owns the prompt fallback, so the ID heading is only for a task with neither.
   const title = resolveTaskTitle(live.title, live.prompt);
   const heading =
-    title === 'Untitled task'
+    title === UNTITLED_TASK_TITLE
       ? live.taskNumber
         ? `Task #${live.taskNumber}`
         : 'Task details'
@@ -183,9 +183,9 @@ export const ExecutionInspectorContent = ({
               {heading}
             </h2>
             <span
-              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskStatusBadgeClass(live.status)}`}
+              class={`rounded-sm border px-2 py-0.5 text-xs font-bold whitespace-nowrap uppercase ${taskDisplayBadgeClass(live)}`}
             >
-              {live.status}
+              {taskDisplayStatusLabel(live)}
             </span>
           </div>
           <p class="mt-1 font-mono text-xs text-pine-subtle">

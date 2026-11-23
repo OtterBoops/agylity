@@ -451,9 +451,11 @@ export class RemoteSwarmRunner {
       {
         status: result.noChanges ? 'no_changes' : result.success ? 'completed' : 'failed',
         runnerId: this.runnerId,
+        // `branchName` may be null: the coordinator clears the column for a discarded branch.
         branchName: result.branchName,
         prUrl: result.prUrl,
         issueUrls: result.issueUrls,
+        title: result.resolvedTitle,
         output: result.output,
         error: result.error,
         durationMs: result.durationMs,

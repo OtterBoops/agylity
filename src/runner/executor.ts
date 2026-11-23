@@ -56,10 +56,13 @@ export type SpawnFn = (
 export interface TaskExecutionResult {
   success: boolean;
   noChanges?: boolean;
-  branchName?: string;
+  /** `null` reports that a branch was discarded, which clears the column rather than leaving it. */
+  branchName?: string | null;
   prUrl?: string;
   /** GitHub issues filed by the run, which are the deliverable when the branch stayed empty. */
   issueUrls?: string[];
+  /** The title the deliverable earned, which the coordinator settles onto the row. */
+  resolvedTitle?: string;
   output: string;
   error?: string;
   durationMs: number;
@@ -92,6 +95,11 @@ const GITHUB_SLUG_FROM_URL_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)
 const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
 // The footer the prompt asks the agent to append, which marks an issue as this fleet's deliverable.
 const AGYLITY_FOOTER_MARKER = 'Dispatched via Agylity';
+// A prompt that already ends with that footer block must not get a second one appended to its PR.
+const AGYLITY_FOOTER_TAIL_RE = new RegExp(
+  `---\\s*\\n\\*${AGYLITY_FOOTER_MARKER}[^\\n]*\\*\\s*$`,
+  'i'
+);
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
 
@@ -979,13 +987,19 @@ export class TaskExecutor {
     }
   }
 
-  /** Commits whatever the agent left behind, or reports that the branch holds no work. */
+  /**
+   * Commits whatever the agent left behind, or reports that the branch holds no work.
+   *
+   * The subject of a commit the agent wrote itself is the run's deliverable title; the runner's own
+   * fallback commit is not, because that message is derived from the dispatch, not from the work.
+   */
   private async commitWorkingTree(
     task: SwarmTask,
     branchName: string,
     baseBranch: string
-  ): Promise<boolean> {
+  ): Promise<{ commitsProduced: boolean; deliverableTitle?: string }> {
     const cwd = task.repositoryPath;
+    const deliverableTitle = await this.authoredCommitSubject(cwd, baseBranch);
     let committed = false;
 
     try {
@@ -1018,7 +1032,7 @@ export class TaskExecutor {
       );
     }
 
-    if (committed) return true;
+    if (committed) return { commitsProduced: true, deliverableTitle };
 
     try {
       const { stdout: revCount } = await this.execFileFn(
@@ -1026,9 +1040,36 @@ export class TaskExecutor {
         ['rev-list', '--count', `${baseBranch}..HEAD`],
         { cwd, timeout: 10000 }
       );
-      return parseInt(revCount.trim(), 10) > 0;
+      return {
+        commitsProduced: parseInt(revCount.trim(), 10) > 0,
+        deliverableTitle,
+      };
     } catch {
-      return false;
+      return { commitsProduced: false, deliverableTitle };
+    }
+  }
+
+  /** The newest subject among commits the agent wrote, or undefined when the branch is still clean. */
+  private async authoredCommitSubject(
+    cwd: string,
+    baseBranch: string
+  ): Promise<string | undefined> {
+    try {
+      const { stdout: revCount } = await this.execFileFn(
+        'git',
+        ['rev-list', '--count', `${baseBranch}..HEAD`],
+        { cwd, timeout: 10000 }
+      );
+      if (!(parseInt(revCount.trim(), 10) > 0)) return undefined;
+
+      const { stdout: subject } = await this.execFileFn(
+        'git',
+        ['log', '-1', '--format=%s', `${baseBranch}..HEAD`],
+        { cwd, timeout: 10000 }
+      );
+      return subject.trim() || undefined;
+    } catch {
+      return undefined;
     }
   }
 
@@ -1074,15 +1115,15 @@ export class TaskExecutor {
     branchName: string,
     baseBranch: string,
     hop: CascadeHop,
-    githubToken: string | undefined
+    githubToken: string | undefined,
+    title: string
   ): Promise<string | undefined> {
     try {
       const tierLabel = task.tier || 'immediate';
       // A failover hop is the model that actually wrote the branch, so the footer names that one.
       const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      const prTitle = resolveTaskTitle(task.title, task.prompt);
       // Avoid stacking a second Agylity footer when the source prompt/issue already ends with one.
-      const hasDispatchFooter = /---\s*\n\*Dispatched via Agylity[^\n]*\*\s*$/i.test(task.prompt);
+      const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(task.prompt);
       const prBody = hasDispatchFooter
         ? task.prompt
         : [
@@ -1102,7 +1143,7 @@ export class TaskExecutor {
           '--head',
           branchName,
           '--title',
-          prTitle,
+          title,
           '--body',
           prBody,
         ],
@@ -1148,7 +1189,7 @@ export class TaskExecutor {
       return {
         success: true,
         noChanges: true,
-        branchName: undefined,
+        branchName: null,
         output: `${output}\n\n${detail}`,
         durationMs: Date.now() - startMs,
         ...this.telemetryFields(telemetry),
@@ -1240,7 +1281,7 @@ export class TaskExecutor {
     task: SwarmTask,
     sinceMs: number,
     githubToken: string | undefined
-  ): Promise<string[]> {
+  ): Promise<Array<{ url: string; title: string }>> {
     const slug = await this.resolveGithubRepoSlug(task);
     if (!slug) {
       this.log.warn(
@@ -1264,7 +1305,7 @@ export class TaskExecutor {
           '--limit',
           String(ISSUE_DELIVERABLE_LIMIT),
           '--json',
-          'number,url,body,createdAt',
+          'number,title,url,body,createdAt',
         ],
         {
           cwd: task.repositoryPath,
@@ -1295,23 +1336,24 @@ export class TaskExecutor {
     }
     if (!Array.isArray(parsed)) return [];
 
-    const created: Array<{ url: string; createdAt: number }> = [];
+    const created: Array<{ url: string; title: string; createdAt: number }> = [];
     for (const item of parsed) {
       if (!item || typeof item !== 'object') continue;
-      const entry = item as { url?: unknown; body?: unknown; createdAt?: unknown };
+      const entry = item as { url?: unknown; title?: unknown; body?: unknown; createdAt?: unknown };
       const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+      const title = typeof entry.title === 'string' ? entry.title.trim() : '';
       const body = typeof entry.body === 'string' ? entry.body : '';
       const createdAt = typeof entry.createdAt === 'string' ? Date.parse(entry.createdAt) : NaN;
       if (!url || !Number.isFinite(createdAt) || createdAt < sinceMs) continue;
       if (!body.includes(AGYLITY_FOOTER_MARKER)) continue;
       if (created.some((existing) => existing.url === url)) continue;
-      created.push({ url, createdAt });
+      created.push({ url, title, createdAt });
     }
 
     return created
       .sort((left, right) => left.createdAt - right.createdAt)
       .slice(0, ISSUE_DELIVERABLE_MAX_URLS)
-      .map((entry) => entry.url);
+      .map((entry) => ({ url: entry.url, title: entry.title }));
   }
 
   public async execute(
@@ -1332,6 +1374,14 @@ export class TaskExecutor {
         'Branch isolation invariant violation: refusing to execute directly on main/master'
       );
     }
+
+    // A human-typed title on a human tier outranks the deliverable; a routine's own name is kept on
+    // `origin_title`, so its runs always settle from what they produced.
+    const hasExplicitTitleOverride =
+      task.tier !== 'routine' &&
+      Boolean(task.title?.trim()) &&
+      task.title.trim() !== resolveTaskTitle(undefined, task.prompt);
+    let resolvedTitle: string | undefined;
 
     const repositoryFailure = await this.ensureRepository(task, branchName, startMs, githubToken);
     if (repositoryFailure) return repositoryFailure;
@@ -1386,11 +1436,19 @@ export class TaskExecutor {
         await this.runVerification(task.verifyCommand, cwd, options.signal);
       }
 
-      const commitsProduced = await this.commitWorkingTree(task, branchName, baseBranch);
-      if (!commitsProduced) {
+      const commit = await this.commitWorkingTree(task, branchName, baseBranch);
+      if (!commit.commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
-        const issueUrls = await this.collectIssueDeliverables(task, startMs, githubToken);
+        const issues = await this.collectIssueDeliverables(task, startMs, githubToken);
+        const issueUrls = issues.map((issue) => issue.url);
         if (issueUrls.length > 0) {
+          const issueTitle =
+            issues.length === 1
+              ? (issues[0]?.title ?? '')
+              : `${issues[0]?.title ?? ''} (+${issues.length - 1})`;
+          if (!hasExplicitTitleOverride) {
+            resolvedTitle = resolveTaskTitle(issueTitle, task.prompt);
+          }
           this.log.info(
             'Task %s produced no commits but filed %d GitHub issue(s); reporting them as the deliverable',
             task.id,
@@ -1398,8 +1456,9 @@ export class TaskExecutor {
           );
           return {
             success: true,
-            branchName: undefined,
+            branchName: null,
             issueUrls,
+            resolvedTitle,
             output:
               `${capturedOutput}\n\n[Deliverable] Filed GitHub issues: ${issueUrls.join(' ')}`.trim(),
             durationMs: Date.now() - startMs,
@@ -1414,7 +1473,7 @@ export class TaskExecutor {
         return {
           success: true,
           noChanges: true,
-          branchName: undefined,
+          branchName: null,
           output: capturedOutput,
           durationMs: Date.now() - startMs,
           ...this.telemetryFields(telemetry),
@@ -1432,13 +1491,41 @@ export class TaskExecutor {
       });
       if (suppression) return suppression;
 
+      // The work that actually shipped names the task; only a human-typed title outranks it.
+      if (!hasExplicitTitleOverride && commit.deliverableTitle) {
+        resolvedTitle = resolveTaskTitle(commit.deliverableTitle, task.prompt);
+      }
+
+      let finalBranchName = branchName;
+      if (!hasExplicitTitleOverride && resolvedTitle) {
+        const nextBranchName = buildContinuationBranchName(task.id, resolvedTitle);
+        if (nextBranchName !== branchName) {
+          try {
+            await this.execFileFn('git', ['branch', '-m', branchName, nextBranchName], {
+              cwd,
+              timeout: 15000,
+            });
+            finalBranchName = nextBranchName;
+          } catch (renameErr: any) {
+            this.log.warn(
+              'Could not rename %s to %s in %s; keeping the original branch: %s',
+              branchName,
+              nextBranchName,
+              cwd,
+              renameErr?.message ?? renameErr
+            );
+          }
+        }
+      }
+
       let prUrl: string | undefined;
       if (task.pushBranch) {
-        const pushError = await this.pushTaskBranch(task, branchName, githubToken);
+        const pushError = await this.pushTaskBranch(task, finalBranchName, githubToken);
         if (pushError) {
           return {
             success: false,
-            branchName,
+            branchName: finalBranchName,
+            resolvedTitle,
             output: capturedOutput,
             error: pushError,
             durationMs: Date.now() - startMs,
@@ -1449,18 +1536,20 @@ export class TaskExecutor {
         if (task.autoCreatePr) {
           prUrl = await this.openPullRequest(
             task,
-            branchName,
+            finalBranchName,
             baseBranch,
             agent.executedHop,
-            githubToken
+            githubToken,
+            resolvedTitle ?? resolveTaskTitle(task.title, task.prompt)
           );
         }
       }
 
       return {
         success: true,
-        branchName,
+        branchName: finalBranchName,
         prUrl,
+        resolvedTitle,
         output: capturedOutput,
         durationMs: Date.now() - startMs,
         ...this.telemetryFields(telemetry),

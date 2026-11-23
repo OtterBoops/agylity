@@ -2465,6 +2465,80 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('persists a settled title, issue URLs, and a cleared branch name', async () => {
+      const { dir, cleanup } = makeTempDir('web_status_deliverable_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        runnerSharedSecret: 'swarm-secret-token-999',
+      });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        const disp = await ky
+          .post(`${baseUrl}/api/dispatch`, {
+            json: {
+              repositoryId: 'agylity',
+              prompt: 'Report findings as issues',
+              allowOverage: true,
+            },
+          })
+          .json<any>();
+
+        // The claim is the coordinator's, so the runner's later reports are the ones under test.
+        await ky.post(`${baseUrl}/api/tasks/poll`, {
+          headers: authHeaders,
+          json: { runnerId: 'runner-a', timeoutMs: 0 },
+        });
+
+        const executing = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'executing',
+              runnerId: 'runner-a',
+              branchName: 'agy/abc12345-report-findings',
+            },
+          })
+          .json<any>();
+        assert.equal(executing.task.branchName, 'agy/abc12345-report-findings');
+
+        const issueUrls = ['https://github.com/OtterBoops/agylity/issues/21'];
+        const reported = await ky
+          .post(`${baseUrl}/api/tasks/${disp.taskId}/status`, {
+            headers: authHeaders,
+            json: {
+              status: 'completed',
+              runnerId: 'runner-a',
+              branchName: null,
+              title: 'Parser drops the trailing token',
+              issueUrls,
+            },
+          })
+          .json<any>();
+
+        assert.equal(reported.success, true);
+        assert.equal(reported.task.title, 'Parser drops the trailing token');
+        assert.deepEqual(reported.task.issueUrls, issueUrls);
+        // A discarded branch is cleared, not merely left at whatever the executing report said.
+        assert.equal(reported.task.branchName, undefined);
+
+        const { tasks } = await ky.get(`${baseUrl}/api/tasks`).json<{ tasks: any[] }>();
+        const task = tasks.find((t) => t.id === disp.taskId);
+        assert.equal(task?.title, 'Parser drops the trailing token');
+        assert.deepEqual(task?.issueUrls, issueUrls);
+        assert.equal(task?.branchName, undefined);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */

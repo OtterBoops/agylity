@@ -80,9 +80,12 @@ export interface ClaimTaskOptions {
 export interface TaskStatusPatch {
   status: TaskStatus;
   runnerId?: string;
-  branchName?: string;
+  /** `null` clears the column: a discarded branch has no name to report. */
+  branchName?: string | null;
   prUrl?: string;
   issueUrls?: string[];
+  /** Settles the row's title when the run's deliverable names it better than the dispatch did. */
+  title?: string;
   output?: string;
   error?: string;
   durationMs?: number;
@@ -974,7 +977,12 @@ export class TaskQueue {
           ? Math.max(0, elapsedMs)
           : existing.durationMs;
 
-    const branchName = patch.branchName ?? existing.branchName ?? null;
+    const branchName =
+      patch.branchName === null ? null : (patch.branchName ?? existing.branchName ?? null);
+    // A blank title never erases one: only a non-empty settled title replaces the stored title.
+    const title = patch.title?.trim()
+      ? resolveTaskTitle(patch.title, existing.prompt)
+      : existing.title;
     const prUrl = patch.prUrl ?? existing.prUrl ?? null;
     // The column is NOT NULL DEFAULT '[]', so "no issues" is an empty array, never NULL.
     const issueUrlsJson =
@@ -1003,6 +1011,7 @@ export class TaskQueue {
         `UPDATE swarm_tasks
          SET status = ?,
              runner_id = ?,
+             title = ?,
              branch_name = ?,
              pr_url = ?,
              issue_urls_json = ?,
@@ -1022,6 +1031,7 @@ export class TaskQueue {
       .run(
         patch.status,
         runnerId,
+        title,
         branchName,
         prUrl,
         issueUrlsJson,

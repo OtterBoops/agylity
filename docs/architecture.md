@@ -439,6 +439,22 @@ dashboard task rows, the inspector and the completion embed's Deliverables field
 quoted in the agent's prose are never scraped — the deliverable comes from the API, filtered by creation
 window and footer, so a mention in the output cannot be mistaken for a filed issue.
 
+The deliverable also names the task. A run that carries no human-typed title adopts one from what it
+produced: the subject of the newest commit the agent wrote (read before the runner's own fallback
+commit, whose message is derived from the dispatch rather than from the work) or the title of the issue
+it filed, rendered as `<first title> (+N)` when several were. That settled title becomes the PR title,
+and the branch is renamed to `buildContinuationBranchName(task.id, resolvedTitle)` with `git branch -m`
+immediately before the push, so the branch slug, the commit subject and the PR title describe the same
+work. An explicit title typed on an immediate or backlog dispatch outranks all of it, and every routine
+run settles this way because the routine's own name is preserved on `origin_title`. A branch that is
+discarded — a zero-diff run, an `issues_only` run that filed its issues, or any policy suppression —
+reports `branchName: null`, which clears `swarm_tasks.branch_name` to `NULL` instead of leaving the row
+pointing at a branch that no longer exists.
+
+The dashboard renders that outcome as a derived status rather than a new one: a `completed` task with
+issue deliverables and no PR shows `Issue Filed` (or `Issues Filed`) in the iris tone, while still
+belonging to the Completed filter, because the stored status remains `completed`.
+
 ### 7.4. Repository Clone Strategy
 
 Runners clone through a local bare mirror cache keyed by the clone URL:

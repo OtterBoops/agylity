@@ -2,10 +2,12 @@
 // `node:` dependency here would leak a server concern into the client build.
 //
 // One title for the dashboard row, the branch slug, the commit subject and the PR title: four
-// surfaces that used to fall back to four different strings (the first 100 chars of a raw prompt,
-// `Task`, `Complete Antigravity continuation task <id>`, `[Agylity] Task <id>: ...`).
+// surfaces that must never disagree, so they all resolve it here.
 
 const ELLIPSIS = '…';
+
+// Exported so a caller can tell the shared default from a task that genuinely carries this title.
+export const UNTITLED_TASK_TITLE = 'Untitled task';
 
 // Markdown decoration a prompt usually opens with: headings, bullets, blockquotes and ordered
 // list numbering. Stripped repeatedly so `> ## - item` still yields `item`.
@@ -53,5 +55,5 @@ export const resolveTaskTitle = (
   const derived = firstMeaningfulLine(prompt ?? '');
   if (derived) return clipToLength(derived, maxLen);
 
-  return 'Untitled task';
+  return UNTITLED_TASK_TITLE;
 };

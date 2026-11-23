@@ -517,8 +517,11 @@ export const handleTaskStatus = async (
   const result = await coordinator.reportTaskStatus(taskId, {
     status: statusParse.data as TaskStatus,
     runnerId: auth.runner?.runnerId ?? toStringOrUndefined(payload.runnerId),
-    branchName: toStringOrUndefined(payload.branchName),
+    // A runner that discarded its branch sends null, which clears the column instead of keeping it.
+    branchName: payload.branchName === null ? null : toStringOrUndefined(payload.branchName),
     prUrl: toStringOrUndefined(payload.prUrl),
+    issueUrls: Array.isArray(payload.issueUrls) ? toStringArray(payload.issueUrls) : undefined,
+    title: toStringOrUndefined(payload.title),
     output: toStringOrUndefined(payload.output),
     error: toStringOrUndefined(payload.error),
     durationMs: toFiniteNumberOrUndefined(payload.durationMs),
