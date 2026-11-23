@@ -9,6 +9,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { getAuthToken, setAuthToken, verifyAuthToken } from '../api';
 import { Icon } from './Icon';
+import { useDialogScrollLock } from '../utils/dialog';
 
 interface SessionModalProps {
   isOpen: boolean;
@@ -38,6 +39,8 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
       setSuccessMessage(null);
     }
   }, [isOpen]);
+
+  useDialogScrollLock(isOpen);
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -90,7 +93,7 @@ export const SessionModal = ({ isOpen, onClose, onLock, onTokenUpdated }: Sessio
       ref={dialogRef}
       onClose={onClose}
       onCancel={onClose}
-      class="m-auto w-[calc(100%-2rem)] max-w-md rounded-2xl border border-pine-highlight bg-pine-surface p-0 transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
+      class="m-auto w-[calc(100%-2rem)] max-w-md overscroll-contain rounded-2xl border border-pine-highlight bg-pine-surface p-0 transition-all backdrop:bg-black/60 backdrop:backdrop-blur-xs"
       onClick={(e) => {
         if (e.target === dialogRef.current) onClose();
       }}

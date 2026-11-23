@@ -36,7 +36,7 @@ import {
   type BuildChannel,
 } from '../../../src/shared/build.ts';
 import { formatTime, useTimeFormat } from '../utils/time';
-import { dialogBackdropClickHandler } from '../utils/dialog';
+import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
 import { ConnectionInspectorModal } from './ConnectionInspectorModal';
 
 interface SidebarProps {
@@ -77,15 +77,7 @@ export const Sidebar = ({
     if (dialog?.open) dialog.close();
   }, []);
 
-  useEffect(() => {
-    // A modal dialog blocks pointer input but not page scroll.
-    if (!mobileOpen) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previous;
-    };
-  }, [mobileOpen]);
+  useDialogScrollLock(mobileOpen);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -347,10 +339,10 @@ export const Sidebar = ({
           setMobileOpen(false);
           mobileToggleRef.current?.focus();
         }}
-        class="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-72 max-w-[85vw] translate-x-full border-l border-pine-highlight bg-pine-surface p-0 text-pine-text opacity-0 transition-[translate,opacity,display,overlay] transition-discrete duration-200 ease-out backdrop:bg-black/0 backdrop:transition-[background-color,display,overlay] backdrop:transition-discrete backdrop:duration-200 open:translate-x-0 open:opacity-100 open:backdrop:bg-black/60 motion-reduce:transition-none motion-reduce:backdrop:transition-none md:hidden starting:open:translate-x-full starting:open:opacity-0 starting:open:backdrop:bg-black/0"
+        class="fixed inset-y-0 right-0 left-auto m-0 h-dvh max-h-none w-72 max-w-[85vw] translate-x-full overscroll-contain border-l border-pine-highlight bg-pine-surface p-0 text-pine-text opacity-0 transition-[translate,opacity,display,overlay] transition-discrete duration-200 ease-out backdrop:bg-black/0 backdrop:transition-[background-color,display,overlay] backdrop:transition-discrete backdrop:duration-200 open:translate-x-0 open:opacity-100 open:backdrop:bg-black/60 motion-reduce:transition-none motion-reduce:backdrop:transition-none md:hidden starting:open:translate-x-full starting:open:opacity-0 starting:open:backdrop:bg-black/0"
         onClick={dialogBackdropClickHandler(mobileNavRef, closeMobileNav)}
       >
-        <div class="flex size-full flex-col gap-4 overflow-y-auto p-4">
+        <div class="flex size-full flex-col gap-4 overflow-y-auto overscroll-contain p-4">
           <div class="flex items-center justify-between gap-2">
             <span class="text-xs font-bold tracking-widest text-pine-subtle uppercase">
               Navigation
