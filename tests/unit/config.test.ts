@@ -218,7 +218,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     }
   });
 
-  it('normalizes a pool policy set saved under the pre-rename pool group key', () => {
+  it('folds a pool policy set saved under the pre-merge group keys onto the merged group', () => {
     const legacy = validateConfigOverridePatch({
       poolGroupPolicies: {
         claude: { alertsEnabled: false, dispatchEnabled: false },
@@ -227,22 +227,25 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       },
     }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
 
-    assert.deepEqual(legacy.poolGroupPolicies?.['gemini-hydrogen'], {
+    // The first legacy key in LEGACY_POOL_GROUPS claims the merged key; the rest collapse into it.
+    assert.deepEqual(legacy.poolGroupPolicies?.gemini, {
       alertsEnabled: false,
       dispatchEnabled: true,
     });
     assert.equal(legacy.poolGroupPolicies?.['gemini-flash'], undefined);
+    assert.equal(legacy.poolGroupPolicies?.['gemini-argon'], undefined);
 
-    // A current payload keeps the canonical key it was written with.
+    // A payload that already names the merged group keeps it, even beside a legacy spelling.
     const current = validateConfigOverridePatch({
       poolGroupPolicies: {
         claude: { alertsEnabled: true, dispatchEnabled: true },
-        'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-        'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: false },
+        gemini: { alertsEnabled: true, dispatchEnabled: false },
+        'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
       },
     }) as Record<string, Record<string, { alertsEnabled: boolean; dispatchEnabled: boolean }>>;
 
-    assert.equal(current.poolGroupPolicies?.['gemini-hydrogen']?.dispatchEnabled, false);
+    assert.equal(current.poolGroupPolicies?.gemini?.dispatchEnabled, false);
+    assert.equal(current.poolGroupPolicies?.['gemini-hydrogen'], undefined);
   });
 });
 

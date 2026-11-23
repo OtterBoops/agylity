@@ -434,8 +434,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
           models: ['Claude Sonnet 5.5'],
         },
         {
-          poolId: 'gemini-argon',
-          poolGroup: 'gemini-argon',
+          poolId: 'gemini',
+          poolGroup: 'gemini',
           displayName: 'Gemini 4 Argon',
           remainingFraction: 0.17,
           resetTime: '2026-10-26T09:17:32Z',
@@ -989,8 +989,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
         const alert: QuotaAlert = {
           pool: {
-            poolId: 'gemini-argon',
-            poolGroup: 'gemini-argon',
+            poolId: 'gemini',
+            poolGroup: 'gemini',
             displayName: 'Gemini 4 Argon',
             remainingFraction: 0.17,
             resetTime: '2026-10-26T09:17:32Z',
@@ -1005,7 +1005,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await notifier.notifyQuotaAlert(alert);
 
         assert.equal(receivedBody?.event, 'quota_alert');
-        assert.equal(receivedBody?.poolId, 'gemini-argon');
+        assert.equal(receivedBody?.poolId, 'gemini');
         assert.equal(receivedBody?.milestone, 12);
         assert.ok(receivedHeaders['x-agylity-signature']);
         assert.ok((receivedHeaders['x-agylity-signature'] as string).startsWith('sha256='));

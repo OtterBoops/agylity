@@ -449,7 +449,7 @@ describe('Runner: effortless models', () => {
   it('omits --effort for a model that advertises no effort variants', async () => {
     const { dir, cleanup } = makeTempDir('runner_effortless_');
     const { task, db } = enqueueTask(dir, {
-      cascade: [{ model: 'gemini-pro-orchestrator-g1-pro', effort: 'high' }],
+      cascade: [{ model: 'gemini-pro-orchestrator-argon', effort: 'high' }],
     });
 
     try {
@@ -468,7 +468,7 @@ describe('Runner: effortless models', () => {
       const result = await executor.execute(task);
 
       assert.equal(result.success, true);
-      assert.equal(modelOf(calls[0]), 'gemini-pro-orchestrator-g1-pro');
+      assert.equal(modelOf(calls[0]), 'gemini-pro-orchestrator-argon');
       assert.equal(calls[0]?.args.includes('--effort'), false);
       // The footer must not claim a reasoning level the model never ran at.
       assert.equal(promptOf(calls[0]).includes('(high reasoning)'), false);

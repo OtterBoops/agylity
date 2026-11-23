@@ -113,8 +113,7 @@ const defaultModelForPoolGroup = (poolGroup: PoolGroup): string => {
 };
 
 export const DEFAULT_MODEL_BY_POOL_GROUP: Record<PoolGroup, string> = {
-  'gemini-argon': defaultModelForPoolGroup('gemini-argon'),
-  'gemini-hydrogen': defaultModelForPoolGroup('gemini-hydrogen'),
+  gemini: defaultModelForPoolGroup('gemini'),
   claude: defaultModelForPoolGroup('claude'),
 };
 
@@ -144,7 +143,7 @@ export const resolvePoolGroupForModelOrNull = (modelOrPoolGroup?: string): PoolG
 
 // Display/bookkeeping default only — never use this to authorise a dispatch.
 export const resolvePoolGroupForModel = (modelOrPoolGroup?: string): PoolGroup =>
-  resolvePoolGroupForModelOrNull(modelOrPoolGroup) ?? 'gemini-argon';
+  resolvePoolGroupForModelOrNull(modelOrPoolGroup) ?? 'gemini';
 
 // Pool shorthands that name one canonical model, so no caller invents its own table.
 const resolveShorthandModelId = (lowercased: string): string | undefined => {
@@ -152,17 +151,19 @@ const resolveShorthandModelId = (lowercased: string): string | undefined => {
   // model silently retargets when that group's default changes.
   if (CATALOG_BY_ID.has(lowercased)) return lowercased;
 
+  // A codename still names the model it used to route to, so an operator's saved choice survives the
+  // merge rather than silently retargeting the group default.
   if (lowercased === 'gemini-argon' || lowercased === 'argon') {
-    return DEFAULT_MODEL_BY_POOL_GROUP['gemini-argon'];
+    return 'gemini-4-argon';
   }
-  // `gemini-flash` is the pre-rename pool group key; a stored default model must keep resolving.
   if (
+    lowercased === 'gemini' ||
     lowercased === 'gemini-hydrogen' ||
     lowercased === 'gemini-flash' ||
     lowercased === 'hydrogen' ||
     lowercased === 'flash'
   ) {
-    return DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'];
+    return DEFAULT_MODEL_BY_POOL_GROUP.gemini;
   }
   if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
     return DEFAULT_MODEL_BY_POOL_GROUP.claude;
@@ -259,7 +260,7 @@ export const normalizeCascade = (input: unknown, fallbackModel?: string): Cascad
 
   if (hops.length > 0) return hops;
 
-  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen'];
+  const fallback = (fallbackModel ?? '').trim() || DEFAULT_MODEL_BY_POOL_GROUP.gemini;
   const resolvedFallback = resolveConcreteModelId(fallback);
   return [
     {
@@ -543,10 +544,7 @@ export const evaluateModelPreferenceChain = (options: {
   const hops =
     options.cascade.length > 0
       ? options.cascade
-      : normalizeCascade(
-          [],
-          options.defaultModel || DEFAULT_MODEL_BY_POOL_GROUP['gemini-hydrogen']
-        );
+      : normalizeCascade([], options.defaultModel || DEFAULT_MODEL_BY_POOL_GROUP.gemini);
   const nowMs = options.nowMs ?? Date.now();
   const rejectionReasons: string[] = [];
 

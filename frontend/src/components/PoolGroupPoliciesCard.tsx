@@ -3,6 +3,7 @@ import { faSliders } from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData } from '../types';
 import { updateConfig } from '../api';
 import { pushErrorToast } from '../state/toastStore';
+import { POOL_GROUP_LABELS, type PoolGroup } from '../../../src/shared/models.ts';
 import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
 
@@ -11,55 +12,55 @@ interface PoolGroupPoliciesCardProps {
   onSaved: () => void;
 }
 
+interface PoolPolicy {
+  alertsEnabled: boolean;
+  dispatchEnabled: boolean;
+}
+
 interface PoolDef {
-  key: 'gemini-argon' | 'gemini-hydrogen' | 'claude';
+  key: PoolGroup;
   name: string;
   description: string;
 }
 
 const POOLS: PoolDef[] = [
   {
-    key: 'gemini-hydrogen',
-    name: 'Gemini Hydrogen',
+    key: 'gemini',
+    name: POOL_GROUP_LABELS.gemini,
     description:
-      'High-speed standard Gemini models (Gemini 4 Hydrogen, Gemini 4 Neon, 3.8 Flash) with shared weekly and 5-hour limits.',
-  },
-  {
-    key: 'gemini-argon',
-    name: 'Gemini Argon',
-    description: 'Flagship reasoning pool. Distinct quota bucket with separate weekly limit.',
+      'Gemini 4 Hydrogen, Neon, Carbon, Argon, 3.8 Flash and the orchestrator routes share one weekly and 5-hour budget.',
   },
   {
     key: 'claude',
-    name: 'Claude and GPT models',
+    name: POOL_GROUP_LABELS.claude,
     description:
       'Third-party model bucket (Claude Sonnet/Opus, GPT-OSS). Disabled by default to prevent credit drain.',
   },
 ];
 
+// Gemini ships on out of the box; the Claude bucket stays off so it cannot drain credits unattended.
+const POLICY_DEFAULTS: Record<PoolGroup, PoolPolicy> = {
+  gemini: { alertsEnabled: true, dispatchEnabled: true },
+  claude: { alertsEnabled: false, dispatchEnabled: false },
+};
+
+const resolvePolicy = (raw: Partial<PoolPolicy> | undefined, defaults: PoolPolicy): PoolPolicy => ({
+  alertsEnabled: raw?.alertsEnabled ?? defaults.alertsEnabled,
+  dispatchEnabled: raw?.dispatchEnabled ?? defaults.dispatchEnabled,
+});
+
 export const PoolGroupPoliciesCard = ({ config, onSaved }: PoolGroupPoliciesCardProps) => {
   const [savingKey, setSavingKey] = useState<string | null>(null);
 
-  const rawPolicies = config.resolved?.poolGroupPolicies || {};
-  const currentPolicies = {
-    'gemini-argon': {
-      alertsEnabled: rawPolicies['gemini-argon']?.alertsEnabled ?? true,
-      dispatchEnabled: rawPolicies['gemini-argon']?.dispatchEnabled ?? true,
-    },
-    'gemini-hydrogen': {
-      alertsEnabled: rawPolicies['gemini-hydrogen']?.alertsEnabled ?? true,
-      dispatchEnabled: rawPolicies['gemini-hydrogen']?.dispatchEnabled ?? true,
-    },
-    claude: {
-      alertsEnabled: rawPolicies.claude?.alertsEnabled ?? false,
-      dispatchEnabled: rawPolicies.claude?.dispatchEnabled ?? false,
-    },
+  const rawPolicies = (config.resolved?.poolGroupPolicies || {}) as Partial<
+    Record<PoolGroup, Partial<PoolPolicy>>
+  >;
+  const currentPolicies: Record<PoolGroup, PoolPolicy> = {
+    gemini: resolvePolicy(rawPolicies.gemini, POLICY_DEFAULTS.gemini),
+    claude: resolvePolicy(rawPolicies.claude, POLICY_DEFAULTS.claude),
   };
 
-  const handleToggle = async (
-    poolKey: 'gemini-argon' | 'gemini-hydrogen' | 'claude',
-    field: 'alertsEnabled' | 'dispatchEnabled'
-  ) => {
+  const handleToggle = async (poolKey: PoolGroup, field: keyof PoolPolicy) => {
     const key = `${poolKey}:${field}`;
     setSavingKey(key);
     try {

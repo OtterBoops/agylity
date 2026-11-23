@@ -155,7 +155,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | :------------------------------------- | :----- | :---------------------------------------------------------------- |
 | `GET /api/health`                      | public | Liveness; reports `authRequired` and build provenance.            |
 | `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
-| `GET /api/summary`                     | Bearer | Per-group headroom percentages and the cached `agy` version.      |
+| `GET /api/summary`                     | Bearer | `geminiPercent`, `claudePercent`, cached `agy` version.           |
 | `GET /api/alerts`                      | Bearer | Active alert state.                                               |
 | `POST /api/alerts/dismiss`             | Bearer | Clears the active alert set.                                      |
 | `GET /api/alerts/events`               | Bearer | Paginated alert history (`limit` ≤ 200, `before` cursor, `pool`). |
@@ -482,7 +482,7 @@ the status report the coordinator stores.
 
 The whole persistent schema — `settings`, the coordinator tables and the sentry tables — is declared as
 column specs and applied through one forward-only registry in `src/storage/migrations.ts`, recorded in
-`schema_migrations` (current head: `v6_issue_urls`). `AppDatabase` owns it: opening the database creates
+`schema_migrations` (current head: `v7_gemini_pool_group`). `AppDatabase` owns it: opening the database creates
 `settings` and runs `applyMigrations()`, so every table reaches the head version in one place and
 `TaskQueue`/`SentryStateManager` only reuse what is already there. Each table is built with
 `ensureTableSchema()` (`CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that
@@ -492,18 +492,20 @@ an existing database is upgraded in place. Table-level constraint specs (`PRIMAR
 repair, which only speaks up when a genuinely un-addable column is missing.
 
 Every successful probe reconciles `pool_state` against the pools it actually reported: an entry the probe no
-longer lists (`gemini-argon` on a tier without that pool) is deleted along with its `pool_milestones` and
+longer lists (`gemini:gemini-4-argon` on a tier without that pool) is deleted along with its `pool_milestones` and
 `pool_samples` rows and its early-reset notice entry, so a retired pool cannot keep appearing in the offline
 fallback (`snapshotsFromSentryState`), the dashboard quota grid or the `/api/summary` percentages. A probe
 that reports nothing is not evidence of anything, so it retires nothing.
 
-Migration v4 (`v4_pool_family_hydrogen`, kept under its historical name because it must still read
-pre-v5 databases) renamed the `gemini-flash` pool group to `gemini-hydrogen` everywhere a pool id or group
-key is stored: the sentry tables (`pool_state`, `pool_milestones`, `pool_samples`, `alert_events`), the
-early-reset notice, `swarm_tasks.pool_family`, the routine cycle stamps and the stored `poolPolicies`
-override. A row already carrying the new id wins over the legacy duplicate, so the migration is safe to
-replay, and `gemini-flash` is still accepted as a legacy alias by the state importer and the config
-schema.
+Migration v7 (`v7_gemini_pool_group`) folds every retired Gemini pool group onto the single `gemini` group.
+A pool id is either the group id or `<group>:<slug>`, so only the prefix is rewritten: each
+`gemini-hydrogen`, `gemini-argon` and `gemini-flash` id (and its bare `hydrogen`/`argon`/`flash` spelling)
+becomes `gemini`, everywhere a pool id or group key is stored — the sentry tables (`pool_state`,
+`pool_milestones`, `pool_samples`, `alert_events`), the early-reset notice, `swarm_tasks.pool_group`, the
+routine cycle stamps and the stored `poolGroupPolicies` override. A row already carrying `gemini` wins over
+the legacy duplicate, so the migration is safe to replay, and `LEGACY_POOL_GROUPS` (`src/shared/models.ts`)
+with `POOL_GROUP_ALIASES` (`src/sentry/models.ts`) keep those spellings accepted at runtime, so a state file
+written before the merge still resolves to a live group.
 
 Migration v5 (`v5_pool_group`) retires the `pool_family` spelling. It renames `swarm_tasks.pool_family` to
 `pool_group` when the old column is present and the new one is not, then moves the settings row

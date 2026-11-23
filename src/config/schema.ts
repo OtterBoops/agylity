@@ -6,6 +6,7 @@ import {
   type BacklogConcurrency,
   type PrPolicy,
 } from '../shared/contracts.js';
+import { LEGACY_POOL_GROUPS } from '../shared/models.js';
 
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
@@ -109,29 +110,33 @@ export const PoolPolicySchema = z.object({
   dispatchEnabled: z.boolean(),
 });
 
-// A policy set saved before the pool rename carries `gemini-flash` and no `gemini-hydrogen`.
+// A policy set saved before the Gemini pools were merged carries the old group keys; the merged key
+// wins when both are present.
 const normalizePoolPolicyKeys = (val: unknown): unknown => {
   if (!val || typeof val !== 'object' || Array.isArray(val)) return val;
-  const raw = val as Record<string, unknown>;
-  if (raw['gemini-hydrogen'] !== undefined) return val;
-  const legacy = raw['gemini-flash'];
-  return legacy === undefined ? val : { ...raw, 'gemini-hydrogen': legacy };
+  const raw = { ...(val as Record<string, unknown>) };
+  let changed = false;
+  for (const [legacy, group] of Object.entries(LEGACY_POOL_GROUPS)) {
+    if (raw[legacy] === undefined) continue;
+    if (raw[group] === undefined) raw[group] = raw[legacy];
+    delete raw[legacy];
+    changed = true;
+  }
+  return changed ? raw : val;
 };
 
 export const PoolGroupPoliciesSchema = z.preprocess(
   normalizePoolPolicyKeys,
   z.object({
+    gemini: PoolPolicySchema,
     claude: PoolPolicySchema,
-    'gemini-argon': PoolPolicySchema,
-    'gemini-hydrogen': PoolPolicySchema,
   })
 );
 
 export type PoolGroupPolicies = z.infer<typeof PoolGroupPoliciesSchema>;
 
 export const DEFAULT_POOL_GROUP_POLICIES: PoolGroupPolicies = {
-  'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
-  'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+  gemini: { alertsEnabled: true, dispatchEnabled: true },
   claude: { alertsEnabled: false, dispatchEnabled: false },
 };
 

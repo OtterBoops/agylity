@@ -28,7 +28,7 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
         version: number;
       }>
     ).map((row) => row.version);
-    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6], 'every migration must be applied, in order');
+    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7], 'every migration must be applied, in order');
 
     // pr_policy is a NOT NULL sentinel column on all three tiers.
     for (const table of ['swarm_tasks', 'backlog_tasks', 'routine_tasks']) {
@@ -49,8 +49,8 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
   }
 });
 
-test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen', () => {
-  const { dir, cleanup } = makeTempDir('schema_v4_pool_group_');
+test('migration v7 folds every legacy Gemini pool id onto the merged gemini group', () => {
+  const { dir, cleanup } = makeTempDir('schema_v7_gemini_pool_group_');
   const db = new AppDatabase(path.join(dir, 'test.db'));
   try {
     const queue = new TaskQueue(db);
@@ -59,16 +59,17 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
 
     queue.enqueue({
       repositoryName: 'agylity',
-      prompt: 'pre-rename pool group',
+      prompt: 'pre-merge pool group',
       cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
     });
 
-    // Pre-rename database: a legacy row beside an already-renamed one, plus a suffixed pool id.
+    // A v6 database that still carries the pre-merge vocabulary: the group v4 already claimed, a
+    // second legacy group that has to collapse into it, and a suffixed pool id.
     raw
       .prepare(
         `INSERT INTO pool_state (pool_id, reset_time, remaining_fraction, last_alert_sent_at, updated_at)
-         VALUES ('gemini-flash', '2026-11-20T00:00:00Z', 0.4, NULL, ?),
-                ('gemini-hydrogen', '2026-11-25T00:00:00Z', 0.9, NULL, ?),
+         VALUES ('gemini-hydrogen', '2026-11-25T00:00:00Z', 0.9, NULL, ?),
+                ('gemini-flash', '2026-11-20T00:00:00Z', 0.4, NULL, ?),
                 ('gemini-flash:gemini-pro', '2026-11-22T00:00:00Z', 0.55, NULL, ?)`
       )
       .run(now, now, now);
@@ -78,7 +79,7 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         `INSERT INTO pool_samples (pool_id, at, remaining_fraction, reset_time)
          VALUES ('gemini-flash', '2026-11-01T00:00:00Z', 0.5, '2026-11-20T00:00:00Z'),
                 ('gemini-flash', '2026-11-02T00:00:00Z', 0.45, '2026-11-20T00:00:00Z'),
-                ('gemini-hydrogen', '2026-11-02T00:00:00Z', 0.95, '2026-11-25T00:00:00Z')`
+                ('gemini-hydrogen', '2026-11-03T00:00:00Z', 0.95, '2026-11-25T00:00:00Z')`
       )
       .run();
 
@@ -93,7 +94,7 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
       .prepare(
         `INSERT INTO alert_events
            (pool_id, reset_time, kind, milestone_hours, headroom_percent, fired_at, channels_json)
-         VALUES ('gemini-flash', '2026-11-20T00:00:00Z', 'milestone', 24, 40, ?, '{}')`
+         VALUES ('gemini-argon', '2026-11-20T00:00:00Z', 'milestone', 24, 40, ?, '{}')`
       )
       .run(now);
 
@@ -103,7 +104,7 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         now,
         JSON.stringify([
           {
-            poolId: 'gemini-flash',
+            poolId: 'gemini-argon:weekly',
             previousRemainingFraction: 0.1,
             remainingFraction: 0.9,
             previousResetTime: '2026-11-10T00:00:00Z',
@@ -117,21 +118,18 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         `INSERT INTO routine_tasks (id, task_number, title, prompt, repository_id, last_triggered_cycles_json)
          VALUES ('routine-1', 1, 'Pre-reset burn', 'burn probe', 'agylity', ?)`
       )
-      .run(JSON.stringify({ claude: 'cycle-a', 'gemini-flash': 'cycle-b' }));
+      .run(JSON.stringify({ claude: 'cycle-a', 'gemini-argon': 'cycle-b' }));
 
-    // The queue column still carries its pre-v5 name here, which is what lets v4 rewrite the stored
-    // value and v5 rename the column on the same boot.
-    raw.exec('ALTER TABLE swarm_tasks RENAME COLUMN pool_group TO pool_family');
-    raw.prepare("UPDATE swarm_tasks SET pool_family = 'gemini-flash'").run();
-    // Seeded under the pre-v5 key, because v4 is what normalizes the value inside it.
-    db.set('poolPolicies', {
+    // A v6 row keeps the post-v5 column name while still holding a legacy group value.
+    raw.prepare("UPDATE swarm_tasks SET pool_group = 'gemini-argon'").run();
+    db.set('poolGroupPolicies', {
       claude: { alertsEnabled: false, dispatchEnabled: false },
-      'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
       'gemini-flash': { alertsEnabled: false, dispatchEnabled: true },
+      'gemini-argon': { alertsEnabled: true, dispatchEnabled: true },
     });
 
-    // Drop both records so the next boot replays v4 against the seeded rows and then v5's renames.
-    raw.prepare('DELETE FROM schema_migrations WHERE version IN (4, 5)').run();
+    // Only the v7 record is dropped, so this boot has to fold a database that already reached v6.
+    raw.prepare('DELETE FROM schema_migrations WHERE version = 7').run();
     new TaskQueue(db);
 
     const poolIds = (
@@ -139,13 +137,12 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         pool_id: string;
       }>
     ).map((row) => row.pool_id);
-    assert.deepEqual(poolIds, ['gemini-hydrogen', 'gemini-hydrogen:gemini-pro']);
-    // The row already carrying the new id survives; the legacy duplicate is dropped, not merged.
+    assert.deepEqual(poolIds, ['gemini', 'gemini:gemini-pro']);
+    // The row already carrying the merged id survives; the legacy duplicate is dropped, not merged.
     assert.equal(
       (
-        raw
-          .prepare("SELECT remaining_fraction FROM pool_state WHERE pool_id = 'gemini-hydrogen'")
-          .get() as { remaining_fraction: number } | undefined
+        raw.prepare("SELECT remaining_fraction FROM pool_state WHERE pool_id = 'gemini'").get() as
+          { remaining_fraction: number } | undefined
       )?.remaining_fraction,
       0.9
     );
@@ -157,8 +154,9 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
       }>
     ).map((row) => `${row.pool_id}@${row.at}`);
     assert.deepEqual(samplePools, [
-      'gemini-hydrogen@2026-11-01T00:00:00Z',
-      'gemini-hydrogen@2026-11-02T00:00:00Z',
+      'gemini@2026-11-01T00:00:00Z',
+      'gemini@2026-11-02T00:00:00Z',
+      'gemini@2026-11-03T00:00:00Z',
     ]);
 
     assert.deepEqual(
@@ -167,13 +165,13 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
           pool_id: string;
         }>
       ).map((row) => row.pool_id),
-      ['gemini-hydrogen']
+      ['gemini']
     );
     assert.deepEqual(
       (
         raw.prepare('SELECT DISTINCT pool_id FROM alert_events').all() as Array<{ pool_id: string }>
       ).map((row) => row.pool_id),
-      ['gemini-hydrogen']
+      ['gemini']
     );
 
     const notice = JSON.parse(
@@ -183,10 +181,10 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         }
       ).pools_json
     ) as Array<{ poolId: string }>;
-    assert.equal(notice[0]?.poolId, 'gemini-hydrogen');
+    assert.equal(notice[0]?.poolId, 'gemini:weekly');
 
     const taskId = queue.listTasks({ limit: 1 })[0]!.id;
-    assert.equal(queue.getTask(taskId)?.poolGroup, 'gemini-hydrogen');
+    assert.equal(queue.getTask(taskId)?.poolGroup, 'gemini');
 
     const cycles = JSON.parse(
       (
@@ -195,15 +193,62 @@ test('migration v4 moves every legacy gemini-flash pool id onto gemini-hydrogen'
         }
       ).cycles
     ) as Record<string, string>;
-    assert.deepEqual(cycles, { claude: 'cycle-a', 'gemini-hydrogen': 'cycle-b' });
+    assert.deepEqual(cycles, { claude: 'cycle-a', gemini: 'cycle-b' });
 
     const policies = db.get<Record<string, unknown>>('poolGroupPolicies') ?? {};
-    assert.deepEqual(Object.keys(policies).sort(), ['claude', 'gemini-argon', 'gemini-hydrogen']);
-    assert.deepEqual(policies['gemini-hydrogen'], { alertsEnabled: false, dispatchEnabled: true });
+    assert.deepEqual(Object.keys(policies).sort(), ['claude', 'gemini']);
+    // 'gemini-flash' is listed before 'gemini-argon', so it claims the merged key; the other legacy
+    // entry folds into it rather than overwriting it.
+    assert.deepEqual(policies['gemini'], { alertsEnabled: false, dispatchEnabled: true });
 
-    // v4 is idempotent: a third boot over renamed rows leaves them alone.
+    // v7 is idempotent: a third boot over the merged rows leaves them alone.
     new TaskQueue(db);
     assert.equal((raw.prepare('SELECT COUNT(*) AS c FROM pool_state').get() as { c: number }).c, 2);
+  } finally {
+    db.close();
+    cleanup();
+  }
+});
+
+test('migration v7 folds a pre-v5 queue column and keeps an existing gemini policy', () => {
+  const { dir, cleanup } = makeTempDir('schema_v7_pool_column_');
+  const db = new AppDatabase(path.join(dir, 'test.db'));
+  try {
+    const queue = new TaskQueue(db);
+    const raw = db.getRawDb();
+
+    queue.enqueue({
+      repositoryName: 'agylity',
+      prompt: 'row written before v5',
+      cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+    });
+
+    // Reshape back to a pre-v5 install: the retired column spelling, the merged policy seeded next
+    // to a legacy key, and v4, v5 and v7 unrecorded so one boot replays the whole chain.
+    raw.exec('ALTER TABLE swarm_tasks RENAME COLUMN pool_group TO pool_family');
+    raw.prepare("UPDATE swarm_tasks SET pool_family = 'gemini-hydrogen'").run();
+    db.set('poolGroupPolicies', {
+      gemini: { alertsEnabled: true, dispatchEnabled: false },
+      claude: { alertsEnabled: false, dispatchEnabled: false },
+      'gemini-hydrogen': { alertsEnabled: true, dispatchEnabled: true },
+    });
+    raw.prepare('DELETE FROM schema_migrations WHERE version IN (4, 5, 7)').run();
+
+    new TaskQueue(db);
+
+    const columns = (
+      raw.prepare('PRAGMA table_info(swarm_tasks)').all() as Array<{ name: string }>
+    ).map((row) => String(row.name));
+    assert.ok(columns.includes('pool_group'), 'v5 must still rename the retired column');
+    assert.ok(!columns.includes('pool_family'), 'v5 must retire the old column spelling');
+
+    const taskId = queue.listTasks({ limit: 1 })[0]!.id;
+    assert.equal(queue.getTask(taskId)?.poolGroup, 'gemini');
+
+    const policies = db.get<Record<string, unknown>>('poolGroupPolicies') ?? {};
+    assert.deepEqual(Object.keys(policies).sort(), ['claude', 'gemini']);
+    // An existing merged entry outranks the legacy key it would otherwise have absorbed.
+    assert.deepEqual(policies['gemini'], { alertsEnabled: true, dispatchEnabled: false });
   } finally {
     db.close();
     cleanup();
@@ -278,8 +323,8 @@ test('migration v5 renames the queue column and moves the policies key on a v4 d
   }
 });
 
-test('re-running migrations on a v5 database is a no-op', () => {
-  const { dir, cleanup } = makeTempDir('schema_v5_noop_');
+test('re-running migrations on a head database is a no-op', () => {
+  const { dir, cleanup } = makeTempDir('schema_v7_noop_');
   const db = new AppDatabase(path.join(dir, 'test.db'));
   try {
     const queue = new TaskQueue(db);
@@ -316,7 +361,7 @@ test('re-running migrations on a v5 database is a no-op', () => {
   }
 });
 
-test('opening AppDatabase alone applies v1..v6 and creates the coordinator and sentry tables', () => {
+test('opening AppDatabase alone applies every migration and creates the coordinator and sentry tables', () => {
   const { dir, cleanup } = makeTempDir('schema_db_owner_');
   const db = new AppDatabase(path.join(dir, 'test.db'));
   try {
@@ -329,8 +374,8 @@ test('opening AppDatabase alone applies v1..v6 and creates the coordinator and s
     ).map((row) => Number(row.version));
     assert.deepEqual(
       versions,
-      [1, 2, 3, 4, 5, 6],
-      'AppDatabase must take the database to v6 on open'
+      [1, 2, 3, 4, 5, 6, 7],
+      'AppDatabase must take the database to v7 on open'
     );
 
     const tables = new Set(

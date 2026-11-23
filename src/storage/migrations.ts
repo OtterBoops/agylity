@@ -294,17 +294,22 @@ const renameLegacyPoolIds = (db: DatabaseSync, table: string, column = 'pool_id'
     db.prepare(`DELETE FROM ${table} WHERE ${match}`).run(legacy, `${legacy}:%`);
   }
   if (renamed > 0) {
-    logger.info('Migration v4: renamed %d legacy %s.%s row(s)', renamed, table, column);
+    logger.info('Pool group upgrade: renamed %d legacy %s.%s row(s)', renamed, table, column);
   }
 };
 
+// The column is spelled `pool_family` before v5 and `pool_group` after it, so the values are folded
+// under whichever name this database carries.
 const renameLegacyTaskPoolGroups = (db: DatabaseSync): void => {
-  if (!tableExists(db, 'swarm_tasks') || !tableHasColumn(db, 'swarm_tasks', 'pool_family')) return;
-  for (const legacy of LEGACY_POOL_GROUP_IDS) {
-    db.prepare('UPDATE swarm_tasks SET pool_family = ? WHERE pool_family = ?').run(
-      upgradePoolGroupId(legacy),
-      legacy
-    );
+  if (!tableExists(db, 'swarm_tasks')) return;
+  for (const column of ['pool_family', 'pool_group']) {
+    if (!tableHasColumn(db, 'swarm_tasks', column)) continue;
+    for (const legacy of LEGACY_POOL_GROUP_IDS) {
+      db.prepare(`UPDATE swarm_tasks SET ${column} = ? WHERE ${column} = ?`).run(
+        upgradePoolGroupId(legacy),
+        legacy
+      );
+    }
   }
 };
 
@@ -367,32 +372,36 @@ const renameLegacyNoticePoolIds = (db: DatabaseSync): void => {
   );
 };
 
-// Config overrides live as one JSON row in `settings`, not in a table of their own.
+// Config overrides live as one JSON row in `settings`, not in a table of their own, and v5 renamed
+// that key, so both spellings are folded.
 const renameLegacyPoolPolicyKeys = (db: DatabaseSync): void => {
   if (!tableExists(db, 'settings')) return;
-  const row = db.prepare("SELECT value FROM settings WHERE key = 'poolPolicies'").get() as
-    { value?: string } | undefined;
-  if (typeof row?.value !== 'string') return;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(row.value);
-  } catch {
-    return;
+  for (const key of ['poolGroupPolicies', 'poolPolicies']) {
+    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      { value?: string } | undefined;
+    if (typeof row?.value !== 'string') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.value);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const policies = { ...(parsed as Record<string, unknown>) };
+    let changed = false;
+    for (const legacy of LEGACY_POOL_GROUP_IDS) {
+      if (policies[legacy] === undefined) continue;
+      const upgraded = upgradePoolGroupId(legacy);
+      if (policies[upgraded] === undefined) policies[upgraded] = policies[legacy];
+      delete policies[legacy];
+      changed = true;
+    }
+    if (!changed) continue;
+    db.prepare("UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = ?").run(
+      JSON.stringify(policies),
+      key
+    );
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
-  const policies = { ...(parsed as Record<string, unknown>) };
-  let changed = false;
-  for (const legacy of LEGACY_POOL_GROUP_IDS) {
-    if (policies[legacy] === undefined) continue;
-    const upgraded = upgradePoolGroupId(legacy);
-    if (policies[upgraded] === undefined) policies[upgraded] = policies[legacy];
-    delete policies[legacy];
-    changed = true;
-  }
-  if (!changed) return;
-  db.prepare(
-    "UPDATE settings SET value = ?, updated_at = datetime('now') WHERE key = 'poolPolicies'"
-  ).run(JSON.stringify(policies));
 };
 
 const migrateLegacyPoolGroups = (db: DatabaseSync): void => {
@@ -505,6 +514,13 @@ export const MIGRATIONS: readonly Migration[] = [
     name: 'v6_issue_urls',
     up: (db) => {
       addIssueUrlsColumn(db);
+    },
+  },
+  {
+    version: 7,
+    name: 'v7_gemini_pool_group',
+    up: (db) => {
+      migrateLegacyPoolGroups(db);
     },
   },
 ];
