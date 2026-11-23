@@ -2351,3 +2351,84 @@ describe('Runner: PR body selection', () => {
     assert.equal(body, 'Fix the header wrapping in SwarmRunnersStrip');
   });
 });
+
+describe('Runner: automatic GitHub commit identity & no-co-authoring directive', () => {
+  it('resolves git author identity from the leased GitHub token, caches it, and forbids Co-authored-by trailers', async () => {
+    const { dir, cleanup } = makeTempDir('runner_gh_identity_');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+    const prevAuthorName = process.env.GIT_AUTHOR_NAME;
+    const prevAuthorEmail = process.env.GIT_AUTHOR_EMAIL;
+    const prevCommitterName = process.env.GIT_COMMITTER_NAME;
+    const prevCommitterEmail = process.env.GIT_COMMITTER_EMAIL;
+    delete process.env.GIT_AUTHOR_NAME;
+    delete process.env.GIT_AUTHOR_EMAIL;
+    delete process.env.GIT_COMMITTER_NAME;
+    delete process.env.GIT_COMMITTER_EMAIL;
+
+    try {
+      const queue = new TaskQueue(db);
+      let resolveCalls = 0;
+      const capturedAgyEnvs: Array<Record<string, string | undefined>> = [];
+      const capturedPrompts: string[] = [];
+
+      const executor = new TaskExecutor({
+        dirExistsFn: () => true,
+        resolveGithubIdentityFn: async () => {
+          resolveCalls += 1;
+          return { name: 'OtterBoops', email: '12345+OtterBoops@users.noreply.github.com' };
+        },
+        execFileFn: async (file, args, opts) => {
+          if (file === 'agy') {
+            capturedAgyEnvs.push({ ...(opts?.env as Record<string, string | undefined>) });
+            const pIdx = args.indexOf('-p');
+            if (pIdx >= 0) capturedPrompts.push(String(args[pIdx + 1] ?? ''));
+            return { stdout: 'Done.', stderr: '' };
+          }
+          if (file === 'git' && args[0] === 'status') return { stdout: '', stderr: '' };
+          if (file === 'git' && args[0] === 'rev-list') return { stdout: '0\n', stderr: '' };
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      const task1 = queue.enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: dir,
+        prompt: 'Fix a bug',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+      const task2 = queue.enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: dir,
+        prompt: 'Fix another bug',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+
+      await executor.execute(task1, { githubToken: 'ghp_test_token_123' });
+      await executor.execute(task2, { githubToken: 'ghp_test_token_123' });
+
+      assert.equal(resolveCalls, 1, 'GitHub identity lookup should be cached per token');
+      assert.equal(capturedAgyEnvs[0]?.GIT_AUTHOR_NAME, 'OtterBoops');
+      assert.equal(
+        capturedAgyEnvs[0]?.GIT_AUTHOR_EMAIL,
+        '12345+OtterBoops@users.noreply.github.com'
+      );
+      assert.equal(capturedAgyEnvs[0]?.GIT_COMMITTER_NAME, 'OtterBoops');
+      assert.equal(
+        capturedAgyEnvs[0]?.GIT_COMMITTER_EMAIL,
+        '12345+OtterBoops@users.noreply.github.com'
+      );
+      assert.match(capturedPrompts[0] ?? '', /Do NOT add Co-authored-by trailers/);
+    } finally {
+      if (prevAuthorName !== undefined) process.env.GIT_AUTHOR_NAME = prevAuthorName;
+      if (prevAuthorEmail !== undefined) process.env.GIT_AUTHOR_EMAIL = prevAuthorEmail;
+      if (prevCommitterName !== undefined) process.env.GIT_COMMITTER_NAME = prevCommitterName;
+      if (prevCommitterEmail !== undefined) process.env.GIT_COMMITTER_EMAIL = prevCommitterEmail;
+      db.close();
+      cleanup();
+    }
+  });
+});
