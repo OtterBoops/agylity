@@ -632,7 +632,7 @@ export const CONFIG_REGISTRY = [
     env: 'GITHUB_BACKLOG_LABEL',
     envSchema: z.string(),
     description:
-      'Issue label that `POST /api/backlog/sync-github` imports as Tier 2 backlog items. Issues carrying it become pending work, and an imported item is cancelled when its issue is closed upstream.',
+      'Issue label that `POST /api/backlog/sync-github` imports as Tier 2 backlog items. Issues carrying it become pending work, and an active item is canceled when its issue closes upstream; a finished item keeps its status.',
   },
   {
     group: 'coordinator',

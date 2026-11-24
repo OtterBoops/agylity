@@ -2278,6 +2278,169 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         cleanup();
       }
     });
+
+    it('deletes rows by id on POST, reports unknown ids and 404s the deleted row', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_bulk_delete_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const create = async (title: string) =>
+          ky
+            .post(`${base}/api/backlog`, {
+              json: { title, prompt: 'P', repositoryId: 'agylity' },
+              retry: 0,
+              throwHttpErrors: false,
+            })
+            .json<{ id: string }>();
+        const setStatus = async (id: string, status: string) => {
+          const patched = await ky.patch(`${base}/api/backlog/${encodeURIComponent(id)}`, {
+            json: { status },
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(patched.status, 200);
+        };
+
+        const completed = await create('Completed row');
+        await setStatus(completed.id, 'completed');
+        const canceled = await create('Canceled row');
+        await setStatus(canceled.id, 'canceled');
+        const pending = await create('Pending row');
+
+        const missing = 'backlog-does-not-exist';
+        const res = await ky.post(`${base}/api/backlog/bulk`, {
+          json: { ids: [completed.id, canceled.id, missing], action: 'delete' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 200);
+        // Delete is allowed for settled rows, and deleted ids echo the request order.
+        assert.deepEqual(await res.json(), {
+          deleted: 2,
+          ids: [completed.id, canceled.id],
+          skipped: [missing],
+        });
+
+        const list = await ky
+          .get(`${base}/api/backlog`, { retry: 0 })
+          .json<Array<{ id: string }>>();
+        assert.deepEqual(
+          list.map((row) => row.id),
+          [pending.id]
+        );
+
+        const gone = await ky.get(`${base}/api/backlog/${encodeURIComponent(completed.id)}`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(gone.status, 404);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('keeps a dispatched row on bulk delete because it is bound to a live run', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_bulk_delete_dispatched_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'In flight row', prompt: 'P', repositoryId: 'agylity' },
+            retry: 0,
+            throwHttpErrors: false,
+          })
+          .json<{ id: string }>();
+        const url = `${base}/api/backlog/${encodeURIComponent(created.id)}`;
+        const patched = await ky.patch(url, {
+          json: { status: 'dispatched' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(patched.status, 200);
+
+        const res = await ky.post(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id], action: 'delete' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 200);
+        assert.deepEqual(await res.json(), { deleted: 0, ids: [], skipped: [created.id] });
+
+        const after = await ky.get(url, { retry: 0 }).json<{ status: string }>();
+        assert.equal(after.status, 'dispatched');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('rejects an unknown bulk action with 400 and still accepts PATCH pause', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_bulk_unknown_action_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({
+          configStore: store,
+          host: '127.0.0.1',
+          port: 0,
+        });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'Pausable row', prompt: 'P', repositoryId: 'agylity' },
+            retry: 0,
+            throwHttpErrors: false,
+          })
+          .json<{ id: string }>();
+
+        const rejected = await ky.post(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id], action: 'purge' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(rejected.status, 400);
+        assert.deepEqual(await rejected.json(), {
+          error: "action must be 'pause', 'resume' or 'delete'",
+        });
+
+        const paused = await ky.patch(`${base}/api/backlog/bulk`, {
+          json: { ids: [created.id], action: 'pause' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(paused.status, 200);
+        assert.equal((await paused.json<{ updated: number }>()).updated, 1);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
   });
 
   /* ==================================================================== */
@@ -4132,6 +4295,69 @@ describe('Web: Antigravity CLI version reporting', () => {
       } finally {
         if (savedEnvToken === undefined) delete process.env.GITHUB_TOKEN;
         else process.env.GITHUB_TOKEN = savedEnvToken;
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('cancels only active rows when an issue leaves the open listing', async () => {
+      const { dir, cleanup } = makeTempDir('web_backlog_sync_closed_issue_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        githubBacklogLabel: 'backlog',
+        repositories: [
+          {
+            id: 'OtterBoops/repo-closed',
+            name: 'repo-closed',
+            path: path.join(dir, 'closed'),
+            defaultBranch: 'main',
+          },
+        ],
+      });
+      const coordinator = new Coordinator({ configStore: store });
+
+      try {
+        const create = (title: string, githubIssueNumber: number) =>
+          coordinator.queue.createBacklogTask({
+            title,
+            prompt: 'P',
+            repositoryId: 'OtterBoops/repo-closed',
+            githubIssueNumber,
+          });
+
+        const completedRow = create('[GH #10] Completed', 10);
+        coordinator.queue.updateBacklogTask(completedRow.id, {
+          status: 'completed',
+          lastError: 'settled attempt output',
+        });
+        const canceledRow = create('[GH #11] Canceled', 11);
+        coordinator.queue.updateBacklogTask(canceledRow.id, { status: 'canceled' });
+        const pendingRow = create('[GH #12] Pending', 12);
+
+        const mockRes = createMockResponse();
+        await handleSyncGithubBacklog(
+          {} as http.IncomingMessage,
+          mockRes.res,
+          { configStore: store, coordinator },
+          'POST',
+          {
+            listOpenIssues: async () => ({ ok: true, truncated: false, issues: [] }),
+          }
+        );
+
+        assert.equal(mockRes.getStatus(), 200);
+        // Finished rows are history, so only the live pending row is canceled.
+        assert.equal(mockRes.getBody().canceledCount, 1);
+
+        const completedAfter = coordinator.queue.getBacklogTask(completedRow.id);
+        assert.equal(completedAfter?.status, 'completed');
+        assert.equal(completedAfter?.lastError, 'settled attempt output');
+        assert.equal(coordinator.queue.getBacklogTask(canceledRow.id)?.status, 'canceled');
+
+        const pendingAfter = coordinator.queue.getBacklogTask(pendingRow.id);
+        assert.equal(pendingAfter?.status, 'canceled');
+        assert.equal(pendingAfter?.lastError, undefined);
+      } finally {
         store.close();
         cleanup();
       }

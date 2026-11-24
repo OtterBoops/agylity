@@ -24,6 +24,7 @@ import {
 } from '../../coordinator/models.js';
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
 import type { RepositoryEntry } from '../../config/schema.js';
+import { FINISHED_BACKLOG_STATUS_VALUES } from '../../shared/contracts.js';
 
 const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
 
@@ -201,13 +202,23 @@ const BULK_BACKLOG_MAX_IDS = 200;
 
 const BULK_PAUSE_FROM: readonly BacklogStatus[] = ['pending', 'dispatched'];
 
+const BULK_BACKLOG_ACTIONS = ['pause', 'resume', 'delete'] as const;
+
+type BulkBacklogAction = (typeof BULK_BACKLOG_ACTIONS)[number];
+
+const isBulkBacklogAction = (value: unknown): value is BulkBacklogAction =>
+  typeof value === 'string' && (BULK_BACKLOG_ACTIONS as readonly string[]).includes(value);
+
+/** Bulk updates arrived on PATCH; bulk delete is posted, so both verbs reach every action. */
+const isBulkBacklogMethod = (method: string): boolean => method === 'PATCH' || method === 'POST';
+
 export const handleBulkBacklogTasks = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
   method: string
 ): Promise<void> => {
-  if (method !== 'PATCH') return methodNotAllowed(res);
+  if (!isBulkBacklogMethod(method)) return methodNotAllowed(res);
 
   const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
   if (!parsed.ok) return;
@@ -217,8 +228,8 @@ export const handleBulkBacklogTasks = async (
   }
 
   const action = payload.action;
-  if (action !== 'pause' && action !== 'resume') {
-    return sendJson(res, 400, { error: "action must be 'pause' or 'resume'" });
+  if (!isBulkBacklogAction(action)) {
+    return sendJson(res, 400, { error: "action must be 'pause', 'resume' or 'delete'" });
   }
 
   const rawIds = payload.ids;
@@ -235,13 +246,29 @@ export const handleBulkBacklogTasks = async (
   }
 
   const coordinator = resolveCoordinator(options);
+  const uniqueIds = new Set<string>(rawIds.map((raw: string) => raw.trim()));
+  const skipped: string[] = [];
+
+  if (action === 'delete') {
+    const deleted: string[] = [];
+    for (const id of uniqueIds) {
+      const row = coordinator.queue.getBacklogTask(id);
+      // A dispatched row is bound to a live swarm task, so it stays until that run settles.
+      if (!row || row.status === 'dispatched' || !coordinator.queue.deleteBacklogTask(id)) {
+        skipped.push(id);
+        continue;
+      }
+      deleted.push(id);
+    }
+    return sendJson(res, 200, { deleted: deleted.length, ids: deleted, skipped });
+  }
+
   const targetStatus: BacklogStatus = action === 'pause' ? 'paused' : 'pending';
   const eligibleFrom: readonly BacklogStatus[] = action === 'pause' ? BULK_PAUSE_FROM : ['paused'];
 
   const items: BacklogTaskRecord[] = [];
-  const skipped: string[] = [];
 
-  for (const id of new Set<string>(rawIds.map((raw: string) => raw.trim()))) {
+  for (const id of uniqueIds) {
     const row = coordinator.queue.getBacklogTask(id);
     if (!row || !eligibleFrom.includes(row.status)) {
       skipped.push(id);
@@ -268,6 +295,12 @@ const parseGithubSlugFromUrl = (value: string): string | undefined => {
 
 const isTerminalBacklogStatus = (status: BacklogStatus): boolean =>
   status === 'canceled' || isTerminalTaskStatus(status);
+
+// A closed issue must not rewind a row that already settled or is bound to a live run.
+const CLOSURE_PRESERVED_STATUSES: ReadonlySet<string> = new Set<string>([
+  'dispatched',
+  ...FINISHED_BACKLOG_STATUS_VALUES,
+]);
 
 export const resolveGithubRepoSlug = async (
   repo: Pick<RepositoryEntry, 'id' | 'name' | 'path' | 'cloneUrl'>,
@@ -406,10 +439,10 @@ export const handleSyncGithubBacklog = async (
         for (const row of existingBacklog) {
           if (row.repositoryId !== repo.id || row.githubIssueNumber === undefined) continue;
           if (openNumbers.has(row.githubIssueNumber)) continue;
-          if (row.status === 'dispatched' || row.status === 'canceled') continue;
+          if (CLOSURE_PRESERVED_STATUSES.has(row.status)) continue;
           coordinator.queue.updateBacklogTask(row.id, {
             status: 'canceled',
-            lastError: 'Issue closed upstream',
+            lastError: null,
           });
           canceledCount++;
         }

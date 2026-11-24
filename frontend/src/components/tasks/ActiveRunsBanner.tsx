@@ -8,6 +8,7 @@ import { Icon } from '../Icon';
 
 interface ActiveRunCardProps {
   run: SwarmTask;
+  highlighted?: boolean;
   busy: boolean;
   noRunnerOnline?: boolean;
   onOpen: (task: SwarmTask) => void;
@@ -16,6 +17,7 @@ interface ActiveRunCardProps {
 
 export const ActiveRunCard = ({
   run,
+  highlighted,
   busy,
   noRunnerOnline,
   onOpen,
@@ -29,7 +31,9 @@ export const ActiveRunCard = ({
     <article
       id={`task-row-${run.id}`}
       onClick={() => onOpen(run)}
-      class="flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50"
+      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
+        highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
+      }`}
     >
       <div class="flex items-start justify-between gap-2">
         <div class="flex min-w-0 items-center gap-2">

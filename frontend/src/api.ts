@@ -451,3 +451,8 @@ export const bulkUpdateBacklog = (
   action: 'pause' | 'resume'
 ): Promise<{ updated: number; items: BacklogTaskRecord[]; skipped: string[] }> =>
   api.patch('backlog/bulk', { json: { ids, action } }).json();
+
+export const bulkDeleteBacklog = (
+  ids: string[]
+): Promise<{ deleted: number; ids: string[]; skipped: string[] }> =>
+  api.post('backlog/bulk', { json: { ids, action: 'delete' } }).json();

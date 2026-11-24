@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { faCloudArrowDown, faPlus } from '@fortawesome/free-solid-svg-icons';
+import { faCloudArrowDown, faPlus, faTimes, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type {
   BacklogTaskRecord,
   RepositoryConfig,
@@ -8,7 +8,9 @@ import type {
   SwarmRunnerRecord,
   SwarmTask,
 } from '../types';
+import { FINISHED_BACKLOG_STATUS_VALUES } from '../../../src/shared/contracts.ts';
 import {
+  bulkDeleteBacklog,
   bulkUpdateBacklog,
   cancelTask,
   deleteBacklogTask,
@@ -48,6 +50,8 @@ interface TasksViewProps {
 const ABORT_CONFIRM_WINDOW_MS = 3000;
 
 const CARD_GRID = 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3';
+
+const FINISHED_BACKLOG_STATUSES: ReadonlySet<string> = new Set(FINISHED_BACKLOG_STATUS_VALUES);
 
 const GITHUB_SYNC_UNCONFIGURED_HINT = 'No repository has GitHub issue sync configured.';
 
@@ -98,6 +102,9 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [backlogActionId, setBacklogActionId] = useState<string | null>(null);
   const [bulkNote, setBulkNote] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [showFinishedBacklog, setShowFinishedBacklog] = useState(false);
+  const [confirmClearFinished, setConfirmClearFinished] = useState(false);
+  const [clearingFinished, setClearingFinished] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
@@ -259,6 +266,24 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     // id and report a live run as deleted.
     if (!executionsInitialLoaded) return;
     if (!routinesInitialLoaded || !backlogInitialLoaded) return;
+    // A finished backlog row is hidden by default; revealing it beats reporting it deleted. The
+    // flag guard is what lets the re-run scroll the card it just revealed.
+    if (!showFinishedBacklog && finishedBacklog.some((item) => item.id === searchId)) {
+      setShowFinishedBacklog(true);
+      return;
+    }
+
+    // A dispatched row hands its card to ACTIVE RUNS, so that run card is what the link names.
+    const linkedRun = backlogTasks.find((item) => item.id === searchId);
+    const run = linkedRun ? linkedRunFor(linkedRun) : undefined;
+    if (run) {
+      handledSearchId.current = searchId;
+      document.getElementById(`task-row-${run.id}`)?.scrollIntoView({ block: 'center' });
+      setHighlightedId(run.id);
+      const timer = setTimeout(() => setHighlightedId(null), 2500);
+      return () => clearTimeout(timer);
+    }
+
     handledSearchId.current = searchId;
     const card = document.getElementById(`task-row-${searchId}`);
     if (!card) {
@@ -277,6 +302,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     executionsInitialLoaded,
     routinesInitialLoaded,
     backlogInitialLoaded,
+    showFinishedBacklog,
     showNotification,
   ]);
 
@@ -292,10 +318,13 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   };
 
   const focusCard = (originId: string) => {
-    const card = document.getElementById(`task-row-${originId}`);
+    const origin = backlogTasks.find((item) => item.id === originId);
+    const run = origin ? linkedRunFor(origin) : undefined;
+    const target = run?.id ?? originId;
+    const card = document.getElementById(`task-row-${target}`);
     if (!card) return;
     card.scrollIntoView({ block: 'center' });
-    setHighlightedId(originId);
+    setHighlightedId(target);
     if (highlightTimer.current) clearTimeout(highlightTimer.current);
     highlightTimer.current = setTimeout(() => setHighlightedId(null), 2500);
   };
@@ -503,6 +532,30 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     }
   };
 
+  const handleClearFinishedBacklog = async () => {
+    const ids = finishedBacklog.map((item) => item.id);
+    if (ids.length === 0) {
+      setConfirmClearFinished(false);
+      return;
+    }
+    setClearingFinished(true);
+    try {
+      const res = await bulkDeleteBacklog(ids);
+      await loadBacklog();
+      setConfirmClearFinished(false);
+      showNotification(
+        'success',
+        res.deleted === 1
+          ? 'Cleared 1 finished backlog item'
+          : `Cleared ${res.deleted} finished backlog items`
+      );
+    } catch (err: any) {
+      showNotification('error', `Clear failed: ${err?.message || String(err)}`);
+    } finally {
+      setClearingFinished(false);
+    }
+  };
+
   const handleToggleRoutineItem = async (routine: RoutineTaskRecord) => {
     const nextEnabled = !routine.enabled;
     pendingRoutineToggles.current.set(routine.id, nextEnabled);
@@ -597,6 +650,32 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
   const activeRuns = tasks.filter((t) => ACTIVE_TASK_STATUSES.has(t.status));
 
+  // A dispatched row whose run is already on screen would render twice, so the run card owns it.
+  const linkedRunFor = (item: BacklogTaskRecord): SwarmTask | undefined =>
+    item.status === 'dispatched'
+      ? activeRuns.find((run) => run.originId === item.id || run.id === item.swarmTaskId)
+      : undefined;
+  const runningBacklog = backlogTasks.filter((item) => linkedRunFor(item) !== undefined);
+  // A dispatched row with no run on screen is drifted state, so it stays in the grid.
+  const shownBacklog = backlogTasks.filter((item) => linkedRunFor(item) === undefined);
+  const finishedBacklog = shownBacklog.filter((item) => FINISHED_BACKLOG_STATUSES.has(item.status));
+  const activeBacklog = shownBacklog.filter((item) => !FINISHED_BACKLOG_STATUSES.has(item.status));
+  const visibleBacklog = showFinishedBacklog ? shownBacklog : activeBacklog;
+
+  const backlogEmptyParts = [
+    runningBacklog.length > 0 ? `${runningBacklog.length} running in Active Runs` : '',
+    finishedBacklog.length > 0 ? `${finishedBacklog.length} finished` : '',
+  ].filter((part) => part !== '');
+  const backlogEmptyCopy =
+    backlogTasks.length === 0
+      ? "No backlog work items queued. Create one with 'New Task' or pull them with 'Pull Issues'."
+      : `Nothing waiting in the backlog: ${backlogEmptyParts.join(' and ')}.`;
+
+  // An armed clear must not survive the rows it refers to, or it re-arms the next finished row.
+  useEffect(() => {
+    if (finishedBacklog.length === 0) setConfirmClearFinished(false);
+  }, [finishedBacklog.length]);
+
   return (
     <div class="flex flex-col gap-5 2xl:gap-7">
       <div class="flex flex-wrap items-center gap-2 border-b border-pine-highlight pb-4">
@@ -648,6 +727,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
                 <ActiveRunCard
                   key={run.id}
                   run={run}
+                  highlighted={highlightedId === run.id}
                   busy={actionLoading.has(run.id)}
                   noRunnerOnline={!runnerCoversRepo(runners, run.repositoryId)}
                   onOpen={setSelectedTask}
@@ -659,19 +739,62 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
         </section>
 
         <section aria-labelledby="backlog-heading" class="mt-6 flex flex-col first:mt-0">
-          <SectionHeader id="backlog-heading" title="Backlog" count={backlogTasks.length} />
+          <SectionHeader id="backlog-heading" title="Backlog" count={activeBacklog.length}>
+            {finishedBacklog.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  aria-expanded={showFinishedBacklog}
+                  aria-controls="backlog-grid"
+                  onClick={() => setShowFinishedBacklog((prev) => !prev)}
+                  class="min-h-11 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 text-xs font-semibold whitespace-nowrap text-pine-subtle transition-colors hover:bg-pine-highlight hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:min-h-8"
+                >
+                  {showFinishedBacklog
+                    ? `Hide finished (${finishedBacklog.length})`
+                    : `Show finished (${finishedBacklog.length})`}
+                </button>
+                {confirmClearFinished ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void handleClearFinishedBacklog()}
+                      disabled={clearingFinished}
+                      class="min-h-11 cursor-pointer rounded-lg border border-pine-love/50 bg-pine-love/15 px-2.5 text-xs font-bold whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-8"
+                    >
+                      {clearingFinished ? 'Clearing...' : `Delete ${finishedBacklog.length}?`}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmClearFinished(false)}
+                      aria-label="Cancel clearing finished backlog items"
+                      class="inline-flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-muted transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:size-8"
+                    >
+                      <Icon icon={faTimes} class="size-3.5" />
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmClearFinished(true)}
+                    class="inline-flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/10 px-2.5 text-xs font-semibold whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden sm:min-h-8"
+                  >
+                    <Icon icon={faTrash} class="size-3" />
+                    <span>Clear finished</span>
+                  </button>
+                )}
+              </>
+            )}
+          </SectionHeader>
 
           {!backlogInitialLoaded ? (
             <EmptyCard>Loading backlog tasks...</EmptyCard>
-          ) : backlogTasks.length === 0 ? (
+          ) : visibleBacklog.length === 0 ? (
             <EmptyCard>
-              {loadError
-                ? `Could not load backlog: ${loadError}`
-                : "No backlog work items queued. Create one with 'New Task' or pull them with 'Pull Issues'."}
+              {loadError ? `Could not load backlog: ${loadError}` : backlogEmptyCopy}
             </EmptyCard>
           ) : (
-            <div class={CARD_GRID}>
-              {backlogTasks.map((item) => (
+            <div id="backlog-grid" class={CARD_GRID}>
+              {visibleBacklog.map((item) => (
                 <BacklogCard
                   key={item.id}
                   item={item}

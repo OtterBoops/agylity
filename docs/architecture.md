@@ -173,7 +173,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `POST /api/tasks/:id/retry`            | Bearer | Re-queues a terminal task.                                        |
 | `GET /api/backlog`                     | Bearer | Backlog items.                                                    |
 | `POST /api/backlog`                    | Bearer | Creates one backlog item.                                         |
-| `PATCH /api/backlog/bulk`              | Bearer | Pause/resume up to 200 ids (`{action, ids}`).                     |
+| `PATCH\|POST /api/backlog/bulk`        | Bearer | Pause, resume or delete up to 200 ids (`{action, ids}`).          |
 | `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues in; per-repo `failures` reasons.            |
 | `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
 | `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
@@ -395,7 +395,11 @@ lets the dashboard link a run back to the item that produced it.
   nothing will claim. The two expiries read differently to the operator: an unclaimed queued task
   reports `no runner claimed the task within its queue window`, while a `pre_reset` or routine task
   reports the weekly reset window passing.
-- **Routes**: `GET|POST /api/backlog`, `PATCH /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
+- **A dispatched row hands its card to its run**: while the spawned run is on screen in Active Runs the
+  backlog card is not rendered and the Backlog count excludes it, so one piece of work is never two
+  cards; a `dispatched` row whose run is gone is drifted state and stays in the grid until the
+  reconciler settles it.
+- **Routes**: `GET|POST /api/backlog`, `PATCH|POST /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
   `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
   `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor
   is HTTP 400 on every one of them, including the two single-item dispatch routes.

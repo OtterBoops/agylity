@@ -24,6 +24,9 @@ export type TaskStatus =
 export type BacklogStatus =
   'pending' | 'dispatched' | 'paused' | 'completed' | 'failed' | 'canceled';
 
+/** Settled backlog rows: nothing will schedule them again, so the UI may hide or clear them. */
+export const FINISHED_BACKLOG_STATUS_VALUES = ['completed', 'canceled'] as const;
+
 export type ScheduleMode = 'immediate' | 'pre_reset';
 
 export const PROBE_SOURCES = [

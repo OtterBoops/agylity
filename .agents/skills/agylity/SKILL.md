@@ -277,6 +277,7 @@ Three tiers, and only the first is human-initiated per run:
 - **Origin settlement has two call sites** — the runner status report and `reconcileBacklogOrigins` — both strictly funneled through `applyBacklogOutcome`. Backlog rows never mutate terminal states (`completed`, `failed`, `canceled`) on late runner callbacks or redundant sweeps. A backlog row left on `dispatched` is picked by nothing.
 - **Every refusal is a 4xx.** A safety-floor or telemetry block on a dispatch is HTTP 400; a cancel of an already-terminal task is 409.
 - **GitHub label sync authenticates or fails loudly.** `POST /api/backlog/sync-github` prefers authenticated GitHub REST when `githubToken` is configured on the coordinator (SQLite override or `GITHUB_TOKEN`) and falls back to the `gh` CLI otherwise; there is no unauthenticated REST path, and every failed repo comes back in `failures` with its reason.
+- **A closed issue never rewinds a finished item.** The sync cancels only rows that are still active: `completed`, `canceled` and `dispatched` rows keep their status and take no `lastError`, so closing an issue upstream cannot turn a delivered item into a failure. Bulk delete (`{action: 'delete'}`) refuses a `dispatched` row for the same reason — it is bound to a live run.
 
 ---
 
