@@ -1,6 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { faCloudArrowDown, faPlus, faTimes, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faCloudArrowDown, faPlus } from '@fortawesome/free-solid-svg-icons';
 import type {
   BacklogTaskRecord,
   RepositoryConfig,
@@ -10,7 +10,6 @@ import type {
 } from '../types';
 import { FINISHED_BACKLOG_STATUS_VALUES } from '../../../src/shared/contracts.ts';
 import {
-  bulkDeleteBacklog,
   bulkUpdateBacklog,
   cancelTask,
   deleteBacklogTask,
@@ -103,8 +102,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [bulkNote, setBulkNote] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showFinishedBacklog, setShowFinishedBacklog] = useState(false);
-  const [confirmClearFinished, setConfirmClearFinished] = useState(false);
-  const [clearingFinished, setClearingFinished] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
@@ -532,30 +529,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     }
   };
 
-  const handleClearFinishedBacklog = async () => {
-    const ids = finishedBacklog.map((item) => item.id);
-    if (ids.length === 0) {
-      setConfirmClearFinished(false);
-      return;
-    }
-    setClearingFinished(true);
-    try {
-      const res = await bulkDeleteBacklog(ids);
-      await loadBacklog();
-      setConfirmClearFinished(false);
-      showNotification(
-        'success',
-        res.deleted === 1
-          ? 'Cleared 1 finished backlog item'
-          : `Cleared ${res.deleted} finished backlog items`
-      );
-    } catch (err: any) {
-      showNotification('error', `Clear failed: ${err?.message || String(err)}`);
-    } finally {
-      setClearingFinished(false);
-    }
-  };
-
   const handleToggleRoutineItem = async (routine: RoutineTaskRecord) => {
     const nextEnabled = !routine.enabled;
     pendingRoutineToggles.current.set(routine.id, nextEnabled);
@@ -662,19 +635,13 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const activeBacklog = shownBacklog.filter((item) => !FINISHED_BACKLOG_STATUSES.has(item.status));
   const visibleBacklog = showFinishedBacklog ? shownBacklog : activeBacklog;
 
-  const backlogEmptyParts = [
-    runningBacklog.length > 0 ? `${runningBacklog.length} running in Active Runs` : '',
-    finishedBacklog.length > 0 ? `${finishedBacklog.length} finished` : '',
-  ].filter((part) => part !== '');
+  const finishedCountLabel = finishedBacklog.length > 99 ? '99+' : String(finishedBacklog.length);
   const backlogEmptyCopy =
     backlogTasks.length === 0
       ? "No backlog work items queued. Create one with 'New Task' or pull them with 'Pull Issues'."
-      : `Nothing waiting in the backlog: ${backlogEmptyParts.join(' and ')}.`;
-
-  // An armed clear must not survive the rows it refers to, or it re-arms the next finished row.
-  useEffect(() => {
-    if (finishedBacklog.length === 0) setConfirmClearFinished(false);
-  }, [finishedBacklog.length]);
+      : runningBacklog.length > 0
+        ? 'No backlog items waiting — active runs are shown above.'
+        : 'No active backlog items.';
 
   return (
     <div class="flex flex-col gap-5 2xl:gap-7">
@@ -741,48 +708,17 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
         <section aria-labelledby="backlog-heading" class="mt-6 flex flex-col first:mt-0">
           <SectionHeader id="backlog-heading" title="Backlog" count={activeBacklog.length}>
             {finishedBacklog.length > 0 && (
-              <>
-                <button
-                  type="button"
-                  aria-expanded={showFinishedBacklog}
-                  aria-controls="backlog-grid"
-                  onClick={() => setShowFinishedBacklog((prev) => !prev)}
-                  class="min-h-11 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 text-xs font-semibold whitespace-nowrap text-pine-subtle transition-colors hover:bg-pine-highlight hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:min-h-8"
-                >
-                  {showFinishedBacklog
-                    ? `Hide finished (${finishedBacklog.length})`
-                    : `Show finished (${finishedBacklog.length})`}
-                </button>
-                {confirmClearFinished ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void handleClearFinishedBacklog()}
-                      disabled={clearingFinished}
-                      class="min-h-11 cursor-pointer rounded-lg border border-pine-love/50 bg-pine-love/15 px-2.5 text-xs font-bold whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50 sm:min-h-8"
-                    >
-                      {clearingFinished ? 'Clearing...' : `Delete ${finishedBacklog.length}?`}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setConfirmClearFinished(false)}
-                      aria-label="Cancel clearing finished backlog items"
-                      class="inline-flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight text-pine-muted transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:size-8"
-                    >
-                      <Icon icon={faTimes} class="size-3.5" />
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => setConfirmClearFinished(true)}
-                    class="inline-flex min-h-11 cursor-pointer items-center justify-center gap-1.5 rounded-lg border border-pine-love/30 bg-pine-love/10 px-2.5 text-xs font-semibold whitespace-nowrap text-pine-love transition-colors hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden sm:min-h-8"
-                  >
-                    <Icon icon={faTrash} class="size-3" />
-                    <span>Clear finished</span>
-                  </button>
-                )}
-              </>
+              <button
+                type="button"
+                aria-expanded={showFinishedBacklog}
+                aria-controls="backlog-grid"
+                onClick={() => setShowFinishedBacklog((prev) => !prev)}
+                class="min-h-11 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-2.5 text-xs font-semibold whitespace-nowrap text-pine-subtle transition-colors hover:bg-pine-highlight hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden sm:min-h-8"
+              >
+                {showFinishedBacklog
+                  ? `Hide finished (${finishedCountLabel})`
+                  : `Show finished (${finishedCountLabel})`}
+              </button>
             )}
           </SectionHeader>
 
