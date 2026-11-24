@@ -1,6 +1,6 @@
 import { createStore } from './store';
 import { getConfig, writeConfigEnvelope, deleteConfigOverride } from '../api';
-import { ALL_SETTINGS_FIELDS, normalizeModelId } from '../config/fields';
+import { ALL_SETTINGS_FIELDS, normalizeModelId, toDisplay } from '../config/fields';
 import type { ConfigData } from '../types';
 
 export interface ConfigState {
@@ -27,11 +27,6 @@ export interface ConfigWriteResult extends ConfigData {
 }
 
 const FIELD_INDEX = new Map(ALL_SETTINGS_FIELDS.map((field) => [field.key, field]));
-
-const toDisplay = (value: unknown): string => {
-  if (value === undefined || value === null) return '';
-  return Array.isArray(value) ? value.join(', ') : String(value);
-};
 
 const isSecretField = (config: ConfigData, key: string): boolean => {
   if (config.secretsMeta && Object.hasOwn(config.secretsMeta, key)) return true;

@@ -13,7 +13,6 @@ import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
 import { resolveTaskTitle, UNTITLED_TASK_TITLE } from '../../../../src/shared/titles.ts';
 import { getTask } from '../../api';
-import { dialogBackdropClickHandler, useDialogScrollLock } from '../../utils/dialog';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { isActiveTaskStatus, isLiveTaskStatus } from './badges';
@@ -28,7 +27,7 @@ const OVERLAP_SEARCH_LIMIT = 4096;
 
 const formatTokenCount = (value: number): string => value.toLocaleString();
 
-export const mergeOutput = (previous: string, next: string): string => {
+const mergeOutput = (previous: string, next: string): string => {
   if (previous === '' || previous === next || !next.includes(previous)) return next;
   if (next.startsWith(previous)) return previous + next.slice(previous.length);
   const maxOverlap = Math.min(previous.length, next.length, OVERLAP_SEARCH_LIMIT);
@@ -158,7 +157,7 @@ export const ExecutionInspectorContent = ({
   }, [live.output]);
 
   const liveStatus = isLiveTaskStatus(live.status);
-  const canAbort = isActiveTaskStatus(live.status) || live.status === 'claimed';
+  const canAbort = isActiveTaskStatus(live.status);
   const canRetry = TERMINAL_STATUSES.has(live.status);
   // resolveTaskTitle owns the prompt fallback, so the ID heading is only for a task with neither.
   const title = resolveTaskTitle(live.title, live.prompt);
@@ -394,50 +393,5 @@ export const ExecutionInspectorContent = ({
         )}
       </div>
     </>
-  );
-};
-
-interface ExecutionInspectorModalProps extends Omit<ExecutionInspectorProps, 'headingId'> {
-  onClose: () => void;
-}
-
-export const ExecutionInspectorModal = ({
-  task,
-  onClose,
-  onAbort,
-  onRetry,
-  actionLoading,
-  noRunnerOnline,
-  renderOrigin,
-}: ExecutionInspectorModalProps) => {
-  const dialogRef = useRef<HTMLDialogElement>(null);
-
-  useDialogScrollLock(true);
-
-  useEffect(() => {
-    dialogRef.current?.showModal();
-  }, []);
-
-  return (
-    <dialog
-      id="execution-dialog"
-      aria-labelledby="execution-dialog-title"
-      aria-modal="true"
-      ref={dialogRef}
-      onClose={onClose}
-      onClick={dialogBackdropClickHandler(dialogRef, onClose)}
-      class="fixed inset-0 m-auto max-h-5/6 w-11/12 max-w-2xl overflow-y-auto overscroll-contain rounded-xl border border-pine-highlight bg-pine-surface p-4 text-pine-text backdrop:bg-black/60 backdrop:backdrop-blur-xs sm:p-6"
-    >
-      <ExecutionInspectorContent
-        task={task}
-        onAbort={onAbort}
-        onRetry={onRetry}
-        actionLoading={actionLoading}
-        noRunnerOnline={noRunnerOnline}
-        renderOrigin={renderOrigin}
-        onRequestClose={onClose}
-        headingId="execution-dialog-title"
-      />
-    </dialog>
   );
 };

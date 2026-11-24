@@ -44,7 +44,7 @@ export const setAuthToken = (token: string | null): void => {
   } catch {}
 };
 
-export interface HealthStatus {
+interface HealthStatus {
   status: string;
   uptime?: number;
   timestamp?: string;
@@ -162,7 +162,7 @@ export const updateConfig = (
 ): Promise<ConfigData & { success: boolean }> =>
   api.post('config', { json: overrides }).json<ConfigData & { success: boolean }>();
 
-export interface ConfigWriteEnvelope {
+interface ConfigWriteEnvelope {
   set?: Record<string, unknown>;
   clear?: string[];
 }
@@ -199,7 +199,7 @@ export const cancelTask = (id: string): Promise<{ success: boolean }> =>
 export const retryTask = (id: string): Promise<{ success: boolean }> =>
   api.post(`tasks/${encodeURIComponent(id)}/retry`).json<{ success: boolean }>();
 
-export interface TaskQuery {
+interface TaskQuery {
   q?: string;
   taskNumber?: number;
   status?: string;
@@ -207,7 +207,7 @@ export interface TaskQuery {
   offset?: number;
 }
 
-export interface TaskPage {
+interface TaskPage {
   tasks: SwarmTask[];
   total: number;
   offset: number;
@@ -261,7 +261,7 @@ export const triggerDispatch = (payload: {
   code?: string;
 }> => api.post('dispatch', { json: payload }).json();
 
-export interface ModelsResponse {
+interface ModelsResponse {
   defaultModel: string;
   defaultEffort: string;
   models: ModelCatalogEntry[];
@@ -383,7 +383,7 @@ export const createBacklogTask = (
   }
 ): Promise<BacklogTaskRecord> => api.post('backlog', { json: input }).json<BacklogTaskRecord>();
 
-export interface BacklogTaskPatch {
+interface BacklogTaskPatch {
   title?: string;
   prompt?: string;
   repositoryId?: string;
@@ -413,12 +413,12 @@ export const dispatchBacklogTask = (
     .post(`backlog/${encodeURIComponent(id)}/dispatch`)
     .json<{ success: boolean; taskId?: string; error?: string; code?: string }>();
 
-export interface GithubSyncFailure {
+interface GithubSyncFailure {
   repositoryId: string;
   reason: string;
 }
 
-export interface GithubSyncResult {
+interface GithubSyncResult {
   success: boolean;
   importedCount: number;
   canceledCount?: number;

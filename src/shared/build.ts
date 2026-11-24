@@ -3,7 +3,7 @@
 
 export type BuildChannel = 'release' | 'main' | 'dev';
 
-export const BUILD_CHANNELS: readonly BuildChannel[] = ['release', 'main', 'dev'];
+const BUILD_CHANNELS: readonly BuildChannel[] = ['release', 'main', 'dev'];
 
 export const DEFAULT_BUILD_CHANNEL: BuildChannel = 'dev';
 

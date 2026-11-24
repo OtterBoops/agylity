@@ -1,5 +1,10 @@
 import { useState } from 'preact/hooks';
-import { autocompleteForType, normalizeModelId, resolveModelEffort } from '../config/fields';
+import {
+  autocompleteForType,
+  normalizeModelId,
+  resolveModelEffort,
+  toDisplay,
+} from '../config/fields';
 import type { ConfigData, ReasoningEffort } from '../types';
 import { deleteConfigOverride } from '../api';
 import { clearDraft, configStore, dirtyKeys, saveDrafts, setDraft } from '../state/configStore';
@@ -32,11 +37,6 @@ interface SettingsFormProps {
 }
 
 const CATALOG_OPTION_KEYS = new Set(['defaultDispatchModel']);
-
-const toDisplay = (value: unknown): string => {
-  if (value === undefined || value === null) return '';
-  return Array.isArray(value) ? value.join(', ') : String(value);
-};
 
 const normalizeValueForField = (
   field: FieldDef,
@@ -244,10 +244,8 @@ export const SettingsForm = ({
                     data-lpignore="true"
                     data-form-type="other"
                     data-bwignore="true"
-                    class={`${inputClass} w-full pr-24 placeholder-pine-subtle`}
-                    placeholder={
-                      f.placeholder ?? (isConfigured ? 'Enter new secret to update...' : undefined)
-                    }
+                    class={`${inputClass} w-full pr-24`}
+                    placeholder={placeholder}
                     value={valueOf(f)}
                     onInput={(e) => setDraft(f.key, (e.target as HTMLInputElement).value)}
                   />

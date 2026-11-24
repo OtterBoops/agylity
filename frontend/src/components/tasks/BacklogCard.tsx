@@ -1,6 +1,7 @@
 import { faCodeBranch, faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { BacklogStatus, BacklogTaskRecord } from '../../types';
 import { toneBadgeClass } from '../../utils/status';
+import { STATUS_PILL_CLASS, taskCardClass } from './badges';
 import { Icon } from '../Icon';
 import { CardActionButtons } from './CardActionButtons';
 import { modelChainLabel } from './ModelCascadeField';
@@ -42,13 +43,7 @@ export const BacklogCard = ({
   const dispatchable = item.status === 'pending' || item.status === 'failed';
 
   return (
-    <article
-      id={`task-row-${item.id}`}
-      onClick={onEdit}
-      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
-        highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
-      }`}
-    >
+    <article id={`task-row-${item.id}`} onClick={onEdit} class={taskCardClass(highlighted)}>
       <div class="flex items-start justify-between gap-2">
         <div class="flex min-w-0 items-center gap-2">
           <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
@@ -59,9 +54,7 @@ export const BacklogCard = ({
             <span class="min-w-0 truncate">{repositoryLabel}</span>
           </span>
         </div>
-        <span
-          class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${backlogStatusBadgeClass(item.status)}`}
-        >
+        <span class={`${STATUS_PILL_CLASS} ${backlogStatusBadgeClass(item.status)}`}>
           {item.status}
         </span>
       </div>

@@ -12,19 +12,19 @@ import {
 import { ensureTableSchema, type ColumnSpec } from './schema.js';
 import { applyMigrations } from './migrations.js';
 
-export interface SettingRecord {
+interface SettingRecord {
   key: string;
   value: string; // JSON encoded
   updated_at: string;
 }
 
-export interface DatabaseConnectionOptions {
+interface DatabaseConnectionOptions {
   path: string;
   keyPath?: string;
   busyTimeoutMs?: number;
 }
 
-export type DatabaseOptions = string | DatabaseConnectionOptions;
+type DatabaseOptions = string | DatabaseConnectionOptions;
 
 // A marked payload was JSON; anything else is a legacy bare-string secret and stays a string.
 const decodeSecretPayload = (plaintext: string): unknown => {
@@ -182,6 +182,4 @@ export class AppDatabase {
   }
 }
 
-export { AppDatabase as Database };
 export * from './crypto.js';
-export default AppDatabase;

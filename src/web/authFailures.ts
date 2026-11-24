@@ -1,7 +1,7 @@
 /** A runner credential and the control-plane Bearer token are separate auth domains. */
-export type AuthDomain = 'control' | 'runner';
+type AuthDomain = 'control' | 'runner';
 
-export interface AuthFailureRecord {
+interface AuthFailureRecord {
   failures: number;
   blockedUntilMs: number;
   lastFailureMs: number;

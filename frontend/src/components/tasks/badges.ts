@@ -16,6 +16,16 @@ export const isActiveTaskStatus = (status: string): boolean => ACTIVE_TASK_STATU
 export const isLiveTaskStatus = (status: string): boolean =>
   status === 'claimed' || status === 'executing';
 
+/** Card shell shared by the backlog, routine and active-run cards; `highlighted` is the jump flash. */
+export const taskCardClass = (highlighted = false): string =>
+  `flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
+    highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
+  }`;
+
+/** Status pill in a card header; the caller supplies the tone class. */
+export const STATUS_PILL_CLASS =
+  'shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase';
+
 export const eligibilityBadgeClass = (state: RoutineEligibilityState): string =>
   state === 'ready' || state === 'running'
     ? toneBadgeClass('good')

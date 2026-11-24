@@ -17,7 +17,6 @@ import {
 
 // The state file's payload types are declared once in the shared wire contracts; the schemas below
 // validate the stored shape and the frontend reads the same declaration.
-export { PROBE_SOURCES };
 export type {
   BurnSample,
   EarlyResetNotice,
@@ -28,31 +27,30 @@ export type {
 };
 
 /** The stored pool shape is the wire pool shape, under the name the state file has always used. */
-export type PoolState = SentryPoolState;
+type PoolState = SentryPoolState;
 import {
   SentryStore,
   SAMPLE_HISTORY_LIMIT,
   ensureSentryStateSchema,
-  headroomPercentOf,
   normalizeMilestoneKey,
   type AlertEventPage,
   type ListAlertEventsOptions,
   type RecordAlertEventInput,
 } from './store.js';
 
-export { SAMPLE_HISTORY_LIMIT, normalizeMilestoneKey, headroomPercentOf };
+export { normalizeMilestoneKey };
 export type { AlertEventPage, ListAlertEventsOptions, RecordAlertEventInput };
 
 const SAMPLE_MIN_INTERVAL_MS = 10 * 60_000;
 const SAMPLE_MIN_DELTA = 0.01;
 
-export const PoolSampleSchema = z.object({
+const PoolSampleSchema = z.object({
   at: z.string(),
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
 }) satisfies z.ZodType<BurnSample>;
 
-export const PoolStateSchema = z.object({
+const PoolStateSchema = z.object({
   resetTime: z.string(),
   remainingFraction: z.number().min(0).max(1),
   firedMilestones: z.array(z.string()),
@@ -60,7 +58,7 @@ export const PoolStateSchema = z.object({
   samples: z.array(PoolSampleSchema).optional(),
 }) satisfies z.ZodType<PoolState>;
 
-export const EarlyResetPoolSchema = z.object({
+const EarlyResetPoolSchema = z.object({
   poolId: z.string(),
   displayName: z.string().optional(),
   previousRemainingFraction: z.number().min(0).max(1),
@@ -69,12 +67,12 @@ export const EarlyResetPoolSchema = z.object({
   resetTime: z.string(),
 }) satisfies z.ZodType<EarlyResetPool>;
 
-export const EarlyResetNoticeSchema = z.object({
+const EarlyResetNoticeSchema = z.object({
   detectedAt: z.string(),
   pools: z.array(EarlyResetPoolSchema),
 }) satisfies z.ZodType<EarlyResetNotice>;
 
-export interface PoolQuotaUpdate {
+interface PoolQuotaUpdate {
   cycleRolled: boolean;
   earlyReset: EarlyResetPool | null;
 }
@@ -127,7 +125,7 @@ const appendSample = (
 };
 
 // `PROBE_SOURCES` is the contract tuple, so a source the wire type does not allow cannot be stored.
-export const SentryStateSchema = z.object({
+const SentryStateSchema = z.object({
   version: z.literal(1),
   lastProbeAt: z.string(),
   lastProbeSource: z.enum(PROBE_SOURCES),
@@ -185,12 +183,12 @@ const upgradeLegacyState = (raw: unknown): unknown => {
   return state;
 };
 
-export interface SentryStateManagerOptions {
+interface SentryStateManagerOptions {
   db: AppDatabase | DatabaseSync;
   legacyStatePath?: string;
 }
 
-export type SentryStateManagerSource = SentryStateManagerOptions | string;
+type SentryStateManagerSource = SentryStateManagerOptions | string;
 
 const isAppDatabase = (value: unknown): value is AppDatabase =>
   typeof (value as AppDatabase)?.getRawDb === 'function';
@@ -237,15 +235,20 @@ export class SentryStateManager {
 
   setState(newState: SentryAlertState): void {
     this.state = JSON.parse(JSON.stringify(newState));
+    this.replaceStore(this.state);
+  }
+
+  /** The stored shape is the in-memory one: one projection, so a write cannot drop a probe field. */
+  private replaceStore(state: SentryAlertState): void {
     this.store.replaceAll(
       {
-        lastProbeAt: this.state.lastProbeAt,
-        lastProbeSource: this.state.lastProbeSource,
-        authRequired: this.state.authRequired,
-        authErrorMessage: this.state.authErrorMessage,
+        lastProbeAt: state.lastProbeAt,
+        lastProbeSource: state.lastProbeSource,
+        authRequired: state.authRequired,
+        authErrorMessage: state.authErrorMessage,
       },
-      this.state.pools,
-      this.state.earlyResetNotice ?? null
+      state.pools,
+      state.earlyResetNotice ?? null
     );
   }
 
@@ -253,16 +256,7 @@ export class SentryStateManager {
     if (this.store.isEmpty() && this.legacyStatePath) {
       const imported = this.importLegacyState();
       if (imported) {
-        this.store.replaceAll(
-          {
-            lastProbeAt: imported.lastProbeAt,
-            lastProbeSource: imported.lastProbeSource,
-            authRequired: imported.authRequired,
-            authErrorMessage: imported.authErrorMessage,
-          },
-          imported.pools,
-          imported.earlyResetNotice ?? null
-        );
+        this.replaceStore(imported);
         return imported;
       }
     }

@@ -15,12 +15,10 @@ export const handleGetAlertEvents = (
   }
 
   const params = url.searchParams;
+  // The store clamps and defaults the page size, so only a usable number is forwarded.
   const rawLimit = params.get('limit');
   const parsedLimit = rawLimit === null ? undefined : Number(rawLimit);
-  const limit =
-    parsedLimit !== undefined && Number.isFinite(parsedLimit)
-      ? Math.min(200, Math.max(1, Math.floor(parsedLimit)))
-      : undefined;
+  const limit = Number.isFinite(parsedLimit) ? parsedLimit : undefined;
   const before = params.get('before');
   const pool = params.get('pool');
 

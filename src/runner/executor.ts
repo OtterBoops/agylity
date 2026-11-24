@@ -16,6 +16,8 @@ import {
 } from '../coordinator/models.js';
 import type { PrPolicy } from '../config/schema.js';
 import { resolveTaskTitle } from '../shared/titles.js';
+import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../shared/github.js';
+import { tailWindow } from '../shared/text.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
   ALLOWED_TEST_RUNNERS,
@@ -84,7 +86,7 @@ export interface TaskExecutionTelemetry {
 }
 
 // Every policy states its own directive: an empty suffix would let the model choose a default that
-// no gate then enforces, and the policy now binds every tier.
+// no gate then enforces.
 const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
   all: '\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT add Co-authored-by trailers, override git author/committer identity, push, or open a pull request yourself.]',
   docs_only:
@@ -94,8 +96,6 @@ const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
   none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
 };
 
-const GITHUB_SLUG_FROM_URL_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
-const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
 // The footer the prompt asks the agent to append, which marks an issue as this fleet's deliverable.
 const AGYLITY_FOOTER_MARKER = 'Dispatched via Agylity';
 // A prompt that already ends with that footer block must not get a second one appended to its PR.
@@ -103,6 +103,10 @@ const AGYLITY_FOOTER_TAIL_RE = new RegExp(
   `---\\s*\\n\\*${AGYLITY_FOOTER_MARKER}[^\\n]*\\*\\s*$`,
   'i'
 );
+/** The Agylity footer, written once because `AGYLITY_FOOTER_TAIL_RE` recognises it in a PR body. */
+const agylityFooter = (tierLabel: string, model: string, effortNote: string): string =>
+  `*Dispatched via Agylity (${tierLabel}) with \`${model}\`${effortNote} — please review carefully.*`;
+
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
 const ROUTINE_PR_BODY_CAP = 4000;
@@ -120,16 +124,7 @@ export const buildPullRequestBody = (
   const trimmed = capturedOutput.trim();
   if (!trimmed) return title;
   if (trimmed.length <= ROUTINE_PR_BODY_CAP) return trimmed;
-  let start = trimmed.length - ROUTINE_PR_BODY_CAP;
-  const code = trimmed.charCodeAt(start);
-  if (code >= 0xdc00 && code <= 0xdfff && start > 0) start -= 1;
-  return `…\n${trimmed.slice(start).trimStart()}`;
-};
-
-const parseGithubSlug = (value: string | undefined): string | undefined => {
-  if (!value) return undefined;
-  const match = GITHUB_SLUG_FROM_URL_RE.exec(value.trim());
-  return match ? `${match[1]}/${match[2]}` : undefined;
+  return `…\n${tailWindow(trimmed, ROUTINE_PR_BODY_CAP).trimStart()}`;
 };
 
 const finiteNumber = (value: unknown): number | undefined => {
@@ -197,6 +192,9 @@ const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+
+const combineOutput = (stdout?: string, stderr?: string): string =>
+  [stdout?.trim(), stderr?.trim()].filter(Boolean).join('\n');
 
 const commandError = (
   message: string,
@@ -519,17 +517,20 @@ export class TaskExecutor {
         }
       };
 
+      // A forced stop must reap the tree before the error reaches the caller, so both paths wait on it.
+      const killAndSettle = (error: Error): void => {
+        void ensureKilled().then(() => settle(error));
+      };
+
       const onAbort = (): void => {
         aborted = true;
-        void ensureKilled().then(() => {
-          settle(
-            commandError(`Command aborted: ${file} was killed after the abort signal fired`, {
-              stdout: stdoutChunks.join(''),
-              stderr: stderrChunks.join(''),
-              signal: 'SIGKILL',
-            })
-          );
-        });
+        killAndSettle(
+          commandError(`Command aborted: ${file} was killed after the abort signal fired`, {
+            stdout: stdoutChunks.join(''),
+            stderr: stderrChunks.join(''),
+            signal: 'SIGKILL',
+          })
+        );
       };
 
       // A non-positive budget means no timeout: setTimeout(0) would kill the child on the next tick.
@@ -540,16 +541,14 @@ export class TaskExecutor {
         timeoutMs > 0
           ? setTimeout(() => {
               timedOut = true;
-              void ensureKilled().then(() => {
-                settle(
-                  commandError(`Command timed out after ${timeoutMs}ms: ${file}`, {
-                    stdout: stdoutChunks.join(''),
-                    stderr: stderrChunks.join(''),
-                    code: null,
-                    signal: 'SIGKILL',
-                  })
-                );
-              });
+              killAndSettle(
+                commandError(`Command timed out after ${timeoutMs}ms: ${file}`, {
+                  stdout: stdoutChunks.join(''),
+                  stderr: stderrChunks.join(''),
+                  code: null,
+                  signal: 'SIGKILL',
+                })
+              );
             }, timeoutMs)
           : null;
 
@@ -685,6 +684,25 @@ export class TaskExecutor {
     }
   }
 
+  /** Raw porcelain status, tail-trimmed only: the leading column is meaningful to the next model. */
+  private async gitStatusPorcelain(cwd: string): Promise<string> {
+    const { stdout } = await this.execFileFn('git', ['status', '--porcelain'], {
+      cwd,
+      timeout: 15000,
+    });
+    return stdout.replace(/\s+$/, '');
+  }
+
+  /** Commits on HEAD that `baseBranch` does not have. */
+  private async countCommitsAhead(cwd: string, baseBranch: string): Promise<number> {
+    const { stdout } = await this.execFileFn(
+      'git',
+      ['rev-list', '--count', `${baseBranch}..HEAD`],
+      { cwd, timeout: 10000 }
+    );
+    return parseInt(stdout.trim(), 10) || 0;
+  }
+
   private async inspectPartialWork(
     cwd: string,
     baseBranch: string
@@ -694,21 +712,11 @@ export class TaskExecutor {
     let aheadOfBase = 0;
 
     try {
-      const { stdout } = await this.execFileFn('git', ['status', '--porcelain'], {
-        cwd,
-        timeout: 15000,
-      });
-      // Trailing whitespace only: the porcelain leading column is meaningful to the next model.
-      statusShort = stdout.replace(/\s+$/, '');
+      statusShort = await this.gitStatusPorcelain(cwd);
     } catch {}
 
     try {
-      const { stdout } = await this.execFileFn(
-        'git',
-        ['rev-list', '--count', `${baseBranch}..HEAD`],
-        { cwd, timeout: 10000 }
-      );
-      aheadOfBase = parseInt(stdout.trim(), 10) || 0;
+      aheadOfBase = await this.countCommitsAhead(cwd, baseBranch);
     } catch {}
 
     const dirty = statusShort !== '' || aheadOfBase > 0;
@@ -758,6 +766,22 @@ export class TaskExecutor {
       numTurns: telemetry.numTurns,
       totalTokens: telemetry.totalTokens,
       thinkingTokens: telemetry.thinkingTokens,
+    };
+  }
+
+  /** The terminal result for a run with nothing to ship; a null branch clears the stored column. */
+  private noChangesResult(
+    output: string,
+    startMs: number,
+    telemetry: TaskExecutionTelemetry
+  ): TaskExecutionResult {
+    return {
+      success: true,
+      noChanges: true,
+      branchName: null,
+      output,
+      durationMs: Date.now() - startMs,
+      ...this.telemetryFields(telemetry),
     };
   }
 
@@ -813,11 +837,8 @@ export class TaskExecutor {
   ): Promise<void> {
     const cwd = task.repositoryPath;
     try {
-      const { stdout: dirtyOut } = await this.execFileFn('git', ['status', '--porcelain'], {
-        cwd,
-        timeout: 15000,
-      });
-      if (dirtyOut && dirtyOut.trim() !== '') {
+      const dirtyOut = await this.gitStatusPorcelain(cwd);
+      if (dirtyOut !== '') {
         const { stdout: stashOut } = await this.execFileFn(
           'git',
           ['stash', 'push', '--include-untracked', '-m', `agylity ${task.id}`],
@@ -865,7 +886,7 @@ export class TaskExecutor {
   ): { prompt: string; policySuffix: string; attributionSuffix: string } {
     const policySuffix = PR_POLICY_DIRECTIVES[prPolicy];
     const effortNote = effort ? ` (${effort} reasoning)` : '';
-    const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n*Dispatched via Agylity (${tierLabel}) with \`${task.model}\`${effortNote} — please review carefully.*". Never mention runner hostnames, internal server paths, or worker IDs.]`;
+    const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n${agylityFooter(tierLabel, task.model, effortNote)}". Never mention runner hostnames, internal server paths, or worker IDs.]`;
     return {
       prompt: `${task.prompt}${policySuffix}${attributionSuffix}`,
       policySuffix,
@@ -987,15 +1008,13 @@ export class TaskExecutor {
           },
         });
         lastStdout = streamed.stdout || '';
-        output = [streamed.stdout?.trim(), streamed.stderr?.trim()].filter(Boolean).join('\n');
+        output = combineOutput(streamed.stdout, streamed.stderr);
         attemptTelemetry.push(parseAgyTelemetry(lastStdout));
         failure = null;
         break;
       } catch (agyErr: any) {
         lastStdout = agyErr?.stdout || '';
-        const attemptOutput = [agyErr?.stdout?.trim(), agyErr?.stderr?.trim()]
-          .filter(Boolean)
-          .join('\n');
+        const attemptOutput = combineOutput(agyErr?.stdout, agyErr?.stderr);
         output = attemptOutput;
         attemptTelemetry.push(parseAgyTelemetry(lastStdout));
         failure = agyErr;
@@ -1100,11 +1119,8 @@ export class TaskExecutor {
     let committed = false;
 
     try {
-      const { stdout: statusOut } = await this.execFileFn('git', ['status', '--porcelain'], {
-        cwd,
-        timeout: 15000,
-      });
-      if (statusOut && statusOut.trim() !== '') {
+      const statusOut = await this.gitStatusPorcelain(cwd);
+      if (statusOut !== '') {
         await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
         await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
           cwd,
@@ -1127,13 +1143,8 @@ export class TaskExecutor {
     if (committed) return { commitsProduced: true, deliverableTitle };
 
     try {
-      const { stdout: revCount } = await this.execFileFn(
-        'git',
-        ['rev-list', '--count', `${baseBranch}..HEAD`],
-        { cwd, timeout: 10000 }
-      );
       return {
-        commitsProduced: parseInt(revCount.trim(), 10) > 0,
+        commitsProduced: (await this.countCommitsAhead(cwd, baseBranch)) > 0,
         deliverableTitle,
       };
     } catch {
@@ -1147,12 +1158,7 @@ export class TaskExecutor {
     baseBranch: string
   ): Promise<string | undefined> {
     try {
-      const { stdout: revCount } = await this.execFileFn(
-        'git',
-        ['rev-list', '--count', `${baseBranch}..HEAD`],
-        { cwd, timeout: 10000 }
-      );
-      if (!(parseInt(revCount.trim(), 10) > 0)) return undefined;
+      if ((await this.countCommitsAhead(cwd, baseBranch)) <= 0) return undefined;
 
       const { stdout: subject } = await this.execFileFn(
         'git',
@@ -1220,12 +1226,7 @@ export class TaskExecutor {
       const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(rawBody);
       const prBody = hasDispatchFooter
         ? rawBody
-        : [
-            rawBody,
-            '',
-            '---',
-            `*Dispatched via Agylity (${tierLabel}) with \`${hop.model}\`${effortNote} — please review carefully.*`,
-          ].join('\n');
+        : [rawBody, '', '---', agylityFooter(tierLabel, hop.model, effortNote)].join('\n');
 
       const { stdout: prOut } = await this.execFileFn(
         'gh',
@@ -1280,14 +1281,7 @@ export class TaskExecutor {
 
     const suppress = async (detail: string): Promise<TaskExecutionResult> => {
       await this.discardBranch(task.repositoryPath, baseBranch, branchName);
-      return {
-        success: true,
-        noChanges: true,
-        branchName: null,
-        output: `${output}\n\n${detail}`,
-        durationMs: Date.now() - startMs,
-        ...this.telemetryFields(telemetry),
-      };
+      return this.noChangesResult(`${output}\n\n${detail}`, startMs, telemetry);
     };
 
     if (prPolicy === 'none' || prPolicy === 'issues_only') {
@@ -1348,7 +1342,7 @@ export class TaskExecutor {
 
   /** Resolves the task repository's GitHub owner/repo slug from configuration or its origin remote. */
   private async resolveGithubRepoSlug(task: SwarmTask): Promise<string | undefined> {
-    const fromCloneUrl = parseGithubSlug(task.cloneUrl);
+    const fromCloneUrl = parseGithubSlugFromUrl(task.cloneUrl);
     if (fromCloneUrl) return fromCloneUrl;
     const configuredName = task.repositoryName?.trim();
     if (configuredName && OWNER_REPO_SLUG_RE.test(configuredName)) return configuredName;
@@ -1358,7 +1352,7 @@ export class TaskExecutor {
         ['-C', task.repositoryPath, 'remote', 'get-url', 'origin'],
         { timeout: 5000 }
       );
-      return parseGithubSlug(stdout);
+      return parseGithubSlugFromUrl(stdout);
     } catch {
       return undefined;
     }
@@ -1567,14 +1561,7 @@ export class TaskExecutor {
           task.id,
           branchName
         );
-        return {
-          success: true,
-          noChanges: true,
-          branchName: null,
-          output: capturedOutput,
-          durationMs: Date.now() - startMs,
-          ...this.telemetryFields(telemetry),
-        };
+        return this.noChangesResult(capturedOutput, startMs, telemetry);
       }
 
       const suppression = await this.applyPrPolicy(task, {
@@ -1686,9 +1673,7 @@ export class TaskExecutor {
         output: failureOutput,
         error: errMessage,
         durationMs,
-        numTurns: failureTelemetry.numTurns,
-        totalTokens: failureTelemetry.totalTokens,
-        thinkingTokens: failureTelemetry.thinkingTokens,
+        ...this.telemetryFields(failureTelemetry),
       };
     }
   }

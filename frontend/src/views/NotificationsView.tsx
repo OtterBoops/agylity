@@ -18,8 +18,6 @@ interface NotificationsViewProps {
   onSaved: () => void;
 }
 
-export type { ChannelId };
-
 const CHANNELS: ChannelDef[] = [
   {
     id: 'discord',
@@ -36,6 +34,9 @@ const CHANNELS: ChannelDef[] = [
     iconColor: 'text-pine-foam',
   },
 ];
+
+// A stored secret renders as a mask; it must never be saved back as if it were the URL.
+const MASKED_SECRET = new Set(['••••••••', '********']);
 
 const getInitialChannels = (resolved: Record<string, unknown>): ChannelId[] => {
   if (Array.isArray(resolved.notificationChannels)) {
@@ -244,37 +245,16 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
     };
 
     if (discordToken.trim()) payload.discordToken = discordToken.trim();
-    if (discordChannelId !== serverDiscordChannelId) {
-      if (
-        discordChannelId.trim() === '' &&
-        config.overrides?.discordNotificationChannelId !== undefined
-      ) {
-        overrideDeletes.push('discordNotificationChannelId');
-      } else {
-        payload.discordNotificationChannelId = discordChannelId.trim();
-      }
-    }
-    if (discordClientId !== serverDiscordClientId) {
-      if (discordClientId.trim() === '' && config.overrides?.discordClientId !== undefined) {
-        overrideDeletes.push('discordClientId');
-      } else {
-        payload.discordClientId = discordClientId.trim();
-      }
-    }
-    if (discordGuildId !== serverDiscordGuildId) {
-      if (discordGuildId.trim() === '' && config.overrides?.discordGuildId !== undefined) {
-        overrideDeletes.push('discordGuildId');
-      } else {
-        payload.discordGuildId = discordGuildId.trim();
-      }
-    }
-    if (discordOwnerUserId !== serverDiscordOwnerUserId) {
-      if (discordOwnerUserId.trim() === '' && config.overrides?.discordOwnerUserId !== undefined) {
-        overrideDeletes.push('discordOwnerUserId');
-      } else {
-        payload.discordOwnerUserId = discordOwnerUserId.trim();
-      }
-    }
+    // Dirty key, empty value: delete the stored override rather than persisting '' over it.
+    const applyOverride = (key: string, value: string, serverValue: string) => {
+      if (value === serverValue) return;
+      if (value.trim() === '' && config.overrides?.[key] !== undefined) overrideDeletes.push(key);
+      else payload[key] = value.trim();
+    };
+    applyOverride('discordNotificationChannelId', discordChannelId, serverDiscordChannelId);
+    applyOverride('discordClientId', discordClientId, serverDiscordClientId);
+    applyOverride('discordGuildId', discordGuildId, serverDiscordGuildId);
+    applyOverride('discordOwnerUserId', discordOwnerUserId, serverDiscordOwnerUserId);
     if (discordPingOwner !== serverDiscordPingOwner) {
       payload.discordPingOwner = discordPingOwner;
     }
@@ -282,8 +262,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
       payload.webhookPingOwner = webhookPingOwner;
     }
 
-    if (webhookUrl.trim() && webhookUrl.trim() !== '••••••••' && webhookUrl.trim() !== '********') {
-      payload.notificationWebhookUrl = webhookUrl.trim();
+    const trimmedWebhookUrl = webhookUrl.trim();
+    if (trimmedWebhookUrl && !MASKED_SECRET.has(trimmedWebhookUrl)) {
+      payload.notificationWebhookUrl = trimmedWebhookUrl;
     }
     if (webhookSecret.trim()) {
       payload.webhookSecret = webhookSecret.trim();
@@ -321,12 +302,9 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
 
     const overrides: Record<string, unknown> = {};
     if (channel === 'webhook') {
-      if (
-        webhookUrl.trim() &&
-        webhookUrl.trim() !== '••••••••' &&
-        webhookUrl.trim() !== '********'
-      ) {
-        overrides.notificationWebhookUrl = webhookUrl.trim();
+      const trimmedWebhookUrl = webhookUrl.trim();
+      if (trimmedWebhookUrl && !MASKED_SECRET.has(trimmedWebhookUrl)) {
+        overrides.notificationWebhookUrl = trimmedWebhookUrl;
       }
       if (webhookSecret.trim()) {
         overrides.webhookSecret = webhookSecret.trim();
@@ -462,12 +440,7 @@ export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) =
           const isEnabled = enabledChannels.includes(ch.id);
           const isExpanded = expandedChannels[ch.id];
 
-          const testLabel =
-            ch.id === 'discord'
-              ? 'Test Ping'
-              : ch.id === 'webhook'
-                ? 'Test Webhook'
-                : 'Test Console';
+          const testLabel = ch.id === 'discord' ? 'Test Ping' : 'Test Webhook';
 
           return (
             <NotificationChannelCard

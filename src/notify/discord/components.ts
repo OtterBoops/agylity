@@ -13,51 +13,61 @@ import {
   resolveReasoningEffortForModel,
 } from '../../coordinator/models.js';
 
-export const createRepoSelectMenu = (
-  repositories: Array<{ id: string; name: string; path?: string; description?: string }>,
-  poolGroup?: string
-): ActionRowBuilder<StringSelectMenuBuilder> => {
-  const customId = poolGroup ? `repo_select:${poolGroup}` : 'repo_select';
-  const select = new StringSelectMenuBuilder().setCustomId(customId);
-  const list = repositories ?? [];
-
-  if (list.length === 0) {
-    select
-      .setDisabled(true)
-      .setPlaceholder('No repositories configured')
-      .addOptions([{ label: 'None', value: 'none' }]);
-  } else {
-    const displayRepos = list.slice(0, 25);
-    select
-      .setPlaceholder(
-        list.length > 25
-          ? `Select repository (showing 25 of ${list.length})...`
-          : 'Select target repository to dispatch task...'
-      )
-      .addOptions(
-        displayRepos.map((repo) => {
-          const option: { label: string; value: string; description?: string } = {
-            label: (repo.name || repo.id).slice(0, 100),
-            value: repo.id.slice(0, 100),
-          };
-          const desc = (repo.description ?? repo.path ?? '').trim();
-          if (desc.length > 0) {
-            option.description = desc.slice(0, 100);
-          }
-          return option;
-        })
-      );
-  }
-
-  return new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select);
-};
-
-export interface DispatchRepositoryOption {
+interface DispatchRepositoryOption {
   id: string;
   name: string;
   path?: string;
   description?: string;
 }
+
+const buildRepositorySelect = (
+  repositories: DispatchRepositoryOption[],
+  options: { customId: string; placeholder: string; selectedRepoId?: string }
+): StringSelectMenuBuilder => {
+  const select = new StringSelectMenuBuilder().setCustomId(options.customId);
+  const list = repositories ?? [];
+
+  // Discord rejects a select with zero options, so the empty registry gets a disabled placeholder.
+  if (list.length === 0) {
+    return select
+      .setDisabled(true)
+      .setPlaceholder('No repositories configured')
+      .addOptions([{ label: 'None', value: 'none' }]);
+  }
+
+  const wanted = (options.selectedRepoId ?? '').trim();
+  return select
+    .setPlaceholder(
+      list.length > 25 ? `Select repository (showing 25 of ${list.length})...` : options.placeholder
+    )
+    .addOptions(
+      list.slice(0, 25).map((repo) => {
+        const option: { label: string; value: string; description?: string; default?: boolean } = {
+          label: (repo.name || repo.id).slice(0, 100),
+          value: repo.id.slice(0, 100),
+        };
+        if (wanted) {
+          option.default = repo.id === wanted || repo.name === wanted;
+        }
+        const desc = (repo.description ?? repo.path ?? '').trim();
+        if (desc.length > 0) {
+          option.description = desc.slice(0, 100);
+        }
+        return option;
+      })
+    );
+};
+
+export const createRepoSelectMenu = (
+  repositories: DispatchRepositoryOption[],
+  poolGroup?: string
+): ActionRowBuilder<StringSelectMenuBuilder> =>
+  new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+    buildRepositorySelect(repositories, {
+      customId: poolGroup ? `repo_select:${poolGroup}` : 'repo_select',
+      placeholder: 'Select target repository to dispatch task...',
+    })
+  );
 
 export interface CreateDispatchModalOptions {
   includeModelInput?: boolean;
@@ -67,46 +77,6 @@ export interface CreateDispatchModalOptions {
   repositories?: DispatchRepositoryOption[];
   selectedRepoId?: string;
 }
-
-const buildRepositorySelect = (
-  repositories: DispatchRepositoryOption[],
-  selectedRepoId?: string
-): StringSelectMenuBuilder => {
-  const select = new StringSelectMenuBuilder().setCustomId('task_repository');
-  const list = repositories ?? [];
-
-  // Discord rejects a select with zero options, so the command path guards this case first.
-  if (list.length === 0) {
-    return select
-      .setDisabled(true)
-      .setPlaceholder('No repositories configured')
-      .addOptions([{ label: 'None', value: 'none' }]);
-  }
-
-  const displayRepos = list.slice(0, 25);
-  const wanted = (selectedRepoId ?? '').trim();
-
-  return select
-    .setPlaceholder(
-      list.length > 25
-        ? `Select repository (showing 25 of ${list.length})...`
-        : 'Select target repository'
-    )
-    .addOptions(
-      displayRepos.map((repo) => {
-        const option: { label: string; value: string; description?: string; default?: boolean } = {
-          label: (repo.name || repo.id).slice(0, 100),
-          value: repo.id.slice(0, 100),
-          default: Boolean(wanted) && (repo.id === wanted || repo.name === wanted),
-        };
-        const desc = (repo.description ?? repo.path ?? '').trim();
-        if (desc.length > 0) {
-          option.description = desc.slice(0, 100);
-        }
-        return option;
-      })
-    );
-};
 
 export const createDispatchModal = (
   repoId?: string | null,
@@ -134,11 +104,13 @@ export const createDispatchModal = (
 
   if (unbound) {
     modal.addComponents(
-      new LabelBuilder()
-        .setLabel('Repository')
-        .setStringSelectMenuComponent(
-          buildRepositorySelect(options?.repositories ?? [], options?.selectedRepoId)
-        )
+      new LabelBuilder().setLabel('Repository').setStringSelectMenuComponent(
+        buildRepositorySelect(options?.repositories ?? [], {
+          customId: 'task_repository',
+          placeholder: 'Select target repository',
+          selectedRepoId: options?.selectedRepoId,
+        })
+      )
     );
   }
 

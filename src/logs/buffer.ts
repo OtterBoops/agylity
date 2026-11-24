@@ -23,7 +23,7 @@ const PATTERNS: RegExp[] = [
   /\b(bearer\s+)[A-Za-z\d._~+/-]{8,}=*/gi,
 ];
 
-export const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
+const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
   let out = text;
   for (const s of secrets) {
     if (!s) continue;

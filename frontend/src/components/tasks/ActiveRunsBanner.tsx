@@ -5,6 +5,7 @@ import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { formatDateTime, useTimeFormat } from '../../utils/time';
 import { taskStatusBadgeClass } from '../../utils/status';
 import { Icon } from '../Icon';
+import { STATUS_PILL_CLASS, taskCardClass } from './badges';
 
 interface ActiveRunCardProps {
   run: SwarmTask;
@@ -31,9 +32,7 @@ export const ActiveRunCard = ({
     <article
       id={`task-row-${run.id}`}
       onClick={() => onOpen(run)}
-      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
-        highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
-      }`}
+      class={taskCardClass(highlighted)}
     >
       <div class="flex items-start justify-between gap-2">
         <div class="flex min-w-0 items-center gap-2">
@@ -42,11 +41,7 @@ export const ActiveRunCard = ({
           </span>
           <span class="truncate font-mono text-xs text-pine-subtle">{run.repositoryName}</span>
         </div>
-        <span
-          class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${taskStatusBadgeClass(run.status)}`}
-        >
-          {run.status}
-        </span>
+        <span class={`${STATUS_PILL_CLASS} ${taskStatusBadgeClass(run.status)}`}>{run.status}</span>
       </div>
 
       {run.status === 'queued' && noRunnerOnline && (

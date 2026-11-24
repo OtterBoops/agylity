@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect } from 'preact/hooks';
 import { getModels } from '../api';
 import type { ModelCatalogEntry, ReasoningEffort } from '../types';
+import { createStore, useStore } from './store';
 
 export interface ModelCatalogState {
   models: ModelCatalogEntry[];
@@ -10,50 +11,43 @@ export interface ModelCatalogState {
   loaded: boolean;
 }
 
-const initialState: ModelCatalogState = {
+const catalogStore = createStore<ModelCatalogState>({
   models: [],
   defaultModel: null,
   defaultEffort: null,
   unattributedModels: [],
   loaded: false,
-};
+});
 
-let state: ModelCatalogState = initialState;
 let inFlight: Promise<ModelCatalogState> | null = null;
-const listeners = new Set<(next: ModelCatalogState) => void>();
 
-const publish = (next: ModelCatalogState): ModelCatalogState => {
-  state = next;
-  listeners.forEach((listener) => {
-    try {
-      listener(state);
-    } catch (err) {
-      console.error('[agylity] Model catalog listener error:', err);
-    }
-  });
-  return state;
-};
-
-export const getModelCatalog = (): ModelCatalogState => state;
+export const getModelCatalog = (): ModelCatalogState => catalogStore.getState();
 
 export const loadModelCatalog = async (force = false): Promise<ModelCatalogState> => {
+  const state = getModelCatalog();
   if (!force && state.loaded) return state;
   if (inFlight) return inFlight;
 
   inFlight = getModels()
     .then((res) => {
-      if (!res.models || res.models.length === 0) {
-        return publish({ ...state, loaded: true });
-      }
-      return publish({
-        models: res.models,
-        defaultModel: res.defaultModel,
-        defaultEffort: res.defaultEffort,
-        unattributedModels: res.unattributedModels ?? [],
-        loaded: true,
-      });
+      const next: ModelCatalogState =
+        res.models && res.models.length > 0
+          ? {
+              models: res.models,
+              defaultModel: res.defaultModel,
+              defaultEffort: res.defaultEffort,
+              unattributedModels: res.unattributedModels ?? [],
+              loaded: true,
+            }
+          : { ...getModelCatalog(), loaded: true };
+      catalogStore.setState(next);
+      return next;
     })
-    .catch(() => publish({ ...state, loaded: true }))
+    .catch(() => {
+      const next = { ...getModelCatalog(), loaded: true };
+      catalogStore.setState(next);
+      return next;
+    })
     .finally(() => {
       inFlight = null;
     });
@@ -62,19 +56,11 @@ export const loadModelCatalog = async (force = false): Promise<ModelCatalogState
 };
 
 export const useModelCatalog = (): ModelCatalogState => {
-  const [snapshot, setSnapshot] = useState<ModelCatalogState>(state);
-
+  const state = useStore(catalogStore);
   useEffect(() => {
-    setSnapshot(state);
-    const listener = (next: ModelCatalogState) => setSnapshot(next);
-    listeners.add(listener);
     void loadModelCatalog();
-    return () => {
-      listeners.delete(listener);
-    };
   }, []);
-
-  return snapshot;
+  return state;
 };
 
 export const toModelOptions = (

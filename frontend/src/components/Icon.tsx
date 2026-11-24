@@ -1,6 +1,6 @@
 import type { IconDefinition } from '@fortawesome/free-solid-svg-icons';
 
-export interface IconProps {
+interface IconProps {
   icon: IconDefinition;
   class?: string;
   title?: string;

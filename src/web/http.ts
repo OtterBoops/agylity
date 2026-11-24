@@ -1,6 +1,6 @@
 import type http from 'node:http';
 
-export const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 64 * 1024;
 
 export class PayloadTooLargeError extends Error {
   readonly statusCode = 413;
@@ -134,21 +134,9 @@ export const sendPayloadTooLarge = (
 
 export const readBody = async (
   req: http.IncomingMessage,
-  resOrMaxBytes?: http.ServerResponse | number,
-  optionalMaxBytes?: number
+  res?: http.ServerResponse,
+  maxBytes: number = MAX_BODY_BYTES
 ): Promise<string> => {
-  let res: http.ServerResponse | undefined;
-  let maxBytes = MAX_BODY_BYTES;
-
-  if (typeof resOrMaxBytes === 'number') {
-    maxBytes = resOrMaxBytes;
-  } else if (resOrMaxBytes) {
-    res = resOrMaxBytes;
-    if (typeof optionalMaxBytes === 'number') {
-      maxBytes = optionalMaxBytes;
-    }
-  }
-
   if (req.readableEnded || req.complete) {
     return '';
   }
@@ -215,14 +203,14 @@ export const readBody = async (
   });
 };
 
-export type EmptyBodyPolicy = 'reject' | 'allow' | 'malformed';
+type EmptyBodyPolicy = 'reject' | 'allow' | 'malformed';
 
-export interface ReadJsonBodyOptions {
+interface ReadJsonBodyOptions {
   emptyBody?: EmptyBodyPolicy;
   emptyBodyValue?: unknown;
 }
 
-export type ReadJsonBodyResult = { ok: true; body: unknown } | { ok: false };
+type ReadJsonBodyResult = { ok: true; body: unknown } | { ok: false };
 
 const rejectEmptyBody = (res: http.ServerResponse): ReadJsonBodyResult => {
   sendJson(res, 400, { error: 'Request body cannot be empty' });

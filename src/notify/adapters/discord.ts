@@ -50,6 +50,17 @@ export class DiscordNotifier implements Notifier {
     }
   }
 
+  private failure(error: string): DeliveryOutcome {
+    return { delivered: false, results: { [this.channelName]: { success: false, error } } };
+  }
+
+  /** Attaches the owner mention only when pinging is enabled and the owner is known. */
+  private withOwnerMention(payload: any, ownerId: string | undefined): any {
+    const mention = this.resolveOwnerMention(ownerId);
+    if (!mention || !ownerId) return payload;
+    return { ...payload, content: mention, allowedMentions: { users: [ownerId] } };
+  }
+
   public getBoundOwnerUserId(): string | undefined {
     return this.config.discordOwnerUserId?.trim() || this.pinnedOwnerUserId;
   }
@@ -263,36 +274,18 @@ export class DiscordNotifier implements Notifier {
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
     if (!this.client || !this.initialized) {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: { success: false, error: 'Discord client is not initialized' },
-        },
-      };
+      return this.failure('Discord client is not initialized');
     }
 
     const channelId = this.config.discordNotificationChannelId;
     if (!channelId || typeof this.client.channels?.fetch !== 'function') {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: {
-            success: false,
-            error: 'No Discord notification channel configured',
-          },
-        },
-      };
+      return this.failure('No Discord notification channel configured');
     }
 
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased?.()) {
-        return {
-          delivered: false,
-          results: {
-            [this.channelName]: { success: false, error: 'Discord channel is unavailable' },
-          },
-        };
+        return this.failure('Discord channel is unavailable');
       }
 
       const ownerId = await this.resolveOwnerUserId();
@@ -302,19 +295,10 @@ export class DiscordNotifier implements Notifier {
         baseUrl: this.config.baseUrl,
       });
       const actionRow = createRepoSelectMenu(this.config.repositories, alert.pool.poolGroup);
-      const mention = this.resolveOwnerMention(ownerId);
-
-      const sendPayload: any = {
-        embeds: [embed],
-        components: [actionRow],
-      };
-
-      if (mention && ownerId) {
-        sendPayload.content = mention;
-        sendPayload.allowedMentions = {
-          users: [ownerId],
-        };
-      }
+      const sendPayload = this.withOwnerMention(
+        { embeds: [embed], components: [actionRow] },
+        ownerId
+      );
 
       await (channel as any).send(sendPayload);
       logger
@@ -327,10 +311,7 @@ export class DiscordNotifier implements Notifier {
       return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
       logger.child('notify:discord').error('Failed to notify quota alert: %s', err.message);
-      return {
-        delivered: false,
-        results: { [this.channelName]: { success: false, error: err.message } },
-      };
+      return this.failure(err.message);
     }
   }
 
@@ -378,33 +359,18 @@ export class DiscordNotifier implements Notifier {
 
   async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
     if (!this.client || !this.initialized) {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: { success: false, error: 'Discord client not initialized' },
-        },
-      };
+      return this.failure('Discord client not initialized');
     }
 
     const channelId = this.config.discordNotificationChannelId;
     if (!channelId || typeof this.client.channels?.fetch !== 'function') {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: { success: false, error: 'No notification channel configured' },
-        },
-      };
+      return this.failure('No notification channel configured');
     }
 
     try {
       const channel = await this.client.channels.fetch(channelId);
       if (!channel || !channel.isTextBased?.()) {
-        return {
-          delivered: false,
-          results: {
-            [this.channelName]: { success: false, error: 'Target channel is not text-based' },
-          },
-        };
+        return this.failure('Target channel is not text-based');
       }
 
       const embed = renderInfoEmbed(notice, this.config.baseUrl);
@@ -412,10 +378,7 @@ export class DiscordNotifier implements Notifier {
       return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
       logger.child('notify:discord').debug('Failed to deliver info notice: %s', err.message);
-      return {
-        delivered: false,
-        results: { [this.channelName]: { success: false, error: err?.message ?? String(err) } },
-      };
+      return this.failure(err?.message ?? String(err));
     }
   }
 
@@ -475,18 +438,7 @@ export class DiscordNotifier implements Notifier {
         pingOwner: this.config.discordPingOwner !== false,
         baseUrl: this.config.baseUrl,
       });
-      const mention = this.resolveOwnerMention(ownerId);
-
-      const sendPayload: any = {
-        embeds: [embed],
-      };
-
-      if (mention && ownerId) {
-        sendPayload.content = mention;
-        sendPayload.allowedMentions = {
-          users: [ownerId],
-        };
-      }
+      const sendPayload = this.withOwnerMention({ embeds: [embed] }, ownerId);
 
       if (this.config.repositories && this.config.repositories.length > 0) {
         sendPayload.components = [createRepoSelectMenu(this.config.repositories)];

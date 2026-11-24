@@ -13,7 +13,7 @@ import type {
 import { Icon } from '../Icon';
 import { ModelCascadeField } from './ModelCascadeField';
 
-export type ComposerMode = 'run' | 'backlog' | 'routine';
+type ComposerMode = 'run' | 'backlog' | 'routine';
 
 /** `verifyCommand` is absent when blank; an edit that must clear it passes `null` through. */
 export type ComposerPayload =
@@ -54,7 +54,7 @@ export type ComposerPayload =
       minHeadroomPercent: number;
     };
 
-export interface ComposerInitial {
+interface ComposerInitial {
   mode: ComposerMode;
   task?: SwarmTask;
   backlog?: BacklogTaskRecord;
@@ -107,6 +107,10 @@ export const UnifiedTaskComposer = ({
   onDirtyChange,
 }: UnifiedTaskComposerProps) => {
   const catalog = useModelCatalog();
+  // Both the seeded draft and an emptied cascade fall back to the configured default model.
+  const defaultChain = (): CascadeHop[] => [
+    { model: defaultModel, effort: resolveModelEffort(catalog.models, defaultModel).defaultEffort },
+  ];
   const { task, backlog, routine } = initial ?? {};
   const lockedMode: ComposerMode | null = backlog
     ? 'backlog'
@@ -125,12 +129,7 @@ export const UnifiedTaskComposer = ({
         ? task.cascade
         : task?.model
           ? [{ model: task.model, effort: task.effort }]
-          : [
-              {
-                model: defaultModel,
-                effort: resolveModelEffort(catalog.models, defaultModel).defaultEffort,
-              },
-            ];
+          : defaultChain();
   // A backlog row has no PR policy column: its stored autoCreatePr is the whole intent.
   const seedPrPolicy: PrPolicy =
     routine?.prPolicy ??
@@ -225,15 +224,7 @@ export const UnifiedTaskComposer = ({
     const cleanVerify: string | undefined = trimmedVerify || undefined;
     const verifyPatch: string | null | undefined =
       trimmedVerify === '' && isEditing && seedVerify !== '' ? null : cleanVerify;
-    const chain: CascadeHop[] =
-      cascade.length > 0
-        ? cascade
-        : [
-            {
-              model: defaultModel,
-              effort: resolveModelEffort(catalog.models, defaultModel).defaultEffort,
-            },
-          ];
+    const chain: CascadeHop[] = cascade.length > 0 ? cascade : defaultChain();
     const repositoryName =
       repoOptions.find((repo) => repo.id === repositoryId)?.name ?? repositoryId;
 

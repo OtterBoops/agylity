@@ -12,7 +12,7 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { poolGroupForModelConfig } from '../sentry/models.js';
 import { logger, type Logger } from '../logs/logger.js';
 
-export interface AgyRawModel {
+interface AgyRawModel {
   id: string;
   label?: string;
 }
@@ -44,7 +44,7 @@ const defaultEffortFor = (id: string, supported: readonly ReasoningEffort[]): Re
   return supported[0] ?? 'medium';
 };
 
-export interface GroupedModelCatalog {
+interface GroupedModelCatalog {
   models: AgyModelCatalogEntry[];
   unattributed: string[];
 }
@@ -150,7 +150,7 @@ export interface ModelCatalogProvider {
   getUnattributedModels(): string[];
 }
 
-export interface DynamicModelCatalogOptions {
+interface DynamicModelCatalogOptions {
   agyBinPath?: string;
   execFileFn?: ExecFileAsyncFn;
   ttlMs?: number;

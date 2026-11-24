@@ -4,10 +4,10 @@ import { logger, type Logger } from '../logs/logger.js';
 // agy refreshes itself at boot, so a longer cache would keep reporting the version the container
 // shipped with; a stale number is worse than one extra local spawn per window.
 export const AGY_VERSION_CACHE_TTL_MS = 60_000;
-export const AGY_VERSION_TIMEOUT_MS = 10_000;
+const AGY_VERSION_TIMEOUT_MS = 10_000;
 export const AGY_UPDATE_TIMEOUT_MS = 300_000;
 
-export interface AgyUpdateResult {
+interface AgyUpdateResult {
   before: string | null;
   after: string | null;
   updated: boolean;
@@ -21,7 +21,7 @@ export interface AgyUpdaterLike {
   update(): Promise<AgyUpdateResult>;
 }
 
-export interface AgyUpdaterOptions {
+interface AgyUpdaterOptions {
   agyBinPath?: string;
   execFileFn?: ExecFileAsyncFn;
   logger?: Logger;

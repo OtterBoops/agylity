@@ -6,7 +6,7 @@ import { useModelCatalog } from '../state/modelCatalogStore';
 import { readUiCache, VERDICT_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 import { CANONICAL_AGY_MODELS } from '../../../src/shared/models.ts';
 import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
-import { formatDateTime, useTimeFormat } from '../utils/time';
+import { formatDateTime, formatWindow, useTimeFormat } from '../utils/time';
 
 const VERDICT_POLL_MS = 15_000;
 
@@ -53,13 +53,6 @@ const describe = (verdict: DispatchEligibility, label: string): string => {
     return `${subject} · autonomous tiers holding ${minutes}m after manual run`;
   }
   return `${subject} ready to run`;
-};
-
-const formatWindow = (hours: number | null): string => {
-  if (hours === null || !Number.isFinite(hours)) return 'N/A';
-  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
-  if (hours < 24) return `${Math.round(hours)}h`;
-  return `${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h`;
 };
 
 const formatProbeAge = (iso: string | null): string => {

@@ -66,6 +66,18 @@ interface NavItem {
   active?: boolean;
 }
 
+const RELEASES_LATEST_URL = 'https://github.com/OtterBoops/agylity/releases/latest';
+
+/** Probe dot: a static core ringed by a ping, sized by the rail or footer variant that hosts it. */
+const ProbeDot = ({ color, size = 'size-2' }: { color: string; size?: string }) => (
+  <span class={`relative flex ${size} shrink-0`}>
+    <span
+      class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${color}`}
+    />
+    <span class={`relative inline-flex ${size} rounded-full ${color}`} />
+  </span>
+);
+
 export const Sidebar = ({
   coordinatorEnabled = false,
   lastProbeSource,
@@ -333,12 +345,7 @@ export const Sidebar = ({
           <h1 class="truncate text-base leading-none font-bold tracking-tight text-pine-text">
             {pageTitle ?? 'Agylity'}
           </h1>
-          <span class="relative flex size-2 shrink-0">
-            <span
-              class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-            />
-            <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
-          </span>
+          <ProbeDot color={probeColor} />
         </div>
 
         <div class="flex shrink-0 items-center gap-1.5">
@@ -446,12 +453,7 @@ export const Sidebar = ({
               class="flex cursor-pointer items-center justify-between gap-2 text-left transition-colors hover:text-pine-text focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
             >
               <span class="flex items-center gap-2">
-                <span class="relative flex size-2 shrink-0">
-                  <span
-                    class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-                  />
-                  <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
-                </span>
+                <ProbeDot color={probeColor} />
                 <span class="font-medium text-pine-text">{probeStatus}</span>
               </span>
               {lastProbeAt && (
@@ -472,7 +474,7 @@ export const Sidebar = ({
               </a>
               {updateInfo.hasUpdate ? (
                 <a
-                  href={updateInfo.url || 'https://github.com/OtterBoops/agylity/releases/latest'}
+                  href={updateInfo.url || RELEASES_LATEST_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   title={updateInfo.title ?? undefined}
@@ -554,12 +556,7 @@ export const Sidebar = ({
                 title="Click to view detailed system telemetry"
               >
                 <span class="flex min-w-0 items-center gap-2">
-                  <span class="relative flex size-2 shrink-0">
-                    <span
-                      class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-                    />
-                    <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
-                  </span>
+                  <ProbeDot color={probeColor} />
                   <span class="truncate font-medium text-pine-text">{probeStatus}</span>
                 </span>
                 {lastProbeAt && (
@@ -586,7 +583,7 @@ export const Sidebar = ({
 
                 {updateInfo.hasUpdate ? (
                   <a
-                    href={updateInfo.url || 'https://github.com/OtterBoops/agylity/releases/latest'}
+                    href={updateInfo.url || RELEASES_LATEST_URL}
                     target="_blank"
                     rel="noopener noreferrer"
                     class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris transition-colors hover:bg-pine-iris/30"
@@ -615,12 +612,7 @@ export const Sidebar = ({
               class="flex cursor-pointer flex-col items-center justify-center gap-1.5 rounded-xl border border-pine-highlight bg-pine-surface px-0 py-2 text-center transition-colors hover:border-pine-iris/60"
               title={railTitle}
             >
-              <span class="relative flex size-2.5 shrink-0">
-                <span
-                  class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
-                />
-                <span class={`relative inline-flex size-2.5 rounded-full ${probeColor}`} />
-              </span>
+              <ProbeDot color={probeColor} size="size-2.5" />
               <span class="max-w-full truncate font-mono text-xs leading-none text-pine-subtle">
                 {railVersionLabel}
               </span>

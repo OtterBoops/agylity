@@ -4,7 +4,7 @@
 
 import { PR_POLICY_VALUES, type PrPolicy } from './contracts.js';
 
-export interface PrPolicyOption {
+interface PrPolicyOption {
   value: PrPolicy;
   /** Select label: what the policy allows, in operator terms. */
   label: string;

@@ -187,7 +187,7 @@ const V1_INDEXES = `
       CREATE UNIQUE INDEX IF NOT EXISTS idx_routine_tasks_number ON routine_tasks (task_number);
     `;
 
-export interface Migration {
+interface Migration {
   version: number;
   name: string;
   up: (db: DatabaseSync) => void;
@@ -450,7 +450,7 @@ const addIssueUrlsColumn = (db: DatabaseSync): void => {
 };
 
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
-export const MIGRATIONS: readonly Migration[] = [
+const MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
     name: 'v1_baseline',

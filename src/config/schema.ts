@@ -12,7 +12,7 @@ const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
 
 // A custom header map is flat and string-valued, so a nested or numeric entry is a rejection, not a coercion.
-export const isPlainStringRecord = (val: unknown): val is Record<string, string> =>
+const isPlainStringRecord = (val: unknown): val is Record<string, string> =>
   typeof val === 'object' &&
   val !== null &&
   !Array.isArray(val) &&
@@ -51,7 +51,7 @@ export const milestoneHoursEnv = z.preprocess((val) => {
   return val;
 }, z.array(z.number().positive()).min(1).default(DEFAULT_MILESTONE_HOURS));
 
-export const RepositorySchema = z.preprocess(
+const RepositorySchema = z.preprocess(
   (val) => {
     if (typeof val === 'object' && val !== null) {
       const raw = val as Record<string, unknown>;
@@ -105,7 +105,7 @@ export const RepositorySchema = z.preprocess(
 
 export type RepositoryEntry = z.infer<typeof RepositorySchema>;
 
-export const PoolPolicySchema = z.object({
+const PoolPolicySchema = z.object({
   alertsEnabled: z.boolean(),
   dispatchEnabled: z.boolean(),
 });
@@ -125,7 +125,7 @@ const normalizePoolPolicyKeys = (val: unknown): unknown => {
   return changed ? raw : val;
 };
 
-export const PoolGroupPoliciesSchema = z.preprocess(
+const PoolGroupPoliciesSchema = z.preprocess(
   normalizePoolPolicyKeys,
   z.object({
     gemini: PoolPolicySchema,
@@ -135,7 +135,7 @@ export const PoolGroupPoliciesSchema = z.preprocess(
 
 export type PoolGroupPolicies = z.infer<typeof PoolGroupPoliciesSchema>;
 
-export const DEFAULT_POOL_GROUP_POLICIES: PoolGroupPolicies = {
+const DEFAULT_POOL_GROUP_POLICIES: PoolGroupPolicies = {
   gemini: { alertsEnabled: true, dispatchEnabled: true },
   claude: { alertsEnabled: false, dispatchEnabled: false },
 };
@@ -158,10 +158,10 @@ export const RepositoriesJsonSchema = z.preprocess((val) => {
 export const PrPolicyEnum = z.enum(PR_POLICY_VALUES);
 export type { PrPolicy };
 
-export const NotificationChannelEnum = z.enum(['discord', 'webhook', 'none']);
-export type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
+const NotificationChannelEnum = z.enum(['discord', 'webhook', 'none']);
+type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
 
-export const NotificationChannelsSchema = z.preprocess((val) => {
+const NotificationChannelsSchema = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val
       .map((v) => String(v).trim().toLowerCase())
@@ -505,15 +505,6 @@ export const CONFIG_REGISTRY = [
     env: 'ANTIGRAVITY_LS_PORT',
     description:
       'TCP port of the local Antigravity Language Server, used when the port cannot be discovered from a running process.',
-  },
-  {
-    group: 'sentry',
-    type: 'number',
-    defaultLabel: '3000',
-    example: 'comment',
-    env: 'QUOTA_MIN_REFRESH_INTERVAL_MS',
-    description:
-      'Floor, in milliseconds, between two quota refreshes, so a burst of callers cannot poll the language server in a tight loop. The daemon passes `30000` explicitly, so a running daemon ignores this variable.',
   },
   {
     group: 'sentry',
@@ -1133,7 +1124,7 @@ export const resolveWebUiAuthToken = (
 ): string | undefined => config?.webUiAuthToken || env.WEB_UI_AUTH_TOKEN;
 
 // A copied example env (`your_bot_token_here`) must never read as a configured value.
-export const isTemplatePlaceholder = (val: string | undefined): boolean =>
+const isTemplatePlaceholder = (val: string | undefined): boolean =>
   typeof val === 'string' && /^your_[a-z0-9_]+_here$/i.test(val.trim());
 
 export const parseRawEnv = (env: Record<string, string | undefined>): Partial<AppConfig> => {
@@ -1193,8 +1184,6 @@ export const RawEnvSchema = z.object(
     )
   )
 );
-
-export type RawEnv = z.infer<typeof RawEnvSchema>;
 
 export const FORBIDDEN_CONFIG_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 

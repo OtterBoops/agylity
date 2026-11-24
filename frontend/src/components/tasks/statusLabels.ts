@@ -24,7 +24,7 @@ export const STATUS_BUCKETS = [
 export type StatusBucketId = (typeof STATUS_BUCKETS)[number]['id'];
 
 // Issue-only runs finish as `completed` with no PR, so the UI derives its own status from the payload.
-export interface TaskDisplayStatusInput {
+interface TaskDisplayStatusInput {
   status: string;
   prUrl?: string | null;
   issueUrls?: readonly string[] | null;

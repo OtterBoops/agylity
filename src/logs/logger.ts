@@ -14,7 +14,7 @@ export interface LogRecord {
 
 export type LogSink = (record: LogRecord) => void;
 
-export interface LoggerOptions {
+interface LoggerOptions {
   namespace?: string;
   minLevel?: LogLevel;
   sinks?: LogSink[];
@@ -161,7 +161,7 @@ export class DefaultLogger implements Logger {
   }
 }
 
-export const createConsoleSink = (): LogSink => {
+const createConsoleSink = (): LogSink => {
   return (record: LogRecord) => {
     switch (record.level) {
       case 'debug':

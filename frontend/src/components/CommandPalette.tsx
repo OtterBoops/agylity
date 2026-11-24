@@ -89,6 +89,12 @@ export const CommandPalette = ({
   const liveRequested = useRef(false);
   const currentExecutionQuery = useRef('');
 
+  // Every command leaves the palette behind it.
+  const navigate = (path: string) => {
+    route(path);
+    onClose();
+  };
+
   // Field-level settings jumps: the settings page no longer carries its own search box.
   const settingsFieldCommands: CommandItem[] = (
     [
@@ -104,8 +110,7 @@ export const CommandPalette = ({
       icon: faSliders,
       keywords: `${field.key} ${field.hint ?? ''} ${section}`,
       action: () => {
-        route(`/settings#${section}`);
-        onClose();
+        navigate(`/settings#${section}`);
         // The field only exists after the section renders, so scroll once it has.
         setTimeout(() => {
           const el = document.getElementById(`f-${field.key}`);
@@ -122,70 +127,49 @@ export const CommandPalette = ({
       title: 'Go to Overview & Quotas',
       category: 'Navigation',
       icon: faChartPie,
-      action: () => {
-        route('/overview');
-        onClose();
-      },
+      action: () => navigate('/overview'),
     },
     {
       id: 'nav-logs',
       title: 'Go to Live Logs',
       category: 'Navigation',
       icon: faTerminal,
-      action: () => {
-        route('/logs');
-        onClose();
-      },
+      action: () => navigate('/logs'),
     },
     {
       id: 'nav-settings-general',
       title: 'Go to General Settings',
       category: 'Navigation',
       icon: faSliders,
-      action: () => {
-        route('/settings/general');
-        onClose();
-      },
+      action: () => navigate('/settings/general'),
     },
     {
       id: 'nav-schedules',
       title: 'Go to Schedules & Queue',
       category: 'Navigation',
       icon: faCheckToSlot,
-      action: () => {
-        route('/tasks?tab=schedules');
-        onClose();
-      },
+      action: () => navigate('/tasks?tab=schedules'),
     },
     {
       id: 'nav-executions',
       title: 'Go to Execution History',
       category: 'Navigation',
       icon: faTerminal,
-      action: () => {
-        route('/tasks?tab=executions');
-        onClose();
-      },
+      action: () => navigate('/tasks?tab=executions'),
     },
     {
       id: 'nav-notifications',
       title: 'Configure Notifications & Discord',
       category: 'Navigation',
       icon: faBell,
-      action: () => {
-        route('/settings/notifications');
-        onClose();
-      },
+      action: () => navigate('/settings/notifications'),
     },
     {
       id: 'nav-coordinator',
       title: 'Configure Task Coordinator',
       category: 'Navigation',
       icon: faNetworkWired,
-      action: () => {
-        route('/settings/coordinator');
-        onClose();
-      },
+      action: () => navigate('/settings/coordinator'),
     },
     ...(coordinatorEnabled
       ? [
@@ -194,20 +178,14 @@ export const CommandPalette = ({
             title: 'Go to Tasks Queue & Runner Jobs',
             category: 'Navigation' as const,
             icon: faCheckToSlot,
-            action: () => {
-              route('/tasks');
-              onClose();
-            },
+            action: () => navigate('/tasks'),
           },
           {
             id: 'nav-repositories',
             title: 'Configure Target Repositories',
             category: 'Navigation' as const,
             icon: faCodeBranch,
-            action: () => {
-              route('/settings/repositories');
-              onClose();
-            },
+            action: () => navigate('/settings/repositories'),
           },
         ]
       : []),
@@ -228,10 +206,7 @@ export const CommandPalette = ({
       title: 'Advanced Daemon Settings',
       category: 'Navigation',
       icon: faSliders,
-      action: () => {
-        route('/settings/advanced');
-        onClose();
-      },
+      action: () => navigate('/settings/advanced'),
     },
     {
       id: 'act-refresh',
@@ -246,27 +221,21 @@ export const CommandPalette = ({
     },
   ];
 
-  const routineCommands: CommandItem[] = liveTasks.routines.map((routine) => ({
-    id: `routine-${routine.id}`,
-    title: taskLabel(routine.taskNumber, routine.title, routine.prompt),
-    category: 'Tasks & Routines',
-    icon: faCheckToSlot,
-    action: () => {
-      route(`/tasks?tab=schedules&id=${encodeURIComponent(routine.id)}`);
-      onClose();
-    },
-  }));
+  // Routines and backlog rows land on the same schedules tab, keyed out by their own prefix.
+  const linkedTaskCommands = (
+    items: ReadonlyArray<{ id: string; taskNumber?: number; title?: string; prompt?: string }>,
+    prefix: 'routine' | 'backlog'
+  ): CommandItem[] =>
+    items.map((item) => ({
+      id: `${prefix}-${item.id}`,
+      title: taskLabel(item.taskNumber, item.title, item.prompt),
+      category: 'Tasks & Routines',
+      icon: faCheckToSlot,
+      action: () => navigate(`/tasks?tab=schedules&id=${encodeURIComponent(item.id)}`),
+    }));
 
-  const backlogCommands: CommandItem[] = liveTasks.backlog.map((item) => ({
-    id: `backlog-${item.id}`,
-    title: taskLabel(item.taskNumber, item.title, item.prompt),
-    category: 'Tasks & Routines',
-    icon: faCheckToSlot,
-    action: () => {
-      route(`/tasks?tab=schedules&id=${encodeURIComponent(item.id)}`);
-      onClose();
-    },
-  }));
+  const routineCommands = linkedTaskCommands(liveTasks.routines, 'routine');
+  const backlogCommands = linkedTaskCommands(liveTasks.backlog, 'backlog');
 
   const staticTitles = new Set(commands.map((c) => c.title.toLowerCase()));
   const executionCommands: CommandItem[] = executions
@@ -282,8 +251,7 @@ export const CommandPalette = ({
       ...row,
       action: () => {
         const tab = isActiveTaskStatus(task.status) ? 'schedules' : 'executions';
-        route(`/tasks?tab=${tab}&id=${encodeURIComponent(task.id)}`);
-        onClose();
+        navigate(`/tasks?tab=${tab}&id=${encodeURIComponent(task.id)}`);
       },
     }));
 

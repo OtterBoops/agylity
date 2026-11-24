@@ -200,6 +200,7 @@ export const QuotaGrid = ({
         let barColor = 'bg-pine-iris';
         let statusText = 'Ready to burn';
 
+        // The safety floor is settable up to 100, so it can sit above the 25% notice band.
         if (
           shortTermPct !== null &&
           shortTermPct <= minHeadroomPercent &&
@@ -212,14 +213,10 @@ export const QuotaGrid = ({
           statusTone = 'text-pine-foam';
           barColor = 'bg-pine-pine';
           statusText = 'Tapped out';
-        } else if (effectivePct <= minHeadroomPercent) {
+        } else if (effectivePct <= Math.max(25, minHeadroomPercent)) {
           statusTone = 'text-pine-foam';
           barColor = 'bg-pine-foam';
-          statusText = minHeadroomPercent > 0 ? 'Safety floor' : 'Well spent';
-        } else if (effectivePct <= 25) {
-          statusTone = 'text-pine-foam';
-          barColor = 'bg-pine-foam';
-          statusText = 'Well spent';
+          statusText = effectivePct <= minHeadroomPercent ? 'Safety floor' : 'Well spent';
         } else if (weeklyHours <= 3) {
           statusTone = 'text-pine-love';
           barColor = 'bg-pine-love';

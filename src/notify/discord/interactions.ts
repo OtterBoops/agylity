@@ -21,6 +21,15 @@ export interface DiscordInteractionDeps {
   verifyOwnerBinding(interaction: any): { allowed: boolean; reason?: string };
 }
 
+const NO_REPOSITORIES_NOTICE =
+  '[Notice] No repositories are currently configured. Please configure repositories in settings.';
+
+const isQueuedResult = (result: {
+  status?: string;
+  taskId?: string;
+  branchName?: string;
+}): boolean => result.status === 'queued' || Boolean(result.taskId && !result.branchName);
+
 // Components V2 selects submit through getStringSelectValues, not getTextInputValue.
 const readStringSelect = (interaction: any, customId: string): string => {
   try {
@@ -134,9 +143,7 @@ const handleDispatchCommand = async (
   if (!prompt.trim()) {
     const repositories = deps.config.repositories ?? [];
     if (repositories.length === 0) {
-      await ephemeralReply(
-        '[Notice] No repositories are currently configured. Please configure repositories in settings.'
-      );
+      await ephemeralReply(NO_REPOSITORIES_NOTICE);
       return;
     }
 
@@ -196,7 +203,7 @@ const handleDispatchCommand = async (
     }
 
     let content = '';
-    const isQueued = result.status === 'queued' || Boolean(result.taskId && !result.branchName);
+    const isQueued = isQueuedResult(result);
     if (!result.success) {
       content = `[Error] Dispatch failed: ${result.error ?? 'Unknown error'}`;
     } else if (isQueued) {
@@ -304,8 +311,7 @@ const handleRepoSelect = async (deps: DiscordInteractionDeps, interaction: any):
     if (typeof interaction.reply === 'function' && !interaction.replied && !interaction.deferred) {
       try {
         await interaction.reply({
-          content:
-            '[Notice] No repositories are currently configured. Please configure repositories in settings.',
+          content: NO_REPOSITORIES_NOTICE,
           ephemeral: true,
         });
       } catch {}
@@ -430,7 +436,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
 
       result = await deps.options.onDispatchRequested(dispatchPayload);
 
-      const isQueued = result.status === 'queued' || Boolean(result.taskId && !result.branchName);
+      const isQueued = isQueuedResult(result);
       if (result.success) {
         if (isQueued) {
           const msg = `[Notice] Continuation task \`#${(result.taskId || '').slice(0, 8)}\` queued for \`${repoName || repoId}\` — waiting for swarm runner...`;
@@ -474,8 +480,7 @@ const handleModalSubmit = async (deps: DiscordInteractionDeps, interaction: any)
     } catch {}
   } finally {
     deps.activeSubmissions.delete(submissionKey);
-    const isQueuedTask =
-      result?.status === 'queued' || Boolean(result?.taskId && !result?.branchName);
+    const isQueuedTask = result !== undefined && isQueuedResult(result);
     if (isQueuedTask && result?.taskId) {
       retainInteraction(deps, result.taskId, interaction);
       if (repoId) retainInteraction(deps, repoId, interaction);

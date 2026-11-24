@@ -1,10 +1,4 @@
 import type { TimeFormat } from '../../utils/time';
-import { taskStatusBadgeClass } from '../../utils/status';
-
-export const statusDotTextClass = (status: string): string =>
-  taskStatusBadgeClass(status)
-    .split(/\s+/)
-    .find((token) => token.startsWith('text-')) ?? 'text-pine-subtle';
 
 const SHORT_MONTHS = [
   'Jan',
@@ -39,12 +33,12 @@ export const formatCompactDateTime = (
   return `${datePart} ${pad(hour12)}:${minutes} ${suffix}`;
 };
 
-export interface IssueLink {
+interface IssueLink {
   url: string;
   label: string;
 }
 
-export interface IssueLinkSummary {
+interface IssueLinkSummary {
   links: IssueLink[];
   overflow: number;
 }

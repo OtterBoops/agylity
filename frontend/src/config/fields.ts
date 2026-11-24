@@ -38,6 +38,11 @@ export const PR_POLICY_OPTIONS: Array<{ value: PrPolicy; label: string }> = PR_P
 
 const FALLBACK_CATALOG = MODEL_OPTIONS.map((m) => ({ id: m.value }));
 
+export const toDisplay = (value: unknown): string => {
+  if (value === undefined || value === null) return '';
+  return Array.isArray(value) ? value.join(', ') : String(value);
+};
+
 export const normalizeModelId = (
   raw: string | undefined,
   models: Array<{ id: string }> = [],

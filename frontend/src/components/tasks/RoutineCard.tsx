@@ -3,7 +3,12 @@ import type { RoutineTaskRecord, SwarmTask } from '../../types';
 import { formatDateTime, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { ToggleSwitch } from '../ToggleSwitch';
-import { eligibilityBadgeClass, resolveRoutineEligibility } from './badges';
+import {
+  STATUS_PILL_CLASS,
+  eligibilityBadgeClass,
+  resolveRoutineEligibility,
+  taskCardClass,
+} from './badges';
 import { modelChainLabel } from './ModelCascadeField';
 import { CardActionButtons } from './CardActionButtons';
 
@@ -42,13 +47,7 @@ export const RoutineCard = ({
   const eligibility = resolveRoutineEligibility(routine);
 
   return (
-    <article
-      id={`task-row-${routine.id}`}
-      onClick={onEdit}
-      class={`flex cursor-pointer flex-col gap-2.5 rounded-xl border border-pine-highlight bg-pine-surface p-4 transition-colors hover:border-pine-iris/50 ${
-        highlighted ? 'ring-2 ring-pine-iris/60 ring-inset' : ''
-      }`}
-    >
+    <article id={`task-row-${routine.id}`} onClick={onEdit} class={taskCardClass(highlighted)}>
       <div class="flex items-start justify-between gap-2">
         <div class="flex min-w-0 items-center gap-2">
           <span class="shrink-0 rounded-sm bg-pine-overlay px-1.5 py-0.5 font-mono text-xs font-bold whitespace-nowrap text-pine-iris">
@@ -61,7 +60,7 @@ export const RoutineCard = ({
         </div>
         <span
           title={eligibility.detail}
-          class={`shrink-0 rounded-sm border px-2 py-0.5 text-xs font-bold tracking-wide whitespace-nowrap uppercase ${eligibilityBadgeClass(eligibility.state)}`}
+          class={`${STATUS_PILL_CLASS} ${eligibilityBadgeClass(eligibility.state)}`}
         >
           {eligibility.label}
         </span>

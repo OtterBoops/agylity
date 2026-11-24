@@ -15,7 +15,7 @@ import {
 } from '../../sentry/models.js';
 import { modelSupportsEffort } from '../../shared/models.js';
 
-export interface EmbedBuildOptions {
+interface EmbedBuildOptions {
   ownerUserId?: string;
   pingOwner?: boolean;
   baseUrl?: string;
@@ -172,13 +172,13 @@ interface StepVisualConfig {
 }
 
 const STEP_VISUALS: Record<string, StepVisualConfig> = {
-  completed: { title: '[Task: Completed]', color: 0x31748f }, // Pine
-  no_changes: { title: '[Task: No Changes]', color: 0x908caa }, // Muted
-  failed: { title: '[Task: Failed]', color: 0xeb6f92 }, // Love
-  aborted: { title: '[Task: Aborted]', color: 0xf6c177 }, // Gold
-  polling: { title: '[Task: Queued]', color: 0x908caa }, // Muted
-  waking: { title: '[Task: Queued]', color: 0x908caa }, // Muted
-  executing: { title: '[Task: In Progress]', color: 0x9ccfd8 }, // Foam
+  completed: { title: '[Task: Completed]', color: 0x31748f },
+  no_changes: { title: '[Task: No Changes]', color: 0x908caa },
+  failed: { title: '[Task: Failed]', color: 0xeb6f92 },
+  aborted: { title: '[Task: Aborted]', color: 0xf6c177 },
+  polling: { title: '[Task: Queued]', color: 0x908caa },
+  waking: { title: '[Task: Queued]', color: 0x908caa },
+  executing: { title: '[Task: In Progress]', color: 0x9ccfd8 },
 };
 
 const DEFAULT_STEP_VISUAL: StepVisualConfig = {

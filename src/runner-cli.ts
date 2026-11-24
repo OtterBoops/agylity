@@ -4,7 +4,7 @@ import { warnDeprecatedEnvVars } from './config/deprecated.js';
 import { RemoteSwarmRunner, normalizePrPolicy } from './runner/index.js';
 import type { PrPolicy } from './config/schema.js';
 
-export interface RunnerCliOptions {
+interface RunnerCliOptions {
   coordinatorUrl: string;
   registrationToken?: string;
   runnerToken?: string;
@@ -133,7 +133,7 @@ export const parseRunnerCliArgs = (
 
 const SHUTDOWN_GRACE_MS = 8000;
 
-export const runRunnerCli = async (): Promise<void> => {
+const runRunnerCli = async (): Promise<void> => {
   process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'true';
 
   const log = logger.child('runner-cli');

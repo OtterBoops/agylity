@@ -85,7 +85,7 @@ export interface RepositoryConfig {
   defaultBranch?: string;
 }
 
-export interface DispatchPoolView {
+interface DispatchPoolView {
   poolId: string;
   displayName: string;
   weeklyPercent: number | null;

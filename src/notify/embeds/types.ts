@@ -4,7 +4,7 @@ export interface EmbedField {
   inline?: boolean;
 }
 
-export interface EmbedFooter {
+interface EmbedFooter {
   text: string;
   icon_url?: string;
 }

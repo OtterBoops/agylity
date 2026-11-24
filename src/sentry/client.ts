@@ -2,12 +2,7 @@ import { existsSync } from 'node:fs';
 import ky from 'ky';
 import { z } from 'zod';
 import { logger, type Logger } from '../logs/logger.js';
-import {
-  defaultExecFileAsync,
-  discoverLocalLanguageServer,
-  type DiscoveredLanguageServer,
-  type ExecFileAsyncFn,
-} from './discovery.js';
+import { defaultExecFileAsync, discoverLocalLanguageServer } from './discovery.js';
 import {
   aggregateQuotaPools,
   aggregateUserQuotaSummary,
@@ -22,13 +17,6 @@ import {
   type QuotaSnapshot,
 } from './models.js';
 
-export {
-  defaultExecFileAsync,
-  discoverLocalLanguageServer,
-  type DiscoveredLanguageServer,
-  type ExecFileAsyncFn,
-};
-
 export class LanguageServerError extends Error {
   public readonly code: string;
   public readonly cause?: unknown;
@@ -41,12 +29,12 @@ export class LanguageServerError extends Error {
   }
 }
 
-export const CliModelItemSchema = z.object({
+const CliModelItemSchema = z.object({
   id: z.string(),
   label: z.string().optional(),
 });
 
-export const CliModelsResponseSchema = z.object({
+const CliModelsResponseSchema = z.object({
   status: z.string().optional(),
   command: z
     .object({
@@ -61,7 +49,7 @@ export const CliModelsResponseSchema = z.object({
   models: z.array(CliModelItemSchema).optional(),
 });
 
-export type CliModelsResponse = z.infer<typeof CliModelsResponseSchema>;
+type CliModelsResponse = z.infer<typeof CliModelsResponseSchema>;
 
 export const extractCliJsonPayload = (stdout: string): unknown => {
   const trimmed = stdout.trim();
@@ -99,14 +87,16 @@ export interface ConnectRpcQuotaClientOptions {
   ) => Promise<{ stdout: string; stderr: string }>;
 }
 
-export const RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData';
+const RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetCascadeModelConfigData';
 export const QUOTA_SUMMARY_RPC_PATH =
   '/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary';
 export const USER_STATUS_RPC_PATH = '/exa.language_server_pb.LanguageServerService/GetUserStatus';
 
+const errorMessage = (err: unknown): string => (err instanceof Error ? err.message : String(err));
+
 const isConnectionRefused = (err: unknown): boolean => {
   if (!err) return false;
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const msg = errorMessage(err).toLowerCase();
   return (
     msg.includes('econnrefused') ||
     msg.includes('ehostunreach') ||
@@ -118,7 +108,7 @@ const isConnectionRefused = (err: unknown): boolean => {
 
 export const isCliAuthFailure = (err: unknown): boolean => {
   if (!err) return false;
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const msg = errorMessage(err).toLowerCase();
   return (
     msg.includes('please sign in') ||
     msg.includes('launch the cli without arguments to sign in') ||
@@ -129,7 +119,7 @@ export const isCliAuthFailure = (err: unknown): boolean => {
   );
 };
 
-export const buildCliAuthErrorMessage = (): string => {
+const buildCliAuthErrorMessage = (): string => {
   const isContainer =
     process.env.DATA_DIR === '/app/data' ||
     Boolean(process.env.DATABASE_PATH?.startsWith('/app/')) ||
@@ -183,7 +173,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     options: Record<string, unknown>
   ) => Promise<{ stdout: string; stderr: string }>;
 
-  constructor(options: ConnectRpcQuotaClientOptions & { minRefreshIntervalMs?: number } = {}) {
+  constructor(options: ConnectRpcQuotaClientOptions = {}) {
     this.logger = options.logger ?? logger.child('sentry');
     this.endpointUrl = options.endpointUrl ?? process.env.ANTIGRAVITY_ENDPOINT_URL;
     this.host = options.host ?? '127.0.0.1';
@@ -200,11 +190,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.enableProcessDiscovery = options.enableProcessDiscovery ?? true;
     this.cachedSnapshotProvider = options.cachedSnapshotProvider;
     this.overageEnabledProvider = options.overageEnabledProvider;
-    this.minRefreshIntervalMs =
-      options.minRefreshIntervalMs ??
-      (process.env.QUOTA_MIN_REFRESH_INTERVAL_MS
-        ? Number(process.env.QUOTA_MIN_REFRESH_INTERVAL_MS)
-        : 3000);
+    this.minRefreshIntervalMs = options.minRefreshIntervalMs ?? 3000;
     this.fetchFn = options.fetchFn;
     this.execFileFn = options.execFileFn ?? (defaultExecFileAsync as any);
   }
@@ -249,33 +235,14 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       try {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
-          this.lastKnownSnapshots = cliSnapshots;
-          this.lastFetchedAt = Date.now();
-          this.lastProbeSource = this.lastFallbackSynthetic ? 'cli_fallback' : 'cli';
-          this.lastFailedAt = 0;
-          this.lastProbeError = undefined;
-          this.authBlockedUntil = 0;
-          this.lastAuthErrorMessage = undefined;
-          return cliSnapshots;
+          return this.recordProbeSuccess(cliSnapshots, 'cli');
         }
       } catch (cliErr: unknown) {
         this.activeProvider = 'unknown';
         this.nextRpcProbeAt = 0;
         this.lastFailedAt = Date.now();
         if (isCliAuthFailure(cliErr)) {
-          this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
-          this.lastAuthErrorMessage = buildCliAuthErrorMessage();
-          this.logger.error(
-            '[Error] %s (Pausing CLI queries for 5m to prevent retry loops)',
-            this.lastAuthErrorMessage
-          );
-          const authError = new LanguageServerError(
-            this.lastAuthErrorMessage,
-            'AUTH_REQUIRED',
-            cliErr
-          );
-          this.lastProbeError = authError;
-          throw authError;
+          throw this.blockOnCliAuthFailure(cliErr);
         }
       }
     }
@@ -296,15 +263,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     try {
       const snapshots = await this.tryConnectRpc();
       if (snapshots && snapshots.length > 0) {
-        this.activeProvider = 'rpc';
-        this.lastProbeSource = 'connect_rpc';
-        this.lastKnownSnapshots = snapshots;
-        this.lastFetchedAt = Date.now();
-        this.lastFailedAt = 0;
-        this.lastProbeError = undefined;
-        this.authBlockedUntil = 0;
-        this.lastAuthErrorMessage = undefined;
-        return snapshots;
+        return this.recordProbeSuccess(snapshots, 'rpc', 'connect_rpc');
       }
     } catch (err: unknown) {
       rpcError = err instanceof Error ? err : new Error(String(err));
@@ -316,15 +275,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         if (this.applyDiscoveredCredentials(discovered)) {
           const snapshots = await this.tryConnectRpc();
           if (snapshots && snapshots.length > 0) {
-            this.activeProvider = 'rpc';
-            this.lastProbeSource = 'connect_rpc';
-            this.lastKnownSnapshots = snapshots;
-            this.lastFetchedAt = Date.now();
-            this.lastFailedAt = 0;
-            this.lastProbeError = undefined;
-            this.authBlockedUntil = 0;
-            this.lastAuthErrorMessage = undefined;
-            return snapshots;
+            return this.recordProbeSuccess(snapshots, 'rpc', 'connect_rpc');
           }
         }
       } catch {}
@@ -335,17 +286,9 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       try {
         const cliSnapshots = await this.fallbackToCli();
         if (cliSnapshots && cliSnapshots.length > 0) {
-          this.activeProvider = 'cli';
-          this.lastProbeSource = this.lastFallbackSynthetic ? 'cli_fallback' : 'cli';
           this.nextRpcProbeAt = Date.now() + 15 * 60 * 1000;
           this.logger.info('Retrieved %d model pools via Antigravity CLI', cliSnapshots.length);
-          this.lastKnownSnapshots = cliSnapshots;
-          this.lastFetchedAt = Date.now();
-          this.lastFailedAt = 0;
-          this.lastProbeError = undefined;
-          this.authBlockedUntil = 0;
-          this.lastAuthErrorMessage = undefined;
-          return cliSnapshots;
+          return this.recordProbeSuccess(cliSnapshots, 'cli');
         }
       } catch (cliErr: unknown) {
         this.activeProvider = 'unknown';
@@ -353,19 +296,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         this.lastFailedAt = Date.now();
 
         if (isCliAuthFailure(cliErr)) {
-          this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
-          this.lastAuthErrorMessage = buildCliAuthErrorMessage();
-          this.logger.error(
-            '[Error] %s (Pausing CLI queries for 5m to prevent retry loops)',
-            this.lastAuthErrorMessage
-          );
-          const authError = new LanguageServerError(
-            this.lastAuthErrorMessage,
-            'AUTH_REQUIRED',
-            cliErr
-          );
-          this.lastProbeError = authError;
-          throw authError;
+          throw this.blockOnCliAuthFailure(cliErr);
         }
 
         const cliError = cliErr instanceof Error ? cliErr : new Error(String(cliErr));
@@ -386,6 +317,41 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       rpcError
     );
     throw this.lastProbeError;
+  }
+
+  /**
+   * Every successful probe lands here, so a recovered probe clears the failure state the same way
+   * whichever transport answered.
+   */
+  private recordProbeSuccess(
+    snapshots: QuotaSnapshot[],
+    provider: 'rpc' | 'cli',
+    source: 'connect_rpc' | 'cli' | 'cli_fallback' = this.lastFallbackSynthetic
+      ? 'cli_fallback'
+      : 'cli'
+  ): QuotaSnapshot[] {
+    this.activeProvider = provider;
+    this.lastProbeSource = source;
+    this.lastKnownSnapshots = snapshots;
+    this.lastFetchedAt = Date.now();
+    this.lastFailedAt = 0;
+    this.lastProbeError = undefined;
+    this.authBlockedUntil = 0;
+    this.lastAuthErrorMessage = undefined;
+    return snapshots;
+  }
+
+  /** One auth-block transition for every CLI path: a dead login must not become a retry loop. */
+  private blockOnCliAuthFailure(cause: unknown): LanguageServerError {
+    this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
+    this.lastAuthErrorMessage = buildCliAuthErrorMessage();
+    this.logger.error(
+      '[Error] %s (Pausing CLI queries for 5m to prevent retry loops)',
+      this.lastAuthErrorMessage
+    );
+    const authError = new LanguageServerError(this.lastAuthErrorMessage, 'AUTH_REQUIRED', cause);
+    this.lastProbeError = authError;
+    return authError;
   }
 
   private applyDiscoveredCredentials(discovered: any): boolean {
@@ -488,10 +454,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         this.authBlockedUntil = Date.now() + ConnectRpcQuotaClient.AUTH_FAILURE_COOLDOWN_MS;
         this.lastAuthErrorMessage = buildCliAuthErrorMessage();
       }
-      this.logger.debug(
-        'Background credits query failed: %s',
-        err instanceof Error ? err.message : String(err)
-      );
+      this.logger.debug('Background credits query failed: %s', errorMessage(err));
     } finally {
       this.isCreditsProbing = false;
     }
@@ -570,7 +533,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         this.logger.debug(
           'RetrieveUserQuotaSummary probe failed on %s: %s',
           base,
-          err instanceof Error ? err.message : String(err)
+          errorMessage(err)
         );
       }
     }
@@ -639,10 +602,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
         return deriveOverageEnabled(parsed.data);
       }
     } catch (err: unknown) {
-      this.logger.debug(
-        'GetUserStatus probe failed: %s',
-        err instanceof Error ? err.message : String(err)
-      );
+      this.logger.debug('GetUserStatus probe failed: %s', errorMessage(err));
     }
     return undefined;
   }
@@ -698,7 +658,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       }
       this.logger.debug(
         'agy -p "/usage" failed: %s; falling back to agy models',
-        usageErr instanceof Error ? usageErr.message : String(usageErr)
+        errorMessage(usageErr)
       );
     }
 
@@ -716,7 +676,7 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
       parsedCli = CliModelsResponseSchema.parse(json);
     } catch (err: unknown) {
       throw new LanguageServerError(
-        `Failed to parse CLI models output: ${err instanceof Error ? err.message : String(err)}`,
+        `Failed to parse CLI models output: ${errorMessage(err)}`,
         'CLI_PARSE_ERROR'
       );
     }
@@ -802,5 +762,3 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     return [];
   }
 }
-
-export const QuotaClient = ConnectRpcQuotaClient;

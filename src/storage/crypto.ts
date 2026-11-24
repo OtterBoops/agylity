@@ -14,7 +14,7 @@ export class SecretDecryptionError extends Error {
   }
 }
 
-export const SECRET_KEYS = new Set<string>([
+const SECRET_KEYS = new Set<string>([
   ...CANONICAL_SECRET_CONFIG_KEYS,
   ...Object.values(SECRET_CONFIG_KEY_ENV_NAMES),
 ]);

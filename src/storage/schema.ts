@@ -6,7 +6,7 @@ export interface ColumnSpec {
   ddl: string;
 }
 
-export const renderColumns = (columns: readonly ColumnSpec[]): string =>
+const renderColumns = (columns: readonly ColumnSpec[]): string =>
   columns.map((column) => `        ${column.ddl}`).join(',\n');
 
 /** A table-level constraint shares the spec list but has no column of its own to add. */
@@ -21,7 +21,7 @@ const isAddableColumn = (ddl: string): boolean => {
 };
 
 /** Additively upgrades a table to its expected column set; never drops or rewrites a column. */
-export const migrateColumns = (
+const migrateColumns = (
   db: DatabaseSync,
   tableName: string,
   columns: readonly ColumnSpec[]

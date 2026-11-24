@@ -5,6 +5,8 @@ import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import { resolveTaskTitle } from '../shared/titles.js';
+import { tailWindow } from '../shared/text.js';
+import { PR_POLICY_VALUES } from '../shared/contracts.js';
 import type {
   BacklogTaskRecord,
   PrPolicy,
@@ -42,7 +44,7 @@ export type {
   SwarmTask,
 };
 
-export interface EnqueueTaskInput {
+interface EnqueueTaskInput {
   id?: string;
   taskNumber?: number;
   title?: string;
@@ -68,7 +70,7 @@ export interface EnqueueTaskInput {
   verifyCommand?: string;
 }
 
-export interface ClaimTaskOptions {
+interface ClaimTaskOptions {
   runnerId: string;
   runnerName?: string;
   labels?: string[];
@@ -94,14 +96,14 @@ export interface TaskStatusPatch {
   thinkingTokens?: number;
 }
 
-export interface TaskListFilters {
+interface TaskListFilters {
   status?: TaskStatus;
   scheduleMode?: ScheduleMode;
   q?: string;
   taskNumber?: number;
 }
 
-export interface TaskListOptions extends TaskListFilters {
+interface TaskListOptions extends TaskListFilters {
   limit?: number;
   offset?: number;
 }
@@ -122,7 +124,7 @@ export interface ExchangeRegistrationTokenInput {
   systemInfo?: RunnerSystemInfo;
 }
 
-export const hashRunnerToken = (token: string): string =>
+const hashRunnerToken = (token: string): string =>
   createHash('sha256').update(token.trim()).digest('hex');
 
 const TASK_LIST_COLUMNS = SWARM_TASK_COLUMNS.filter((column) => column.name !== 'output')
@@ -130,16 +132,6 @@ const TASK_LIST_COLUMNS = SWARM_TASK_COLUMNS.filter((column) => column.name !== 
   .join(', ');
 
 export const OUTPUT_CAP = 512 * 1024;
-
-/** The last `cap` UTF-16 units, nudged off a surrogate pair so the head never renders as U+FFFD. */
-export const tailWindow = (text: string, cap: number): string => {
-  let start = Math.max(0, text.length - cap);
-  if (start > 0) {
-    const code = text.charCodeAt(start);
-    if (code >= 0xdc00 && code <= 0xdfff) start -= 1;
-  }
-  return text.slice(start);
-};
 
 /** Keeps the tail, which is where a failure explains itself, and says how much was dropped. */
 export const capOutput = (text: string, cap: number = OUTPUT_CAP): string => {
@@ -149,6 +141,10 @@ export const capOutput = (text: string, cap: number = OUTPUT_CAP): string => {
 };
 
 const REGISTRATION_TOKEN_RETENTION = 50;
+
+const ELIGIBLE_BACKLOG_SQL = `SELECT * FROM backlog_tasks
+   WHERE status = 'pending' AND attempt_count < max_attempts
+   ORDER BY priority_order ASC, task_number ASC, created_at ASC`;
 
 const TERMINAL_STATUS_SQL = TERMINAL_TASK_STATUSES.map((s) => `'${s}'`).join(', ');
 
@@ -167,6 +163,14 @@ const coerceNullableNumber = (value: unknown, fallback: number | null): number |
   return fallback;
 };
 
+const bitFlag = (value: boolean): 0 | 1 => (value ? 1 : 0);
+
+const PR_POLICY_SET: ReadonlySet<string> = new Set(PR_POLICY_VALUES);
+
+// An unrecognised policy string must never be stored, or it would read as "no restriction".
+const coercePrPolicy = (value: unknown): PrPolicy | undefined =>
+  typeof value === 'string' && PR_POLICY_SET.has(value) ? (value as PrPolicy) : undefined;
+
 const coerceBacklogStatus = (value: unknown, fallback: BacklogStatus): BacklogStatus => {
   if (value === undefined) return fallback;
   const parsed = BacklogStatusSchema.safeParse(value);
@@ -184,6 +188,17 @@ const coerceTrimmedString = (value: unknown, fallback: string): string => {
   const trimmed = value.trim();
   return trimmed === '' ? fallback : trimmed;
 };
+
+const parseJsonColumn = <T>(raw: unknown, fallback: T): T => {
+  try {
+    return JSON.parse(String(raw)) as T;
+  } catch {
+    return fallback;
+  }
+};
+
+const numberOrUndefined = (value: unknown): number | undefined =>
+  value !== null && value !== undefined ? Number(value) : undefined;
 
 const parseIssueUrls = (raw: unknown): string[] | undefined => {
   if (typeof raw !== 'string' || raw.trim() === '') return undefined;
@@ -223,7 +238,7 @@ export class TaskQueue {
 
   constructor(database: AppDatabase) {
     this.rawDb = database.getRawDb();
-    this.initSchema();
+    applyMigrations(this.rawDb);
   }
 
   private inTransaction<T>(fn: () => T): T {
@@ -240,8 +255,11 @@ export class TaskQueue {
     }
   }
 
-  private initSchema(): void {
-    applyMigrations(this.rawDb);
+  // The max read and the insert share the caller's write transaction, so two creates cannot collide.
+  private nextTaskNumber(table: 'swarm_tasks' | 'backlog_tasks' | 'routine_tasks'): number {
+    const row = this.rawDb.prepare(`SELECT MAX(task_number) as max_num FROM ${table}`).get() as
+      { max_num?: number } | undefined;
+    return (row?.max_num ?? 0) + 1;
   }
 
   public getRuntimeValue(key: string): string | undefined {
@@ -353,14 +371,8 @@ export class TaskQueue {
         throw new RegistrationTokenError('Runner registration token has expired');
       }
 
-      let defaultLabels: string[] = [];
-      let defaultRepos: string[] = [];
-      try {
-        defaultLabels = JSON.parse(String(regRow.labels_json || '[]'));
-      } catch {}
-      try {
-        defaultRepos = JSON.parse(String(regRow.repositories_json || '[]'));
-      } catch {}
+      const defaultLabels = parseJsonColumn<string[]>(regRow.labels_json || '[]', []);
+      const defaultRepos = parseJsonColumn<string[]>(regRow.repositories_json || '[]', []);
 
       const runnerId = input.runnerId?.trim() || `runner-${randomBytes(4).toString('hex')}`;
       const existingRunner = this.getRunner(runnerId);
@@ -582,12 +594,7 @@ export class TaskQueue {
     const originNumber = input.originNumber ?? null;
     const originTitle = input.originTitle ?? null;
 
-    // Two concurrent enqueues must never pick the same number, so the max read and the insert share
-    // one write transaction.
-    const maxNumberRow = this.rawDb
-      .prepare('SELECT MAX(task_number) as max_num FROM swarm_tasks')
-      .get() as { max_num?: number } | undefined;
-    const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+    const taskNumber = input.taskNumber ?? this.nextTaskNumber('swarm_tasks');
     this.rawDb
       .prepare(
         `INSERT INTO swarm_tasks (
@@ -674,23 +681,14 @@ export class TaskQueue {
   }
 
   public getLatestTaskForOrigin(originId: string, poolGroup?: string): SwarmTask | undefined {
-    const row = poolGroup
-      ? (this.rawDb
-          .prepare(
-            `SELECT * FROM swarm_tasks
-             WHERE origin_id = ? AND pool_group = ?
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT 1`
-          )
-          .get(originId, poolGroup) as Record<string, any> | undefined)
-      : (this.rawDb
-          .prepare(
-            `SELECT * FROM swarm_tasks
-             WHERE origin_id = ?
-             ORDER BY created_at DESC, rowid DESC
-             LIMIT 1`
-          )
-          .get(originId) as Record<string, any> | undefined);
+    const row = this.rawDb
+      .prepare(
+        `SELECT * FROM swarm_tasks
+         WHERE origin_id = ?${poolGroup ? ' AND pool_group = ?' : ''}
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT 1`
+      )
+      .get(...(poolGroup ? [originId, poolGroup] : [originId])) as Record<string, any> | undefined;
     return row ? this.mapRowToTask(row) : undefined;
   }
 
@@ -805,15 +803,18 @@ export class TaskQueue {
       // A registered runner keeps its stored identity; only an ad-hoc runner adopts the poll payload.
       const persistedLabels = existingRunner ? registeredLabels : effectiveLabels;
       const persistedRepos = existingRunner ? registeredRepos : effectiveRepos;
-      if (existingRunner && !existingRunner.enabled) {
+      const beat = (status: 'idle' | 'busy', activeTaskId?: string): void =>
         this.registerRunnerHeartbeat({
           runnerId: options.runnerId,
           name: options.runnerName,
           labels: persistedLabels,
           repositories: persistedRepos,
           systemInfo: options.systemInfo,
-          status: 'idle',
+          activeTaskId,
+          status,
         });
+      if (existingRunner && !existingRunner.enabled) {
+        beat('idle');
         return null;
       }
 
@@ -826,14 +827,7 @@ export class TaskQueue {
         }
         // A finished or vanished task leaves a stale pointer behind; clearing it is what lets a
         // runner whose final status report was lost ever claim again.
-        this.registerRunnerHeartbeat({
-          runnerId: options.runnerId,
-          name: options.runnerName,
-          labels: persistedLabels,
-          repositories: persistedRepos,
-          systemInfo: options.systemInfo,
-          status: 'idle',
-        });
+        beat('idle');
       }
 
       const repoFilter =
@@ -942,27 +936,12 @@ export class TaskQueue {
           ) as unknown as { changes?: number };
 
         if ((updateResult?.changes ?? 0) > 0) {
-          this.registerRunnerHeartbeat({
-            runnerId: options.runnerId,
-            name: options.runnerName,
-            labels: persistedLabels,
-            repositories: persistedRepos,
-            systemInfo: options.systemInfo,
-            activeTaskId: task.id,
-            status: 'busy',
-          });
+          beat('busy', task.id);
           return this.getTask(task.id) ?? null;
         }
       }
 
-      this.registerRunnerHeartbeat({
-        runnerId: options.runnerId,
-        name: options.runnerName,
-        labels: persistedLabels,
-        repositories: persistedRepos,
-        systemInfo: options.systemInfo,
-        status: 'idle',
-      });
+      beat('idle');
 
       return null;
     });
@@ -1321,18 +1300,9 @@ export class TaskQueue {
   }
 
   private mapRowToRunner(r: Record<string, any>): SwarmRunnerRecord {
-    let labels: string[] = [];
-    let repositories: string[] = [];
-    let systemInfo: RunnerSystemInfo = {};
-    try {
-      labels = JSON.parse(String(r.labels_json || '[]'));
-    } catch {}
-    try {
-      repositories = JSON.parse(String(r.repositories_json || '[]'));
-    } catch {}
-    try {
-      systemInfo = JSON.parse(String(r.system_info_json || '{}'));
-    } catch {}
+    const labels = parseJsonColumn<string[]>(r.labels_json || '[]', []);
+    const repositories = parseJsonColumn<string[]>(r.repositories_json || '[]', []);
+    const systemInfo = parseJsonColumn<RunnerSystemInfo>(r.system_info_json || '{}', {});
 
     return {
       runnerId: String(r.runner_id ?? ''),
@@ -1350,15 +1320,8 @@ export class TaskQueue {
   }
 
   private mapRowToTask(row: Record<string, any>): SwarmTask {
-    let requiredLabels: string[] = [];
-    try {
-      requiredLabels = JSON.parse(String(row.required_labels_json || '[]'));
-    } catch {}
-
-    let storedCascade: unknown = [];
-    try {
-      storedCascade = JSON.parse(String(row.candidate_models_json || '[]'));
-    } catch {}
+    const requiredLabels = parseJsonColumn<string[]>(row.required_labels_json || '[]', []);
+    const storedCascade = parseJsonColumn<unknown>(row.candidate_models_json || '[]', []);
 
     const primaryModel = String(row.model);
     const primaryEffort = resolveReasoningEffortForModel(primaryModel, row.effort);
@@ -1378,10 +1341,7 @@ export class TaskQueue {
       title,
       tier: (row.tier as TaskTier) || 'immediate',
       originId: row.origin_id ? String(row.origin_id) : undefined,
-      originNumber:
-        row.origin_number !== null && row.origin_number !== undefined
-          ? Number(row.origin_number)
-          : undefined,
+      originNumber: numberOrUndefined(row.origin_number),
       originTitle: row.origin_title ? String(row.origin_title) : undefined,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -1416,16 +1376,9 @@ export class TaskQueue {
       output: row.output ? String(row.output) : undefined,
       error: row.error ? String(row.error) : undefined,
       durationMs: Number(row.duration_ms || 0),
-      numTurns:
-        row.num_turns !== null && row.num_turns !== undefined ? Number(row.num_turns) : undefined,
-      totalTokens:
-        row.total_tokens !== null && row.total_tokens !== undefined
-          ? Number(row.total_tokens)
-          : undefined,
-      thinkingTokens:
-        row.thinking_tokens !== null && row.thinking_tokens !== undefined
-          ? Number(row.thinking_tokens)
-          : undefined,
+      numTurns: numberOrUndefined(row.num_turns),
+      totalTokens: numberOrUndefined(row.total_tokens),
+      thinkingTokens: numberOrUndefined(row.thinking_tokens),
     };
   }
 
@@ -1448,25 +1401,13 @@ export class TaskQueue {
   }
 
   public listEligibleBacklogTasks(): BacklogTaskRecord[] {
-    const rows = this.rawDb
-      .prepare(
-        `SELECT * FROM backlog_tasks
-         WHERE status = 'pending' AND attempt_count < max_attempts
-         ORDER BY priority_order ASC, task_number ASC, created_at ASC`
-      )
-      .all() as Array<Record<string, any>>;
+    const rows = this.rawDb.prepare(ELIGIBLE_BACKLOG_SQL).all() as Array<Record<string, any>>;
     return rows.map((r) => this.mapRowToBacklogTask(r));
   }
 
   public getNextEligibleBacklogTask(): BacklogTaskRecord | undefined {
-    const row = this.rawDb
-      .prepare(
-        `SELECT * FROM backlog_tasks
-         WHERE status = 'pending' AND attempt_count < max_attempts
-         ORDER BY priority_order ASC, task_number ASC, created_at ASC
-         LIMIT 1`
-      )
-      .get() as Record<string, any> | undefined;
+    const row = this.rawDb.prepare(`${ELIGIBLE_BACKLOG_SQL} LIMIT 1`).get() as
+      Record<string, any> | undefined;
     return row ? this.mapRowToBacklogTask(row) : undefined;
   }
 
@@ -1496,17 +1437,12 @@ export class TaskQueue {
     const id = input.id ?? `backlog-${Date.now()}-${randomBytes(3).toString('hex')}`;
     const now = new Date().toISOString();
     const cascade = coerceCascade(input.cascade);
-    const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
+    const autoCreatePr = bitFlag(input.autoCreatePr !== false);
     const priorityOrder = coerceNumber(input.priorityOrder, 0);
     const maxAttempts = coerceNumber(input.maxAttempts, 2);
 
-    // Two concurrent creates must never pick the same number, so the max read and insert share one
-    // write transaction.
     this.inTransaction(() => {
-      const maxNumberRow = this.rawDb
-        .prepare('SELECT MAX(task_number) as max_num FROM backlog_tasks')
-        .get() as { max_num?: number } | undefined;
-      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+      const taskNumber = input.taskNumber ?? this.nextTaskNumber('backlog_tasks');
 
       this.rawDb
         .prepare(
@@ -1564,19 +1500,11 @@ export class TaskQueue {
     const title = coerceTrimmedString(patch.title, existing.title);
     const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
     const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
-    const cascade = coerceCascade(
-      patch.cascade !== undefined ? patch.cascade : existing.cascade,
-      existing.cascade[0]?.model
-    );
+    const cascade = coerceCascade(patch.cascade ?? existing.cascade, existing.cascade[0]?.model);
     const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
-    const autoCreatePr =
-      typeof patch.autoCreatePr === 'boolean'
-        ? patch.autoCreatePr
-          ? 1
-          : 0
-        : existing.autoCreatePr
-          ? 1
-          : 0;
+    const autoCreatePr = bitFlag(
+      typeof patch.autoCreatePr === 'boolean' ? patch.autoCreatePr : existing.autoCreatePr
+    );
     const priorityOrder = coerceNumber(patch.priorityOrder, existing.priorityOrder);
     const status = coerceBacklogStatus(patch.status ?? existing.status, existing.status);
     const attemptCount = coerceNumber(patch.attemptCount, existing.attemptCount);
@@ -1634,28 +1562,36 @@ export class TaskQueue {
     return this.getBacklogTask(id);
   }
 
-  public deleteBacklogTask(id: string): boolean {
-    const info = this.rawDb
-      .prepare('DELETE FROM backlog_tasks WHERE id = ?')
-      .run(id) as unknown as { changes?: number };
+  private deleteByTable(table: 'backlog_tasks' | 'routine_tasks', id: string): boolean {
+    const info = this.rawDb.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id) as unknown as {
+      changes?: number;
+    };
     return (info?.changes ?? 0) > 0;
   }
 
-  private mapRowToBacklogTask(r: Record<string, any>): BacklogTaskRecord {
-    let storedCascade: unknown = [];
-    try {
-      storedCascade = JSON.parse(String(r.models_json || '[]'));
-    } catch {}
+  public deleteBacklogTask(id: string): boolean {
+    return this.deleteByTable('backlog_tasks', id);
+  }
 
+  /** The columns `backlog_tasks` and `routine_tasks` share, read once so the two mappers cannot drift. */
+  private mapSharedTaskColumns(r: Record<string, any>) {
     return {
       id: String(r.id),
       taskNumber: Number(r.task_number || 0),
       title: String(r.title),
       prompt: String(r.prompt),
       repositoryId: String(r.repository_id),
-      cascade: coerceCascade(storedCascade),
+      cascade: coerceCascade(parseJsonColumn<unknown>(r.models_json || '[]', [])),
       verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
       autoCreatePr: r.auto_create_pr !== 0,
+      createdAt: String(r.created_at),
+      updatedAt: String(r.updated_at),
+    };
+  }
+
+  private mapRowToBacklogTask(r: Record<string, any>): BacklogTaskRecord {
+    return {
+      ...this.mapSharedTaskColumns(r),
       priorityOrder: Number(r.priority_order ?? 0),
       status: (r.status as BacklogStatus) || 'pending',
       attemptCount: Number(r.attempt_count ?? 0),
@@ -1669,8 +1605,6 @@ export class TaskQueue {
           ? Number(r.github_issue_number)
           : undefined,
       githubIssueUrl: r.github_issue_url ? String(r.github_issue_url) : undefined,
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
     };
   }
 
@@ -1707,26 +1641,15 @@ export class TaskQueue {
     const id = input.id ?? `routine-${Date.now()}-${randomBytes(3).toString('hex')}`;
     const now = new Date().toISOString();
     const cascade = coerceCascade(input.cascade);
-    const autoCreatePr = input.autoCreatePr !== false ? 1 : 0;
-    const prPolicy =
-      input.prPolicy === 'docs_only' ||
-      input.prPolicy === 'issues_only' ||
-      input.prPolicy === 'all' ||
-      input.prPolicy === 'none'
-        ? input.prPolicy
-        : 'inherit';
-    const enabled = input.enabled !== false ? 1 : 0;
+    const autoCreatePr = bitFlag(input.autoCreatePr !== false);
+    const prPolicy = coercePrPolicy(input.prPolicy) ?? 'inherit';
+    const enabled = bitFlag(input.enabled !== false);
     const sortOrder = coerceNumber(input.sortOrder, 0);
     const triggerHours = coerceNumber(input.triggerBeforeResetHours, DEFAULT_QUOTA_BURN_MAX_HOURS);
     const minHeadroom = coerceNumber(input.minHeadroomPercent, 10);
 
-    // Two concurrent creates must never pick the same number, so the max read and insert share one
-    // write transaction.
     this.inTransaction(() => {
-      const maxNumberRow = this.rawDb
-        .prepare('SELECT MAX(task_number) as max_num FROM routine_tasks')
-        .get() as { max_num?: number } | undefined;
-      const taskNumber = input.taskNumber ?? (maxNumberRow?.max_num ?? 0) + 1;
+      const taskNumber = input.taskNumber ?? this.nextTaskNumber('routine_tasks');
 
       this.rawDb
         .prepare(
@@ -1784,30 +1707,16 @@ export class TaskQueue {
     const title = coerceTrimmedString(patch.title, existing.title);
     const prompt = coerceTrimmedString(patch.prompt, existing.prompt);
     const repositoryId = coerceTrimmedString(patch.repositoryId, existing.repositoryId);
-    const cascade = coerceCascade(
-      patch.cascade !== undefined ? patch.cascade : existing.cascade,
-      existing.cascade[0]?.model
-    );
+    const cascade = coerceCascade(patch.cascade ?? existing.cascade, existing.cascade[0]?.model);
     const verifyCommand = coerceNullableString(patch.verifyCommand, existing.verifyCommand ?? null);
-    const autoCreatePr =
-      typeof patch.autoCreatePr === 'boolean'
-        ? patch.autoCreatePr
-          ? 1
-          : 0
-        : existing.autoCreatePr
-          ? 1
-          : 0;
+    const autoCreatePr = bitFlag(
+      typeof patch.autoCreatePr === 'boolean' ? patch.autoCreatePr : existing.autoCreatePr
+    );
     const prPolicy =
       patch.prPolicy === null
         ? 'inherit'
-        : patch.prPolicy === 'docs_only' ||
-            patch.prPolicy === 'issues_only' ||
-            patch.prPolicy === 'all' ||
-            patch.prPolicy === 'none'
-          ? patch.prPolicy
-          : (existing.prPolicy ?? 'inherit');
-    const enabled =
-      typeof patch.enabled === 'boolean' ? (patch.enabled ? 1 : 0) : existing.enabled ? 1 : 0;
+        : (coercePrPolicy(patch.prPolicy) ?? existing.prPolicy ?? 'inherit');
+    const enabled = bitFlag(typeof patch.enabled === 'boolean' ? patch.enabled : existing.enabled);
     const sortOrder = coerceNumber(patch.sortOrder, existing.sortOrder);
     const triggerHours = coerceNumber(
       patch.triggerBeforeResetHours,
@@ -1866,27 +1775,12 @@ export class TaskQueue {
   }
 
   public deleteRoutineTask(id: string): boolean {
-    const info = this.rawDb
-      .prepare('DELETE FROM routine_tasks WHERE id = ?')
-      .run(id) as unknown as { changes?: number };
-    return (info?.changes ?? 0) > 0;
+    return this.deleteByTable('routine_tasks', id);
   }
 
   private mapRowToRoutineTask(r: Record<string, any>): RoutineTaskRecord {
-    let storedCascade: unknown = [];
-    try {
-      storedCascade = JSON.parse(String(r.models_json || '[]'));
-    } catch {}
-
     return {
-      id: String(r.id),
-      taskNumber: Number(r.task_number || 0),
-      title: String(r.title),
-      prompt: String(r.prompt),
-      repositoryId: String(r.repository_id),
-      cascade: coerceCascade(storedCascade),
-      verifyCommand: r.verify_command ? String(r.verify_command) : undefined,
-      autoCreatePr: r.auto_create_pr !== 0,
+      ...this.mapSharedTaskColumns(r),
       prPolicy: r.pr_policy && r.pr_policy !== 'inherit' ? (r.pr_policy as PrPolicy) : undefined,
       enabled: r.enabled !== 0,
       sortOrder: Number(r.sort_order ?? 0),
@@ -1897,8 +1791,6 @@ export class TaskQueue {
         : undefined,
       lastTriggeredCycles: parseCycleMap(r.last_triggered_cycles_json),
       lastTaskId: r.last_task_id ? String(r.last_task_id) : undefined,
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
     };
   }
 }

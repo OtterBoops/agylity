@@ -12,7 +12,7 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import type { RunnersResponse } from '../../shared/contracts.js';
+import { PR_POLICY_VALUES, type PrPolicy, type RunnersResponse } from '../../shared/contracts.js';
 import { extractClientIp } from '../ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
@@ -37,21 +37,23 @@ import {
 
 const coordinatorCache = new WeakMap<WebServerOptions, Coordinator>();
 
-export const knownModelIds = (options: WebServerOptions): readonly string[] => [
+const knownModelIds = (options: WebServerOptions): readonly string[] => [
   ...CANONICAL_AGY_MODELS.map((m) => m.id),
   ...(options.modelCatalog?.getModels() ?? []).map((m) => m.id),
 ];
 
-export interface CascadeRequestOptions {
+interface CascadeRequestOptions {
   fallbackModel?: string;
   fallbackEffort?: ReasoningEffort;
   knownModels?: readonly string[];
 }
 
-export const parseCascadeRequest = (
+type CascadeParseResult = { ok: true; cascade: CascadeHop[] } | { ok: false; error: string };
+
+const parseCascadeRequest = (
   raw: unknown,
   options: CascadeRequestOptions = {}
-): { ok: true; cascade: CascadeHop[] } | { ok: false; error: string } => {
+): CascadeParseResult => {
   const fallbackModel = options.fallbackModel?.trim() || 'gemini-4-hydrogen';
 
   if (raw === undefined || raw === null) {
@@ -98,12 +100,29 @@ export const parseCascadeRequest = (
   return { ok: true, cascade: normalizeCascade(raw, fallbackModel) };
 };
 
-export const configuredCascade = (options: CascadeRequestOptions = {}): CascadeHop[] => {
-  const parsed = parseCascadeRequest(undefined, options);
+/** Every write path validates a cascade against the same catalog and dispatch default. */
+const cascadeOptions = (options: WebServerOptions): CascadeRequestOptions => {
+  const resolved = options.configStore.resolveConfig();
+  return {
+    fallbackModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
+    fallbackEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
+    knownModels: knownModelIds(options),
+  };
+};
+
+export const cascadeFromBody = (raw: unknown, options: WebServerOptions): CascadeParseResult =>
+  parseCascadeRequest(raw, cascadeOptions(options));
+
+/** A body with no cascade takes the configured default rather than an implicit model. */
+export const configuredCascade = (options: WebServerOptions): CascadeHop[] => {
+  const parsed = cascadeFromBody(undefined, options);
   return parsed.ok ? parsed.cascade : [];
 };
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
+
+const isPrPolicy = (value: unknown): value is PrPolicy =>
+  typeof value === 'string' && (PR_POLICY_VALUES as readonly string[]).includes(value);
 
 export const resolveCoordinator = (options: WebServerOptions): Coordinator => {
   if (options.coordinator) {
@@ -149,6 +168,23 @@ const noteRunnerAuth = (
   else recordAuthFailure(clientIp, 'runner');
 };
 
+/** One 401 path for every runner-authenticated route, so the failure counter cannot be skipped. */
+const requireRunnerAuth = (
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  options: WebServerOptions,
+  coordinator: Coordinator
+): ReturnType<Coordinator['authenticateRunner']> | null => {
+  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
+  if (!auth.authenticated) {
+    noteRunnerAuth(req, options, false);
+    sendJson(res, 401, { error: 'Unauthorized runner token' });
+    return null;
+  }
+  noteRunnerAuth(req, options, true);
+  return auth;
+};
+
 export const handleGetModels = async (
   _req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -164,7 +200,7 @@ export const handleGetModels = async (
     try {
       pools = await options.quotaClient.fetchQuota(false);
     } catch {
-      pools = [];
+      // A failed probe is not a pool list: the catalog annotation still renders unquotad models.
     }
   }
 
@@ -187,7 +223,7 @@ export const handleGetModels = async (
       models,
       unattributedModels: options.modelCatalog?.getUnattributedModels() ?? [],
     },
-    { 'Cache-Control': 'no-store' }
+    NO_STORE
   );
 };
 
@@ -222,12 +258,7 @@ export const handlePostDispatch = async (
     ? scheduleModeParse.data
     : 'immediate';
 
-  const resolved = options.configStore.resolveConfig();
-  const cascadeParse = parseCascadeRequest(payload.cascade, {
-    fallbackModel: resolved.defaultDispatchModel || BUILTIN_DEFAULTS.defaultDispatchModel,
-    fallbackEffort: resolved.defaultDispatchEffort || BUILTIN_DEFAULTS.defaultDispatchEffort,
-    knownModels: knownModelIds(options),
-  });
+  const cascadeParse = cascadeFromBody(payload.cascade, options);
   if (!cascadeParse.ok) {
     return sendJson(res, 400, { error: cascadeParse.error });
   }
@@ -247,13 +278,7 @@ export const handlePostDispatch = async (
     originNumber: toFiniteNumberOrUndefined(payload.originNumber),
     originTitle: toStringOrUndefined(payload.originTitle),
     requestedBy: toStringOrUndefined(payload.requestedBy) ?? 'web-ui',
-    prPolicy:
-      payload.prPolicy === 'docs_only' ||
-      payload.prPolicy === 'issues_only' ||
-      payload.prPolicy === 'all' ||
-      payload.prPolicy === 'none'
-        ? payload.prPolicy
-        : undefined,
+    prPolicy: isPrPolicy(payload.prPolicy) ? payload.prPolicy : undefined,
     scheduleMode,
     requiredLabels,
     cascade: cascadeParse.cascade,
@@ -334,12 +359,8 @@ export const handlePollTasks = async (
 
   const resolved = options.configStore.resolveConfig();
   const coordinator = resolveCoordinator(options);
-  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
-  if (!auth.authenticated) {
-    noteRunnerAuth(req, options, false);
-    return sendJson(res, 401, { error: 'Unauthorized runner token' });
-  }
-  noteRunnerAuth(req, options, true);
+  const auth = requireRunnerAuth(req, res, options, coordinator);
+  if (!auth) return;
 
   const githubToken = resolved.githubToken?.trim() || undefined;
   const credentialsAvailable = Boolean(githubToken);
@@ -412,7 +433,7 @@ export const handlePollTasks = async (
           ...(task && githubToken ? { githubToken } : {}),
           ...(task ? {} : leaseBlocked ? { leaseBlocked } : {}),
         },
-        { 'Cache-Control': 'no-store' }
+        NO_STORE
       );
     }
   } finally {
@@ -441,7 +462,7 @@ export const handleGetTaskById = (
     )
     .digest('hex')
     .slice(0, 16);
-  return sendJson(res, 200, { ...task, fingerprint }, { 'Cache-Control': 'no-store' });
+  return sendJson(res, 200, { ...task, fingerprint }, NO_STORE);
 };
 
 export const handleRunnerHeartbeat = async (
@@ -453,12 +474,8 @@ export const handleRunnerHeartbeat = async (
   if (method !== 'POST') return methodNotAllowed(res);
 
   const coordinator = resolveCoordinator(options);
-  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
-  if (!auth.authenticated) {
-    noteRunnerAuth(req, options, false);
-    return sendJson(res, 401, { error: 'Unauthorized runner token' });
-  }
-  noteRunnerAuth(req, options, true);
+  const auth = requireRunnerAuth(req, res, options, coordinator);
+  if (!auth) return;
 
   const parsed = await readJsonBody(req, res, { emptyBody: 'allow' });
   if (!parsed.ok) return;
@@ -492,12 +509,8 @@ export const handleTaskStatus = async (
   if (method !== 'POST') return methodNotAllowed(res);
 
   const coordinator = resolveCoordinator(options);
-  const auth = coordinator.authenticateRunner(extractRunnerToken(req));
-  if (!auth.authenticated) {
-    noteRunnerAuth(req, options, false);
-    return sendJson(res, 401, { error: 'Unauthorized runner token' });
-  }
-  noteRunnerAuth(req, options, true);
+  const auth = requireRunnerAuth(req, res, options, coordinator);
+  if (!auth) return;
 
   const match = /^\/api\/tasks\/([^/]+)\/status$/.exec(pathname);
   const taskId = match?.[1] ? safeDecodeSegment(match[1]) : '';
@@ -515,7 +528,7 @@ export const handleTaskStatus = async (
   }
 
   const result = await coordinator.reportTaskStatus(taskId, {
-    status: statusParse.data as TaskStatus,
+    status: statusParse.data,
     runnerId: auth.runner?.runnerId ?? toStringOrUndefined(payload.runnerId),
     // A runner that discarded its branch sends null, which clears the column instead of keeping it.
     branchName: payload.branchName === null ? null : toStringOrUndefined(payload.branchName),
@@ -618,7 +631,7 @@ export const handleGetRunners = (
   const runners = coordinator.listRunners();
   const credentialsAvailable = Boolean(options.configStore.resolveConfig().githubToken?.trim());
   const payload: RunnersResponse = { runners, credentialsAvailable };
-  return sendJson(res, 200, payload, { 'Cache-Control': 'no-store' });
+  return sendJson(res, 200, payload, NO_STORE);
 };
 
 export const handleCreateRegistrationToken = async (
@@ -639,14 +652,9 @@ export const handleCreateRegistrationToken = async (
   const ttlMs = toFiniteNumberOrUndefined(payload?.ttlMs);
 
   const coordinator = resolveCoordinator(options);
-  const result = coordinator.createRegistrationToken({
-    nameHint,
-    labels,
-    repositories,
-    ttlMs,
-  });
+  const result = coordinator.createRegistrationToken({ nameHint, labels, repositories, ttlMs });
 
-  return sendJson(res, 200, result, { 'Cache-Control': 'no-store' });
+  return sendJson(res, 200, result, NO_STORE);
 };
 
 export const handleRegisterRunner = async (
@@ -699,7 +707,7 @@ export const handleRegisterRunner = async (
         runner: registered.runner,
         runnerToken: registered.runnerToken,
       },
-      { 'Cache-Control': 'no-store' }
+      NO_STORE
     );
   } catch (err: any) {
     if (err instanceof RegistrationTokenError) {

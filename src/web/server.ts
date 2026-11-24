@@ -4,9 +4,7 @@ import { handleRequest, type WebServerOptions } from './routes.js';
 import { logger } from '../logs/logger.js';
 import { resolveWebUiAuthToken, BUILTIN_DEFAULTS } from '../config/schema.js';
 
-export { type WebServerOptions };
-
-export const createWebServer = (options: WebServerOptions): http.Server => {
+const createWebServer = (options: WebServerOptions): http.Server => {
   const server = http.createServer(async (req, res) => {
     try {
       await handleRequest(req, res, options);
@@ -132,10 +130,4 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
       }
     });
   });
-};
-
-export default {
-  createWebServer,
-  startWebServer,
-  closeWebServer,
 };

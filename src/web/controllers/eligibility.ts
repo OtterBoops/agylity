@@ -4,7 +4,7 @@ import type { WebServerOptions } from '../types.js';
 import { resolveCoordinator } from './dispatch.js';
 import type { QuotaSnapshot } from '../../sentry/models.js';
 import { calculateHoursUntilReset } from '../../sentry/models.js';
-import { headroomPercentOf } from '../../sentry/store.js';
+import { toPercentFloor } from '../../shared/percent.js';
 import { calculateEffectiveHeadroomPercent } from '../../coordinator/models.js';
 
 const AUTONOMY_QUENCH_MS = 2 * 60 * 60 * 1000;
@@ -13,7 +13,7 @@ const bucketPercent = (bucket: QuotaSnapshot['weekly']): number | null => {
   if (!bucket || bucket.disabled === true) return null;
   if (typeof bucket.remainingFraction !== 'number') return null;
   if (!Number.isFinite(bucket.remainingFraction)) return null;
-  return headroomPercentOf(bucket.remainingFraction);
+  return toPercentFloor(bucket.remainingFraction);
 };
 
 const resolveLimitingWindow = (pool: QuotaSnapshot): 'weekly' | 'short_term' => {

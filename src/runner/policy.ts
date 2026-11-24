@@ -63,8 +63,9 @@ export const isDocumentationFile = (filePath: string): boolean => {
     ? baseName.slice(0, -ext.length).toLowerCase()
     : baseName.toLowerCase();
 
-  if (nameWithoutExt.startsWith('readme') || DOC_SPECIAL_BASENAMES.has(nameWithoutExt)) {
-    if (!ext || DOC_EXTENSIONS.has(ext)) return true;
+  // A bare `README`/`LICENSE` with no extension is documentation; a doc extension is handled below.
+  if (!ext && (nameWithoutExt.startsWith('readme') || DOC_SPECIAL_BASENAMES.has(nameWithoutExt))) {
+    return true;
   }
 
   if (DOC_EXTENSIONS.has(ext)) {

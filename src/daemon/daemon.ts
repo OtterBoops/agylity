@@ -241,7 +241,6 @@ export class AgylityDaemon {
       new ConnectRpcQuotaClient({
         endpointUrl: resolved.antigravityEndpointUrl,
         csrfToken: resolved.antigravityCsrfToken,
-        minRefreshIntervalMs: 30000,
         logger: options.logger ? options.logger.child('sentry') : logger.child('sentry'),
         cachedSnapshotProvider: () => {
           return snapshotsFromSentryState(sentryState.getState());

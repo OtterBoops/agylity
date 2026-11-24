@@ -2,13 +2,14 @@ import type { QuotaAlert, QuotaSnapshot } from './models.js';
 import { calculateHoursUntilReset } from './models.js';
 import { DEFAULT_MILESTONE_HOURS } from '../config/schema.js';
 import type { EarlyResetPool, SentryStateManager } from './state.js';
+import { normalizeMilestoneKey } from './store.js';
 
-export interface QuotaEvaluatorOptions {
+interface QuotaEvaluatorOptions {
   milestoneHours?: number[];
   alertThresholdPercent?: number;
 }
 
-export interface EvaluationPlan {
+interface EvaluationPlan {
   alerts: QuotaAlert[];
   pendingMilestones: Map<string, number[]>;
   supersededMilestones: Map<string, number[]>;
@@ -16,15 +17,18 @@ export interface EvaluationPlan {
   retiredPools: string[];
 }
 
+/** Milestones are deduplicated, positive and most-urgent-first wherever they arrive from config. */
+const normalizeMilestones = (raw: number[]): number[] =>
+  Array.from(new Set(raw.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))).sort(
+    (a, b) => b - a
+  );
+
 export class QuotaEvaluator {
   public milestoneHours: number[];
   public alertThresholdPercent: number;
 
   constructor(options: QuotaEvaluatorOptions = {}) {
-    const rawMilestones = options.milestoneHours ?? DEFAULT_MILESTONE_HOURS;
-    this.milestoneHours = Array.from(
-      new Set(rawMilestones.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))
-    ).sort((a, b) => b - a);
+    this.milestoneHours = normalizeMilestones(options.milestoneHours ?? DEFAULT_MILESTONE_HOURS);
 
     this.alertThresholdPercent =
       typeof options.alertThresholdPercent === 'number' &&
@@ -35,11 +39,7 @@ export class QuotaEvaluator {
 
   public updateConfig(options: QuotaEvaluatorOptions): void {
     if (options.milestoneHours !== undefined) {
-      const next = Array.from(
-        new Set(
-          options.milestoneHours.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0)
-        )
-      ).sort((a, b) => b - a);
+      const next = normalizeMilestones(options.milestoneHours);
       if (next.length > 0) {
         this.milestoneHours = next;
       }
@@ -70,12 +70,7 @@ export class QuotaEvaluator {
       return { alert: null, supersededMilestones: [] };
     }
 
-    const firedKeys = new Set(
-      firedMilestones.map((m) => {
-        const s = String(m).trim().toLowerCase();
-        return s.endsWith('h') ? s : `${s}h`;
-      })
-    );
+    const firedKeys = new Set(firedMilestones.map(normalizeMilestoneKey));
 
     const applicableMilestones = this.milestoneHours.filter((m) => deltaHours <= m);
 

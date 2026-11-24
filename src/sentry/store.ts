@@ -15,9 +15,8 @@ export type { AlertEvent, AlertEventPage };
 // model, not the source of truth; the DDL is rendered from column specs so a migration cannot drift.
 
 export const SAMPLE_HISTORY_LIMIT = 24;
-export const ALERT_EVENT_RETENTION_ROWS = 2000;
-export const ALERT_EVENT_RETENTION_DAYS = 90;
-const MILESTONE_RETENTION_DAYS = ALERT_EVENT_RETENTION_DAYS;
+const ALERT_EVENT_RETENTION_ROWS = 2000;
+const ALERT_EVENT_RETENTION_DAYS = 90;
 
 const POOL_STATE_COLUMNS: readonly ColumnSpec[] = [
   { name: 'pool_id', ddl: 'pool_id TEXT PRIMARY KEY' },
@@ -96,7 +95,7 @@ export const ensureSentryStateSchema = (db: DatabaseSync): void => {
   db.exec(SENTRY_STATE_INDEXES);
 };
 
-export type AlertEventKind = 'milestone' | 'early_reset';
+type AlertEventKind = 'milestone' | 'early_reset';
 
 export interface RecordAlertEventInput {
   poolId: string;
@@ -114,7 +113,7 @@ export interface ListAlertEventsOptions {
   poolId?: string | null;
 }
 
-export interface StoredProbe {
+interface StoredProbe {
   lastProbeAt?: string;
   lastProbeSource?: string;
   authRequired?: boolean;
@@ -135,8 +134,8 @@ const parseJsonObject = <T>(raw: unknown, fallback: T): T => {
   }
 };
 
-const toPercentFloor = (fraction: number): number =>
-  Math.floor(Number((fraction * 100).toPrecision(12)));
+const retentionCutoff = (days: number): string =>
+  new Date(Date.now() - days * 24 * 3600 * 1000).toISOString();
 
 export class SentryStore {
   private readonly db: DatabaseSync;
@@ -454,16 +453,14 @@ export class SentryStore {
   }
 
   private pruneRetiredMilestones(poolId: string, currentResetTime: string): void {
-    const cutoff = new Date(Date.now() - MILESTONE_RETENTION_DAYS * 24 * 3600 * 1000).toISOString();
+    const cutoff = retentionCutoff(ALERT_EVENT_RETENTION_DAYS);
     this.db
       .prepare('DELETE FROM pool_milestones WHERE pool_id = ? AND reset_time <> ? AND fired_at < ?')
       .run(poolId, currentResetTime, cutoff);
   }
 
   private pruneAlertEvents(): void {
-    const cutoff = new Date(
-      Date.now() - ALERT_EVENT_RETENTION_DAYS * 24 * 3600 * 1000
-    ).toISOString();
+    const cutoff = retentionCutoff(ALERT_EVENT_RETENTION_DAYS);
     this.db
       .prepare(
         `DELETE FROM alert_events
@@ -533,8 +530,6 @@ export class SentryStore {
   }
 }
 
-export const headroomPercentOf = (fraction: number): number => toPercentFloor(fraction);
-
 interface AlertEventCursor {
   firedAt: string;
   id: number | null;
@@ -552,7 +547,7 @@ const parseCursor = (raw: string | null): AlertEventCursor | null => {
   return { firedAt, id };
 };
 
-export const milestoneToColumn = (milestone: number | string): number | string => {
+const milestoneToColumn = (milestone: number | string): number | string => {
   const normalized = String(milestone).trim().toLowerCase();
   const withoutSuffix = normalized.endsWith('h') ? normalized.slice(0, -1) : normalized;
   const numeric = Number(withoutSuffix);

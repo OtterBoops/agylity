@@ -50,9 +50,22 @@ const ABORT_CONFIRM_WINDOW_MS = 3000;
 
 const CARD_GRID = 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3';
 
+const SECTION = 'mt-6 flex flex-col first:mt-0';
+
 const FINISHED_BACKLOG_STATUSES: ReadonlySet<string> = new Set(FINISHED_BACKLOG_STATUS_VALUES);
 
 const GITHUB_SYNC_UNCONFIGURED_HINT = 'No repository has GitHub issue sync configured.';
+
+/** Drops `?id=` once its target is gone, so the next poll does not re-open or re-scroll it. */
+const clearSearchId = (expectedId?: string): void => {
+  try {
+    const url = new URL(window.location.href);
+    const current = url.searchParams.get('id');
+    if (current === null || (expectedId !== undefined && current !== expectedId)) return;
+    url.searchParams.delete('id');
+    window.history.replaceState({}, '', url.toString());
+  } catch {}
+};
 
 const SectionHeader = ({
   id,
@@ -242,14 +255,6 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     }
     if (handledSearchId.current === searchId) return;
 
-    const clearUrlId = () => {
-      try {
-        const url = new URL(window.location.href);
-        url.searchParams.delete('id');
-        window.history.replaceState({}, '', url.toString());
-      } catch {}
-    };
-
     const task = executionsInitialLoaded
       ? tasks.find((t) => t.id === searchId || t.originId === searchId)
       : undefined;
@@ -284,7 +289,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     handledSearchId.current = searchId;
     const card = document.getElementById(`task-row-${searchId}`);
     if (!card) {
-      clearUrlId();
+      clearSearchId();
       showNotification('error', 'The requested task or schedule was deleted or not found.');
       return;
     }
@@ -305,13 +310,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
   const closeInspector = () => {
     setSelectedTask(null);
-    try {
-      const url = new URL(window.location.href);
-      if (url.searchParams.has('id')) {
-        url.searchParams.delete('id');
-        window.history.replaceState({}, '', url.toString());
-      }
-    } catch {}
+    clearSearchId();
   };
 
   const focusCard = (originId: string) => {
@@ -372,9 +371,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   };
 
   const toggleAllVisible = () => {
-    const ids = tasks
-      .filter((task) => visibleTasks.some((visible) => visible.id === task.id))
-      .map((task) => task.id);
+    const ids = visibleTasks.map((task) => task.id);
     setSelectedIds((prev) => (ids.every((id) => prev.has(id)) ? new Set() : new Set(ids)));
   };
 
@@ -414,7 +411,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   // every aborted item on its next probe.
   const handleStopAndPause = async () => {
     const live = tasks.filter(
-      (task) => selectedIds.has(task.id) && ['queued', 'claimed', 'executing'].includes(task.status)
+      (task) => selectedIds.has(task.id) && ACTIVE_TASK_STATUSES.has(task.status)
     );
     if (live.length === 0) return;
     setBulkBusy(true);
@@ -513,13 +510,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     setBacklogActionId(id);
     try {
       await deleteBacklogTask(id);
-      try {
-        const url = new URL(window.location.href);
-        if (url.searchParams.get('id') === id) {
-          url.searchParams.delete('id');
-          window.history.replaceState({}, '', url.toString());
-        }
-      } catch {}
+      clearSearchId(id);
       await loadBacklog();
       showNotification('success', `Deleted backlog task`);
     } catch (err: any) {
@@ -570,13 +561,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     setRoutineActionId(id);
     try {
       await deleteRoutine(id);
-      try {
-        const url = new URL(window.location.href);
-        if (url.searchParams.get('id') === id) {
-          url.searchParams.delete('id');
-          window.history.replaceState({}, '', url.toString());
-        }
-      } catch {}
+      clearSearchId(id);
       await loadRoutines();
       showNotification('success', `Deleted routine`);
     } catch (err: any) {
@@ -680,7 +665,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       </div>
 
       <div class="flex flex-col">
-        <section aria-labelledby="active-runs-heading" class="mt-6 flex flex-col first:mt-0">
+        <section aria-labelledby="active-runs-heading" class={SECTION}>
           <SectionHeader id="active-runs-heading" title="Active Runs" count={activeRuns.length} />
 
           {activeRuns.length === 0 ? (
@@ -705,7 +690,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
           )}
         </section>
 
-        <section aria-labelledby="backlog-heading" class="mt-6 flex flex-col first:mt-0">
+        <section aria-labelledby="backlog-heading" class={SECTION}>
           <SectionHeader id="backlog-heading" title="Backlog" count={activeBacklog.length}>
             {finishedBacklog.length > 0 && (
               <button
@@ -753,7 +738,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
         </section>
 
         {routinesEnabled && (
-          <section aria-labelledby="routines-heading" class="mt-6 flex flex-col first:mt-0">
+          <section aria-labelledby="routines-heading" class={SECTION}>
             <SectionHeader id="routines-heading" title="Routines" count={routines.length} />
 
             {!routinesInitialLoaded ? (
@@ -792,7 +777,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
           </section>
         )}
 
-        <section aria-labelledby="executions-heading" class="mt-6 flex flex-col first:mt-0">
+        <section aria-labelledby="executions-heading" class={SECTION}>
           <SectionHeader
             id="executions-heading"
             title="Execution History"

@@ -4,7 +4,7 @@ import { logger } from '../../logs/logger.js';
 import type { WebServerOptions } from '../types.js';
 import type { PoolGroup, QuotaSnapshot } from '../../sentry/models.js';
 import { computeBurnProjection, snapshotsFromSentryState } from '../../sentry/models.js';
-import type { SentryStateManager } from '../../sentry/state.js';
+import { createInitialState, type SentryStateManager } from '../../sentry/state.js';
 
 const withCatalogModels = (
   snapshots: QuotaSnapshot[],
@@ -65,10 +65,10 @@ export const handleGetQuota = async (
       'Cache-Control': 'no-store',
     });
   } catch (err: any) {
-    const statusCode = err?.code === 'AUTH_REQUIRED' ? 401 : 500;
+    const authRequired = err?.code === 'AUTH_REQUIRED';
     logger.child('web').error('Quota fetch failed: %s', err?.stack ?? err);
-    return sendJson(res, statusCode, {
-      error: err?.code === 'AUTH_REQUIRED' ? 'Authentication Required' : 'Failed to fetch quota',
+    return sendJson(res, authRequired ? 401 : 500, {
+      error: authRequired ? 'Authentication Required' : 'Failed to fetch quota',
       code: err?.code,
     });
   }
@@ -109,12 +109,7 @@ export const handleGetAlerts = (
   method: string
 ): void => {
   if (method !== 'GET') return methodNotAllowed(res);
-  const alertData = options.sentryState?.getState() ?? {
-    version: 1,
-    lastProbeAt: new Date().toISOString(),
-    lastProbeSource: 'unreachable',
-    pools: {},
-  };
+  const alertData = options.sentryState?.getState() ?? createInitialState();
   return sendJson(res, 200, alertData, { 'Cache-Control': 'no-store' });
 };
 

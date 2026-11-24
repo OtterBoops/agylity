@@ -5,8 +5,6 @@ export interface TaskOriginLists {
   routines: RoutineTaskRecord[] | null;
 }
 
-export const UNRESOLVED_ORIGINS: TaskOriginLists = { backlog: null, routines: null };
-
 type OriginKind = 'backlog' | 'routine' | 'external';
 
 interface OriginDescriptor {
@@ -29,7 +27,7 @@ const isMissing = (
 ): boolean =>
   records !== null && (originId === undefined || !records.some((r) => r.id === originId));
 
-export const describeTaskOrigin = (task: SwarmTask, lists: TaskOriginLists): OriginDescriptor => {
+const describeTaskOrigin = (task: SwarmTask, lists: TaskOriginLists): OriginDescriptor => {
   const requestedBy = task.requestedBy ?? '';
 
   if (task.tier === 'backlog' || requestedBy.startsWith(BACKLOG_PREFIX)) {

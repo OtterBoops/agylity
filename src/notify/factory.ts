@@ -2,7 +2,7 @@ import type { Notifier, NotifierOptions } from './types.js';
 import type { ResolvedConfig } from '../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../config/schema.js';
 import { logger } from '../logs/logger.js';
-import { CompositeNotifier } from './adapters/composite.js';
+import { CompositeNotifier, normalizeChannelNames } from './adapters/composite.js';
 
 // Console output is logging now, not a destination: a stored 'console' must not silently become
 // "no channels at all", so it is dropped out loud.
@@ -19,10 +19,8 @@ const resolveChannels = (config: ResolvedConfig): string[] => {
         ? [String(config.notificationChannel)]
         : [];
 
-  const named = new Set(
-    raw.map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none')
-  );
-  const retired = [...named].filter((c) => RETIRED_CHANNELS.has(c));
+  const named = normalizeChannelNames(raw);
+  const retired = named.filter((c) => RETIRED_CHANNELS.has(c));
   if (retired.length > 0 && !retiredAnnounced) {
     retiredAnnounced = true;
     logger.warn(
@@ -30,7 +28,7 @@ const resolveChannels = (config: ResolvedConfig): string[] => {
       retired.join("', '")
     );
   }
-  return [...named].filter((c) => !RETIRED_CHANNELS.has(c));
+  return named.filter((c) => !RETIRED_CHANNELS.has(c));
 };
 
 const instantiateChannels = async (
@@ -84,14 +82,7 @@ export const createNotifier = async (
       options = configOrOptions as NotifierOptions | undefined;
     }
 
-    channels = Array.from(
-      new Set(
-        channelOrConfig
-          .split(',')
-          .map((c) => c.trim().toLowerCase())
-          .filter((c) => Boolean(c) && c !== 'none')
-      )
-    );
+    channels = normalizeChannelNames(channelOrConfig.split(','));
   } else {
     config = channelOrConfig;
     options = configOrOptions as NotifierOptions | undefined;

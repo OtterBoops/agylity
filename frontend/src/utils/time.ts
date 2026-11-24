@@ -5,7 +5,7 @@ export type TimeFormat = '12h' | '24h';
 const STORAGE_KEY = 'agylity-time-format';
 const EVENT_NAME = 'agylity:timeformat-changed';
 
-export const getTimeFormat = (): TimeFormat => {
+const getTimeFormat = (): TimeFormat => {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored === '24h' || stored === '12h') return stored;
@@ -87,4 +87,11 @@ export const formatDuration = (ms: number): string => {
   if (ms < 1000) return `${ms}ms`;
   const s = Math.round(ms / 1000);
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+};
+
+export const formatWindow = (hours: number | null): string => {
+  if (hours === null || !Number.isFinite(hours)) return 'N/A';
+  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
+  if (hours < 24) return `${Math.round(hours)}h`;
+  return `${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h`;
 };

@@ -6,7 +6,7 @@ export type { QuotaAlert, QuotaSnapshot };
 // Delivered-channel results are part of the alert-history payload the dashboard reads.
 export type { DeliveryChannelResult };
 
-export type DispatchStep =
+type DispatchStep =
   'waking' | 'polling' | 'executing' | 'completed' | 'no_changes' | 'aborted' | 'failed';
 
 export interface DispatchStatusUpdate {

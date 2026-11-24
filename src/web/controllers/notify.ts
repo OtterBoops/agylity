@@ -9,6 +9,10 @@ import {
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
 
+/** The four stored secrets/URLs a test payload may override without saving. */
+type OverridableStringKey =
+  'notificationWebhookUrl' | 'webhookSecret' | 'discordToken' | 'discordNotificationChannelId';
+
 export const handleTestNotify = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -50,39 +54,22 @@ export const handleTestNotify = async (
     let hasOverrides = false;
 
     const rawWebhook = testOverrides.notificationWebhookUrl ?? testOverrides.webhookUrl;
-    if (typeof rawWebhook === 'string' && rawWebhook.trim()) {
-      const clean = rawWebhook.trim();
-      if (clean !== baseResolved.notificationWebhookUrl) {
-        resolved.notificationWebhookUrl = clean;
-        hasOverrides = true;
-      }
-    }
-
-    if (typeof testOverrides.webhookSecret === 'string' && testOverrides.webhookSecret.trim()) {
-      const clean = testOverrides.webhookSecret.trim();
-      if (clean !== baseResolved.webhookSecret) {
-        resolved.webhookSecret = clean;
-        hasOverrides = true;
-      }
-    }
-
-    if (typeof testOverrides.discordToken === 'string' && testOverrides.discordToken.trim()) {
-      const clean = testOverrides.discordToken.trim();
-      if (clean !== baseResolved.discordToken) {
-        resolved.discordToken = clean;
-        hasOverrides = true;
-      }
-    }
-
     const rawDiscordChan =
       testOverrides.discordNotificationChannelId ?? testOverrides.discordChannelId;
-    if (typeof rawDiscordChan === 'string' && rawDiscordChan.trim()) {
-      const clean = rawDiscordChan.trim();
-      if (clean !== baseResolved.discordNotificationChannelId) {
-        resolved.discordNotificationChannelId = clean;
-        hasOverrides = true;
-      }
-    }
+
+    // Only a value that differs from the stored one is an override; the stored config is the baseline.
+    const applyStringOverride = (key: OverridableStringKey, raw: unknown): void => {
+      if (typeof raw !== 'string' || raw.trim() === '') return;
+      const clean = raw.trim();
+      if (clean === baseResolved[key]) return;
+      resolved[key] = clean;
+      hasOverrides = true;
+    };
+
+    applyStringOverride('notificationWebhookUrl', rawWebhook);
+    applyStringOverride('webhookSecret', testOverrides.webhookSecret);
+    applyStringOverride('discordToken', testOverrides.discordToken);
+    applyStringOverride('discordNotificationChannelId', rawDiscordChan);
 
     if (typeof testOverrides.discordOwnerUserId === 'string') {
       const clean = testOverrides.discordOwnerUserId.trim() || undefined;
@@ -109,9 +96,9 @@ export const handleTestNotify = async (
 
     const channel =
       targetChannel ??
-      (resolved.notificationChannels && resolved.notificationChannels.length > 0
+      (resolved.notificationChannels.length > 0
         ? resolved.notificationChannels.join(', ')
-        : (resolved.notificationChannel ?? 'none'));
+        : resolved.notificationChannel);
 
     const sampleAlert = {
       pool: {
@@ -190,10 +177,6 @@ export const handleTestNotify = async (
       message: resultMessage,
     });
   } catch (err: any) {
-    if (err instanceof PayloadTooLargeError || err?.statusCode === 413) {
-      sendPayloadTooLarge(req, res, err?.message);
-      return;
-    }
     log.error('Test notification failed: %s', err?.stack ?? err);
     return sendJson(res, 500, {
       success: false,

@@ -21,7 +21,7 @@ import {
   buildInfoNoticeEmbed,
 } from '../embeds/index.js';
 
-export interface WebhookPayload {
+interface WebhookPayload {
   event: 'quota_alert' | 'dispatch_status' | 'test_ping' | 'info_notice';
   timestamp: string;
   data: Record<string, unknown>;
@@ -116,7 +116,7 @@ export function sanitizeErrorMessage(message: string, rawUrl?: string): string {
   });
 }
 
-export function isDiscordWebhook(url?: string): boolean {
+function isDiscordWebhook(url?: string): boolean {
   if (!url) return false;
   try {
     const u = new URL(url);
@@ -132,6 +132,17 @@ export function isDiscordWebhook(url?: string): boolean {
     return false;
   }
 }
+
+// The server's own body is the most useful part of a failed delivery, but it is untrusted text.
+const responseDetail = async (err: any): Promise<string> => {
+  if (!err?.response || typeof err.response.text !== 'function') return '';
+  try {
+    const body = await err.response.text();
+    return body ? `: ${body.slice(0, 150)}` : '';
+  } catch {
+    return '';
+  }
+};
 
 // A Slack mention token (`<@id>`) must not ping the channel, so `<` is escaped.
 const escapeMentions = (text: string): string => text.replace(/<(?=[!@])/g, '&lt;');
@@ -200,15 +211,9 @@ export class WebhookNotifier implements Notifier {
       await this.postWebhook(payload);
       return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: {
-            success: false,
-            error: sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl()),
-          },
-        },
-      };
+      return this.failureOutcome(
+        sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl())
+      );
     }
   }
 
@@ -262,15 +267,9 @@ export class WebhookNotifier implements Notifier {
       await this.postWebhook(payload);
       return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
-      return {
-        delivered: false,
-        results: {
-          [this.channelName]: {
-            success: false,
-            error: sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl()),
-          },
-        },
-      };
+      return this.failureOutcome(
+        sanitizeErrorMessage(err?.message ?? String(err), this.getWebhookUrl())
+      );
     }
   }
 
@@ -327,21 +326,17 @@ export class WebhookNotifier implements Notifier {
         channel: this.channelName,
       };
     } catch (err: any) {
-      let extra = '';
-      if (err?.response && typeof err.response.text === 'function') {
-        try {
-          const body = await err.response.text();
-          if (body) {
-            extra = `: ${body.slice(0, 150)}`;
-          }
-        } catch {}
-      }
+      const extra = await responseDetail(err);
       return {
         success: false,
         message: `Webhook ping failed: ${sanitizeErrorMessage((err?.message ?? String(err)) + extra, url)}`,
         channel: this.channelName,
       };
     }
+  }
+
+  private failureOutcome(error: string): DeliveryOutcome {
+    return { delivered: false, results: { [this.channelName]: { success: false, error } } };
   }
 
   public getWebhookUrl(): string | undefined {
@@ -403,15 +398,7 @@ export class WebhookNotifier implements Notifier {
         .info('Webhook delivered to %s (status %d)', sanitizeWebhookUrl(url), response.status);
       return { status: response.status };
     } catch (err: any) {
-      let extra = '';
-      if (err?.response && typeof err.response.text === 'function') {
-        try {
-          const body = await err.response.text();
-          if (body) {
-            extra = `: ${body.slice(0, 150)}`;
-          }
-        } catch {}
-      }
+      const extra = await responseDetail(err);
       logger
         .child('notify:webhook')
         .error(

@@ -10,12 +10,7 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import {
-  configuredCascade,
-  parseCascadeRequest,
-  resolveCoordinator,
-  knownModelIds,
-} from './dispatch.js';
+import { cascadeFromBody, configuredCascade, resolveCoordinator } from './dispatch.js';
 import { defaultExecFileAsync } from '../../sentry/discovery.js';
 import {
   BacklogStatusSchema,
@@ -25,20 +20,8 @@ import {
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
 import type { RepositoryEntry } from '../../config/schema.js';
 import { FINISHED_BACKLOG_STATUS_VALUES } from '../../shared/contracts.js';
-
-const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
-
-const validateTextFieldPatch = (body: any): string | undefined => {
-  if (!body || typeof body !== 'object') return undefined;
-  for (const field of TEXT_FIELDS) {
-    if (!(field in body)) continue;
-    const value = body[field];
-    if (typeof value !== 'string' || value.trim() === '') {
-      return `${field} must be a non-empty string`;
-    }
-  }
-  return undefined;
-};
+import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../../shared/github.js';
+import { isPlainJsonObject, validateTextFieldPatch } from './patchFields.js';
 
 export const handleBacklogTasks = async (
   req: http.IncomingMessage,
@@ -73,12 +56,7 @@ export const handleBacklogTasks = async (
       });
     }
 
-    const resolved = options.configStore.resolveConfig();
-    const cascadeParse = parseCascadeRequest(payload.cascade, {
-      fallbackModel: resolved.defaultDispatchModel,
-      fallbackEffort: resolved.defaultDispatchEffort,
-      knownModels: knownModelIds(options),
-    });
+    const cascadeParse = cascadeFromBody(payload.cascade, options);
     if (!cascadeParse.ok) {
       return sendJson(res, 400, { error: cascadeParse.error });
     }
@@ -166,7 +144,7 @@ export const handleBacklogTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    if (!isPlainJsonObject(patch)) {
       return sendJson(res, 400, { error: 'Request body must be a JSON object' });
     }
 
@@ -174,12 +152,7 @@ export const handleBacklogTaskById = async (
     if (textError) return sendJson(res, 400, { error: textError });
 
     if ('cascade' in patch) {
-      const resolved = options.configStore.resolveConfig();
-      const cascadeParse = parseCascadeRequest(patch.cascade, {
-        fallbackModel: resolved.defaultDispatchModel,
-        fallbackEffort: resolved.defaultDispatchEffort,
-        knownModels: knownModelIds(options),
-      });
+      const cascadeParse = cascadeFromBody(patch.cascade, options);
       if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
       patch.cascade = cascadeParse.cascade;
     }
@@ -223,7 +196,7 @@ export const handleBulkBacklogTasks = async (
   const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
   if (!parsed.ok) return;
   const payload: any = parsed.body;
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+  if (!isPlainJsonObject(payload)) {
     return sendJson(res, 400, { error: 'Request body must be a JSON object' });
   }
 
@@ -285,14 +258,6 @@ export const handleBulkBacklogTasks = async (
   return sendJson(res, 200, { updated: items.length, items, skipped });
 };
 
-const OWNER_REPO_SLUG_RE = /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/;
-const GITHUB_URL_SLUG_RE = /github\.com[/:]([^/\s]+)\/([^/#?\s]+?)(?:\.git)?\/?$/i;
-
-const parseGithubSlugFromUrl = (value: string): string | undefined => {
-  const match = GITHUB_URL_SLUG_RE.exec(value.trim());
-  return match ? `${match[1]}/${match[2]}` : undefined;
-};
-
 const isTerminalBacklogStatus = (status: BacklogStatus): boolean =>
   status === 'canceled' || isTerminalTaskStatus(status);
 
@@ -334,7 +299,7 @@ export const resolveGithubRepoSlug = async (
   return undefined;
 };
 
-export interface GithubIssueSyncFailure {
+interface GithubIssueSyncFailure {
   repositoryId: string;
   reason: string;
 }
@@ -345,7 +310,7 @@ const describeError = (err: unknown): string => {
   return text === '[object Object]' ? 'unknown error' : text;
 };
 
-export interface SyncGithubBacklogDeps {
+interface SyncGithubBacklogDeps {
   listOpenIssues?: typeof listOpenIssues;
   execFileAsync?: typeof defaultExecFileAsync;
 }
@@ -414,10 +379,7 @@ export const handleSyncGithubBacklog = async (
         const key = `${repo.id}#${issue.number}`;
         if (existingKeys.has(key)) continue;
 
-        const cascade = configuredCascade({
-          fallbackModel: config.defaultDispatchModel || 'gemini-4-hydrogen',
-          fallbackEffort: config.defaultDispatchEffort || 'high',
-        });
+        const cascade = configuredCascade(options);
 
         coordinator.queue.createBacklogTask({
           title: `[GH #${issue.number}] ${issue.title.trim()}`,
@@ -481,8 +443,7 @@ const GITHUB_ISSUE_PAGES = 5;
 const GITHUB_ISSUE_PAGE_SIZE = 100;
 const GH_CLI_ISSUE_LIMIT = 500;
 
-export type GithubIssueFetchResult =
-  ({ ok: true } & GithubIssueListing) | { ok: false; reason: string };
+type GithubIssueFetchResult = ({ ok: true } & GithubIssueListing) | { ok: false; reason: string };
 
 const fetchGithubRestIssues = async (
   repoSlug: string,

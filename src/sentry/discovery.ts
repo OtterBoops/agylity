@@ -148,6 +148,18 @@ export interface DiscoveredLanguageServer {
 }
 
 const CSRF_TOKEN_RE = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i;
+const HTTPS_PORT_RE = /--https_server_port(?:\s+|=)(\d+)/i;
+const PORTS_LIST_RE = /PORTS:([0-9,]+)/i;
+
+const portsFromList = (text: string): number[] => {
+  const match = PORTS_LIST_RE.exec(text);
+  return match?.[1]
+    ? match[1]
+        .split(',')
+        .map(Number)
+        .filter((n) => !Number.isNaN(n) && n > 0)
+    : [];
+};
 
 export const parseWindowsNetstatPorts = (netstatOut: string, pid: string): number[] => {
   const ports: number[] = [];
@@ -246,31 +258,15 @@ export const discoverWindowsLanguageServer = async (
         { timeout: 4000, windowsHide: true }
       );
       commandLine = res.stdout;
-      const portsMatch = /PORTS:([0-9,]+)/i.exec(res.stdout);
-      if (portsMatch && portsMatch[1]) {
-        rawPorts.push(
-          ...portsMatch[1]
-            .split(',')
-            .map(Number)
-            .filter((n) => !Number.isNaN(n) && n > 0)
-        );
-      }
+      rawPorts.push(...portsFromList(res.stdout));
     } catch {}
   }
 
   const csrfMatch = CSRF_TOKEN_RE.exec(commandLine);
-  const portMatch = /--https_server_port(?:\s+|=)(\d+)/i.exec(commandLine);
-  const portsMatch = /PORTS:([0-9,]+)/i.exec(commandLine);
+  const portMatch = HTTPS_PORT_RE.exec(commandLine);
 
   const csrfToken = csrfMatch ? csrfMatch[1] : undefined;
-  if (portsMatch && portsMatch[1]) {
-    rawPorts.push(
-      ...portsMatch[1]
-        .split(',')
-        .map(Number)
-        .filter((n) => !Number.isNaN(n) && n > 0)
-    );
-  }
+  rawPorts.push(...portsFromList(commandLine));
 
   const httpsPort = portMatch ? Number(portMatch[1]) : undefined;
   let port = rawPorts.length > 0 ? Math.max(...rawPorts) : undefined;
@@ -284,27 +280,20 @@ export const discoverWindowsLanguageServer = async (
   return null;
 };
 
-export const discoverUnixLanguageServer = async (
+const discoverUnixLanguageServer = async (
   execFileFn: ExecFileAsyncFn
 ): Promise<DiscoveredLanguageServer | null> => {
   const { stdout } = await execFileFn('pgrep', ['-a', 'language_server'], {
     timeout: 3000,
   });
-  const csrfMatch = /--csrf_token(?:\s+|=)["']?([^\s"']+)["']?/i.exec(stdout);
-  const portMatch = /--https_server_port(?:\s+|=)(\d+)/i.exec(stdout);
-  const portsMatch = /PORTS:([0-9,]+)/i.exec(stdout);
+  const csrfMatch = CSRF_TOKEN_RE.exec(stdout);
+  const portMatch = HTTPS_PORT_RE.exec(stdout);
   const pidMatch = /^(\d+)/m.exec(stdout.trim());
   const csrfToken = csrfMatch ? csrfMatch[1] : undefined;
   const httpsPort = portMatch ? Number(portMatch[1]) : undefined;
   let port = httpsPort && httpsPort > 0 ? httpsPort + 1 : undefined;
 
-  const rawPorts: number[] =
-    portsMatch && portsMatch[1]
-      ? portsMatch[1]
-          .split(',')
-          .map(Number)
-          .filter((n) => !Number.isNaN(n) && n > 0)
-      : [];
+  const rawPorts: number[] = portsFromList(stdout);
 
   if (pidMatch && pidMatch[1]) {
     const pid = pidMatch[1];

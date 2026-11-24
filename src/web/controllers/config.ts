@@ -9,6 +9,7 @@ import {
   validateConfigOverridePatch,
 } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import { isPlainJsonObject } from './patchFields.js';
 
 const isSecretSet = (value: unknown): boolean => {
   if (typeof value === 'string') return value.trim() !== '';
@@ -24,7 +25,7 @@ const isWritableConfigKey = (key: string): boolean => {
   return Boolean(alias) && !FORBIDDEN_CONFIG_KEYS.has(alias!);
 };
 
-export const sanitizeConfigForClient = (config: Record<string, any>): Record<string, any> => {
+const sanitizeConfigForClient = (config: Record<string, any>): Record<string, any> => {
   const result: Record<string, any> = { ...config };
   for (const [k, v] of Object.entries(result)) {
     if (!isSecretKey(k)) continue;
@@ -33,7 +34,7 @@ export const sanitizeConfigForClient = (config: Record<string, any>): Record<str
   return result;
 };
 
-export const getSecretsMeta = (config: Record<string, any>): Record<string, { isSet: boolean }> => {
+const getSecretsMeta = (config: Record<string, any>): Record<string, { isSet: boolean }> => {
   const meta: Record<string, { isSet: boolean }> = {};
   for (const [k, v] of Object.entries(config)) {
     if (isSecretKey(k)) {
@@ -41,6 +42,17 @@ export const getSecretsMeta = (config: Record<string, any>): Record<string, { is
     }
   }
   return meta;
+};
+
+/** The client view of the store, shared by every write and read so no response drops a field. */
+const configView = (options: WebServerOptions) => {
+  const resolved = options.configStore.resolveConfig();
+  return {
+    resolved: sanitizeConfigForClient(resolved),
+    overrides: sanitizeConfigForClient(options.configStore.getAllOverrides()),
+    sources: options.configStore.getSources?.() ?? {},
+    secretsMeta: getSecretsMeta(resolved),
+  };
 };
 
 export const handleConfigEndpoint = async (
@@ -52,20 +64,7 @@ export const handleConfigEndpoint = async (
   const log = options.logger ?? logger.child('web');
 
   if (method === 'GET') {
-    const resolved = options.configStore.resolveConfig();
-    const overrides = options.configStore.getAllOverrides();
-    const sources = options.configStore.getSources?.() ?? {};
-    return sendJson(
-      res,
-      200,
-      {
-        resolved: sanitizeConfigForClient(resolved),
-        overrides: sanitizeConfigForClient(overrides),
-        secretsMeta: getSecretsMeta(resolved),
-        sources,
-      },
-      { 'Cache-Control': 'no-store' }
-    );
+    return sendJson(res, 200, configView(options), { 'Cache-Control': 'no-store' });
   }
 
   if (method === 'POST') {
@@ -73,12 +72,9 @@ export const handleConfigEndpoint = async (
     if (!parsed.ok) return;
     const payload: any = parsed.body;
 
-    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+    if (!isPlainJsonObject(payload)) {
       return sendJson(res, 400, { error: 'Payload must be a JSON object' });
     }
-
-    const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-      typeof value === 'object' && value !== null && !Array.isArray(value);
 
     const isKeyValueForm =
       typeof payload.key === 'string' && 'value' in payload && Object.keys(payload).length === 2;
@@ -96,7 +92,7 @@ export const handleConfigEndpoint = async (
           error: `Unexpected fields in config write: ${unexpected.join(', ')}`,
         });
       }
-      if (payload.set !== undefined && !isPlainObject(payload.set)) {
+      if (payload.set !== undefined && !isPlainJsonObject(payload.set)) {
         return sendJson(res, 400, { error: '`set` must be a JSON object' });
       }
       if (payload.clear !== undefined && !Array.isArray(payload.clear)) {
@@ -173,19 +169,10 @@ export const handleConfigEndpoint = async (
       handleSet(k, Object.hasOwn(validatedPatch, k) ? validatedPatch[k] : v);
     }
 
-    const updatedResolved = options.configStore.resolveConfig();
-    const updatedOverrides = options.configStore.getAllOverrides();
     const keys = typeof payload.key === 'string' ? [payload.key] : Object.keys(patchToValidate);
     const touched = [...keys, ...cleared];
     log.info('Configuration updated via Web API (keys: %s)', touched.join(', ') || 'none');
-    return sendJson(res, 200, {
-      success: true,
-      resolved: sanitizeConfigForClient(updatedResolved),
-      overrides: sanitizeConfigForClient(updatedOverrides),
-      sources: options.configStore.getSources?.() ?? {},
-      secretsMeta: getSecretsMeta(updatedResolved),
-      cleared,
-    });
+    return sendJson(res, 200, { success: true, ...configView(options), cleared });
   }
 
   return methodNotAllowed(res);
@@ -212,13 +199,5 @@ export const handleDeleteConfigOverride = (
   }
   options.configStore.deleteOverride(decodedKey);
   log.info('Configuration override deleted via Web API: %s', decodedKey);
-  const resolved = options.configStore.resolveConfig();
-  const overrides = options.configStore.getAllOverrides();
-  return sendJson(res, 200, {
-    success: true,
-    resolved: sanitizeConfigForClient(resolved),
-    overrides: sanitizeConfigForClient(overrides),
-    sources: options.configStore.getSources?.() ?? {},
-    secretsMeta: getSecretsMeta(resolved),
-  });
+  return sendJson(res, 200, { success: true, ...configView(options) });
 };

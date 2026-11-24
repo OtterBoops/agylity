@@ -61,6 +61,13 @@ export interface PersistedRunnerState {
   registeredAt: string;
 }
 
+interface PollResponse {
+  task: SwarmTask | null;
+  credentialsAvailable?: boolean;
+  leaseBlocked?: 'missing_github_token';
+  githubToken?: string;
+}
+
 export const collectRunnerSystemInfo = (agyVersion?: string | null): RunnerSystemInfo => ({
   hostname: os.hostname(),
   platform: process.platform,
@@ -144,7 +151,7 @@ export class RemoteSwarmRunner {
         onStatusUpdate: async (status) => {
           if (this.currentExecutingTaskId) {
             await this.reportStatus(
-              this.options.coordinatorUrl?.replace(/\/+$/, '') || 'http://127.0.0.1:8484',
+              this.baseUrl() || 'http://127.0.0.1:8484',
               this.buildAuthHeaders(),
               this.currentExecutingTaskId,
               {
@@ -206,6 +213,11 @@ export class RemoteSwarmRunner {
 
   public getRunnerToken(): string | undefined {
     return this.runnerToken;
+  }
+
+  /** The configured coordinator base URL without a trailing slash. */
+  private baseUrl(): string {
+    return this.options.coordinatorUrl.replace(/\/+$/, '');
   }
 
   private loadPersistedState(): void {
@@ -279,7 +291,7 @@ export class RemoteSwarmRunner {
       return null;
     }
 
-    const baseUrl = this.options.coordinatorUrl.replace(/\/+$/, '');
+    const baseUrl = this.baseUrl();
     const res = await ky
       .post(`${baseUrl}/api/runners/register`, {
         json: {
@@ -346,24 +358,13 @@ export class RemoteSwarmRunner {
       return null;
     }
 
-    try {
-      await this.registerIfNeeded();
-    } catch (err) {
-      this.noteCredentialRejection(err);
-      throw err;
-    }
+    await this.withCredentialTracking(() => this.registerIfNeeded());
 
-    const baseUrl = this.options.coordinatorUrl.replace(/\/+$/, '');
+    const baseUrl = this.baseUrl();
     const headers = this.buildAuthHeaders();
 
-    let res: {
-      task: SwarmTask | null;
-      credentialsAvailable?: boolean;
-      leaseBlocked?: 'missing_github_token';
-      githubToken?: string;
-    };
-    try {
-      res = await ky
+    const res = await this.withCredentialTracking(() =>
+      ky
         .post(`${baseUrl}/api/tasks/poll`, {
           headers,
           json: {
@@ -378,21 +379,13 @@ export class RemoteSwarmRunner {
           timeout: (this.options.pollTimeoutMs ?? 0) + 10000,
           signal: this.abortController?.signal,
         })
-        .json<{
-          task: SwarmTask | null;
-          credentialsAvailable?: boolean;
-          leaseBlocked?: 'missing_github_token';
-          githubToken?: string;
-        }>();
-    } catch (err) {
-      this.noteCredentialRejection(err);
-      throw err;
-    }
+        .json<PollResponse>()
+    );
 
     this.credentialRejectedUntil = 0;
     this.warnedCredentialRejected = false;
-    this.noteCoordinatorCredentials(res?.credentialsAvailable, res?.leaseBlocked);
-    const task = res?.task ?? null;
+    this.noteCoordinatorCredentials(res.credentialsAvailable, res.leaseBlocked);
+    const task = res.task;
     if (!task) return null;
 
     const taskAbort = new AbortController();
@@ -432,7 +425,7 @@ export class RemoteSwarmRunner {
           outputTail = tail;
         },
         // Held in memory for this task only: the lease is never written to runner.json or a log.
-        githubToken: res?.githubToken,
+        githubToken: res.githubToken,
       });
     } finally {
       clearInterval(heartbeatTimer);
@@ -610,6 +603,16 @@ export class RemoteSwarmRunner {
     } catch (err: any) {
       this.log.warn('Heartbeat failed for task %s: %s', taskId, err?.message ?? err);
       return true;
+    }
+  }
+
+  /** A 401/403 is terminal for the credential, so it is noted before the error propagates. */
+  private async withCredentialTracking<T>(call: () => Promise<T>): Promise<T> {
+    try {
+      return await call();
+    } catch (err) {
+      this.noteCredentialRejection(err);
+      throw err;
     }
   }
 

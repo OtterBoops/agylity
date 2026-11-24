@@ -1,6 +1,6 @@
 import type { Logger } from '../logs/logger.js';
 
-export const DEPRECATED_ENV_VARS: Readonly<Record<string, string>> = {
+const DEPRECATED_ENV_VARS: Readonly<Record<string, string>> = {
   NOTIFICATION_CHANNEL: 'NOTIFICATION_CHANNELS',
   WEBHOOK_URL: 'NOTIFICATION_WEBHOOK_URL',
   ENCRYPTION_KEY: 'AGYLITY_SECRET_KEY',

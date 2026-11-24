@@ -15,6 +15,7 @@ import {
   type AgyModelCatalogEntry,
   type ReasoningEffort,
 } from '../shared/models.js';
+import { toPercentFloor } from '../shared/percent.js';
 
 export {
   ALL_EFFORTS,
@@ -71,8 +72,6 @@ export const BacklogStatusSchema = z
   .enum(['pending', 'dispatched', 'paused', 'completed', 'failed', 'canceled'])
   .default('pending') satisfies z.ZodType<BacklogStatus, BacklogStatus | undefined>;
 
-export const ReasoningEffortSchema = z.enum(['low', 'medium', 'high', 'xhigh']).default('high');
-
 export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'aborted'] as const;
 
 /** `TERMINAL_TASK_STATUSES` is the single source so no status list can drift. */
@@ -92,7 +91,7 @@ export const TaskStatusSchema = z.enum([
   'aborted',
 ]) satisfies z.ZodType<TaskStatus>;
 
-export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
+interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   effectiveHeadroomPercent: number | null;
   weeklyRemainingPercent: number | null;
   shortTermRemainingPercent: number | null;
@@ -103,8 +102,9 @@ export interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
 
 export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
 
-export const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> =
-  Object.fromEntries(CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS]));
+const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> = Object.fromEntries(
+  CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS])
+);
 
 const defaultModelForPoolGroup = (poolGroup: PoolGroup): string => {
   const entry = CANONICAL_AGY_MODELS.find((m) => m.poolGroup === poolGroup && m.defaultForGroup);
@@ -176,6 +176,11 @@ const resolveShorthandModelId = (lowercased: string): string | undefined => {
   }
   return undefined;
 };
+
+const headroomPercentOf = (fraction: number | undefined): number | null =>
+  typeof fraction === 'number' && Number.isFinite(fraction)
+    ? toPercentFloor(Math.max(0, Math.min(1, fraction)))
+    : null;
 
 const stripEffortSuffix = (value: string): string =>
   value.trim().replace(/-(low|medium|high|xhigh)$/i, '');
@@ -270,9 +275,6 @@ export const normalizeCascade = (input: unknown, fallbackModel?: string): Cascad
   ];
 };
 
-const toPercentFloor = (fraction: number): number =>
-  Math.floor(Number((fraction * 100).toPrecision(12)));
-
 export const calculateEffectiveHeadroomPercent = (
   pool: Pick<QuotaSnapshot, 'remainingFraction' | 'weekly' | 'shortTerm' | 'buckets'>
 ): number | null => {
@@ -296,7 +298,28 @@ export const calculateEffectiveHeadroomPercent = (
   return toPercentFloor(minFraction);
 };
 
-export interface ModelEligibilityOptions {
+export const findPoolForGroup = <
+  T extends { poolGroup?: PoolGroup; poolId?: string; displayName?: string },
+>(
+  pools: readonly T[],
+  poolGroup: PoolGroup
+): T | undefined =>
+  pools.find(
+    (p) =>
+      p.poolGroup === poolGroup ||
+      p.poolId === poolGroup ||
+      resolvePoolGroupForModelOrNull(p.poolId || p.displayName) === poolGroup
+  );
+
+export const poolHoursUntilReset = (
+  pool: Pick<QuotaSnapshot, 'hoursUntilReset' | 'resetTime'>,
+  nowMs: number
+): number | null =>
+  typeof pool.hoursUntilReset === 'number' && pool.hoursUntilReset > 0
+    ? pool.hoursUntilReset
+    : calculateHoursUntilReset(pool.resetTime, nowMs);
+
+interface ModelEligibilityOptions {
   requestedModel?: string;
   defaultModel?: string;
   scheduleMode?: ScheduleMode;
@@ -347,16 +370,29 @@ export const evaluateModelDispatchEligibility = (
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
 
+  // Missing or unusable telemetry answers with one locked payload, so only the reason varies.
+  const lockedForUnknownTelemetry = (reason: string): ModelEligibilityResult => ({
+    allowed: false,
+    resolvedModel,
+    poolGroup,
+    effectiveHeadroomPercent: 0,
+    hoursUntilReset: null,
+    code: 'TELEMETRY_UNAVAILABLE',
+    reason,
+  });
+  // Overage is the explicit override for unknown telemetry, in both the empty-pool and unusable-pool case.
+  const overageBypass = (): ModelEligibilityResult => ({
+    allowed: true,
+    resolvedModel,
+    poolGroup,
+    effectiveHeadroomPercent: 100,
+    hoursUntilReset: null,
+  });
+
   if (poolGroup === null) {
-    return {
-      allowed: false,
-      resolvedModel,
-      poolGroup,
-      effectiveHeadroomPercent: 0,
-      hoursUntilReset: null,
-      code: 'TELEMETRY_UNAVAILABLE',
-      reason: `Unknown model '${resolvedModel}': it maps to no quota pool, so headroom cannot be verified. Dispatch locked.`,
-    };
+    return lockedForUnknownTelemetry(
+      `Unknown model '${resolvedModel}': it maps to no quota pool, so headroom cannot be verified. Dispatch locked.`
+    );
   }
 
   if (pools.length === 0) {
@@ -371,62 +407,24 @@ export const evaluateModelDispatchEligibility = (
         reason: `Pre-Reset Quota-Burn task queued: waiting for telemetry confirming <${quotaBurnMaxHours}h to reset and >=${minHeadroom}% headroom.`,
       };
     }
-    if (allowOverage) {
-      return {
-        allowed: true,
-        resolvedModel,
-        poolGroup,
-        effectiveHeadroomPercent: 100,
-        hoursUntilReset: null,
-      };
-    }
-    return {
-      allowed: false,
-      resolvedModel,
-      poolGroup,
-      effectiveHeadroomPercent: 0,
-      hoursUntilReset: null,
-      code: 'TELEMETRY_UNAVAILABLE',
-      reason: `Overage Protection: quota telemetry for ${poolGroup} could not be read, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
-    };
+    if (allowOverage) return overageBypass();
+    return lockedForUnknownTelemetry(
+      `Overage Protection: quota telemetry for ${poolGroup} could not be read, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`
+    );
   }
 
-  const targetPool = pools.find(
-    (p) =>
-      p.poolGroup === poolGroup ||
-      p.poolId === poolGroup ||
-      resolvePoolGroupForModelOrNull(p.poolId || p.displayName) === poolGroup
-  );
+  const targetPool = findPoolForGroup(pools, poolGroup);
 
   const effectiveHeadroomPercent = targetPool
     ? calculateEffectiveHeadroomPercent(targetPool)
     : null;
   if (effectiveHeadroomPercent === null) {
-    // Overage is the explicit override for unknown telemetry, matching the empty-pool branch.
-    if (allowOverage) {
-      return {
-        allowed: true,
-        resolvedModel,
-        poolGroup,
-        effectiveHeadroomPercent: 100,
-        hoursUntilReset: null,
-      };
-    }
-    return {
-      allowed: false,
-      resolvedModel,
-      poolGroup,
-      effectiveHeadroomPercent: 0,
-      hoursUntilReset: null,
-      code: 'TELEMETRY_UNAVAILABLE',
-      reason: `Overage Protection: no usable quota telemetry for ${poolGroup}, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`,
-    };
+    if (allowOverage) return overageBypass();
+    return lockedForUnknownTelemetry(
+      `Overage Protection: no usable quota telemetry for ${poolGroup}, so remaining headroom is unknown. Dispatch locked to prevent paid AI overages; pass allowOverage: true to override.`
+    );
   }
-  const hoursUntilReset = targetPool
-    ? typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
-      ? targetPool.hoursUntilReset
-      : calculateHoursUntilReset(targetPool.resetTime, nowMs)
-    : null;
+  const hoursUntilReset = targetPool ? poolHoursUntilReset(targetPool, nowMs) : null;
 
   if (effectiveHeadroomPercent < minHeadroom && !allowOverage) {
     return {
@@ -498,10 +496,7 @@ export const annotateModelsWithQuota = (
     );
     const shortTermRemainingPercent =
       pool.shortTerm !== undefined ? Math.round(pool.shortTerm.remainingFraction * 100) : null;
-    const hoursUntilReset =
-      pool.hoursUntilReset > 0
-        ? pool.hoursUntilReset
-        : calculateHoursUntilReset(pool.resetTime, nowMs);
+    const hoursUntilReset = poolHoursUntilReset(pool, nowMs);
 
     return {
       ...entry,
@@ -516,7 +511,7 @@ export const annotateModelsWithQuota = (
   });
 };
 
-export interface ModelPreferenceEvaluationResult {
+interface ModelPreferenceEvaluationResult {
   allowed: boolean;
   selectedModel?: string;
   selectedEffort?: ReasoningEffort;
@@ -565,31 +560,20 @@ export const evaluateModelPreferenceChain = (options: {
       continue;
     }
 
-    const targetPool = options.pools.find(
-      (p) =>
-        p.poolGroup === poolGroup ||
-        p.poolId === poolGroup ||
-        resolvePoolGroupForModelOrNull(p.poolId || p.displayName) === poolGroup
-    );
+    const targetPool = findPoolForGroup(options.pools, poolGroup);
     if (!targetPool) {
       rejectionReasons.push(`${resolvedModel} (${poolGroup}): no telemetry pool`);
       continue;
     }
 
-    const weeklyFraction = targetPool.weekly?.remainingFraction ?? targetPool.remainingFraction;
-    const weeklyHeadroomPercent =
-      typeof weeklyFraction === 'number' && Number.isFinite(weeklyFraction)
-        ? toPercentFloor(Math.max(0, Math.min(1, weeklyFraction)))
-        : null;
+    const weeklyHeadroomPercent = headroomPercentOf(
+      targetPool.weekly?.remainingFraction ?? targetPool.remainingFraction
+    );
 
     const isShortTermActive = targetPool.shortTerm && !targetPool.shortTerm.disabled;
-    const shortTermFraction = isShortTermActive
-      ? targetPool.shortTerm?.remainingFraction
-      : undefined;
-    const shortTermHeadroomPercent =
-      typeof shortTermFraction === 'number' && Number.isFinite(shortTermFraction)
-        ? toPercentFloor(Math.max(0, Math.min(1, shortTermFraction)))
-        : null;
+    const shortTermHeadroomPercent = isShortTermActive
+      ? headroomPercentOf(targetPool.shortTerm?.remainingFraction)
+      : null;
 
     const effectiveHeadroomPercent = calculateEffectiveHeadroomPercent(targetPool);
 
@@ -621,10 +605,7 @@ export const evaluateModelPreferenceChain = (options: {
       continue;
     }
 
-    const hoursUntilReset =
-      typeof targetPool.hoursUntilReset === 'number' && targetPool.hoursUntilReset > 0
-        ? targetPool.hoursUntilReset
-        : calculateHoursUntilReset(targetPool.resetTime, nowMs);
+    const hoursUntilReset = poolHoursUntilReset(targetPool, nowMs);
 
     if (options.maxHoursUntilReset !== undefined) {
       if (

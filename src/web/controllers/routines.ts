@@ -9,9 +9,10 @@ import {
   isSafetyBlockCode,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
-import { parseCascadeRequest, resolveCoordinator, knownModelIds } from './dispatch.js';
+import { cascadeFromBody, resolveCoordinator } from './dispatch.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 import { PR_POLICY_VALUES } from '../../shared/contracts.js';
+import { isPlainJsonObject, validateTextFieldPatch } from './patchFields.js';
 
 const parseOptionalPrPolicy = (
   raw: unknown
@@ -26,20 +27,6 @@ const parseOptionalPrPolicy = (
     };
   }
   return { ok: true, value: parsed.data };
-};
-
-const TEXT_FIELDS = ['title', 'prompt', 'repositoryId'] as const;
-
-const validateTextFieldPatch = (body: any): string | undefined => {
-  if (!body || typeof body !== 'object') return undefined;
-  for (const field of TEXT_FIELDS) {
-    if (!(field in body)) continue;
-    const value = body[field];
-    if (typeof value !== 'string' || value.trim() === '') {
-      return `${field} must be a non-empty string`;
-    }
-  }
-  return undefined;
 };
 
 const validateRoutineLimits = (body: any): string | undefined => {
@@ -103,12 +90,7 @@ export const handleRoutineTasks = async (
       return sendJson(res, 400, { error: limitError });
     }
 
-    const resolved = options.configStore.resolveConfig();
-    const cascadeParse = parseCascadeRequest(payload.cascade, {
-      fallbackModel: resolved.defaultDispatchModel,
-      fallbackEffort: resolved.defaultDispatchEffort,
-      knownModels: knownModelIds(options),
-    });
+    const cascadeParse = cascadeFromBody(payload.cascade, options);
     if (!cascadeParse.ok) {
       return sendJson(res, 400, { error: cascadeParse.error });
     }
@@ -217,7 +199,7 @@ export const handleRoutineTaskById = async (
     const parsed = await readJsonBody(req, res, { emptyBody: 'malformed' });
     if (!parsed.ok) return;
     const patch: any = parsed.body;
-    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+    if (!isPlainJsonObject(patch)) {
       return sendJson(res, 400, { error: 'Request body must be a JSON object' });
     }
 
@@ -230,17 +212,12 @@ export const handleRoutineTaskById = async (
     if (!policyParsed.ok) {
       return sendJson(res, 400, { error: policyParsed.error });
     }
-    if (patch && 'prPolicy' in patch) {
+    if ('prPolicy' in patch) {
       patch.prPolicy = policyParsed.value;
     }
 
     if ('cascade' in patch) {
-      const resolved = options.configStore.resolveConfig();
-      const cascadeParse = parseCascadeRequest(patch.cascade, {
-        fallbackModel: resolved.defaultDispatchModel,
-        fallbackEffort: resolved.defaultDispatchEffort,
-        knownModels: knownModelIds(options),
-      });
+      const cascadeParse = cascadeFromBody(patch.cascade, options);
       if (!cascadeParse.ok) return sendJson(res, 400, { error: cascadeParse.error });
       patch.cascade = cascadeParse.cascade;
     }

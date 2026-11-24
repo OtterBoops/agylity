@@ -56,8 +56,8 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
   return crypto.timingSafeEqual(tokenDigest, expectedDigest);
 };
 
-export { clearAuthFailures, isIpRateLimited, recordAuthFailure };
-export type { AuthDomain, AuthFailureRecord } from './authFailures.js';
+// Re-exported so a test can reset the module-level lockout table.
+export { clearAuthFailures };
 
 const sendRateLimited = (res: http.ServerResponse): void => {
   sendJson(
@@ -104,13 +104,11 @@ export const handleRequest = async (
 
     const clientIp = extractClientIp(req, trustedProxies);
 
-    if (allowedRanges.length > 0) {
-      if (!isIpAllowed(clientIp, allowedRanges)) {
-        logger
-          .child('security')
-          .warn('Rejected connection from unauthorized IP: %s (path: %s)', clientIp, pathname);
-        return sendJson(res, 403, { error: 'Forbidden: IP not in allowlist', clientIp });
-      }
+    if (!isIpAllowed(clientIp, allowedRanges)) {
+      logger
+        .child('security')
+        .warn('Rejected connection from unauthorized IP: %s (path: %s)', clientIp, pathname);
+      return sendJson(res, 403, { error: 'Forbidden: IP not in allowlist', clientIp });
     }
 
     const expectedToken = resolveWebUiAuthToken(resolvedConfig);

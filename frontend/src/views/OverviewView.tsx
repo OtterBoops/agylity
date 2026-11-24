@@ -12,6 +12,7 @@ import { VerdictBar } from '../components/VerdictBar';
 import { SwarmRunnersStrip } from '../components/SwarmRunnersStrip';
 import { dismissEarlyReset, getRunners } from '../api';
 import { readUiCache, RUNNERS_CACHE_KEY, writeUiCache } from '../state/quotaStore';
+import { formatWindow } from '../utils/time';
 
 interface OverviewViewProps {
   quota: QuotaSnapshot[];
@@ -25,12 +26,6 @@ interface OverviewViewProps {
 }
 
 const formatPercent = (fraction: number): string => `${Math.round(fraction * 100)}%`;
-
-const formatWindow = (hours: number): string => {
-  if (hours < 1) return `${Math.max(1, Math.round(hours * 60))}m`;
-  if (hours < 24) return `${Math.round(hours)}h`;
-  return `${Math.floor(hours / 24)}d ${Math.round(hours % 24)}h`;
-};
 
 const hoursBetween = (fromIso: string, toIso: string): number | null => {
   const from = Date.parse(fromIso);

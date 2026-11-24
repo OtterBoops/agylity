@@ -4,6 +4,9 @@ import { Icon } from './Icon';
 import { ToggleSwitch } from './ToggleSwitch';
 import { DiscordEmbedSimulator } from './DiscordEmbedSimulator';
 
+const INPUT_CLASS =
+  'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris';
+
 interface DiscordChannelFormProps {
   token: string;
   onTokenChange: (val: string) => void;
@@ -103,7 +106,7 @@ export const DiscordChannelForm = ({
                 autoComplete="new-password"
                 data-1p-ignore="true"
                 data-lpignore="true"
-                class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+                class={`flex-1 ${INPUT_CLASS}`}
                 placeholder={
                   isTokenSet ? 'Enter new token to update...' : 'Paste Discord bot token'
                 }
@@ -133,7 +136,7 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+              class={INPUT_CLASS}
               placeholder="e.g. 123456789012345678"
               value={clientId}
               onInput={(e) => onClientIdChange((e.target as HTMLInputElement).value)}
@@ -180,7 +183,7 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+              class={INPUT_CLASS}
               placeholder="e.g. 123456789012345678"
               value={channelId}
               onInput={(e) => onChannelIdChange((e.target as HTMLInputElement).value)}
@@ -202,7 +205,7 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+              class={INPUT_CLASS}
               placeholder="e.g. 123456789012345678"
               value={guildId}
               onInput={(e) => onGuildIdChange((e.target as HTMLInputElement).value)}
@@ -230,7 +233,7 @@ export const DiscordChannelForm = ({
               inputMode="numeric"
               data-1p-ignore="true"
               data-lpignore="true"
-              class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+              class={INPUT_CLASS}
               placeholder="e.g. 123456789012345678"
               value={ownerUserId}
               onInput={(e) => onOwnerUserIdChange((e.target as HTMLInputElement).value)}

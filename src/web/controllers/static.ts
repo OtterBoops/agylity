@@ -6,7 +6,7 @@ import { sendJson, methodNotAllowed, STANDARD_SECURITY_HEADERS } from '../http.j
 import { MIME_TYPES } from '../types.js';
 import { logger } from '../../logs/logger.js';
 
-export const resolvePublicFilePath = (relative: string): string | null => {
+const resolvePublicFilePath = (relative: string): string | null => {
   if (relative.includes('\0')) {
     return null;
   }
@@ -26,14 +26,9 @@ export const resolvePublicFilePath = (relative: string): string | null => {
   return null;
 };
 
-export const resolveIndexHtmlPath = (): string | null => resolvePublicFilePath('index.html');
-
-export const loadIndexHtml = async (): Promise<string | null> => {
-  const p = resolveIndexHtmlPath();
-  if (!p) {
-    return null;
-  }
-  return fs.readFile(p, 'utf-8');
+const loadIndexHtml = async (): Promise<string | null> => {
+  const file = resolvePublicFilePath('index.html');
+  return file ? fs.readFile(file, 'utf-8') : null;
 };
 
 export const handleStaticAsset = async (
@@ -96,7 +91,7 @@ export const handleIndexHtml = async (
         Expires: '0',
       })
       .end(html);
-  } catch (err: any) {
+  } catch {
     return sendJson(res, 503, { error: 'Frontend bundle not built. Run npm run build:client.' });
   }
 };

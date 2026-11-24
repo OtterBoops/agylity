@@ -1,4 +1,4 @@
-export type RowKeyAction =
+type RowKeyAction =
   'up' | 'down' | 'first' | 'last' | 'page-up' | 'page-down' | 'open' | 'abort' | 'filter';
 
 interface KeyLike {
@@ -63,14 +63,4 @@ export const moveRowIndex = (
     default:
       return from;
   }
-};
-
-/** Typing in a field must never move the cursor, abort a run or steal the search box. */
-export const isEditableTarget = (target: EventTarget | null): boolean => {
-  const element = target as HTMLElement | null;
-  if (!element || typeof element.tagName !== 'string') return false;
-  if (element.isContentEditable) return true;
-  const tag = element.tagName;
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
-  return element.getAttribute('role') === 'textbox';
 };

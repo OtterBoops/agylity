@@ -10,7 +10,7 @@ import {
   type ResolvedConfig,
 } from './schema.js';
 
-export interface IConfigStore {
+interface IConfigStore {
   get<T>(key: string): T | undefined;
   set<T>(key: string, value: T): void;
   delete(key: string): void;

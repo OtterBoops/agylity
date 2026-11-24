@@ -8,8 +8,8 @@ import {
 // Both files are generated from CONFIG_REGISTRY: the reference table in `docs/configuration.md` and
 // `.env.example`. Hand-editing either is drift, and the unit test re-renders them and fails.
 
-export const CONFIG_REFERENCE_START = '<!-- config-reference:start -->';
-export const CONFIG_REFERENCE_END = '<!-- config-reference:end -->';
+const CONFIG_REFERENCE_START = '<!-- config-reference:start -->';
+const CONFIG_REFERENCE_END = '<!-- config-reference:end -->';
 
 const ROW_WIDTH = 96;
 
@@ -34,7 +34,7 @@ const documented = (): ConfigRegistryEntry[] => CONFIG_REGISTRY.filter((entry) =
 const variableOf = (entry: ConfigRegistryEntry): string => entry.env ?? entry.key ?? '';
 
 /** The env reference table, ordered by `CONFIG_DOC_GROUPS` and grouped with a heading row. */
-export const renderConfigReferenceTable = (): string => {
+const renderConfigReferenceTable = (): string => {
   const rows: string[][] = [['Variable', 'Type', 'Default', 'Description']];
   for (const group of CONFIG_DOC_GROUPS) {
     const entries = documented().filter((entry) => entry.group === group.id);

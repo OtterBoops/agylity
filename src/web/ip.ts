@@ -87,13 +87,13 @@ const parsePrefix = (prefixStr: string | null, maxBits: number): number | null =
   return prefix >= 0 && prefix <= maxBits ? prefix : null;
 };
 
-export interface ParsedSubnet {
+interface ParsedSubnet {
   family: 'ipv4' | 'ipv6';
   network: bigint;
   mask: bigint;
 }
 
-export const parseSubnet = (entry: string): ParsedSubnet | null => {
+const parseSubnet = (entry: string): ParsedSubnet | null => {
   const clean = normalizeIp(entry.trim());
   if (!clean) return null;
 
@@ -129,7 +129,7 @@ export const parseSubnet = (entry: string): ParsedSubnet | null => {
   return null;
 };
 
-export const isIpInSubnet = (clientIp: string, subnet: ParsedSubnet): boolean => {
+const isIpInSubnet = (clientIp: string, subnet: ParsedSubnet): boolean => {
   const norm = normalizeIp(clientIp);
   const family = net.isIP(norm);
   if (family === 4 && subnet.family === 'ipv4') {
@@ -167,14 +167,14 @@ export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean
 };
 
 /** Loopback only: a private-range peer is not a proxy, it is another host that can forge headers. */
-export const DEFAULT_TRUSTED_PROXY_RANGES = ['127.0.0.0/8', '::1/128'];
+const DEFAULT_TRUSTED_PROXY_RANGES = ['127.0.0.0/8', '::1/128'];
 
 export const isLoopbackIp = (ip: string): boolean => {
   const norm = normalizeIp(ip);
   return isIpAllowed(norm, DEFAULT_TRUSTED_PROXY_RANGES);
 };
 
-export const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[]): boolean => {
+const isTrustedProxyPeer = (peerIp: string, customProxyRanges?: string[]): boolean => {
   const ranges =
     customProxyRanges && customProxyRanges.length > 0
       ? customProxyRanges

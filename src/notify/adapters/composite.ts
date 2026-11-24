@@ -10,6 +10,12 @@ import type {
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 
+/** Trimmed, lowercased, de-duplicated channel names; blank entries and `none` are dropped. */
+export const normalizeChannelNames = (raw: Iterable<string>): string[] =>
+  Array.from(
+    new Set([...raw].map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none'))
+  );
+
 export class CompositeNotifier implements Notifier {
   public readonly notifiers: Notifier[];
   private readonly options?: NotifierOptions;
@@ -124,12 +130,8 @@ export class CompositeNotifier implements Notifier {
           : undefined;
 
     if (rawChannels !== undefined) {
-      const targetChannelNames = Array.from(
-        new Set(
-          (Array.isArray(rawChannels) ? rawChannels : [rawChannels])
-            .map((c) => String(c).trim().toLowerCase())
-            .filter((c) => Boolean(c) && c !== 'none')
-        )
+      const targetChannelNames = normalizeChannelNames(
+        (Array.isArray(rawChannels) ? rawChannels : [rawChannels]).map(String)
       );
 
       const toKeep: Notifier[] = [];

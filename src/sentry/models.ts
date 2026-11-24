@@ -26,7 +26,7 @@ const quotaInfoOrAbsent = (value: unknown): unknown => {
     : value;
 };
 
-export const LanguageServerModelConfigSchema = z.object({
+const LanguageServerModelConfigSchema = z.object({
   label: z.string(),
   modelId: z.string(),
   modelOrAlias: z
@@ -46,7 +46,7 @@ export const LanguageServerModelConfigSchema = z.object({
 
 export type LanguageServerModelConfig = z.infer<typeof LanguageServerModelConfigSchema>;
 
-export const ClientModelSortSchema = z.object({
+const ClientModelSortSchema = z.object({
   name: z.string(),
   groups: z.array(
     z.object({
@@ -63,7 +63,7 @@ export const LanguageServerResponseSchema = z.object({
 
 export type { PoolGroup };
 
-export const QuotaBucketSchema = z.object({
+const QuotaBucketSchema = z.object({
   bucketId: z.string(),
   displayName: z.string(),
   window: z.string().optional(),
@@ -96,7 +96,7 @@ export const QuotaSnapshotSchema = z.object({
     .optional(),
 }) satisfies z.ZodType<QuotaSnapshot>;
 
-export const RawQuotaBucketSchema = z.object({
+const RawQuotaBucketSchema = z.object({
   bucketId: z.string(),
   displayName: z.string(),
   description: z.string().optional(),
@@ -106,14 +106,13 @@ export const RawQuotaBucketSchema = z.object({
   disabled: z.boolean().optional(),
 });
 
-export const RawQuotaGroupSchema = z.object({
+const RawQuotaGroupSchema = z.object({
   displayName: z.string(),
   description: z.string().optional(),
   buckets: z.array(RawQuotaBucketSchema),
 });
 
-// The server does not currently emit overageInfo; retained only as a secondary signal.
-export const OverageInfoSchema = z.object({
+const OverageInfoSchema = z.object({
   enabled: z.boolean().optional(),
 });
 
@@ -126,11 +125,9 @@ export const RetrieveUserQuotaSummaryResponseSchema = z.object({
   }),
 });
 
-export type RetrieveUserQuotaSummaryResponse = z.infer<
-  typeof RetrieveUserQuotaSummaryResponseSchema
->;
+type RetrieveUserQuotaSummaryResponse = z.infer<typeof RetrieveUserQuotaSummaryResponseSchema>;
 
-export const UserPlanInfoSchema = z.object({
+const UserPlanInfoSchema = z.object({
   teamsTier: z.string().optional(),
   planName: z.string().optional(),
   monthlyPromptCredits: z.number().optional(),
@@ -151,7 +148,7 @@ export const GetUserStatusResponseSchema = z.object({
     .optional(),
 });
 
-export type GetUserStatusResponse = z.infer<typeof GetUserStatusResponseSchema>;
+type GetUserStatusResponse = z.infer<typeof GetUserStatusResponseSchema>;
 
 export const deriveOverageEnabled = (
   status: GetUserStatusResponse | null | undefined
@@ -164,7 +161,7 @@ export const deriveOverageEnabled = (
   return (typeof flex === 'number' && flex > 0) || canBuy === true;
 };
 
-export const QuotaAlertSchema = z.object({
+const QuotaAlertSchema = z.object({
   pool: QuotaSnapshotSchema,
   milestoneHours: z.number(),
   remainingPercentage: z.number(),
@@ -187,7 +184,7 @@ export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date
   return Math.max(0.0001, Math.round(hours * 1000) / 1000);
 };
 
-export const BURN_FLOOR_PERCENT = 10;
+const BURN_FLOOR_PERCENT = 10;
 
 /** Two observations closer than this cannot separate signal from probe jitter. */
 const BURN_MIN_SPAN_MS = 5 * 60_000;
@@ -234,9 +231,33 @@ export const computeBurnProjection = (input: {
   };
 };
 
-export const POOL_GROUP_ORDER: Record<PoolGroup, number> = {
+const POOL_GROUP_ORDER: Record<PoolGroup, number> = {
   gemini: 0,
   claude: 1,
+};
+
+/** Gemini pools always render before Claude ones, wherever a snapshot list is assembled. */
+const sortByPoolGroup = (snapshots: QuotaSnapshot[]): QuotaSnapshot[] =>
+  snapshots.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
+
+/** The weekly bucket and its live countdown come from one place: every pool reports that window. */
+const weeklyBucketFor = (
+  poolGroup: PoolGroup,
+  pool: { remainingFraction: number; resetTime: string },
+  nowMs: number
+): { weeklyBucket: QuotaBucket; hoursUntilReset: number } => {
+  const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
+  return {
+    weeklyBucket: {
+      bucketId: `${poolGroup}-weekly`,
+      displayName: 'Weekly Limit',
+      window: 'weekly',
+      remainingFraction: pool.remainingFraction,
+      resetTime: pool.resetTime,
+      hoursUntilReset,
+    },
+    hoursUntilReset,
+  };
 };
 
 // Prototype-free table: an arbitrary state-file key such as `constructor` must not resolve to an inherited member.
@@ -275,7 +296,7 @@ const resolveCredits = (
   overageEnabled: extraCredits?.overageEnabled ?? overageFallback,
 });
 
-export const toSnapshot = (input: {
+const toSnapshot = (input: {
   poolGroup: PoolGroup;
   remainingFraction: number;
   resetTime: string;
@@ -361,7 +382,7 @@ const poolIdSlug = (name: string): string => {
   return slug || 'pool';
 };
 
-export const resolvePoolGroupForQuotaGroup = (
+const resolvePoolGroupForQuotaGroup = (
   groupName: string
 ): {
   poolGroup: PoolGroup;
@@ -388,6 +409,17 @@ export const resolvePoolGroupForQuotaGroup = (
   return null;
 };
 
+// The probe spells the weekly window differently across versions, so the bucket is matched by id,
+// name or window rather than by position.
+const isWeeklyBucket = (bucket: {
+  window?: string;
+  bucketId: string;
+  displayName: string;
+}): boolean =>
+  bucket.window === 'weekly' ||
+  bucket.bucketId.includes('weekly') ||
+  bucket.displayName.toLowerCase().includes('weekly');
+
 export const aggregateUserQuotaSummary = (
   summary: RetrieveUserQuotaSummaryResponse,
   nowMs: number = Date.now(),
@@ -407,13 +439,7 @@ export const aggregateUserQuotaSummary = (
     const resolved = resolvePoolGroupForQuotaGroup(group.displayName);
     if (!resolved) continue;
 
-    const rawWeekly =
-      (group.buckets || []).find(
-        (b) =>
-          b.window === 'weekly' ||
-          b.bucketId.includes('weekly') ||
-          b.displayName.toLowerCase().includes('weekly')
-      ) || group.buckets?.[0];
+    const rawWeekly = (group.buckets || []).find(isWeeklyBucket) || group.buckets?.[0];
 
     const weeklyResetTime = rawWeekly?.resetTime || '';
     const weeklyHours = weeklyResetTime ? calculateHoursUntilReset(weeklyResetTime, nowMs) : 0;
@@ -433,13 +459,7 @@ export const aggregateUserQuotaSummary = (
       };
     });
 
-    const weeklyBucket =
-      bucketsWithHours.find(
-        (b) =>
-          b.window === 'weekly' ||
-          b.bucketId.includes('weekly') ||
-          b.displayName.toLowerCase().includes('weekly')
-      ) || bucketsWithHours[0];
+    const weeklyBucket = bucketsWithHours.find(isWeeklyBucket) || bucketsWithHours[0];
 
     const shortTermBucket = bucketsWithHours.find(
       (b) =>
@@ -483,7 +503,7 @@ export const aggregateUserQuotaSummary = (
     }
   }
 
-  return result.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
+  return sortByPoolGroup(result);
 };
 
 const inferPoolGroupFromQuotaInfo = (
@@ -569,15 +589,7 @@ export const aggregateQuotaPools = (
 
   const result: QuotaSnapshot[] = [];
   for (const entry of poolMap.values()) {
-    const hoursUntilReset = calculateHoursUntilReset(entry.resetTime, nowMs);
-    const weeklyBucket: QuotaBucket = {
-      bucketId: `${entry.poolGroup}-weekly`,
-      displayName: 'Weekly Limit',
-      window: 'weekly',
-      remainingFraction: entry.remainingFraction,
-      resetTime: entry.resetTime,
-      hoursUntilReset,
-    };
+    const { weeklyBucket, hoursUntilReset } = weeklyBucketFor(entry.poolGroup, entry, nowMs);
     result.push(
       toSnapshot({
         poolGroup: entry.poolGroup,
@@ -593,10 +605,10 @@ export const aggregateQuotaPools = (
     );
   }
 
-  return result.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
+  return sortByPoolGroup(result);
 };
 
-export interface QuotaStatePoolLike {
+interface QuotaStatePoolLike {
   resetTime: string;
   remainingFraction: number;
   firedMilestones?: string[];
@@ -604,7 +616,7 @@ export interface QuotaStatePoolLike {
   samples?: BurnSample[];
 }
 
-export interface QuotaStateLike {
+interface QuotaStateLike {
   pools: Record<string, QuotaStatePoolLike>;
 }
 
@@ -618,15 +630,7 @@ export const snapshotsFromSentryState = (
     const poolGroup = POOL_GROUP_ALIASES[rawId] ?? POOL_GROUP_ALIASES[rawId.split(':')[0] ?? ''];
     if (!poolGroup) continue;
 
-    const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
-    const weeklyBucket: QuotaBucket = {
-      bucketId: `${poolGroup}-weekly`,
-      displayName: 'Weekly Limit',
-      window: 'weekly',
-      remainingFraction: pool.remainingFraction,
-      resetTime: pool.resetTime,
-      hoursUntilReset,
-    };
+    const { weeklyBucket, hoursUntilReset } = weeklyBucketFor(poolGroup, pool, nowMs);
 
     const snapshot = toSnapshot({
       poolId: upgradePoolGroupId(poolId),
@@ -649,5 +653,5 @@ export const snapshotsFromSentryState = (
     snapshots.push(snapshot);
   }
 
-  return snapshots.sort((a, b) => POOL_GROUP_ORDER[a.poolGroup] - POOL_GROUP_ORDER[b.poolGroup]);
+  return sortByPoolGroup(snapshots);
 };

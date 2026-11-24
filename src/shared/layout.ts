@@ -1,12 +1,11 @@
 // Zero imports and erasable syntax only: the frontend bundles this file directly.
 
-// One literal class list: the grid renders one cell per pool group, so the column count no longer
-// depends on how many of them this account holds.
+// Two columns: `COLUMNS` below must agree, or a placeholder lands outside the last row.
 export const QUOTA_GRID_COLUMNS = 'grid-cols-1 md:grid-cols-2';
 
 const COLUMNS = 2;
 
-export interface QuotaGridPlaceholder {
+interface QuotaGridPlaceholder {
   key: string;
   className: string;
 }

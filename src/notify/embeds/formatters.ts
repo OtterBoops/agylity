@@ -1,6 +1,6 @@
 import type { DispatchStatusUpdate } from '../types.js';
 
-export const TERMINAL_STEPS = ['completed', 'no_changes', 'failed', 'aborted'];
+const TERMINAL_STEPS = ['completed', 'no_changes', 'failed', 'aborted'];
 
 export const normalizeStep = (status: DispatchStatusUpdate): string =>
   String(status.status ?? status.step ?? 'executing').toLowerCase();
