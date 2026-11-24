@@ -462,6 +462,15 @@ The dashboard renders that outcome as a derived status rather than a new one: a 
 issue deliverables and no PR shows `Issue Filed` (or `Issues Filed`) in the iris tone, while still
 belonging to the Completed filter, because the stored status remains `completed`.
 
+Nothing an agent invented about its own identity reaches the remote. Immediately before the push, the
+runner replays every commit on `base..HEAD` through `git commit-tree`: lines matching `Co-authored-by:`
+are dropped, because a squash-merge credits each one as a real account, and any
+`@users.noreply.github.com` address the leased identity does not own is replaced with the identity the
+lease resolved (`GIT_AUTHOR_EMAIL`, else the token owner's noreply address, else
+`noreply@agylity.local`). Trees, author/committer dates and clean commits are carried over untouched —
+a commit with nothing to fix keeps its own id — so only the offending metadata and the commits
+downstream of a rewrite change, and the diff under review is byte-identical.
+
 ### 7.4. Repository Clone Strategy
 
 Runners clone through a local bare mirror cache keyed by the clone URL:

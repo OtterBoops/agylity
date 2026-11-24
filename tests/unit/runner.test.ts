@@ -11,7 +11,14 @@ import { makeTempDir } from '../e2e/harness/index.js';
 import { createLogger } from '../../src/logs/logger.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import { TaskQueue, type SwarmTask } from '../../src/coordinator/queue.js';
-import { buildPullRequestBody } from '../../src/runner/executor.js';
+import {
+  buildPullRequestBody,
+  hasCoAuthorTrailer,
+  isUnownedNoreplyEmail,
+  parseBranchCommitLog,
+  stripCoAuthorTrailers,
+} from '../../src/runner/executor.js';
+import { defaultExecFileAsync } from '../../src/sentry/discovery.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
 import {
   RemoteSwarmRunner,
@@ -2428,6 +2435,222 @@ describe('Runner: automatic GitHub commit identity & no-co-authoring directive',
       if (prevCommitterName !== undefined) process.env.GIT_COMMITTER_NAME = prevCommitterName;
       if (prevCommitterEmail !== undefined) process.env.GIT_COMMITTER_EMAIL = prevCommitterEmail;
       db.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Runner: branch attribution guard', () => {
+  it('detects co-author trailers however the agent spells them', () => {
+    assert.equal(hasCoAuthorTrailer('feat: x\n\nCo-authored-by: A <a@b.c>'), true);
+    assert.equal(hasCoAuthorTrailer('feat: x\n\nco-authored-by:A <a@b.c>'), true);
+    assert.equal(hasCoAuthorTrailer('feat: x\r\n  Co-Authored-By: A <a@b.c>'), true);
+    assert.equal(hasCoAuthorTrailer('feat: x\n\nCo-authored-by is prose here'), false);
+    assert.equal(hasCoAuthorTrailer('feat: x\n\nSigned-off-by: A <a@b.c>'), false);
+  });
+
+  it('strips the trailer and the blank tail it leaves behind', () => {
+    const stripped = stripCoAuthorTrailers('feat: x\n\nBody line.\n\nCo-authored-by: A <a@b.c>\n');
+    assert.equal(stripped, 'feat: x\n\nBody line.\n');
+  });
+
+  it('treats only noreply addresses the lease does not own as unowned', () => {
+    const owned = '12345+OtterBoops@users.noreply.github.com';
+    assert.equal(isUnownedNoreplyEmail('user@users.noreply.github.com', owned), true);
+    assert.equal(isUnownedNoreplyEmail('999+stranger@users.noreply.github.com', owned), true);
+    assert.equal(isUnownedNoreplyEmail('12345+OtterBoops@users.noreply.github.com', owned), false);
+    assert.equal(isUnownedNoreplyEmail('12345+OTTERBOOPS@users.noreply.github.com', owned), false);
+    assert.equal(isUnownedNoreplyEmail('dev@example.com', owned), false);
+    assert.equal(isUnownedNoreplyEmail('user@users.noreply.github.com', undefined), true);
+  });
+
+  it('parses a git log dump into oldest-first commits with the message intact', () => {
+    const record = (fields: string[]): string => `${fields.join('\u001f')}\u001e\n`;
+    const stdout =
+      record([
+        'sha1',
+        'tree1',
+        'p0',
+        'Ada',
+        'ada@example.com',
+        '2026-01-01T00:00:00+02:00',
+        'Ada',
+        'ada@example.com',
+        '2026-01-01T00:00:00+02:00',
+        'feat: one',
+      ]) +
+      record([
+        'sha2',
+        'tree2',
+        'sha1 p9',
+        'Grace',
+        'grace@example.com',
+        '2026-01-02T00:00:00+02:00',
+        'Grace',
+        'grace@example.com',
+        '2026-01-02T00:00:00+02:00',
+        'feat: two\n\nBody\n\nCo-authored-by: A <a@b.c>\n',
+      ]);
+
+    const commits = parseBranchCommitLog(stdout);
+    assert.equal(commits.length, 2);
+    assert.deepEqual(commits[0], {
+      sha: 'sha1',
+      tree: 'tree1',
+      parents: ['p0'],
+      authorName: 'Ada',
+      authorEmail: 'ada@example.com',
+      authorDate: '2026-01-01T00:00:00+02:00',
+      committerName: 'Ada',
+      committerEmail: 'ada@example.com',
+      committerDate: '2026-01-01T00:00:00+02:00',
+      message: 'feat: one',
+    });
+    assert.deepEqual(commits[1]?.parents, ['sha1', 'p9']);
+    assert.match(commits[1]?.message ?? '', /Co-authored-by: A <a@b\.c>/);
+    assert.deepEqual(parseBranchCommitLog(''), []);
+  });
+
+  it('strips trailers and rewrites a placeholder identity before the branch reaches the remote', async () => {
+    const { dir, cleanup } = makeTempDir('runner_attribution_');
+    const work = path.join(dir, 'work');
+    const remote = path.join(dir, 'remote.git');
+    const saved = {
+      name: process.env.GIT_AUTHOR_NAME,
+      email: process.env.GIT_AUTHOR_EMAIL,
+      committerName: process.env.GIT_COMMITTER_NAME,
+      committerEmail: process.env.GIT_COMMITTER_EMAIL,
+    };
+    delete process.env.GIT_AUTHOR_NAME;
+    delete process.env.GIT_AUTHOR_EMAIL;
+    delete process.env.GIT_COMMITTER_NAME;
+    delete process.env.GIT_COMMITTER_EMAIL;
+
+    const git = async (
+      cwd: string,
+      args: string[],
+      env?: Record<string, string>
+    ): Promise<string> =>
+      (
+        await defaultExecFileAsync('git', args, {
+          cwd,
+          timeout: 30000,
+          env: { ...process.env, ...env },
+        })
+      ).stdout;
+
+    const lease = { name: 'OtterBoops', email: '12345+OtterBoops@users.noreply.github.com' };
+    const leased = {
+      GIT_AUTHOR_NAME: lease.name,
+      GIT_AUTHOR_EMAIL: lease.email,
+      GIT_COMMITTER_NAME: lease.name,
+      GIT_COMMITTER_EMAIL: lease.email,
+    };
+    let cleanSha = '';
+    let baseSha = '';
+
+    try {
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        await git(dir, ['init', '-q', '-b', 'main', work]);
+        await git(dir, ['init', '-q', '--bare', remote]);
+        await git(work, ['remote', 'add', 'origin', remote.split(path.sep).join('/')]);
+        writeFileSync(path.join(work, 'README.md'), 'base\n');
+        await git(work, ['add', '-A']);
+        await git(work, ['commit', '-q', '-m', 'chore: base'], {
+          GIT_AUTHOR_NAME: 'Human',
+          GIT_AUTHOR_EMAIL: 'human@example.com',
+          GIT_COMMITTER_NAME: 'Human',
+          GIT_COMMITTER_EMAIL: 'human@example.com',
+        });
+        baseSha = (await git(work, ['rev-parse', 'HEAD'])).trim();
+
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          prPolicy: 'all',
+          resolveGithubIdentityFn: async () => lease,
+          execFileFn: async (file, args, opts) => {
+            if (file === 'agy') {
+              // A clean commit the runner must leave alone, then the one an improviser wrote.
+              writeFileSync(path.join(work, 'a.txt'), 'a\n');
+              await git(work, ['add', '-A']);
+              await git(work, ['commit', '-q', '-m', 'feat: add a'], leased);
+              cleanSha = (await git(work, ['rev-parse', 'HEAD'])).trim();
+
+              writeFileSync(path.join(work, 'b.txt'), 'b\n');
+              await git(work, ['add', '-A']);
+              await git(
+                work,
+                [
+                  'commit',
+                  '-q',
+                  '-m',
+                  'feat: add b\n\nCo-authored-by: Stranger <999+stranger@users.noreply.github.com>',
+                ],
+                {
+                  GIT_AUTHOR_NAME: 'User',
+                  GIT_AUTHOR_EMAIL: 'user@users.noreply.github.com',
+                  GIT_COMMITTER_NAME: 'User',
+                  GIT_COMMITTER_EMAIL: 'user@users.noreply.github.com',
+                }
+              );
+              return { stdout: 'Done.', stderr: '' };
+            }
+            if (file === 'gh') throw new Error('no pull request may be opened for this task');
+            return defaultExecFileAsync(file, args, opts);
+          },
+        });
+
+        const task = new TaskQueue(db).enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: work,
+          prompt: 'Add a and b',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          prPolicy: 'all',
+          pushBranch: true,
+          autoCreatePr: false,
+        });
+
+        const result = await executor.execute(task, { githubToken: 'ghp_test_token_123' });
+        assert.equal(result.success, true, result.error ?? 'the run must succeed');
+        assert.ok(result.branchName, 'the pushed branch must be reported');
+
+        const pushed = await git(remote, [
+          'log',
+          '--reverse',
+          `--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1e`,
+          result.branchName,
+          `^${baseSha}`,
+        ]);
+        const commits = parseBranchCommitLog(pushed);
+
+        assert.equal(commits.length, 2);
+        assert.equal(commits[0]?.sha, cleanSha, 'a clean commit keeps its own id');
+        assert.equal(commits[0]?.authorEmail, lease.email);
+
+        const offending = commits[1];
+        assert.equal(offending?.authorEmail, lease.email);
+        assert.equal(offending?.authorName, lease.name);
+        assert.equal(offending?.committerEmail, lease.email);
+        assert.equal(offending?.committerName, lease.name);
+        assert.doesNotMatch(offending?.message ?? '', /co-authored-by/i);
+        assert.match(offending?.message ?? '', /^feat: add b/);
+        assert.equal(pushed.includes('user@users.noreply.github.com'), false);
+        assert.equal(pushed.includes('stranger@users.noreply.github.com'), false);
+
+        // The rewrite only moved identity: the trees still carry the work under review.
+        assert.equal(await git(remote, ['show', `${result.branchName}:a.txt`]), 'a\n');
+        assert.equal(await git(remote, ['show', `${result.branchName}:b.txt`]), 'b\n');
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (saved.name !== undefined) process.env.GIT_AUTHOR_NAME = saved.name;
+      if (saved.email !== undefined) process.env.GIT_AUTHOR_EMAIL = saved.email;
+      if (saved.committerName !== undefined) process.env.GIT_COMMITTER_NAME = saved.committerName;
+      if (saved.committerEmail !== undefined)
+        process.env.GIT_COMMITTER_EMAIL = saved.committerEmail;
       cleanup();
     }
   });

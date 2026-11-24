@@ -1042,7 +1042,7 @@ export const CONFIG_REGISTRY = [
   {
     group: 'runner',
     type: 'string',
-    defaultLabel: 'user@users.noreply.github.com',
+    defaultLabel: 'noreply@agylity.local',
     example: 'comment',
     env: 'GIT_AUTHOR_EMAIL',
     description:

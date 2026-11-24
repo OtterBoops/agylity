@@ -371,6 +371,72 @@ const defaultResolveGithubIdentity = async (
   }
 };
 
+// A squash-merge credits every `Co-authored-by:` trailer and every noreply address on the branch,
+// so an agent that improvises an identity inside the container can attribute work to a stranger.
+const GITHUB_NOREPLY_SUFFIX = '@users.noreply.github.com';
+const CO_AUTHOR_TRAILER_RE = /^[ \t]*co-authored-by[ \t]*:/i;
+const ATTRIBUTION_FIELD = '\u001f';
+const ATTRIBUTION_RECORD = '\u001e';
+const ATTRIBUTION_LOG_FORMAT = '%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1e';
+
+/** One commit as the attribution guard reads and replays it. */
+export interface BranchCommit {
+  sha: string;
+  tree: string;
+  parents: string[];
+  authorName: string;
+  authorEmail: string;
+  authorDate: string;
+  committerName: string;
+  committerEmail: string;
+  committerDate: string;
+  message: string;
+}
+
+/** True when the message carries a trailer GitHub would credit a third-party account from. */
+export const hasCoAuthorTrailer = (message: string): boolean =>
+  message.split(/\r?\n/).some((line) => CO_AUTHOR_TRAILER_RE.test(line));
+
+/** Drops every `Co-authored-by:` line and the blank tail it can leave behind. */
+export const stripCoAuthorTrailers = (message: string): string =>
+  `${message
+    .split(/\r?\n/)
+    .filter((line) => !CO_AUTHOR_TRAILER_RE.test(line))
+    .join('\n')
+    .replace(/\s+$/, '')}\n`;
+
+/** True for a GitHub noreply address the identity holding the lease does not own. */
+export const isUnownedNoreplyEmail = (email: string, ownedEmail?: string): boolean => {
+  const candidate = email.trim().toLowerCase();
+  if (!candidate.endsWith(GITHUB_NOREPLY_SUFFIX)) return false;
+  return candidate !== (ownedEmail ?? '').trim().toLowerCase();
+};
+
+/** Parses `git log --reverse --format=<ATTRIBUTION_LOG_FORMAT>` output, oldest commit first. */
+export const parseBranchCommitLog = (stdout: string): BranchCommit[] =>
+  stdout
+    .split(ATTRIBUTION_RECORD)
+    .map((record) => record.replace(/^\r?\n/, ''))
+    .filter((record) => record.trim() !== '')
+    .map((record) => {
+      // Field order mirrors ATTRIBUTION_LOG_FORMAT; the message is last and keeps its separators.
+      const fields = record.split(ATTRIBUTION_FIELD);
+      const field = (index: number): string => (fields[index] ?? '').trim();
+      const parents = field(2);
+      return {
+        sha: field(0),
+        tree: field(1),
+        parents: parents === '' ? [] : parents.split(' '),
+        authorName: field(3),
+        authorEmail: field(4),
+        authorDate: field(5),
+        committerName: field(6),
+        committerEmail: field(7),
+        committerDate: field(8),
+        message: fields.slice(9).join(ATTRIBUTION_FIELD),
+      };
+    });
+
 export class TaskExecutor {
   private readonly agyBinPath: string;
   private readonly timeoutMs: number;
@@ -1179,6 +1245,105 @@ export class TaskExecutor {
     } catch {}
   }
 
+  /**
+   * Removes attribution a squash-merge would honour, before the branch leaves the box.
+   *
+   * A merge reads `Co-authored-by:` trailers as real accounts and a noreply address as a real author,
+   * so an identity the agent invented inside the container could credit a stranger on the default
+   * branch. Each offending commit is replayed through `commit-tree` with only that metadata changed,
+   * so every tree (and therefore the diff under review) is identical and a clean branch keeps its
+   * own SHAs.
+   */
+  private async stripUntrustedAttribution(
+    cwd: string,
+    baseBranch: string,
+    gitIdentityEnv: Record<string, string>
+  ): Promise<void> {
+    const commits = await this.readBranchCommits(cwd, baseBranch);
+    if (commits.length === 0) return;
+
+    const safeName = gitIdentityEnv.GIT_AUTHOR_NAME || 'Agylity Runner';
+    const safeEmail = gitIdentityEnv.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
+    const rewritten = new Map<string, string>();
+    let head = '';
+    let flagged = 0;
+
+    for (const commit of commits) {
+      const parents = commit.parents.map((parent) => rewritten.get(parent) ?? parent);
+      const parentsMoved = parents.some((parent, index) => parent !== commit.parents[index]);
+      const authorUnowned = isUnownedNoreplyEmail(commit.authorEmail, safeEmail);
+      const committerUnowned = isUnownedNoreplyEmail(commit.committerEmail, safeEmail);
+      const carriesTrailer = hasCoAuthorTrailer(commit.message);
+
+      if (!parentsMoved && !authorUnowned && !committerUnowned && !carriesTrailer) {
+        rewritten.set(commit.sha, commit.sha);
+        head = commit.sha;
+        continue;
+      }
+
+      head = await this.replayCommit(cwd, {
+        ...commit,
+        parents,
+        authorName: authorUnowned ? safeName : commit.authorName,
+        authorEmail: authorUnowned ? safeEmail : commit.authorEmail,
+        committerName: committerUnowned ? safeName : commit.committerName,
+        committerEmail: committerUnowned ? safeEmail : commit.committerEmail,
+        message: carriesTrailer ? stripCoAuthorTrailers(commit.message) : commit.message,
+      });
+      rewritten.set(commit.sha, head);
+      flagged += 1;
+    }
+
+    if (flagged === 0) return;
+
+    this.log.info(
+      'Rewrote attribution on %d of %d commit(s) before pushing: co-author trailers and unowned noreply identities never reach GitHub',
+      flagged,
+      commits.length
+    );
+    await this.execFileFn('git', ['reset', '--hard', head], { cwd, timeout: 15000 });
+  }
+
+  /** The commits this branch adds to `baseBranch`, oldest first so parents replay before children. */
+  private async readBranchCommits(cwd: string, baseBranch: string): Promise<BranchCommit[]> {
+    const { stdout } = await this.execFileFn(
+      'git',
+      ['log', '--reverse', `--format=${ATTRIBUTION_LOG_FORMAT}`, `${baseBranch}..HEAD`],
+      { cwd, timeout: 20000 }
+    );
+    return parseBranchCommitLog(stdout ?? '');
+  }
+
+  /** Rebuilds one commit from its own tree and metadata, returning the new id. */
+  private async replayCommit(cwd: string, commit: BranchCommit): Promise<string> {
+    const scratchDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agylity-commit-'));
+    try {
+      const messagePath = path.join(scratchDir, 'message');
+      await fsPromises.writeFile(messagePath, commit.message, 'utf8');
+      const args = ['commit-tree', commit.tree];
+      for (const parent of commit.parents) args.push('-p', parent);
+      args.push('-F', messagePath);
+      const { stdout } = await this.execFileFn('git', args, {
+        cwd,
+        timeout: 30000,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: commit.authorName,
+          GIT_AUTHOR_EMAIL: commit.authorEmail,
+          GIT_AUTHOR_DATE: commit.authorDate,
+          GIT_COMMITTER_NAME: commit.committerName,
+          GIT_COMMITTER_EMAIL: commit.committerEmail,
+          GIT_COMMITTER_DATE: commit.committerDate,
+        },
+      });
+      const sha = (stdout ?? '').trim();
+      if (!sha) throw new Error(`git commit-tree produced no commit id for tree ${commit.tree}`);
+      return sha;
+    } finally {
+      await fsPromises.rm(scratchDir, { recursive: true, force: true });
+    }
+  }
+
   /** Returns the failure message for a rejected push, or null once the branch is upstream. */
   private async pushTaskBranch(
     task: SwarmTask,
@@ -1604,6 +1769,8 @@ export class TaskExecutor {
 
       let prUrl: string | undefined;
       if (task.pushBranch) {
+        // Nothing unowned reaches the remote: the guard runs before the leased token can push.
+        await this.stripUntrustedAttribution(cwd, baseBranch, gitIdentityEnv);
         const pushError = await this.pushTaskBranch(task, finalBranchName, githubToken);
         if (pushError) {
           return {
