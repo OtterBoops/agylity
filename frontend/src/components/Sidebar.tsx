@@ -9,9 +9,13 @@ import {
   faChartPie,
   faCheckToSlot,
   faBullhorn,
+  faCoins,
   faGear,
+  faKey,
   faList,
   faNetworkWired,
+  faRotate,
+  faSearch,
   faSliders,
   faXmark,
   type IconDefinition,
@@ -44,6 +48,13 @@ interface SidebarProps {
   lastProbeSource?: string;
   lastProbeAt?: string;
   minHeadroomPercent?: number;
+  pageTitle?: string;
+  isRefreshing?: boolean;
+  refreshCooldown?: number;
+  remainingCredits?: number | null;
+  onRefresh?: () => void;
+  onOpenCommandPalette?: () => void;
+  onOpenAuthModal?: () => void;
 }
 
 interface NavItem {
@@ -60,6 +71,13 @@ export const Sidebar = ({
   lastProbeSource,
   lastProbeAt,
   minHeadroomPercent = 10,
+  pageTitle,
+  isRefreshing = false,
+  refreshCooldown = 0,
+  remainingCredits = null,
+  onRefresh,
+  onOpenCommandPalette,
+  onOpenAuthModal,
 }: SidebarProps) => {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -296,9 +314,13 @@ export const Sidebar = ({
 
   return (
     <>
-      <div class="sticky top-0 z-40 flex h-14 w-full items-center justify-between border-b border-pine-highlight bg-pine-surface px-4 md:hidden">
-        <Link href="/overview" class="flex items-center gap-2.5">
-          <div class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay">
+      <div class="sticky top-0 z-40 flex h-14 w-full items-center justify-between gap-2 border-b border-pine-highlight bg-pine-surface px-4 md:hidden">
+        <div class="flex min-w-0 items-center gap-2.5">
+          <Link
+            href="/overview"
+            aria-label="Agylity home"
+            class="flex size-8 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay"
+          >
             <svg viewBox="0 0 24 24" fill="none" class="size-4.5 text-pine-iris" aria-hidden="true">
               <path
                 fill-rule="evenodd"
@@ -307,28 +329,52 @@ export const Sidebar = ({
                 fill="currentColor"
               />
             </svg>
-          </div>
-          <span class="text-base leading-none font-bold tracking-tight text-pine-text">
-            Agylity
-          </span>
+          </Link>
+          <h1 class="truncate text-base leading-none font-bold tracking-tight text-pine-text">
+            {pageTitle ?? 'Agylity'}
+          </h1>
           <span class="relative flex size-2 shrink-0">
             <span
               class={`absolute inline-flex size-full rounded-full opacity-75 motion-reduce:animate-none ${probeColor}`}
             />
             <span class={`relative inline-flex size-2 rounded-full ${probeColor}`} />
           </span>
-        </Link>
-        <button
-          ref={mobileToggleRef}
-          type="button"
-          onClick={() => (mobileOpen ? closeMobileNav() : openMobileNav())}
-          class="flex size-11 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
-          aria-label="Toggle navigation menu"
-          aria-expanded={mobileOpen}
-          aria-controls="mobile-nav"
-        >
-          <Icon icon={mobileOpen ? faXmark : faBars} class="size-4" />
-        </button>
+        </div>
+
+        <div class="flex shrink-0 items-center gap-1.5">
+          {typeof remainingCredits === 'number' && (
+            <div
+              class="inline-flex h-10 items-center gap-1.5 rounded-lg border border-pine-highlight bg-pine-overlay/60 px-2.5 text-xs font-semibold text-pine-text"
+              title="Available Google AI Credits / Flex Tokens"
+            >
+              <Icon icon={faCoins} class="size-3 text-pine-iris" />
+              <span class="font-mono text-pine-iris">{remainingCredits}</span>
+            </div>
+          )}
+          {onRefresh && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={refreshCooldown > 0 || isRefreshing}
+              class="inline-flex size-10 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
+              title="Poll latest quota snapshots"
+              aria-label="Poll latest quota snapshots"
+            >
+              <Icon icon={faRotate} class={`size-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            </button>
+          )}
+          <button
+            ref={mobileToggleRef}
+            type="button"
+            onClick={() => (mobileOpen ? closeMobileNav() : openMobileNav())}
+            class="flex size-10 cursor-pointer items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/60 text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+            aria-label="Toggle navigation menu"
+            aria-expanded={mobileOpen}
+            aria-controls="mobile-nav"
+          >
+            <Icon icon={mobileOpen ? faXmark : faBars} class="size-4" />
+          </button>
+        </div>
       </div>
 
       <dialog
@@ -361,7 +407,38 @@ export const Sidebar = ({
             {renderNavSection('Settings', settingsItems, false, closeMobileNav)}
           </nav>
 
-          <div class="mt-4 flex flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs">
+          {(onOpenCommandPalette || onOpenAuthModal) && (
+            <div class="flex items-center gap-2 border-t border-pine-highlight pt-3">
+              {onOpenCommandPalette && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMobileNav();
+                    onOpenCommandPalette();
+                  }}
+                  class="flex min-h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-pine-highlight bg-pine-overlay/60 px-3 text-xs font-semibold text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+                >
+                  <Icon icon={faSearch} class="size-3.5 text-pine-iris" />
+                  <span>Search</span>
+                </button>
+              )}
+              {onOpenAuthModal && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    closeMobileNav();
+                    onOpenAuthModal();
+                  }}
+                  class="flex min-h-10 flex-1 cursor-pointer items-center justify-center gap-2 rounded-lg border border-pine-highlight bg-pine-overlay/60 px-3 text-xs font-semibold text-pine-text transition-colors hover:bg-pine-highlight focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
+                >
+                  <Icon icon={faKey} class="size-3.5 text-pine-iris" />
+                  <span>Auth</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          <div class="mt-auto flex shrink-0 flex-col gap-2 rounded-xl border border-pine-highlight bg-pine-surface p-3 text-xs">
             <button
               type="button"
               onClick={() => setInspectorOpen(true)}

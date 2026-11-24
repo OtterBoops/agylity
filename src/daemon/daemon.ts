@@ -179,7 +179,7 @@ export class AgylityDaemon {
               resolvedConfig.quotaCheckIntervalSeconds &&
               (key === 'quotaCheckIntervalSeconds' || key === '*')
             ) {
-              const newIntervalSeconds = Math.max(30, resolvedConfig.quotaCheckIntervalSeconds);
+              const newIntervalSeconds = Math.max(15, resolvedConfig.quotaCheckIntervalSeconds);
               this.logger.info(
                 'Rescheduling quota sentry timer to %ds interval',
                 newIntervalSeconds
@@ -399,7 +399,7 @@ export class AgylityDaemon {
     if (this.shutdownRequested) {
       return;
     }
-    const intervalSeconds = Math.max(30, resolved.quotaCheckIntervalSeconds ?? 60);
+    const intervalSeconds = Math.max(15, resolved.quotaCheckIntervalSeconds ?? 60);
     this.logger.info('Sentry recurring check scheduled every %d seconds.', intervalSeconds);
     this.scheduleSentryTimer(intervalSeconds);
 

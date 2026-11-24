@@ -186,7 +186,7 @@ export const SENTRY_GENERAL_FIELDS: FieldDef[] = [
     key: 'quotaCheckIntervalSeconds',
     label: 'Polling interval (seconds)',
     type: 'number',
-    hint: 'How often to check rolling quota (default: 60s, minimum: 30s).',
+    hint: 'How often to check rolling quota (default: 60s, minimum: 15s).',
   },
   {
     key: 'quotaMilestoneHours',

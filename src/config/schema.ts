@@ -522,10 +522,10 @@ export const CONFIG_REGISTRY = [
     example: 'set',
     key: 'quotaCheckIntervalSeconds',
     value: 60,
-    overrideSchema: z.number().int().min(30),
+    overrideSchema: z.number().int().min(15),
     env: 'QUOTA_CHECK_INTERVAL_SECONDS',
-    envSchema: z.coerce.number().int().min(30),
-    description: 'Sentry polling interval (60s = 1m). Min: 30.',
+    envSchema: z.coerce.number().int().min(15),
+    description: 'Sentry polling interval (60s = 1m). Min: 15.',
   },
   {
     group: 'sentry',

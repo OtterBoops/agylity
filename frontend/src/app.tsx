@@ -216,7 +216,7 @@ export const App = () => {
     });
 
   const checkIntervalMs =
-    Math.max(30, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
+    Math.max(15, Number(config.resolved?.quotaCheckIntervalSeconds) || 60) * 1000;
 
   useEffect(() => {
     if (isLocked || isCheckingAuth) return;
@@ -332,10 +332,17 @@ export const App = () => {
         lastProbeSource={alerts?.lastProbeSource}
         lastProbeAt={alerts?.lastProbeAt}
         minHeadroomPercent={config.resolved?.minDispatchHeadroomPercent ?? 10}
+        pageTitle={title}
+        isRefreshing={isRefreshing}
+        refreshCooldown={refreshCooldown}
+        remainingCredits={remainingCredits}
+        onRefresh={handleManualRefresh}
+        onOpenCommandPalette={() => setCommandPaletteOpen(true)}
+        onOpenAuthModal={() => setSessionModalOpen(true)}
       />
 
       <div class="min-w-0 flex-1 md:flex md:h-full md:flex-col md:overflow-hidden">
-        <header class="shrink-0 scrollbar-gutter-stable border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:px-6 2xl:px-8">
+        <header class="hidden shrink-0 scrollbar-gutter-stable border-b border-pine-highlight bg-pine-base/95 px-4 py-2.5 sm:px-6 md:block md:px-6 2xl:px-8">
           <div class="mx-auto max-w-7xl 2xl:max-w-none">
             <TopBar
               title={title}
