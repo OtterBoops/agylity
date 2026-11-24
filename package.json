@@ -1,6 +1,6 @@
 {
   "name": "agylity",
-  "version": "0.6.6",
+  "version": "0.7.0",
   "license": "PolyForm-Noncommercial-1.0.0",
   "description": "Autonomous Quota Sentry & Remote Task Coordinator for Google Antigravity",
   "type": "module",
