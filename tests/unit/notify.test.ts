@@ -1985,6 +1985,28 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(renderQuotaEmbed([]).data.url, undefined);
     });
 
+    it('sanitizes markdown headings, newlines, and truncated backticks in the prompt preview', () => {
+      const prompt = [
+        '## Summary',
+        '',
+        'Multiple task lifecycle paths (`POST /api/tasks/:id/cancel`, `POST /api/tasks/:id/retry`, `POST /api/backlog/:id/dispatch`, and `POST /api/routines/:id/trigger`) violate SQLite state invariants for `backlog_tasks` and `routine_tasks`, causing premature retries, permanently wedged `dispatched` rows, and stale `attemptCount` values across restarts.',
+      ].join('\n');
+
+      const embed = buildDispatchStatusEmbed({
+        step: 'completed',
+        taskId: 'fcd7d6',
+        prompt,
+      });
+
+      const desc = embed.description ?? '';
+      assert.ok(desc.startsWith('**Prompt:** *'));
+      assert.ok(desc.endsWith('*'));
+      assert.ok(!desc.includes('##'));
+      assert.ok(!desc.includes('\n'));
+      assert.ok(!desc.includes('`'));
+      assert.ok(desc.includes('…*'));
+    });
+
     it('links info notices to /tasks by default and to their explicit dashboard path when set', () => {
       const fallback = buildInfoNoticeEmbed(
         { title: 'Task finished', message: 'The run produced no file changes.' },

@@ -34,3 +34,28 @@ export const formatModelPills = (models?: string[]): string => {
   if (!models || models.length === 0) return '';
   return models.map((m) => `\`${m}\``).join(' • ');
 };
+
+const PROMPT_LINE_PREFIX = /^(?:\s*(?:#{1,6}|[-*+>]|\d+[.)])\s*)+/;
+
+/** Strips Markdown syntax and collapses newlines so Discord's `*...*` prompt preview never breaks mid-token. */
+export const formatPromptPreview = (prompt: string, maxLen = 300): string => {
+  const normalized = prompt
+    .replace(/```[^\r\n]*\r?\n?/g, ' ')
+    .split(/\r?\n/)
+    .map((line) => line.replace(PROMPT_LINE_PREFIX, '').trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[`*_~|]+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!normalized) return '';
+  if (normalized.length <= maxLen) return normalized;
+
+  const budget = Math.max(1, maxLen - 1);
+  const head = normalized.slice(0, budget + 1);
+  const boundary = head.lastIndexOf(' ');
+  const body = boundary > 0 ? head.slice(0, boundary) : normalized.slice(0, budget);
+  return `${body.replace(/[\s.,;:!?–—-]+$/, '')}…`;
+};

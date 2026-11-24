@@ -1,6 +1,7 @@
 import type { StandardEmbed, EmbedField } from './types.js';
 import {
   formatModelPills,
+  formatPromptPreview,
   formatResetWindow,
   isTerminalStep,
   normalizeStep,
@@ -292,8 +293,10 @@ export const buildDispatchStatusEmbed = (
 
   let description = '';
   if (status.prompt) {
-    const cleanPrompt = status.prompt.trim();
-    description += `**Prompt:** *${cleanPrompt.slice(0, 300)}${cleanPrompt.length > 300 ? '…' : ''}*\n\n`;
+    const cleanPrompt = formatPromptPreview(status.prompt);
+    if (cleanPrompt) {
+      description += `**Prompt:** *${cleanPrompt}*\n\n`;
+    }
   }
 
   if (step === 'failed' && status.error) {
