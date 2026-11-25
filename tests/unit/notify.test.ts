@@ -29,6 +29,7 @@ import {
   buildInfoNoticeEmbed,
   buildQuotaAlertEmbed,
   formatDurationHuman,
+  formatResetWindow,
 } from '../../src/notify/embeds/index.js';
 import {
   DiscordNotifier,
@@ -114,9 +115,6 @@ const createMockInteraction = (
 };
 
 describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture', () => {
-  /* ==================================================================== */
-  /* 2. Dynamic Import Factory & Channel Isolation                        */
-  /* ==================================================================== */
   describe('2. Dynamic Import Factory & Channel Isolation', () => {
     it('creates the concrete notifier class that matches each remote channel', async () => {
       const channelCases = [
@@ -209,9 +207,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
   });
 
-  /* ==================================================================== */
-  /* 4. Discord 3-Second Timeout Guardrail & Modal Prompt Handling         */
-  /* ==================================================================== */
   describe('4. Discord 3-Second Timeout Guardrail & Modal Lifecycle', () => {
     it('TaskPromptSchema validates character bounds and UTF-8 formatting', () => {
       const valid = 'Test prompt';
@@ -411,9 +406,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
   });
 
-  /* ==================================================================== */
-  /* 5. Discord UI Components, Embeds & Slash Command                     */
-  /* ==================================================================== */
   describe('5. Discord UI Components, Embeds & Slash Command', () => {
     it('renderQuotaEmbed handles zero model pools gracefully', () => {
       const embed = renderQuotaEmbed([]);
@@ -953,9 +945,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
   });
 
-  /* ==================================================================== */
-  /* 6. Console & Webhook Adapter Notifications                           */
-  /* ==================================================================== */
   describe('6. Webhook Adapter Notifications', () => {
     it('posts webhook JSON with x-agylity-signature when webhook URL and secret are configured', async () => {
       let receivedHeaders: http.IncomingHttpHeaders = {};
@@ -1100,6 +1089,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await notifier.initialize();
 
         await notifier.notifyInfo({
+          kind: 'burn_kick',
           title: 'Pre-reset burn started',
           message: 'Routine #1 entered the pre-reset window.',
           poolGroup: 'claude',
@@ -1178,6 +1168,182 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         // The success line is shown to operators, so it must not hand back the URL's secrets.
         assert.ok(!result.message.includes(secretToken));
         assert.ok(!result.message.includes('superSecretQuery'));
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('retries a 408 the receiver used to mean "try again"', async () => {
+      let requests = 0;
+      const server = http.createServer((_req, res) => {
+        requests += 1;
+        if (requests === 1) {
+          res.writeHead(408, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'timeout' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+        });
+        await notifier.initialize();
+
+        const result = await notifier.testNotification();
+        assert.equal(result.success, true);
+        assert.equal(requests, 2);
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('does not edit another task message when only the repository name matches', async () => {
+      const editsA: any[] = [];
+      const sentToChannel: any[] = [];
+
+      const notifier = new DiscordNotifier(
+        { discordNotificationChannelId: 'chan-alerts' },
+        {
+          client: {
+            channels: {
+              fetch: async () => ({
+                id: 'chan-alerts',
+                isTextBased: () => true,
+                send: async (payload: any) => {
+                  sentToChannel.push(payload);
+                  return { id: 'msg' };
+                },
+              }),
+            },
+          },
+        }
+      );
+      notifier.initialized = true;
+
+      const interactionA = {
+        editReply: async (payload: any) => {
+          editsA.push(payload);
+        },
+        lastMessageId: 'a',
+      };
+      notifier.activeInteractions.set('task-a', interactionA);
+      notifier.activeInteractions.set('repo-x', interactionA);
+
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-b',
+        status: 'completed',
+        repositoryName: 'repo-x',
+        message: 'task-b finished with 3 commits',
+      } as DispatchStatusUpdate);
+
+      assert.deepEqual(editsA, [], 'task-b must not reuse the message task-a owns');
+      assert.equal(notifier.activeInteractions.has('task-a'), true);
+      assert.equal(sentToChannel.length, 1, 'task-b falls through to its own channel embed');
+    });
+
+    it('reconnects on a later delivery instead of staying dead after a failed login', async () => {
+      let loginAttempts = 0;
+      const sent: any[] = [];
+      const client = {
+        on: () => {},
+        user: { id: 'bot' },
+        login: async () => {
+          loginAttempts += 1;
+          if (loginAttempts === 1) throw new Error('Gateway connection failed: 502');
+        },
+        channels: {
+          fetch: async () => ({
+            id: 'chan-alerts',
+            isTextBased: () => true,
+            send: async (payload: any) => {
+              sent.push(payload);
+              return { id: `msg-${sent.length}` };
+            },
+          }),
+        },
+      };
+
+      const notifier = new DiscordNotifier(
+        { discordToken: 'token', discordNotificationChannelId: 'chan-alerts' },
+        { client }
+      );
+
+      await notifier.initialize();
+      assert.equal(loginAttempts, 1);
+      assert.equal(notifier.initialized, false);
+
+      // Simulate the retry window elapsing, then deliver again.
+      (notifier as any).loginRetryAt = 0;
+      const outcome = await notifier.notifyInfo({
+        kind: 'burn_kick',
+        title: 'Quota watch resumed',
+        message: 'The sentry is probing again.',
+      });
+
+      assert.equal(loginAttempts, 2, 'a delivery must retry the login the process already failed');
+      assert.equal(notifier.initialized, true);
+      assert.equal(outcome.delivered, true);
+      assert.equal(sent.length, 1);
+    });
+
+    it('keeps the receiver body as the reason a delivery was rejected', async () => {
+      const server = http.createServer((_req, res) => {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'payload rejected: unknown field embeds' }));
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+        });
+        await notifier.initialize();
+
+        const result = await notifier.testNotification();
+        assert.equal(result.success, false);
+        assert.match(result.message, /payload rejected: unknown field embeds/);
+
+        await notifier.shutdown();
+      } finally {
+        server.closeAllConnections?.();
+        await new Promise<void>((r) => server.close(() => r()));
+      }
+    });
+
+    it('does not re-post an alert whose response was lost', async () => {
+      let requests = 0;
+      const server = http.createServer((req) => {
+        requests += 1;
+        req.resume();
+        req.on('end', () => req.socket.destroy());
+      });
+
+      try {
+        await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
+        const port = (server.address() as { port: number }).port;
+
+        const notifier = new WebhookNotifier({
+          notificationWebhookUrl: `http://127.0.0.1:${port}/hook`,
+        });
+        await notifier.initialize();
+
+        const result = await notifier.testNotification();
+        assert.equal(result.success, false);
+        assert.equal(requests, 1, 'a receiver that never answered must not be posted to twice');
 
         await notifier.shutdown();
       } finally {
@@ -1352,6 +1518,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await notifier.initialize();
 
         await notifier.notifyInfo({
+          kind: 'burn_kick',
           title: 'Rollout <!channel> started',
           message: 'Ping <@U12345> when done',
         });
@@ -1369,9 +1536,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
   });
 
-  /* ==================================================================== */
-  /* 7. Discord Status Updates & Live Interaction Relaying                */
-  /* ==================================================================== */
   describe('7. Discord Status Updates & Live Interaction Relaying', () => {
     it('relays notifyDispatchStatus updates to active deferred modal interaction and cleans up on completion', async () => {
       const interaction = createMockInteraction({
@@ -1653,9 +1817,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       await notifier.shutdown();
     });
   });
-  /* ==================================================================== */
-  /* 8. Discord & Webhook Owner Notification Mentions & Auto-Discovery    */
-  /* ==================================================================== */
   describe('8. Discord & Webhook Owner Notification Mentions & Auto-Discovery', () => {
     const createMockDiscordClient = (
       options: {
@@ -1808,6 +1969,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       notifier.initialized = true;
 
       await notifier.notifyInfo({
+        kind: 'burn_kick',
         title: 'Pre-reset burn started',
         message: 'Routine #1 entered the pre-reset window.',
         poolGroup: 'claude',
@@ -1863,9 +2025,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
     });
   });
 
-  /* ==================================================================== */
-  /* 9. Composite Resilience & Delivery Outcomes                          */
-  /* ==================================================================== */
   describe('9. Composite Resilience & Delivery Outcomes', () => {
     const buildNotifier = (name: string, impl: Partial<Notifier> = {}): Notifier => ({
       channelName: name,
@@ -1940,9 +2099,6 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       assert.equal(outcome.results.ok?.success, true);
     });
   });
-  /* ==================================================================== */
-  /* 10. Dashboard Deep Links in Embeds                                   */
-  /* ==================================================================== */
   describe('10. Dashboard links in embeds', () => {
     const baseUrl = 'https://agylity.example.com';
     const sampleAlert: QuotaAlert = {
@@ -1977,6 +2133,23 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         { baseUrl }
       );
       assert.equal(unlinked.url, undefined);
+    });
+
+    it('drops an issue link that cannot fit instead of slicing it mid-markdown', () => {
+      const deliverables = (issueUrls: string[]): string | undefined =>
+        buildDispatchStatusEmbed({
+          step: 'completed',
+          taskId: 'x',
+          issueUrls,
+          timestamp: new Date().toISOString(),
+        } as DispatchStatusUpdate).fields?.find((field) => field.name === 'Deliverables')?.value;
+
+      const longUrl = `https://github.com/otterboops/an-extremely-long-repository-name-for-testing/issues/12345`;
+      assert.equal(deliverables([longUrl]), undefined);
+
+      const short = 'https://github.com/o/r/issues/7';
+      const value = deliverables([short]);
+      assert.equal(value, `[Issue #7](${short})`);
     });
 
     it('omits the link entirely when no base URL is configured', () => {
@@ -2071,5 +2244,147 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         await new Promise<void>((r) => server.close(() => r()));
       }
     });
+  });
+});
+
+describe('Reset-window formatting', () => {
+  const EPOCH_ZERO = '1970-01-01T00:00:00Z';
+
+  it('renders an unset or unparseable clock as Unknown, never as a 1970 date', () => {
+    assert.equal(formatResetWindow(''), 'Unknown');
+    assert.equal(formatResetWindow(undefined), 'Unknown');
+    assert.equal(formatResetWindow(EPOCH_ZERO), 'Unknown');
+    assert.equal(formatResetWindow('not-a-date'), 'Unknown');
+  });
+
+  it('renders a real deadline as a Discord relative timestamp with an absolute hint', () => {
+    const raw = '2026-11-20T22:00:00Z';
+    const unixSec = Math.floor(Date.parse(raw) / 1000);
+    assert.equal(formatResetWindow(raw), `<t:${unixSec}:R> (<t:${unixSec}:t>)`);
+  });
+});
+
+describe('DiscordNotifier: reconnect and concurrency', () => {
+  it('reconnects via ensureConnected inside notifyDispatchStatus after a boot login failure', async () => {
+    let loginCalls = 0;
+    const sentPayloads: any[] = [];
+    const mockClient = {
+      on: () => {},
+      login: async () => {
+        loginCalls += 1;
+        if (loginCalls === 1) {
+          throw new Error('temporary gateway outage');
+        }
+        return 'ok';
+      },
+      channels: {
+        fetch: async () => ({
+          id: 'chan-dispatch',
+          isTextBased: () => true,
+          send: async (payload: any) => {
+            sentPayloads.push(payload);
+            return { id: 'msg-1' };
+          },
+        }),
+      },
+      removeAllListeners: () => {},
+      destroy: async () => {},
+    };
+
+    const notifier = new DiscordNotifier(
+      {
+        discordToken: 'test-token',
+        discordNotificationChannelId: 'chan-dispatch',
+      },
+      { client: mockClient as any }
+    );
+
+    try {
+      await notifier.initialize();
+      assert.equal(notifier.initialized, false);
+      assert.equal(loginCalls, 1);
+
+      // Advance past the 30s retry backoff so ensureConnected attempts login again.
+      (notifier as any).loginRetryAt = 0;
+
+      await notifier.notifyDispatchStatus({
+        taskId: 'task-reconnect',
+        status: 'completed',
+        repositoryName: 'repo-1',
+        durationMs: 1200,
+      });
+
+      assert.equal(loginCalls, 2);
+      assert.equal(notifier.initialized, true);
+      assert.equal(sentPayloads.length, 1);
+    } finally {
+      await notifier.shutdown();
+    }
+  });
+
+  it('serializes concurrent reconnect attempts so client.login is invoked only once', async () => {
+    let loginCalls = 0;
+    let releaseLogin!: () => void;
+    const loginGate = new Promise<void>((resolve) => {
+      releaseLogin = resolve;
+    });
+    const sentPayloads: any[] = [];
+    const mockClient = {
+      on: () => {},
+      login: async () => {
+        loginCalls += 1;
+        await loginGate;
+        return 'ok';
+      },
+      channels: {
+        fetch: async () => ({
+          id: 'chan-concurrent',
+          isTextBased: () => true,
+          send: async (payload: any) => {
+            sentPayloads.push(payload);
+            return { id: `msg-${sentPayloads.length}` };
+          },
+        }),
+      },
+      removeAllListeners: () => {},
+      destroy: async () => {},
+    };
+
+    const notifier = new DiscordNotifier(
+      {
+        discordToken: 'test-token',
+        discordNotificationChannelId: 'chan-concurrent',
+      },
+      { client: mockClient as any }
+    );
+
+    try {
+      const p1 = notifier.notifyInfo({
+        kind: 'burn_kick',
+        title: 'Notice 1',
+        message: 'First concurrent delivery',
+      });
+      const p2 = notifier.notifyDispatchStatus({
+        taskId: 'task-concurrent',
+        status: 'completed',
+        repositoryName: 'repo-1',
+        durationMs: 500,
+      });
+      const p3 = notifier.initialize();
+
+      // Let all three reach the serialized login barrier before releasing it.
+      await new Promise((r) => setImmediate(r));
+      assert.equal(loginCalls, 1);
+
+      releaseLogin();
+      const [infoOutcome] = await Promise.all([p1, p2, p3]);
+
+      assert.equal(loginCalls, 1);
+      assert.equal(infoOutcome.delivered, true);
+      assert.equal(sentPayloads.length, 2);
+    } finally {
+      releaseLogin();
+      await notifier.shutdown();
+    }
   });
 });

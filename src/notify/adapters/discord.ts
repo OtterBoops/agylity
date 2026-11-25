@@ -29,6 +29,8 @@ export class DiscordNotifier implements Notifier {
   readonly channelName: string = 'discord';
   public client: Client | null = null;
   public initialized = false;
+  private loginRetryAt = 0;
+  private connectPromise: Promise<boolean> | null = null;
   public activeInteractions = new Map<string, any>();
   public maxActiveInteractions = 200;
   public interactionRetentionMs = 30 * 60 * 1000;
@@ -131,6 +133,22 @@ export class DiscordNotifier implements Notifier {
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
+    if (this.connectPromise) {
+      await this.connectPromise;
+      return;
+    }
+
+    const attempt = this.performInitialize().finally(() => {
+      if (this.connectPromise === attempt) {
+        this.connectPromise = null;
+      }
+    });
+    this.connectPromise = attempt;
+    await attempt;
+  }
+
+  private async performInitialize(): Promise<boolean> {
+    if (this.initialized) return this.client !== null;
 
     if (!this.client) {
       this.client = new Client({
@@ -160,12 +178,27 @@ export class DiscordNotifier implements Notifier {
         await this.autoDiscoverOwnerUserId();
         await registerSlashCommands(this.config);
         this.initialized = true;
+        this.loginRetryAt = 0;
       } catch (err: any) {
+        // A transient gateway failure must not silence the channel for the life of the process.
+        this.loginRetryAt = Date.now() + 30 * 1000;
         logger.child('notify:discord').error('Client login failed: %s', err.message);
       }
     } else {
       this.initialized = true;
     }
+
+    return this.client !== null && this.initialized;
+  }
+
+  /** A login that failed at boot is retried on the next delivery, not only when the token changes. */
+  private async ensureConnected(): Promise<boolean> {
+    if (this.client && this.initialized) return true;
+    if (this.connectPromise) return this.connectPromise;
+    if (!this.config.discordToken) return false;
+    if (Date.now() < this.loginRetryAt) return false;
+    await this.initialize();
+    return this.client !== null && this.initialized;
   }
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
@@ -273,7 +306,7 @@ export class DiscordNotifier implements Notifier {
   }
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
-    if (!this.client || !this.initialized) {
+    if (!(await this.ensureConnected()) || !this.client) {
       return this.failure('Discord client is not initialized');
     }
 
@@ -318,9 +351,13 @@ export class DiscordNotifier implements Notifier {
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
     const taskKey = status.taskId;
     const repoKey = status.repositoryName;
-    const interaction =
-      (taskKey ? this.activeInteractions.get(taskKey) : undefined) ||
-      (repoKey ? this.activeInteractions.get(repoKey) : undefined);
+    // The repository key is a fallback for a status that names no task; with a task id present, a miss
+    // means this task has no Discord message, not that another task's message is fair game.
+    const interaction = taskKey
+      ? this.activeInteractions.get(taskKey)
+      : repoKey
+        ? this.activeInteractions.get(repoKey)
+        : undefined;
 
     if (interaction) {
       try {
@@ -331,12 +368,16 @@ export class DiscordNotifier implements Notifier {
       } catch {}
       const st = normalizeStep(status);
       if (isTerminalStep(st)) {
-        if (taskKey) this.activeInteractions.delete(taskKey);
-        if (repoKey) this.activeInteractions.delete(repoKey);
+        if (taskKey && this.activeInteractions.get(taskKey) === interaction) {
+          this.activeInteractions.delete(taskKey);
+        }
+        if (repoKey && this.activeInteractions.get(repoKey) === interaction) {
+          this.activeInteractions.delete(repoKey);
+        }
       }
     }
 
-    if (!this.client || !this.initialized) return;
+    if (!(await this.ensureConnected()) || !this.client) return;
     const channelId = this.config.discordNotificationChannelId;
     if (!channelId || typeof this.client.channels?.fetch !== 'function') return;
 
@@ -358,7 +399,7 @@ export class DiscordNotifier implements Notifier {
   }
 
   async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
-    if (!this.client || !this.initialized) {
+    if (!(await this.ensureConnected()) || !this.client) {
       return this.failure('Discord client not initialized');
     }
 
@@ -462,6 +503,7 @@ export class DiscordNotifier implements Notifier {
 
   async shutdown(): Promise<void> {
     this.initialized = false;
+    this.connectPromise = null;
     this.interactionListenerBound = false;
     this.activeInteractions.clear();
     this.activeSubmissions.clear();

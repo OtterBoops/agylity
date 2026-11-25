@@ -13,6 +13,7 @@ import {
   snapshotsFromSentryState,
 } from '../sentry/models.js';
 import { createDaemonNotifier } from '../notify/factory.js';
+import { isValidResetTime, normalizeResetTime } from '../shared/resetTime.js';
 import { type DeliveryOutcome, type InfoNotice, type Notifier } from '../notify/types.js';
 import { LogBuffer } from '../logs/buffer.js';
 import { logger, DefaultLogger, type Logger, type LogLevel } from '../logs/logger.js';
@@ -36,17 +37,24 @@ const formatWindow = (hours: number): string => {
 };
 
 const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): InfoNotice => {
+  const detectedMs = Date.parse(detectedAt);
   const lines = pools.map((pool) => {
     const name = pool.displayName || pool.poolId;
-    const window = formatWindow(
-      calculateHoursUntilReset(pool.previousResetTime, Date.parse(detectedAt))
-    );
-    return `${name}: ${formatPercent(pool.previousRemainingFraction)} -> ${formatPercent(pool.remainingFraction)} remaining, ${window} before its scheduled reset.`;
+    const remaining = `${formatPercent(pool.previousRemainingFraction)} -> ${formatPercent(
+      pool.remainingFraction
+    )} remaining`;
+    // An unset prior clock means the pool had no deadline to beat.
+    if (!isValidResetTime(pool.previousResetTime)) {
+      return `${name}: ${remaining}, with no scheduled reset.`;
+    }
+    const window = formatWindow(calculateHoursUntilReset(pool.previousResetTime, detectedMs));
+    return `${name}: ${remaining}, ${window} before its scheduled reset.`;
   });
 
   const single = pools.length === 1 ? pools[0] : null;
-
-  return {
+  const singleResetTime = single ? normalizeResetTime(single.resetTime) : '';
+  const notice: InfoNotice = {
+    kind: 'early_reset',
     title: 'Quota reset early',
     message: `${lines.join(' ')} Upstream replenished ${
       pools.length === 1 ? 'this pool' : 'these pools'
@@ -54,12 +62,13 @@ const buildEarlyResetNotice = (pools: EarlyResetPool[], detectedAt: string): Inf
     path: '/overview',
     poolGroup: single?.poolId,
     poolName: single?.displayName,
-    resetTime: single?.resetTime,
-    hoursUntilReset: single
-      ? calculateHoursUntilReset(single.resetTime, Date.parse(detectedAt))
-      : undefined,
     timestamp: detectedAt,
   };
+  if (singleResetTime) {
+    notice.resetTime = singleResetTime;
+    notice.hoursUntilReset = calculateHoursUntilReset(singleResetTime, detectedMs);
+  }
+  return notice;
 };
 
 export interface AgylityDaemonOptions {
@@ -105,6 +114,7 @@ export class AgylityDaemon {
   private probeInFlightPromise: Promise<QuotaAlert[]> | null = null;
   private agyUpdateInFlightPromise: Promise<boolean> | null = null;
   private configSyncChain: Promise<void> = Promise.resolve();
+  private webServerStartPromise: Promise<http.Server | undefined> | null = null;
   private shutdownPromise?: Promise<void>;
   private shutdownRequested = false;
   private readonly autoCheckOnStart: boolean;
@@ -351,9 +361,16 @@ export class AgylityDaemon {
     const resolved = this.configStore.resolveConfig();
 
     await this.sentryState.load();
+    if (this.shutdownRequested) {
+      return;
+    }
     this.logger.info('Sentry persistent state loaded.');
 
     await this.notifier.initialize();
+    if (this.shutdownRequested) {
+      await this.notifier.shutdown().catch(() => {});
+      return;
+    }
     this.logger.info('Active notification adapter initialized (%s).', this.notifier.channelName);
 
     if (!resolved.coordinatorEnabled) {
@@ -365,8 +382,12 @@ export class AgylityDaemon {
     }
 
     if (resolved.webUiEnabled) {
-      const { startWebServer } = await import('../web/server.js');
-      const { server, port, host } = await startWebServer({
+      const { startWebServer, closeWebServer } = await import('../web/server.js');
+      if (this.shutdownRequested) {
+        await this.notifier.shutdown().catch(() => {});
+        return;
+      }
+      const startPromise = startWebServer({
         configStore: this.configStore,
         quotaClient: this.quotaClient,
         sentryState: this.sentryState,
@@ -379,6 +400,34 @@ export class AgylityDaemon {
         port: resolved.webUiPort,
         host: resolved.webUiHost,
       });
+      const trackedStart = startPromise.then(
+        (started) => started.server,
+        () => undefined
+      );
+      this.webServerStartPromise = trackedStart;
+      let started: Awaited<typeof startPromise>;
+      try {
+        started = await startPromise;
+      } catch (err: unknown) {
+        if (this.webServerStartPromise === trackedStart) {
+          this.webServerStartPromise = null;
+        }
+        // A bound port or a refused bind must not leave the notifier's gateway connection open.
+        await this.notifier.shutdown().catch(() => {});
+        throw err;
+      }
+      const { server, port, host } = started;
+      if (this.webServerStartPromise === trackedStart) {
+        this.webServerStartPromise = null;
+      }
+      if (this.shutdownRequested) {
+        await closeWebServer(server).catch(() => {});
+        if (this.webServer === server) {
+          this.webServer = undefined;
+        }
+        await this.notifier.shutdown().catch(() => {});
+        return;
+      }
       this.webServer = server;
       this.logger.info('Web UI active on http://%s:%d', host, port);
     }
@@ -476,7 +525,7 @@ export class AgylityDaemon {
           alert.remainingPercentage
         );
         const outcome = await this.deliverQuotaAlert(alert);
-        if (outcome.delivered) {
+        if (outcome.delivered || outcome.suppressed) {
           this.recordDeliveredMilestones(plan, alert, outcome);
         } else {
           this.logger.warn(
@@ -785,10 +834,23 @@ export class AgylityDaemon {
       this.isNotifierShutdown = true;
     }
 
-    if (this.webServer) {
+    let serverToClose = this.webServer;
+    if (this.webServerStartPromise) {
+      const pendingStart = this.webServerStartPromise;
+      this.webServerStartPromise = null;
+      try {
+        const startedServer = await pendingStart;
+        if (startedServer && !serverToClose) {
+          serverToClose = startedServer;
+        }
+      } catch {}
+    }
+    serverToClose ??= this.webServer;
+
+    if (serverToClose) {
       try {
         const { closeWebServer } = await import('../web/server.js');
-        await closeWebServer(this.webServer);
+        await closeWebServer(serverToClose);
         this.logger.info('Web server stopped cleanly.');
       } catch (err) {
         this.logger.error('Web server shutdown error:', err);

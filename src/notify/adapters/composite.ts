@@ -9,6 +9,7 @@ import type {
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
+import { notificationKindEnabled, type NotificationKind } from '../../shared/notificationKinds.js';
 
 /** Trimmed, lowercased, de-duplicated channel names; blank entries and `none` are dropped. */
 export const normalizeChannelNames = (raw: Iterable<string>): string[] =>
@@ -20,6 +21,7 @@ export class CompositeNotifier implements Notifier {
   public readonly notifiers: Notifier[];
   private readonly options?: NotifierOptions;
   private lastConfig: Partial<ResolvedConfig> = {};
+  private readonly silenced = new Set<NotificationKind>();
 
   get channelName(): string {
     if (this.notifiers.length === 0) return 'none';
@@ -98,12 +100,30 @@ export class CompositeNotifier implements Notifier {
     return { delivered, results: channelResults };
   }
 
+  // A suppressed type still logs where it fired; only the delivery is skipped.
+  private gate(kind: NotificationKind): DeliveryOutcome | undefined {
+    if (notificationKindEnabled(this.lastConfig.notificationTypes, kind)) return undefined;
+    if (!this.silenced.has(kind)) {
+      this.silenced.add(kind);
+      logger
+        .child('notify')
+        .info(
+          'Notification type "%s" is switched off; its events are logged but not delivered',
+          kind
+        );
+    }
+    return { delivered: false, suppressed: true, results: {} };
+  }
+
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
+    const suppressed = this.gate('quota_alert');
+    if (suppressed) return suppressed;
     await this.syncResolvedOwner();
     return this.fanOutOutcome('Quota alert', (n) => n.notifyQuotaAlert(alert));
   }
 
   async notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void> {
+    if (this.gate('dispatch')) return;
     const results = await Promise.allSettled(
       this.notifiers.map((n) => n.notifyDispatchStatus(status))
     );
@@ -115,7 +135,7 @@ export class CompositeNotifier implements Notifier {
   }
 
   async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
-    return this.fanOutOutcome('Info notice', (n) => n.notifyInfo(notice));
+    return this.gate(notice.kind) ?? this.fanOutOutcome('Info notice', (n) => n.notifyInfo(notice));
   }
 
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {

@@ -133,19 +133,41 @@ function isDiscordWebhook(url?: string): boolean {
   }
 }
 
-// The server's own body is the most useful part of a failed delivery, but it is untrusted text.
-const responseDetail = async (err: any): Promise<string> => {
-  if (!err?.response || typeof err.response.text !== 'function') return '';
+const describeBody = (data: unknown): string => {
+  if (data === undefined || data === null) return '';
+  if (typeof data === 'string') return data;
   try {
-    const body = await err.response.text();
-    return body ? `: ${body.slice(0, 150)}` : '';
+    return JSON.stringify(data);
   } catch {
     return '';
   }
 };
 
+// The server's own body is the most useful part of a failed delivery, but it is untrusted text.
+// ky has already read it into `err.data`, so `response.text()` on the same error always throws.
+const responseDetail = async (err: any): Promise<string> => {
+  let body = describeBody(err?.data);
+  if (!body && typeof err?.response?.text === 'function') {
+    try {
+      body = await err.response.text();
+    } catch {
+      body = '';
+    }
+  }
+  return body ? `: ${body.slice(0, 150)}` : '';
+};
+
 // A Slack mention token (`<@id>`) must not ping the channel, so `<` is escaped.
 const escapeMentions = (text: string): string => text.replace(/<(?=[!@])/g, '&lt;');
+
+const CONNECT_FAILURES = new Set([
+  'ECONNREFUSED',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+]);
 
 export class WebhookNotifier implements Notifier {
   readonly channelName: string = 'webhook';
@@ -389,8 +411,19 @@ export class WebhookNotifier implements Notifier {
         body: bodyStr,
         headers,
         timeout: 5000,
-        // ky's default retry.methods excludes POST, so opt it in explicitly.
-        retry: { limit: 1, methods: ['post'] },
+        // Only a failure that cannot have reached the receiver is retried: a lost response would
+        // double-post, so ECONNRESET/ETIMEDOUT and other post-send errors are left alone.
+        retry: {
+          limit: 1,
+          methods: ['post'],
+          shouldRetry: ({ error }: { error: unknown }) => {
+            const status = (error as any)?.response?.status;
+            if (typeof status === 'number')
+              return status === 408 || status === 429 || status >= 500;
+            const code = String((error as any)?.cause?.code ?? (error as any)?.code ?? '');
+            return CONNECT_FAILURES.has(code);
+          },
+        },
       });
 
       logger

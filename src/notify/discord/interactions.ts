@@ -46,7 +46,9 @@ const retainInteraction = (deps: DiscordInteractionDeps, key: string, interactio
     if (oldest === undefined) break;
     deps.activeInteractions.delete(oldest);
   }
-  setTimeout(() => deps.activeInteractions.delete(key), deps.interactionRetentionMs).unref?.();
+  setTimeout(() => {
+    if (deps.activeInteractions.get(key) === interaction) deps.activeInteractions.delete(key);
+  }, deps.interactionRetentionMs).unref?.();
 };
 
 export const routeInteraction = async (

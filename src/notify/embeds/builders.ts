@@ -86,7 +86,7 @@ export const buildQuotaAlertEmbed = (
 };
 
 export const buildInfoNoticeEmbed = (
-  notice: InfoNotice,
+  notice: Omit<InfoNotice, 'kind'>,
   options?: EmbedBuildOptions
 ): StandardEmbed => {
   const fields: EmbedField[] = [];
@@ -208,10 +208,10 @@ const renderIssueLinks = (urls: readonly string[]): string => {
   const fitted: string[] = [];
   for (const link of links) {
     const candidate = fitted.length > 0 ? `${fitted.join(' · ')} · ${link}` : link;
-    if (candidate.length > 100 && fitted.length > 0) break;
+    if (candidate.length > 100) break;
     fitted.push(link);
   }
-  return fitted.join(' · ').slice(0, 100);
+  return fitted.join(' · ');
 };
 
 export const buildDispatchStatusEmbed = (

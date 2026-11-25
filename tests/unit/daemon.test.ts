@@ -36,9 +36,6 @@ class NotifierStub implements Notifier {
 }
 
 describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
-  /* ==================================================================== */
-  /* 1. Subsystem Instantiation & Wiring                                   */
-  /* ==================================================================== */
   describe('1. Subsystem Instantiation & Wiring', () => {
     it('applies explicit createDaemon() options to the config the subsystems read', async () => {
       const { dir, cleanup } = makeTempDir('daemon_init_');
@@ -66,9 +63,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 2. Startup Lifecycle & Quota Evaluation                              */
-  /* ==================================================================== */
   describe('2. Startup Lifecycle & Quota Evaluation', () => {
     it('initializes notifier, loads state, and triggers initial quota check on start()', async () => {
       const { dir, cleanup } = makeTempDir('daemon_start_');
@@ -183,9 +177,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     cleanup();
   });
 
-  /* ==================================================================== */
-  /* 3. Decoupled Web UI Lifecycle                                        */
-  /* ==================================================================== */
   describe('3. Decoupled Web UI Lifecycle Integration', () => {
     it('spawns web server when webUiEnabled is true and binds ephemeral port', async () => {
       const { dir, cleanup } = makeTempDir('daemon_web_on_');
@@ -213,6 +204,42 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
       cleanup();
     });
 
+    it('leaves no initialized notifier behind when the web server cannot bind', async () => {
+      const { dir, cleanup } = makeTempDir('daemon_web_fail_');
+      const blocker = net.createServer();
+      await new Promise<void>((r) => blocker.listen(0, '127.0.0.1', () => r()));
+      const takenPort = (blocker.address() as net.AddressInfo).port;
+
+      const notifier = new NotifierStub();
+      let shutdowns = 0;
+      notifier.shutdown = async () => {
+        shutdowns += 1;
+        notifier.initialized = false;
+      };
+
+      const daemon = await createDaemon({
+        dbPath: path.join(dir, 'test.db'),
+        statePath: path.join(dir, 'state.json'),
+        autoCheckOnStart: false,
+        notifier,
+        config: {
+          webUiEnabled: true,
+          webUiPort: takenPort,
+          webUiHost: '127.0.0.1',
+        },
+      });
+
+      try {
+        await assert.rejects(() => daemon.start(), /EADDRINUSE/);
+        assert.equal(notifier.initialized, false);
+        assert.equal(shutdowns, 1);
+      } finally {
+        await daemon.shutdown().catch(() => {});
+        await new Promise<void>((r) => blocker.close(() => r()));
+        cleanup();
+      }
+    });
+
     it('leaves webServer undefined when webUiEnabled is false (Zero-Overhead)', async () => {
       const { dir, cleanup } = makeTempDir('daemon_web_off_');
       const dbPath = path.join(dir, 'test.db');
@@ -235,9 +262,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 4. Graceful Teardown & Idempotency                                   */
-  /* ==================================================================== */
   describe('4. Graceful Teardown & Idempotency', () => {
     it('shuts down all subsystems in strict graceful sequence', async () => {
       const { dir, cleanup } = makeTempDir('daemon_shutdown_');
@@ -344,9 +368,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 5. Premature Quota Reset Detection                                   */
-  /* ==================================================================== */
   describe('Premature quota reset detection', () => {
     it('notifies once and records the notice when a used pool refills before its deadline', async () => {
       const { dir, cleanup } = makeTempDir('daemon_early_reset_');
@@ -696,9 +717,6 @@ describe('Unit Tests: Daemon Lifecycle & Packaging (Milestone 6)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 6. Delivered-Alert Ledger                                            */
-  /* ==================================================================== */
   describe('Delivered-alert ledger', () => {
     const poolingSnapshot = (resetTime: string): QuotaSnapshot[] => [
       {
@@ -1372,6 +1390,216 @@ describe('Daemon: robustness under hostile timers and overlapping work', () => {
       assert.equal((daemon as any).timer._idleTimeout, 2_147_483_647);
       await new Promise((resolve) => setTimeout(resolve, 30));
       assert.equal(checks, 0);
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+});
+
+describe('Epoch-zero early-reset notices', () => {
+  it('omits the notice reset window when the refill reports no new clock', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_early_reset_unset_');
+
+    const notices: InfoNotice[] = [];
+    class RecordingNotifier extends NotifierStub {
+      override async notifyInfo(notice: InfoNotice): Promise<DeliveryOutcome> {
+        notices.push(notice);
+        return { delivered: true, results: { discord: { success: true } } };
+      }
+    }
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      notifier: new RecordingNotifier(),
+      autoCheckOnStart: false,
+      config: { webUiEnabled: false },
+    });
+
+    const now = Date.now();
+    const previousResetTime = new Date(now + 40 * 3600 * 1000).toISOString();
+    const unsetPool: EarlyResetPool = {
+      poolId: 'claude',
+      displayName: 'Claude Pool',
+      previousRemainingFraction: 0.4,
+      remainingFraction: 1,
+      previousResetTime,
+      resetTime: '',
+    };
+    const announce = (daemon as any).announceEarlyReset as (
+      pools: EarlyResetPool[]
+    ) => Promise<void>;
+
+    try {
+      await announce.call(daemon, [unsetPool]);
+
+      assert.equal(notices.length, 1);
+      // With no deadline to count down the notice must omit the field rather than send an empty one.
+      assert.equal(notices[0]?.resetTime, undefined);
+      assert.equal(notices[0]?.poolGroup, 'claude');
+
+      const stored = daemon.sentryState.getState().earlyResetNotice;
+      assert.deepEqual(
+        stored?.pools.map((pool) => pool.poolId),
+        ['claude']
+      );
+      assert.equal(stored?.pools[0]?.resetTime, '');
+
+      // The alert is still recorded against the cycle that refilled early.
+      assert.equal(daemon.sentryState.listAlertEvents().events[0]?.resetTime, previousResetTime);
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+});
+
+describe('Daemon: suppressed alerts and startup/shutdown races', () => {
+  it('records milestones when quota_alert is suppressed so subsequent probes do not retry-spam', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_suppressed_quota_');
+    const sink = createMemorySink();
+    const testLogger = createLogger({ minLevel: 'debug', sinks: [sink.sink] });
+    let alertCalls = 0;
+
+    class SuppressedNotifier extends NotifierStub {
+      override async notifyQuotaAlert(_alert: QuotaAlert): Promise<DeliveryOutcome> {
+        alertCalls += 1;
+        return { delivered: false, suppressed: true, results: {} };
+      }
+    }
+
+    const now = Date.now();
+    const resetTime = new Date(now + 10 * 3600_000).toISOString();
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      notifier: new SuppressedNotifier(),
+      logger: testLogger,
+      autoCheckOnStart: false,
+      quotaClient: {
+        async fetchQuota(): Promise<QuotaSnapshot[]> {
+          return [
+            {
+              poolId: 'claude',
+              poolGroup: 'claude',
+              displayName: 'Claude',
+              remainingFraction: 0.6,
+              resetTime,
+              hoursUntilReset: 10,
+              models: ['Claude'],
+            },
+          ];
+        },
+      },
+      config: {
+        webUiEnabled: false,
+        quotaMilestoneHours: [48, 24, 12],
+        quotaAlertThresholdPercent: 25,
+      },
+    });
+
+    try {
+      await daemon.start();
+      const first = await daemon.checkQuota();
+      assert.equal(first.length, 1);
+      assert.equal(alertCalls, 1);
+      assert.equal(daemon.sentryState.isMilestoneFired('claude', 12), true);
+
+      const second = await daemon.checkQuota();
+      assert.equal(second.length, 0);
+      assert.equal(alertCalls, 1);
+
+      const retryWarnings = sink.records.filter((record) =>
+        record.formatted.includes('leaving milestone unrecorded for retry')
+      );
+      assert.equal(retryWarnings.length, 0);
+    } finally {
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('skips notifier initialization when shutdown is requested during state load', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_shutdown_during_load_');
+    const loadStarted = deferred<void>();
+    const loadGate = deferred<void>();
+    let initCalls = 0;
+
+    class CountingInitNotifier extends NotifierStub {
+      override async initialize(): Promise<void> {
+        initCalls += 1;
+        this.initialized = true;
+      }
+    }
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      notifier: new CountingInitNotifier(),
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: { webUiEnabled: false },
+    });
+
+    const originalLoad = daemon.sentryState.load.bind(daemon.sentryState);
+    daemon.sentryState.load = async () => {
+      loadStarted.resolve();
+      await loadGate.promise;
+      return originalLoad();
+    };
+
+    try {
+      const startPromise = daemon.start();
+      await loadStarted.promise;
+
+      const shutdownPromise = daemon.shutdown();
+      loadGate.resolve();
+      await Promise.all([startPromise, shutdownPromise]);
+
+      assert.equal(initCalls, 0);
+      assert.equal(daemon.isRunning, false);
+    } finally {
+      loadGate.resolve();
+      await daemon.shutdown();
+      cleanup();
+    }
+  });
+
+  it('awaits and closes an in-flight web server startup during shutdown before closing SQLite', async () => {
+    const { dir, cleanup } = makeTempDir('daemon_shutdown_during_web_start_');
+    const initDone = deferred<void>();
+
+    class SignalingNotifier extends NotifierStub {
+      override async initialize(): Promise<void> {
+        this.initialized = true;
+        initDone.resolve();
+      }
+    }
+
+    const daemon = await createDaemon({
+      dbPath: path.join(dir, 'test.db'),
+      statePath: path.join(dir, 'state.json'),
+      notifier: new SignalingNotifier(),
+      autoCheckOnStart: false,
+      logger: quietAgyLogger(),
+      config: {
+        webUiEnabled: true,
+        webUiPort: 0,
+        webUiHost: '127.0.0.1',
+      },
+    });
+
+    try {
+      const startPromise = daemon.start();
+      await initDone.promise;
+      // Trigger shutdown while start() is transitioning into / awaiting startWebServer().
+      const shutdownPromise = daemon.shutdown();
+      await Promise.all([startPromise, shutdownPromise]);
+
+      assert.equal(daemon.webServer, undefined);
+      assert.equal(daemon.isDbClosed, true);
+      assert.equal(daemon.isRunning, false);
     } finally {
       await daemon.shutdown();
       cleanup();

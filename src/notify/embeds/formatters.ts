@@ -1,4 +1,5 @@
 import type { DispatchStatusUpdate } from '../types.js';
+import { resetTimeMs } from '../../shared/resetTime.js';
 
 const TERMINAL_STEPS = ['completed', 'no_changes', 'failed', 'aborted'];
 
@@ -19,15 +20,10 @@ export const renderSquareProgressBar = (fraction: number, totalBars = 10): strin
 };
 
 export const formatResetWindow = (rawResetTime?: string): string => {
-  if (!rawResetTime) return 'Unknown';
-  try {
-    const d = new Date(rawResetTime);
-    if (!isNaN(d.getTime())) {
-      const unixSec = Math.floor(d.getTime() / 1000);
-      return `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
-    }
-  } catch {}
-  return rawResetTime;
+  const ms = resetTimeMs(rawResetTime);
+  if (ms === null) return 'Unknown';
+  const unixSec = Math.floor(ms / 1000);
+  return `<t:${unixSec}:R> (<t:${unixSec}:t>)`;
 };
 
 export const formatModelPills = (models?: string[]): string => {

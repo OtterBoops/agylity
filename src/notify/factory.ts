@@ -99,7 +99,7 @@ export const createNotifier = async (
     return instantiatedNotifiers[0];
   }
 
-  return new CompositeNotifier(instantiatedNotifiers, options);
+  return new CompositeNotifier(instantiatedNotifiers, options, config);
 };
 
 export const createDaemonNotifier = async (
