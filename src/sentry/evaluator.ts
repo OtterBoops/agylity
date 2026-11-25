@@ -28,7 +28,9 @@ export class QuotaEvaluator {
   public alertThresholdPercent: number;
 
   constructor(options: QuotaEvaluatorOptions = {}) {
-    this.milestoneHours = normalizeMilestones(options.milestoneHours ?? DEFAULT_MILESTONE_HOURS);
+    const milestones = normalizeMilestones(options.milestoneHours ?? DEFAULT_MILESTONE_HOURS);
+    // An empty window list would silence every milestone alert, so it can never be the resolved value.
+    this.milestoneHours = milestones.length > 0 ? milestones : [...DEFAULT_MILESTONE_HOURS];
 
     this.alertThresholdPercent =
       typeof options.alertThresholdPercent === 'number' &&

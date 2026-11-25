@@ -106,7 +106,8 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
       }, timeoutMs);
     }
 
-    child.stdout?.on('data', (chunk: Buffer) => {
+    const capture = (chunk: Buffer, sink: Buffer[]): void => {
+      if (settled) return;
       size += chunk.length;
       if (size > maxBuffer) {
         killTree();
@@ -116,10 +117,14 @@ export const defaultExecFileAsync: ExecFileAsyncFn = (
         settle(overflow as ExecFileFailure);
         return;
       }
-      out.push(chunk);
+      sink.push(chunk);
+    };
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      capture(chunk, out);
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      err.push(chunk);
+      capture(chunk, err);
     });
 
     child.on('error', (spawnError: NodeJS.ErrnoException) => {

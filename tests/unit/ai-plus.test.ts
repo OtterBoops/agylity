@@ -173,6 +173,37 @@ describe('AI Plus edge cases', () => {
     });
   });
 
+  describe('stored fraction bounds', () => {
+    it('bounds a headroom fraction that a corrupt row put outside 0..1', () => {
+      const { dir, cleanup } = makeTempDir('ai_plus_fraction_bounds_');
+      const db = new AppDatabase(join(dir, 'pools.db'));
+      try {
+        // Written before the manager exists: its state is loaded from the store at construction.
+        const insert = db.getRawDb().prepare(
+          `INSERT OR REPLACE INTO pool_state
+               (pool_id, reset_time, remaining_fraction, last_alert_sent_at, updated_at)
+             VALUES (?, ?, ?, NULL, ?)`
+        );
+        const now = new Date().toISOString();
+        insert.run('claude', '', 1.4, now);
+        insert.run('gemini', '', -0.2, now);
+
+        const manager = new SentryStateManager({ db });
+        const snapshots = snapshotsFromSentryState(manager.getState());
+        assert.equal(snapshots.length, 2);
+        for (const snapshot of snapshots) {
+          assert.ok(
+            snapshot.remainingFraction >= 0 && snapshot.remainingFraction <= 1,
+            `${snapshot.poolId} kept ${snapshot.remainingFraction}`
+          );
+        }
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+  });
+
   describe('pool state reconciliation', () => {
     it('retires a pool the probe stopped reporting and keeps the rest', () => {
       const { dir, cleanup } = makeTempDir('ai_plus_pools_');
@@ -183,6 +214,11 @@ describe('AI Plus edge cases', () => {
         manager.updatePoolQuota('claude', 0.5, resetTime);
         manager.recordMilestoneFired('claude', 24);
         assert.equal(snapshotsFromSentryState(manager.getState()).length, 2);
+
+        // A single short probe is not proof of retirement: the ledger must survive it.
+        assert.deepEqual(manager.reconcilePools(['gemini']), []);
+        assert.deepEqual(manager.reconcilePools(['gemini']), []);
+        assert.ok(manager.getState().pools['claude']);
 
         const retired = manager.reconcilePools(['gemini']);
 
@@ -237,6 +273,14 @@ describe('AI Plus edge cases', () => {
         assert.deepEqual(failedProbe.retiredPools, []);
         assert.ok(manager.getState().pools['claude']);
 
+        assert.deepEqual(
+          evaluator.evaluateWithPlan([poolSnapshot('gemini')], manager).retiredPools,
+          []
+        );
+        assert.deepEqual(
+          evaluator.evaluateWithPlan([poolSnapshot('gemini')], manager).retiredPools,
+          []
+        );
         const probe = evaluator.evaluateWithPlan([poolSnapshot('gemini')], manager);
         assert.deepEqual(probe.retiredPools, ['claude']);
         assert.deepEqual(Object.keys(manager.getState().pools), ['gemini']);
@@ -246,25 +290,48 @@ describe('AI Plus edge cases', () => {
       }
     });
 
-    it('clears a stored early-reset notice once every pool it names is retired', () => {
-      const { dir, cleanup } = makeTempDir('ai_plus_pools_notice_');
+    it('keeps the milestone ledger through one partial probe so a delivered milestone cannot re-fire', () => {
+      const { dir, cleanup } = makeTempDir('ai_plus_pools_partial_');
       const db = new AppDatabase(join(dir, 'pools.db'));
       const manager = new SentryStateManager({ db });
+      const evaluator = new QuotaEvaluator({
+        milestoneHours: [24, 12, 3],
+        alertThresholdPercent: 25,
+      });
       try {
-        manager.updatePoolQuota('claude', 0.5, resetTime);
-        manager.recordEarlyResetNotice([
-          {
-            poolId: 'claude',
-            previousRemainingFraction: 0.2,
-            remainingFraction: 0.9,
-            previousResetTime: resetTime,
-            resetTime,
-          },
+        const deliver = (snapshots: QuotaSnapshot[]): string[] => {
+          const plan = evaluator.evaluateWithPlan(snapshots, manager);
+          for (const alert of plan.alerts) {
+            manager.recordDeliveredAlert({
+              poolId: alert.pool.poolId,
+              resetTime: alert.pool.resetTime,
+              milestoneHours: alert.milestoneHours,
+              headroomPercent: alert.remainingPercentage,
+              channels: {},
+              firedAt: alert.triggeredAt,
+            });
+          }
+          return plan.alerts.map((alert) => `${alert.pool.poolId}@${alert.milestoneHours}h`);
+        };
+
+        assert.deepEqual(deliver([poolSnapshot('claude', 0.5), poolSnapshot('gemini', 0.9)]), [
+          'claude@24h',
+          'gemini@24h',
         ]);
 
-        manager.reconcilePools(['gemini']);
+        const partial = evaluator.evaluateWithPlan([poolSnapshot('gemini', 0.9)], manager);
+        assert.deepEqual(partial.retiredPools, []);
+        assert.deepEqual(
+          partial.alerts.map((alert) => alert.pool.poolId),
+          []
+        );
 
-        assert.equal(manager.getEarlyResetNotice(), null);
+        const reappeared = deliver([poolSnapshot('claude', 0.5), poolSnapshot('gemini', 0.9)]);
+        assert.deepEqual(
+          reappeared,
+          [],
+          'a milestone already delivered in this cycle must not fire again'
+        );
       } finally {
         db.close();
         cleanup();

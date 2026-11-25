@@ -11,6 +11,9 @@ import type {
 // language-server and state-file shapes that feed them.
 export type { BurnSample, QuotaBucket, QuotaBurnProjection, QuotaSnapshot };
 
+export { isValidResetTime, normalizeResetTime, resetTimeMs } from '../shared/resetTime.js';
+import { normalizeResetTime, resetTimeMs } from '../shared/resetTime.js';
+
 export const QuotaInfoSchema = z.object({
   remainingFraction: z.number().min(0).max(1),
   resetTime: z.string(),
@@ -176,8 +179,8 @@ export interface QuotaClient {
 }
 
 export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date.now()): number => {
-  const resetEpoch = new Date(resetTime).getTime();
-  if (Number.isNaN(resetEpoch)) return 0;
+  const resetEpoch = resetTimeMs(resetTime);
+  if (resetEpoch === null) return 0;
   const diffMs = resetEpoch - nowMs;
   if (diffMs <= 0) return 0;
   const hours = diffMs / (1000 * 60 * 60);
@@ -245,15 +248,16 @@ const weeklyBucketFor = (
   poolGroup: PoolGroup,
   pool: { remainingFraction: number; resetTime: string },
   nowMs: number
-): { weeklyBucket: QuotaBucket; hoursUntilReset: number } => {
-  const hoursUntilReset = calculateHoursUntilReset(pool.resetTime, nowMs);
+): { weeklyBucket: QuotaBucket; hoursUntilReset: number | null } => {
+  const resetTime = normalizeResetTime(pool.resetTime);
+  const hoursUntilReset = resetTime ? calculateHoursUntilReset(resetTime, nowMs) : null;
   return {
     weeklyBucket: {
       bucketId: `${poolGroup}-weekly`,
       displayName: 'Weekly Limit',
       window: 'weekly',
       remainingFraction: pool.remainingFraction,
-      resetTime: pool.resetTime,
+      resetTime,
       hoursUntilReset,
     },
     hoursUntilReset,
@@ -296,6 +300,16 @@ const resolveCredits = (
   overageEnabled: extraCredits?.overageEnabled ?? overageFallback,
 });
 
+// A fraction outside 0..1 is meaningless (a corrupt row or an upstream unit slip): bound it here so a
+// negative or >100% headroom can never reach the cards, the dispatch floor or the alert ladder.
+const clampFraction = (value: number): number =>
+  Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0;
+
+const clampBucket = (bucket: QuotaBucket | undefined): QuotaBucket | undefined =>
+  bucket === undefined
+    ? undefined
+    : { ...bucket, remainingFraction: clampFraction(bucket.remainingFraction) };
+
 const toSnapshot = (input: {
   poolGroup: PoolGroup;
   remainingFraction: number;
@@ -313,15 +327,15 @@ const toSnapshot = (input: {
   poolId: input.poolId ?? input.poolGroup,
   poolGroup: input.poolGroup,
   displayName: input.displayName ?? POOL_GROUP_DISPLAY_NAMES[input.poolGroup],
-  remainingFraction: input.remainingFraction,
+  remainingFraction: clampFraction(input.remainingFraction),
   resetTime: input.resetTime,
   hoursUntilReset: input.hoursUntilReset,
   models: input.models,
   overageEnabled: input.overageEnabled,
   remainingCredits: input.remainingCredits,
-  weekly: input.weekly,
-  shortTerm: input.shortTerm,
-  buckets: input.buckets,
+  weekly: clampBucket(input.weekly),
+  shortTerm: clampBucket(input.shortTerm),
+  buckets: input.buckets?.map((bucket) => clampBucket(bucket)!),
 });
 
 export const poolGroupForModelConfig = (config: {
@@ -416,8 +430,8 @@ const isWeeklyBucket = (bucket: {
   bucketId: string;
   displayName: string;
 }): boolean =>
-  bucket.window === 'weekly' ||
-  bucket.bucketId.includes('weekly') ||
+  bucket.window?.toLowerCase() === 'weekly' ||
+  bucket.bucketId.toLowerCase().includes('weekly') ||
   bucket.displayName.toLowerCase().includes('weekly');
 
 export const aggregateUserQuotaSummary = (
@@ -439,14 +453,12 @@ export const aggregateUserQuotaSummary = (
     const resolved = resolvePoolGroupForQuotaGroup(group.displayName);
     if (!resolved) continue;
 
-    const rawWeekly = (group.buckets || []).find(isWeeklyBucket) || group.buckets?.[0];
+    const rawBuckets = group.buckets || [];
+    const weeklyIndex = rawBuckets.findIndex(isWeeklyBucket);
 
-    const weeklyResetTime = rawWeekly?.resetTime || '';
-    const weeklyHours = weeklyResetTime ? calculateHoursUntilReset(weeklyResetTime, nowMs) : 0;
-
-    const bucketsWithHours: QuotaBucket[] = (group.buckets || []).map((b) => {
-      const bReset = b.resetTime || weeklyResetTime;
-      const bHours = b.resetTime ? calculateHoursUntilReset(b.resetTime, nowMs) : weeklyHours;
+    const bucketsWithHours: QuotaBucket[] = rawBuckets.map((b) => {
+      const bReset = normalizeResetTime(b.resetTime);
+      const bHours = bReset ? calculateHoursUntilReset(bReset, nowMs) : null;
       return {
         bucketId: b.bucketId,
         displayName: b.displayName,
@@ -459,7 +471,7 @@ export const aggregateUserQuotaSummary = (
       };
     });
 
-    const weeklyBucket = bucketsWithHours.find(isWeeklyBucket) || bucketsWithHours[0];
+    const weeklyBucket = weeklyIndex >= 0 ? bucketsWithHours[weeklyIndex] : undefined;
 
     const shortTermBucket = bucketsWithHours.find(
       (b) =>
@@ -469,9 +481,17 @@ export const aggregateUserQuotaSummary = (
         b.displayName.toLowerCase().includes('five hour')
     );
 
+    const widestBucket = bucketsWithHours.reduce<QuotaBucket | undefined>((widest, bucket) => {
+      const bucketMs = resetTimeMs(bucket.resetTime);
+      if (bucketMs === null) return widest;
+      const widestMs = widest ? resetTimeMs(widest.resetTime) : null;
+      return widestMs === null || bucketMs > widestMs ? bucket : widest;
+    }, undefined);
+    const primaryBucket = weeklyBucket ?? widestBucket ?? bucketsWithHours[0];
+
     const groupModels = resolved.defaultModels;
 
-    if (weeklyBucket) {
+    if (primaryBucket) {
       const basePoolId: string = resolved.poolGroup;
       let poolId: string = basePoolId;
       if (usedPoolIds.has(poolId)) {
@@ -489,9 +509,9 @@ export const aggregateUserQuotaSummary = (
           poolGroup: resolved.poolGroup,
           poolId,
           displayName: poolId === basePoolId ? undefined : group.displayName,
-          remainingFraction: weeklyBucket.remainingFraction,
-          resetTime: weeklyBucket.resetTime || '',
-          hoursUntilReset: weeklyBucket.hoursUntilReset ?? 0,
+          remainingFraction: primaryBucket.remainingFraction,
+          resetTime: primaryBucket.resetTime ?? '',
+          hoursUntilReset: primaryBucket.hoursUntilReset ?? 0,
           models: groupModels,
           overageEnabled,
           remainingCredits,
@@ -514,7 +534,7 @@ const inferPoolGroupFromQuotaInfo = (
   for (const pool of pools) {
     if (
       pool.remainingFraction === quotaInfo.remainingFraction &&
-      pool.resetTime === quotaInfo.resetTime
+      pool.resetTime === normalizeResetTime(quotaInfo.resetTime)
     ) {
       matches.push(pool.poolGroup);
     }
@@ -558,17 +578,18 @@ export const aggregateQuotaPools = (
         poolGroup,
         displayName,
         remainingFraction: config.quotaInfo.remainingFraction,
-        resetTime: config.quotaInfo.resetTime,
+        resetTime: normalizeResetTime(config.quotaInfo.resetTime),
         models: new Set([modelLabel]),
       });
     } else {
       const existing = poolMap.get(poolGroup)!;
       existing.models.add(modelLabel);
-      if (
-        config.quotaInfo.resetTime &&
-        (!existing.resetTime || config.quotaInfo.resetTime < existing.resetTime)
-      ) {
-        existing.resetTime = config.quotaInfo.resetTime;
+      const nextResetTime = normalizeResetTime(config.quotaInfo.resetTime);
+      const nextResetMs = resetTimeMs(nextResetTime);
+      const existingResetMs = resetTimeMs(existing.resetTime);
+      // The pool reports the soonest deadline; that is an instant comparison, not a text one.
+      if (nextResetMs !== null && (existingResetMs === null || nextResetMs < existingResetMs)) {
+        existing.resetTime = nextResetTime;
       }
       if (typeof config.quotaInfo.remainingFraction === 'number') {
         existing.remainingFraction = Math.min(
@@ -594,8 +615,8 @@ export const aggregateQuotaPools = (
       toSnapshot({
         poolGroup: entry.poolGroup,
         remainingFraction: entry.remainingFraction,
-        resetTime: entry.resetTime,
-        hoursUntilReset,
+        resetTime: normalizeResetTime(entry.resetTime),
+        hoursUntilReset: hoursUntilReset ?? 0,
         models: Array.from(entry.models).sort(),
         overageEnabled,
         remainingCredits,
@@ -630,14 +651,15 @@ export const snapshotsFromSentryState = (
     const poolGroup = POOL_GROUP_ALIASES[rawId] ?? POOL_GROUP_ALIASES[rawId.split(':')[0] ?? ''];
     if (!poolGroup) continue;
 
+    const resetTime = normalizeResetTime(pool.resetTime);
     const { weeklyBucket, hoursUntilReset } = weeklyBucketFor(poolGroup, pool, nowMs);
 
     const snapshot = toSnapshot({
       poolId: upgradePoolGroupId(poolId),
       poolGroup,
       remainingFraction: pool.remainingFraction,
-      resetTime: pool.resetTime,
-      hoursUntilReset,
+      resetTime,
+      hoursUntilReset: hoursUntilReset ?? 0,
       models: [...POOL_GROUP_DEFAULT_MODELS[poolGroup]],
       weekly: weeklyBucket,
       buckets: [weeklyBucket],
@@ -645,7 +667,7 @@ export const snapshotsFromSentryState = (
 
     const burnProjection = computeBurnProjection({
       samples: pool.samples,
-      resetTime: pool.resetTime,
+      resetTime,
       nowMs,
     });
     if (burnProjection) snapshot.burnProjection = burnProjection;

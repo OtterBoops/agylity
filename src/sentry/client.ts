@@ -135,6 +135,12 @@ const buildCliAuthErrorMessage = (): string => {
   return 'Antigravity CLI is not authenticated. Launch `agy` in your terminal to sign in.';
 };
 
+const parseLoopbackPort = (raw: string | undefined): number | undefined => {
+  if (!raw) return undefined;
+  const parsed = Number(raw.trim());
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535 ? parsed : undefined;
+};
+
 export class ConnectRpcQuotaClient implements IQuotaClient {
   private static readonly CREDITS_TTL_MS = 5 * 60 * 1000;
   private static readonly AUTH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
@@ -177,9 +183,12 @@ export class ConnectRpcQuotaClient implements IQuotaClient {
     this.logger = options.logger ?? logger.child('sentry');
     this.endpointUrl = options.endpointUrl ?? process.env.ANTIGRAVITY_ENDPOINT_URL;
     this.host = options.host ?? '127.0.0.1';
-    this.port =
-      options.port ??
-      (process.env.ANTIGRAVITY_LS_PORT ? Number(process.env.ANTIGRAVITY_LS_PORT) : 60643);
+    const envPort = process.env.ANTIGRAVITY_LS_PORT;
+    const parsedEnvPort = parseLoopbackPort(envPort);
+    if (envPort && parsedEnvPort === undefined) {
+      this.logger.warn('Ignoring invalid ANTIGRAVITY_LS_PORT=%s; probing 60643 instead', envPort);
+    }
+    this.port = options.port ?? parsedEnvPort ?? 60643;
     this.csrfToken = options.csrfToken ?? process.env.ANTIGRAVITY_CSRF_TOKEN ?? '';
     this.timeoutMs = options.timeoutMs ?? 5000;
     this.fallbackPorts =

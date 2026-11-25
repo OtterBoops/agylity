@@ -11,7 +11,10 @@ import {
   calculateHoursUntilReset,
   computeBurnProjection,
   deriveOverageEnabled,
+  isValidResetTime,
+  normalizeResetTime,
   poolGroupForModelConfig,
+  resetTimeMs,
   snapshotsFromSentryState,
   GetUserStatusResponseSchema,
   LanguageServerResponseSchema,
@@ -24,6 +27,7 @@ import {
 import { SentryStateManager, normalizeMilestoneKey } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';
 import { AppDatabase } from '../../src/storage/db.js';
+import { upgradePoolGroupId } from '../../src/shared/models.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 import {
   ConnectRpcQuotaClient,
@@ -570,18 +574,24 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(manager2.isMilestoneFired('claude', 12), false);
     });
 
-    it('detects cycle rollover and clears fired milestones when resetTime advances', async () => {
+    it('detects cycle rollover and clears fired milestones once the stored deadline has passed', async () => {
       const manager = openState(stateFile);
       await manager.load();
+      const nowMs = Date.parse('2026-10-20T09:00:00Z');
 
       // Cycle 1
-      manager.updatePoolQuota('claude', 0.5, '2026-10-20T10:00:00Z');
+      manager.updatePoolQuota('claude', 0.5, '2026-10-20T10:00:00Z', nowMs);
       manager.recordMilestoneFired('claude', 24);
       manager.recordMilestoneFired('claude', 12);
       assert.equal(manager.isMilestoneFired('claude', 24), true);
 
-      // Cycle 2: new reset deadline
-      const rolledOver = manager.updatePoolQuota('claude', 0.95, '2026-10-21T10:00:00Z');
+      // Cycle 2: the stored deadline elapsed and the probe reports the next one
+      const rolledOver = manager.updatePoolQuota(
+        'claude',
+        0.95,
+        '2026-10-21T10:00:00Z',
+        nowMs + 2 * 3600 * 1000
+      );
       assert.equal(rolledOver.cycleRolled, true);
       assert.equal(rolledOver.earlyReset, null);
       assert.equal(manager.isMilestoneFired('claude', 24), false);
@@ -684,7 +694,10 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         },
       ]);
 
-      // The probe now reports the merged Gemini pool alone; the retired pools must not linger.
+      // The probe now reports the merged Gemini pool alone; the retired pools must not linger,
+      // but one short probe is not enough to retire them.
+      assert.deepEqual(manager.reconcilePools(['gemini']), []);
+      assert.deepEqual(manager.reconcilePools(['gemini']), []);
       const removed = manager.reconcilePools(['gemini']);
       assert.deepEqual(removed.sort(), ['claude', 'gemini:hydrogen-wtu']);
       // An empty notice is not a notice: it must be dropped, not rendered as a shell.
@@ -708,6 +721,60 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       // Quarantining here would rename a file nothing is wrong with; nothing may be created.
       const quarantined = readdirSync(testDir).filter((f) => f.includes('.corrupt.'));
       assert.equal(quarantined.length, 0);
+    });
+
+    it('lists a corrupt alert ledger without throwing or losing the page', () => {
+      const { dir, cleanup } = makeTempDir('sentry_alert_ledger_hostile_');
+      const db = new AppDatabase(join(dir, 'ledger.db'));
+
+      try {
+        const insert = db.getRawDb().prepare(
+          `INSERT INTO alert_events
+               (pool_id, reset_time, kind, milestone_hours, headroom_percent, fired_at, channels_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+        );
+        insert.run(
+          'gemini',
+          '2026-11-27T00:00:00Z',
+          'milestone',
+          12,
+          30,
+          '2026-11-26T10:00:00Z',
+          'not json'
+        );
+        insert.run('claude', '', 'milestone', -3, -50, 'garbage-date', '[]');
+        insert.run('gemini', '', 'early_reset', null, null, '0000', '{"discord":{"success":true}}');
+
+        const manager = new SentryStateManager({ db });
+
+        for (const options of [
+          { limit: 50 },
+          { limit: 2 },
+          { limit: Number.NaN },
+          { limit: -5 },
+          { before: 'garbage|nope' },
+          { before: '2026-11-26T10:00:00Z|1' },
+        ]) {
+          const page = manager.listAlertEvents(options);
+          assert.ok(page.events.length >= 0);
+          assert.ok(page.nextBefore === null || typeof page.nextBefore === 'string');
+          for (const event of page.events) {
+            assert.ok(Number.isFinite(event.id));
+            assert.equal(typeof event.firedAt, 'string');
+            // A row whose channels_json is unreadable degrades to "nothing recorded", never a throw.
+            assert.equal(typeof event.channels, 'object');
+            assert.ok(event.channels !== null);
+          }
+        }
+
+        // The unreadable JSON is the only row with a milestone at that instant, and it is still listed.
+        const all = manager.listAlertEvents({ limit: 50 });
+        assert.equal(all.events.length, 3);
+        assert.deepEqual(all.events.find((event) => event.poolId === 'claude')?.channels, {});
+      } finally {
+        db.close();
+        cleanup();
+      }
     });
 
     it('normalizes milestone keys consistently', () => {
@@ -794,9 +861,37 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       manager.updatePoolQuota('gemini', 0.2, firstReset, nowMs);
       const update = manager.updatePoolQuota('gemini', 1, secondReset, nowMs + 60_000);
 
-      assert.equal(update.cycleRolled, true);
+      assert.equal(update.cycleRolled, false);
       assert.equal(update.earlyReset?.previousResetTime, firstReset);
       assert.equal(update.earlyReset?.resetTime, secondReset);
+    });
+
+    it('clears fired milestones and lastAlertSentAt when an early reset advances to a later deadline', async () => {
+      const manager = openState(stateFile);
+      await manager.load();
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const firstReset = new Date(nowMs + 24 * 3600 * 1000).toISOString();
+      const secondReset = new Date(nowMs + 7 * 24 * 3600 * 1000).toISOString();
+      const firedAt = new Date(nowMs).toISOString();
+
+      manager.updatePoolQuota('claude', 0.2, firstReset, nowMs);
+      manager.recordMilestoneFired('claude', 24, firedAt);
+      manager.recordMilestoneFired('claude', 12, firedAt);
+      assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, ['24h', '12h']);
+      assert.equal(manager.getPoolState('claude')?.lastAlertSentAt, firedAt);
+
+      const update = manager.updatePoolQuota('claude', 1, secondReset, nowMs + 60_000);
+      assert.equal(update.cycleRolled, false);
+      assert.ok(update.earlyReset);
+      assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, []);
+      assert.equal(manager.getPoolState('claude')?.lastAlertSentAt, null);
+      assert.equal(manager.isMilestoneFired('claude', 24), false);
+
+      // Verify the cleared ledger was persisted to SQLite, not only in memory.
+      const reloaded = openState(stateFile);
+      await reloaded.load();
+      assert.deepEqual(reloaded.getPoolState('claude')?.firedMilestones, []);
+      assert.equal(reloaded.getPoolState('claude')?.lastAlertSentAt, null);
     });
 
     it('ignores a never-used pool whose reset time merely floats forward', () => {
@@ -811,7 +906,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
         nowMs + 60_000
       );
 
-      assert.equal(update.cycleRolled, true);
+      assert.equal(update.cycleRolled, false);
       assert.equal(update.earlyReset, null);
       assert.equal(manager.getEarlyResetNotice(), null);
     });
@@ -888,18 +983,30 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
     it('keeps the fired milestones when the same reset instant is re-rendered differently', async () => {
       const manager = openState(stateFile);
       await manager.load();
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = '2026-11-20T22:00:00Z';
 
-      manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00Z');
+      manager.updatePoolQuota('claude', 0.5, resetTime, nowMs);
       manager.recordMilestoneFired('claude', 24);
 
       // Same instant, different rendering: this is not a new cycle.
-      const sameInstant = manager.updatePoolQuota('claude', 0.5, '2026-11-20T22:00:00.000Z');
+      const sameInstant = manager.updatePoolQuota(
+        'claude',
+        0.5,
+        '2026-11-20T22:00:00.000Z',
+        nowMs + 60_000
+      );
       assert.equal(sameInstant.cycleRolled, false);
       assert.equal(manager.isMilestoneFired('claude', 24), true);
       assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, ['24h']);
 
-      // A genuinely different deadline is a new cycle and re-arms the milestones.
-      const newCycle = manager.updatePoolQuota('claude', 0.5, '2026-11-21T22:00:00Z');
+      // A deadline that moves earlier is a new cycle and re-arms the milestones.
+      const newCycle = manager.updatePoolQuota(
+        'claude',
+        0.5,
+        new Date(Date.parse(resetTime) - 60_000).toISOString(),
+        nowMs + 120_000
+      );
       assert.equal(newCycle.cycleRolled, true);
       assert.equal(manager.isMilestoneFired('claude', 24), false);
       assert.deepEqual(manager.getPoolState('claude')?.firedMilestones, []);
@@ -916,6 +1023,31 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(lost.cycleRolled, false);
       assert.equal(manager.getPoolState('claude')?.resetTime, '2026-11-20T22:00:00Z');
       assert.equal(manager.isMilestoneFired('claude', 24), true);
+    });
+
+    it('adopts a later deadline as the same cycle so the ladder and burn history survive', () => {
+      const manager = openState(stateFile);
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const storedReset = new Date(nowMs + 48 * 3600 * 1000).toISOString();
+      const laterReset = new Date(Date.parse(storedReset) + 1000).toISOString();
+      const firedAt = new Date(nowMs).toISOString();
+
+      manager.updatePoolQuota('claude', 0.6, storedReset, nowMs);
+      manager.recordMilestoneFired('claude', 24, firedAt);
+
+      const update = manager.updatePoolQuota('claude', 0.55, laterReset, nowMs + 11 * 60_000);
+      const pool = manager.getPoolState('claude');
+
+      assert.equal(update.cycleRolled, false);
+      assert.equal(update.earlyReset, null);
+      assert.equal(pool?.resetTime, laterReset);
+      assert.deepEqual(pool?.firedMilestones, ['24h']);
+      assert.equal(pool?.lastAlertSentAt, firedAt);
+      assert.equal(pool?.samples?.length, 2);
+      assert.equal(
+        pool?.samples?.every((sample) => sample.resetTime === laterReset),
+        true
+      );
     });
 
     it('does not resurrect a dismissed notice, because a dismissal is already committed', async () => {
@@ -1079,6 +1211,50 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
   // 3. Quota Evaluator Math & Late-Wake Anti-Spam
   // ==========================================
   describe('3. Quota Evaluator Math & Late-Wake Reconciliation', () => {
+    it('collapses a pre-merge Claude pool id onto the group it was merged into', () => {
+      assert.equal(upgradePoolGroupId('sonnet'), 'claude');
+      assert.equal(upgradePoolGroupId('3p:p1'), 'claude:p1');
+
+      const snapshots = snapshotsFromSentryState(
+        {
+          pools: {
+            sonnet: { resetTime: '2026-11-26T09:00:00.000Z', remainingFraction: 0.8 },
+            claude: { resetTime: '2026-11-26T09:00:00.000Z', remainingFraction: 0.2 },
+          },
+        },
+        Date.parse('2026-11-26T00:00:00Z')
+      );
+      assert.deepEqual(
+        [...new Set(snapshots.map((snapshot) => snapshot.poolId))],
+        ['claude'],
+        'one account must not be reported as two Claude pools'
+      );
+    });
+
+    it('does not resurrect a milestone a cycle roll retired', () => {
+      const { dir, cleanup } = makeTempDir('sentry_cycle_roll_');
+      const dbPath = join(dir, 'state.db');
+      const first = new SentryStateManager({ db: new AppDatabase(dbPath) });
+      const now = Date.parse('2026-11-25T00:00:00Z');
+      const reset = new Date(now + 20 * 3600 * 1000).toISOString();
+
+      first.updatePoolQuota('claude', 0.5, reset, now);
+      first.recordMilestoneFired('claude', '24h', new Date(now).toISOString());
+      assert.deepEqual(first.getPoolState('claude')?.firedMilestones, ['24h']);
+
+      // The deadline jitters forward (same cycle), then back onto the instant the ledger already knows.
+      const jittered = new Date(now + 20 * 3600 * 1000 + 1000).toISOString();
+      first.updatePoolQuota('claude', 0.5, jittered, now + 1000);
+      const rolled = first.updatePoolQuota('claude', 0.5, reset, now + 2000);
+      assert.equal(rolled?.cycleRolled, true);
+      assert.deepEqual(first.getPoolState('claude')?.firedMilestones, []);
+
+      // A restart must not read the retired milestone back out of the ledger.
+      const second = new SentryStateManager({ db: new AppDatabase(dbPath) });
+      assert.deepEqual(second.getPoolState('claude')?.firedMilestones, []);
+      cleanup();
+    });
+
     it('compares the raw fraction against the threshold, not its rounded display value', () => {
       const evaluator = new QuotaEvaluator({
         milestoneHours: [24, 12, 3],
@@ -1102,6 +1278,15 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       const atFloor = evaluator.evaluatePool(makeSnapshot(0.25), [], now);
       assert.ok(atFloor.alert);
       assert.equal(atFloor.alert.milestoneHours, 24);
+    });
+
+    it('never resolves an empty window list, so milestones cannot be silenced', () => {
+      const constructed = new QuotaEvaluator({ milestoneHours: [] });
+      assert.deepEqual(constructed.milestoneHours, [48, 24, 12]);
+
+      const updated = new QuotaEvaluator({ milestoneHours: [36, 18, 6] });
+      updated.updateConfig({ milestoneHours: [] });
+      assert.deepEqual(updated.milestoneHours, [36, 18, 6]);
     });
 
     it('suppresses alert when reset deadline has already passed', () => {
@@ -1623,6 +1808,121 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(cached.length, 1);
       assert.equal(cached[0]?.poolGroup, 'gemini');
       assert.equal(cached[0]?.poolId, 'gemini:gemini-pro');
+    });
+
+    it('never publishes a short-term window as weekly and takes the widest deadline', () => {
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const fiveHourReset = new Date(nowMs + 3 * 3600 * 1000).toISOString();
+      const dailyReset = new Date(nowMs + 300 * 3600 * 1000).toISOString();
+      const summary = RetrieveUserQuotaSummaryResponseSchema.parse({
+        response: {
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [
+                {
+                  bucketId: 'gemini-5h',
+                  displayName: 'Five Hour Limit Remaining',
+                  window: '5h',
+                  remainingFraction: 0.3,
+                  resetTime: fiveHourReset,
+                },
+                {
+                  bucketId: 'gemini-daily',
+                  displayName: 'Daily Limit Remaining',
+                  window: 'daily',
+                  remainingFraction: 0.7,
+                  resetTime: dailyReset,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const [snapshot] = aggregateUserQuotaSummary(summary, nowMs);
+
+      assert.ok(snapshot);
+      assert.equal(snapshot.weekly, undefined);
+      assert.equal(snapshot.shortTerm?.bucketId, 'gemini-5h');
+      assert.equal(snapshot.remainingFraction, 0.7);
+      assert.equal(snapshot.resetTime, dailyReset);
+      assert.equal(snapshot.hoursUntilReset, 300);
+    });
+
+    it('matches a weekly window regardless of case', () => {
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const resetTime = new Date(nowMs + 120 * 3600 * 1000).toISOString();
+      const summary = RetrieveUserQuotaSummaryResponseSchema.parse({
+        response: {
+          groups: [
+            {
+              displayName: 'Claude and GPT models',
+              buckets: [
+                {
+                  bucketId: '3p-5h',
+                  displayName: 'Five Hour Limit Remaining',
+                  window: '5h',
+                  remainingFraction: 0.9,
+                  resetTime: new Date(nowMs + 3 * 3600 * 1000).toISOString(),
+                },
+                {
+                  bucketId: '3p-window',
+                  displayName: 'Limit Remaining',
+                  window: 'WEEKLY',
+                  remainingFraction: 0.5,
+                  resetTime,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const [snapshot] = aggregateUserQuotaSummary(summary, nowMs);
+
+      assert.ok(snapshot);
+      assert.equal(snapshot.weekly?.bucketId, '3p-window');
+      assert.equal(snapshot.resetTime, resetTime);
+      assert.equal(snapshot.hoursUntilReset, 120);
+    });
+
+    it('leaves a bucket without its own deadline unscheduled instead of lending it another window', () => {
+      const nowMs = Date.parse('2026-11-14T12:00:00Z');
+      const weeklyReset = new Date(nowMs + 264 * 3600 * 1000).toISOString();
+      const summary = RetrieveUserQuotaSummaryResponseSchema.parse({
+        response: {
+          groups: [
+            {
+              displayName: 'Claude and GPT models',
+              buckets: [
+                {
+                  bucketId: '3p-5h',
+                  displayName: 'Five Hour Limit Remaining',
+                  window: '5h',
+                  remainingFraction: 0.9,
+                },
+                {
+                  bucketId: '3p-weekly',
+                  displayName: 'Weekly Limit Remaining',
+                  window: 'weekly',
+                  remainingFraction: 0.5,
+                  resetTime: weeklyReset,
+                },
+              ],
+            },
+          ],
+        },
+      });
+
+      const [snapshot] = aggregateUserQuotaSummary(summary, nowMs);
+
+      assert.ok(snapshot);
+      assert.equal(snapshot.weekly?.hoursUntilReset, 264);
+      assert.equal(snapshot.shortTerm?.resetTime, '');
+      assert.equal(snapshot.shortTerm?.hoursUntilReset, null);
+      assert.equal(snapshot.buckets?.[0]?.resetTime, '');
+      assert.equal(snapshot.buckets?.[0]?.hoursUntilReset, null);
     });
 
     it('parses overageInfo and sets overageEnabled flag accurately', () => {
@@ -2230,7 +2530,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(samples[1]?.remainingFraction, 0.88);
     });
 
-    it('clears the history when the reset time rolls into a new cycle', () => {
+    it('clears the history when an early refill lands on a later deadline', () => {
       const manager = openState();
 
       manager.updatePoolQuota('claude', 0.5, cycleReset, NOW_MS);
@@ -2238,7 +2538,7 @@ describe('Milestone 2: Quota Sentry & RPC Engine', () => {
       assert.equal(manager.getPoolState('claude')?.samples?.length, 2);
 
       const rolled = manager.updatePoolQuota('claude', 1, nextCycleReset, NOW_MS + 21 * MINUTE_MS);
-      assert.equal(rolled.cycleRolled, true);
+      assert.equal(rolled.cycleRolled, false);
 
       const samples = manager.getPoolState('claude')?.samples ?? [];
       assert.equal(samples.length, 1);
@@ -2468,6 +2768,19 @@ describe('Process execution (defaultExecFileAsync)', () => {
     assert.equal(existsSync(marker), false);
   });
 
+  it('applies the output cap to stderr as well as stdout', async () => {
+    const script = `process.stderr.write('x'.repeat(300000)); process.stdout.write('ok');`;
+
+    await assert.rejects(
+      defaultExecFileAsync(process.execPath, ['-e', script], { timeout: 20000, maxBuffer: 1024 }),
+      (err: any) => {
+        assert.equal(err?.code, 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER');
+        assert.ok(err.stderr.length <= 1024, `stderr was ${err.stderr.length} bytes`);
+        return true;
+      }
+    );
+  });
+
   it('resolves stdout and rejects a non-zero exit with the captured streams', async () => {
     const ok = await defaultExecFileAsync(process.execPath, ['-e', "console.log('hello')"]);
     assert.equal(ok.stdout.trim(), 'hello');
@@ -2480,5 +2793,198 @@ describe('Process execution (defaultExecFileAsync)', () => {
         return true;
       }
     );
+  });
+});
+
+describe('Epoch-zero reset windows', () => {
+  // Upstream's placeholder for an idle pool whose window has not started.
+  const EPOCH_ZERO = '1970-01-01T00:00:00Z';
+  const NOW_MS = Date.parse('2026-11-14T12:00:00Z');
+
+  it('treats empty, unparseable, and epoch-zero clocks as unset', () => {
+    assert.equal(resetTimeMs(EPOCH_ZERO), null);
+    assert.equal(resetTimeMs('1970-01-01T00:00:00.000Z'), null);
+    assert.equal(resetTimeMs('1969-12-31T23:59:59Z'), null);
+    assert.equal(resetTimeMs(''), null);
+    assert.equal(resetTimeMs(undefined), null);
+    assert.equal(resetTimeMs(null), null);
+    assert.equal(resetTimeMs('not-a-date'), null);
+
+    assert.equal(isValidResetTime(EPOCH_ZERO), false);
+    assert.equal(isValidResetTime(''), false);
+    assert.equal(isValidResetTime('2026-11-20T22:00:00Z'), true);
+
+    // Normalizing is the one spelling of unset, so no epoch placeholder is ever stored.
+    assert.equal(normalizeResetTime(EPOCH_ZERO), '');
+    assert.equal(normalizeResetTime(''), '');
+    assert.equal(normalizeResetTime(null), '');
+    assert.equal(normalizeResetTime('2026-11-20T22:00:00Z'), '2026-11-20T22:00:00Z');
+  });
+
+  it('reports no hours to reset for the epoch placeholder', () => {
+    assert.equal(calculateHoursUntilReset(EPOCH_ZERO), 0);
+  });
+
+  it('aggregates an epoch-zero quota summary into an unset window', () => {
+    const summary = RetrieveUserQuotaSummaryResponseSchema.parse({
+      response: {
+        groups: [
+          {
+            displayName: 'Claude and GPT models',
+            buckets: [
+              {
+                bucketId: '3p-weekly',
+                displayName: 'Weekly Limit Remaining',
+                window: 'weekly',
+                remainingFraction: 1,
+                resetTime: EPOCH_ZERO,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    const snapshots = aggregateUserQuotaSummary(summary, NOW_MS);
+    assert.equal(snapshots.length, 1);
+    const snapshot = snapshots[0]!;
+    assert.equal(snapshot.poolId, 'claude');
+    assert.equal(snapshot.resetTime, '');
+    // The snapshot field is non-nullable, so only the bucket can say "no deadline".
+    assert.equal(snapshot.hoursUntilReset, 0);
+    assert.equal(snapshot.weekly?.resetTime, '');
+    assert.equal(snapshot.weekly?.hoursUntilReset, null);
+    assert.equal(snapshot.buckets?.[0]?.hoursUntilReset, null);
+
+    // The emitted snapshot still satisfies the API payload schema.
+    assert.equal(QuotaSnapshotSchema.parse(snapshot).resetTime, '');
+  });
+
+  it('aggregates a Language Server epoch-zero clock into an unset pool', () => {
+    const pools = aggregateQuotaPools(
+      [
+        {
+          label: 'Gemini 4 Argon',
+          modelId: 'gemini-4-argon-medium',
+          quotaInfo: { remainingFraction: 1, resetTime: EPOCH_ZERO },
+        },
+      ],
+      NOW_MS
+    );
+
+    assert.equal(pools.length, 1);
+    assert.equal(pools[0]?.poolGroup, 'gemini');
+    assert.equal(pools[0]?.resetTime, '');
+    assert.equal(pools[0]?.hoursUntilReset, 0);
+    assert.equal(pools[0]?.weekly?.resetTime, '');
+    assert.equal(pools[0]?.weekly?.hoursUntilReset, null);
+  });
+
+  it('synthesizes a cached epoch-zero pool without inventing a deadline', () => {
+    const snapshots = snapshotsFromSentryState(
+      {
+        pools: {
+          claude: { resetTime: EPOCH_ZERO, remainingFraction: 1, firedMilestones: [] },
+        },
+      },
+      NOW_MS
+    );
+
+    assert.equal(snapshots.length, 1);
+    assert.equal(snapshots[0]?.resetTime, '');
+    assert.equal(snapshots[0]?.hoursUntilReset, 0);
+    assert.equal(snapshots[0]?.weekly?.resetTime, '');
+    assert.equal(snapshots[0]?.weekly?.hoursUntilReset, null);
+  });
+
+  it('stores an epoch-zero clock as an unset reset time on a new pool', () => {
+    const { dir, cleanup } = makeTempDir('sentry_epoch_state_');
+    const manager = new SentryStateManager({ db: new AppDatabase(join(dir, 'epoch.db')) });
+
+    try {
+      const created = manager.updatePoolQuota('claude', 1, EPOCH_ZERO, NOW_MS);
+      assert.equal(created.earlyReset, null);
+      assert.equal(manager.getPoolState('claude')?.resetTime, '');
+    } finally {
+      manager.close();
+      cleanup();
+    }
+  });
+
+  it('reports an early reset with an unset new clock when the refill reports the placeholder', () => {
+    const { dir, cleanup } = makeTempDir('sentry_epoch_early_reset_');
+    const manager = new SentryStateManager({ db: new AppDatabase(join(dir, 'epoch.db')) });
+    const resetTime = new Date(NOW_MS + 48 * 3600 * 1000).toISOString();
+
+    try {
+      manager.updatePoolQuota('claude', 0.4, resetTime, NOW_MS);
+      manager.recordMilestoneFired('claude', 24);
+
+      const update = manager.updatePoolQuota('claude', 1, EPOCH_ZERO, NOW_MS + 60_000);
+
+      assert.ok(update.earlyReset);
+      assert.equal(update.earlyReset?.poolId, 'claude');
+      assert.equal(update.earlyReset?.previousResetTime, resetTime);
+      assert.equal(update.earlyReset?.resetTime, '');
+
+      const pool = manager.getPoolState('claude');
+      assert.equal(pool?.resetTime, '');
+      assert.deepEqual(pool?.firedMilestones, []);
+      assert.equal(pool?.remainingFraction, 1);
+    } finally {
+      manager.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Connect-RPC client: ANTIGRAVITY_LS_PORT validation', () => {
+  const original = process.env.ANTIGRAVITY_LS_PORT;
+  afterEach(() => {
+    if (original === undefined) delete process.env.ANTIGRAVITY_LS_PORT;
+    else process.env.ANTIGRAVITY_LS_PORT = original;
+  });
+
+  const portOf = (raw: string): { port: number; fallbackPorts: number[] } => {
+    process.env.ANTIGRAVITY_LS_PORT = raw;
+    const client = new ConnectRpcQuotaClient({
+      enableCliFallback: false,
+      enableProcessDiscovery: false,
+    });
+    const self = client as unknown as { port: number; fallbackPorts: number[] };
+    return { port: self.port, fallbackPorts: self.fallbackPorts };
+  };
+
+  it('falls back to 60643 for a value that is not a port', () => {
+    for (const raw of ['abc', '0x', '70000', '-1', '60643.5', '']) {
+      const { port, fallbackPorts } = portOf(raw);
+      assert.equal(port, 60643, `port for ${JSON.stringify(raw)}`);
+      assert.equal(
+        fallbackPorts.every((value) => Number.isInteger(value)),
+        true
+      );
+    }
+  });
+
+  it('accepts a valid explicit port and keeps it first in the fallback list', () => {
+    const { port, fallbackPorts } = portOf('60650');
+    assert.equal(port, 60650);
+    assert.deepEqual(fallbackPorts, [60650, 60643, 60642]);
+  });
+});
+
+describe('Reset-time shape validation', () => {
+  it('rejects values Date.parse would accept without an ISO date-time shape', () => {
+    assert.equal(resetTimeMs('0'), null);
+    assert.equal(resetTimeMs('2026'), null);
+    assert.equal(resetTimeMs('May 1, 2026'), null);
+    assert.equal(resetTimeMs('2026-05-01'), null);
+  });
+
+  it('accepts a padded ISO instant and stores it without the padding', () => {
+    assert.equal(resetTimeMs(' 2026-05-01T00:00:00Z '), Date.parse('2026-05-01T00:00:00Z'));
+    assert.equal(isValidResetTime(' 2026-05-01T00:00:00Z '), true);
+    assert.equal(normalizeResetTime(' 2026-05-01T00:00:00Z '), '2026-05-01T00:00:00Z');
+    assert.equal(normalizeResetTime(' 1970-01-01T00:00:00Z '), '');
   });
 });

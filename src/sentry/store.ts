@@ -296,6 +296,11 @@ export class SentryStore {
       }
       this.trimSamples(poolId);
 
+      // The in-memory ledger is the truth for the live cycle: a roll retires milestones, so their rows go.
+      this.db
+        .prepare('DELETE FROM pool_milestones WHERE pool_id = ? AND reset_time = ?')
+        .run(poolId, pool.resetTime);
+
       const insertMilestone = this.db.prepare(
         `INSERT OR IGNORE INTO pool_milestones (pool_id, reset_time, milestone_hours, fired_at)
          VALUES (?, ?, ?, ?)`

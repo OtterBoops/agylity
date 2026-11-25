@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../storage/db.js';
 import { upgradePoolGroupId } from '../shared/models.js';
+import { normalizeResetTime, resetTimeMs } from '../shared/resetTime.js';
 import type { DeliveryChannelResult } from '../notify/types.js';
 import {
   PROBE_SOURCES,
@@ -89,8 +90,8 @@ const detectEarlyReset = (
   nowMs: number
 ): EarlyResetPool | null => {
   if (existing.remainingFraction >= EARLY_RESET_UNUSED_FRACTION) return null;
-  const priorResetMs = Date.parse(existing.resetTime);
-  if (!Number.isFinite(priorResetMs)) return null;
+  const priorResetMs = resetTimeMs(existing.resetTime);
+  if (priorResetMs === null) return null;
   if (nowMs >= priorResetMs - EARLY_RESET_GUARD_MS) return null;
   if (remainingFraction - existing.remainingFraction < EARLY_RESET_MIN_GAIN) return null;
 
@@ -98,8 +99,8 @@ const detectEarlyReset = (
     poolId,
     previousRemainingFraction: existing.remainingFraction,
     remainingFraction,
-    previousResetTime: existing.resetTime,
-    resetTime,
+    previousResetTime: normalizeResetTime(existing.resetTime),
+    resetTime: normalizeResetTime(resetTime),
   };
 };
 
@@ -196,11 +197,14 @@ const isAppDatabase = (value: unknown): value is AppDatabase =>
 const deriveDatabasePath = (statePath: string): string =>
   statePath.toLowerCase().endsWith('.json') ? `${statePath.slice(0, -5)}.db` : `${statePath}.db`;
 
+const POOL_RETIREMENT_MISSES = 3;
+
 export class SentryStateManager {
   private readonly store: SentryStore;
   private readonly ownsDatabase?: AppDatabase;
   private readonly legacyStatePath?: string;
   private state: SentryAlertState;
+  private readonly missingProbeCounts = new Map<string, number>();
 
   constructor(source: SentryStateManagerSource = 'data/state.json') {
     if (typeof source === 'string') {
@@ -339,57 +343,79 @@ export class SentryStateManager {
     resetTime: string,
     nowMs: number = Date.now()
   ): PoolQuotaUpdate {
+    // Upstream reports an idle pool at the epoch, which carries no deadline.
+    const nextResetTime = normalizeResetTime(resetTime);
     const existing = this.state.pools[poolId];
     if (!existing) {
       this.state.pools[poolId] = {
-        resetTime,
+        resetTime: nextResetTime,
         remainingFraction,
         firedMilestones: [],
         lastAlertSentAt: null,
-        samples: appendSample(undefined, remainingFraction, resetTime, nowMs),
+        samples: appendSample(undefined, remainingFraction, nextResetTime, nowMs),
       };
       this.store.writePool(poolId, this.state.pools[poolId]);
       return { cycleRolled: true, earlyReset: null };
     }
 
-    const nextResetMs = Date.parse(resetTime);
-    const priorResetMs = Date.parse(existing.resetTime);
-    const effectiveResetTime = Number.isFinite(nextResetMs) ? resetTime : existing.resetTime;
-    const detected = detectEarlyReset(
-      poolId,
-      existing,
-      remainingFraction,
-      effectiveResetTime,
-      nowMs
-    );
+    const priorResetTime = normalizeResetTime(existing.resetTime);
+    existing.resetTime = priorResetTime;
+    // The cycle identity is the instant, not its spelling: two renderings of one deadline are one cycle.
+    const nextResetMs = resetTimeMs(nextResetTime);
+    const priorResetMs = resetTimeMs(priorResetTime);
+    const effectiveResetTime = nextResetTime || priorResetTime;
+    const detected = detectEarlyReset(poolId, existing, remainingFraction, nextResetTime, nowMs);
     // Upstream can refill, drain and refill again inside one cycle; the ledger key
     // (pool, cycle, kind) is the invariant, so a repeat refill is not a second early reset.
     const earlyReset =
       detected && this.hasEarlyResetAlert(poolId, detected.previousResetTime) ? null : detected;
 
     if (
-      Number.isFinite(nextResetMs) &&
-      Number.isFinite(priorResetMs) &&
-      nextResetMs !== priorResetMs
+      nextResetMs !== null &&
+      priorResetMs !== null &&
+      nextResetMs !== priorResetMs &&
+      (nextResetMs < priorResetMs || nowMs >= priorResetMs)
     ) {
-      existing.resetTime = resetTime;
+      existing.resetTime = nextResetTime;
       existing.remainingFraction = remainingFraction;
       existing.firedMilestones = [];
       existing.lastAlertSentAt = null;
-      existing.samples = appendSample(undefined, remainingFraction, resetTime, nowMs);
+      existing.samples = appendSample(undefined, remainingFraction, nextResetTime, nowMs);
       this.store.writePool(poolId, existing);
       return { cycleRolled: true, earlyReset };
     }
 
-    if (Number.isFinite(nextResetMs)) {
-      existing.resetTime = resetTime;
+    if (nextResetMs !== null) {
+      if (existing.samples && nextResetTime !== priorResetTime) {
+        existing.samples = existing.samples.map((sample) => ({
+          ...sample,
+          resetTime: nextResetTime,
+        }));
+      }
+      existing.resetTime = nextResetTime;
     }
 
+    const advancedDeadline =
+      nextResetMs !== null && priorResetMs !== null && nextResetMs > priorResetMs;
+
     if (earlyReset) {
+      // A refill with no new clock or a later deadline starts a cycle whose milestones are all unfired.
+      if (!nextResetTime) {
+        existing.resetTime = '';
+      }
+      if (!nextResetTime || advancedDeadline) {
+        existing.firedMilestones = [];
+        existing.lastAlertSentAt = null;
+      }
       existing.remainingFraction = remainingFraction;
-      existing.samples = appendSample(undefined, remainingFraction, effectiveResetTime, nowMs);
+      existing.samples = appendSample(undefined, remainingFraction, existing.resetTime, nowMs);
       this.store.writePool(poolId, existing);
       return { cycleRolled: false, earlyReset };
+    }
+
+    if (detected && advancedDeadline) {
+      existing.firedMilestones = [];
+      existing.lastAlertSentAt = null;
     }
 
     existing.remainingFraction = remainingFraction;
@@ -405,10 +431,23 @@ export class SentryStateManager {
     for (const poolId of activePoolIds) active.add(upgradePoolGroupId(poolId));
     if (active.size === 0) return [];
 
-    const removed = Object.keys(this.state.pools).filter((poolId) => !active.has(poolId));
-    for (const poolId of removed) {
+    const removed: string[] = [];
+    for (const poolId of Object.keys(this.state.pools)) {
+      if (active.has(poolId)) {
+        this.missingProbeCounts.delete(poolId);
+        continue;
+      }
+      // One short probe must not retire a pool: deleting it also wipes the milestone ledger,
+      // and the next full probe would fire an already-delivered milestone all over again.
+      const misses = (this.missingProbeCounts.get(poolId) ?? 0) + 1;
+      if (misses < POOL_RETIREMENT_MISSES) {
+        this.missingProbeCounts.set(poolId, misses);
+        continue;
+      }
+      this.missingProbeCounts.delete(poolId);
       delete this.state.pools[poolId];
       this.store.deletePool(poolId);
+      removed.push(poolId);
     }
 
     const notice = this.state.earlyResetNotice;
