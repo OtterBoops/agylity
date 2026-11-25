@@ -37,6 +37,9 @@ export const LEGACY_POOL_GROUPS: Readonly<Record<string, PoolGroup>> = {
   flash: 'gemini',
   'gemini-argon': 'gemini',
   argon: 'gemini',
+  // Claude pools written before the two ids were merged into one group.
+  sonnet: 'claude',
+  '3p': 'claude',
 };
 
 export const upgradePoolGroupId = (poolId: string): string => {

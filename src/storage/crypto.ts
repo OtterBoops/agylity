@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { CANONICAL_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEY_ENV_NAMES } from '../config/schema.js';
 import { logger } from '../logs/logger.js';
@@ -77,12 +77,26 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
       mkdirSync(parentDir, { recursive: true });
     }
 
+    // Write to a sibling temp file first so linkSync publishes only a complete 64-char key.
     const generatedKey = randomBytes(32);
-    writeFileSync(keyFilePath, generatedKey.toString('hex'), {
-      mode: 0o600,
-      encoding: 'utf8',
-    });
-    return generatedKey;
+    const tmpPath = `${keyFilePath}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmpPath, generatedKey.toString('hex'), {
+        mode: 0o600,
+        encoding: 'utf8',
+        flag: 'wx',
+      });
+      linkSync(tmpPath, keyFilePath);
+      return generatedKey;
+    } catch (err) {
+      // Another process won the creation race; a key of our own would encrypt secrets nothing can read.
+      if ((err as NodeJS.ErrnoException)?.code !== 'EEXIST') throw err;
+      return resolveMasterKey(keyFilePath);
+    } finally {
+      try {
+        unlinkSync(tmpPath);
+      } catch {}
+    }
   }
 
   if (!processMemoryKey) {
@@ -93,7 +107,6 @@ export const resolveMasterKey = (keyFilePath = 'data/.agylity.key'): Buffer => {
 
 export const encryptSecret = (plaintext: string, customKey?: Buffer): string => {
   if (!plaintext || typeof plaintext !== 'string') return plaintext;
-  if (plaintext.startsWith(ENCRYPTION_PREFIX)) return plaintext;
 
   const key = customKey ?? resolveMasterKey();
   const iv = randomBytes(12); // Standard 96-bit IV for AES-GCM

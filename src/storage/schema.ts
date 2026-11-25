@@ -20,6 +20,17 @@ const isAddableColumn = (ddl: string): boolean => {
   return true;
 };
 
+// SQLite only allows a literal default when the table already holds rows, so an expression default
+// has to be added bare and backfilled.
+const expressionDefault = (ddl: string): string | undefined =>
+  /\bDEFAULT\s*(\([\s\S]*\))\s*$/i.exec(ddl.trim())?.[1];
+
+const addableDdl = (ddl: string): string =>
+  ddl
+    .replace(/\s*\bDEFAULT\b[\s\S]*$/i, '')
+    .replace(/\s*\bNOT\s+NULL\b/i, '')
+    .trim();
+
 /** Additively upgrades a table to its expected column set; never drops or rewrites a column. */
 const migrateColumns = (
   db: DatabaseSync,
@@ -41,6 +52,29 @@ const migrateColumns = (
         tableName,
         column.name
       );
+      continue;
+    }
+    const backfill = expressionDefault(column.ddl);
+    if (backfill && db.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get() !== undefined) {
+      // Savepoint stays atomic both standalone and inside an enclosing migration transaction.
+      db.exec('SAVEPOINT migrate_column_backfill');
+      try {
+        db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${addableDdl(column.ddl)}`);
+        db.exec(`UPDATE ${tableName} SET ${column.name} = ${backfill}`);
+        db.exec('RELEASE SAVEPOINT migrate_column_backfill');
+      } catch (err) {
+        try {
+          db.exec('ROLLBACK TO SAVEPOINT migrate_column_backfill');
+          db.exec('RELEASE SAVEPOINT migrate_column_backfill');
+        } catch {}
+        throw err;
+      }
+      logger.warn(
+        'Added %s.%s without NOT NULL or a default: SQLite refuses an expression default on a populated table',
+        tableName,
+        column.name
+      );
+      added.push(column.name);
       continue;
     }
     db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${column.ddl}`);

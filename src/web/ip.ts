@@ -11,10 +11,19 @@ const hexPairToDotted = (tail: string): string | null => {
   return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
 };
 
+const stripIpv6ZoneId = (ip: string): string => {
+  const pctIdx = ip.indexOf('%');
+  if (pctIdx === -1) return ip;
+  const candidate = ip.slice(0, pctIdx);
+  const zone = ip.slice(pctIdx + 1);
+  if (!zone || zone.includes('/')) return ip;
+  return net.isIP(candidate) === 6 ? candidate : ip;
+};
+
 // The suffix of a mapped address is only rewritten when it really is IPv4: slicing blindly
 // turned the equally valid ::ffff:7f00:1 into "7f00:1", which is no address at all.
 export const normalizeIp = (ip: string): string => {
-  const trimmed = ip.trim();
+  const trimmed = stripIpv6ZoneId(ip.trim());
   if (!trimmed.toLowerCase().startsWith(MAPPED_V4_PREFIX)) {
     return trimmed;
   }
@@ -41,16 +50,17 @@ const ipv4ToBigInt = (ip: string): bigint | null => {
   return res;
 };
 
-const ipv6ToBigInt = (ip: string): bigint | null => {
+const ipv6ToBigInt = (raw: string): bigint | null => {
+  let ip = stripIpv6ZoneId(raw);
   const lastColon = ip.lastIndexOf(':');
   if (lastColon !== -1 && ip.slice(lastColon + 1).includes('.')) {
     const ipv4Part = ip.slice(lastColon + 1);
     const v4Num = ipv4ToBigInt(ipv4Part);
     if (v4Num === null) return null;
-    const v6Prefix = ip.slice(0, lastColon);
+    const v6Prefix = ip.slice(0, lastColon + 1);
     const highPart = ((v4Num >> 16n) & 0xffffn).toString(16);
     const lowPart = (v4Num & 0xffffn).toString(16);
-    ip = `${v6Prefix}:${highPart}:${lowPart}`;
+    ip = `${v6Prefix}${highPart}:${lowPart}`;
   }
 
   const doubleColonIdx = ip.indexOf('::');
@@ -93,8 +103,40 @@ interface ParsedSubnet {
   mask: bigint;
 }
 
+const buildSubnet = (family: 'ipv4' | 'ipv6', ipNum: bigint, prefix: number): ParsedSubnet => {
+  const bits = family === 'ipv4' ? 32 : 128;
+  const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(bits - prefix);
+  return { family, network: ipNum & mask, mask };
+};
+
+const parseMappedSubnet = (entry: string): ParsedSubnet | null | undefined => {
+  if (!entry.toLowerCase().startsWith(MAPPED_V4_PREFIX)) return undefined;
+
+  const rest = entry.slice(MAPPED_V4_PREFIX.length);
+  const slashIdx = rest.indexOf('/');
+  const address = slashIdx === -1 ? rest : rest.slice(0, slashIdx);
+  const prefixStr = slashIdx === -1 ? null : rest.slice(slashIdx + 1).trim();
+
+  const dotted = net.isIP(address) === 4 ? address : hexPairToDotted(address);
+  if (dotted === null) return undefined;
+
+  const ipNum = ipv4ToBigInt(dotted);
+  if (ipNum === null) return null;
+
+  const prefix = parsePrefix(prefixStr, 128);
+  // /96 is the whole IPv4 space.
+  if (prefix === null || prefix < 96) return null;
+  return buildSubnet('ipv4', ipNum, prefix - 96);
+};
+
 const parseSubnet = (entry: string): ParsedSubnet | null => {
-  const clean = normalizeIp(entry.trim());
+  const raw = entry.trim();
+  if (!raw || raw.includes('%')) return null;
+
+  const mapped = parseMappedSubnet(raw);
+  if (mapped !== undefined) return mapped;
+
+  const clean = normalizeIp(raw);
   if (!clean) return null;
 
   const slashIdx = clean.indexOf('/');
@@ -109,10 +151,7 @@ const parseSubnet = (entry: string): ParsedSubnet | null => {
     if (ipNum === null) return null;
     const prefix = parsePrefix(prefixStr, 32);
     if (prefix === null) return null;
-
-    const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(32 - prefix);
-    const network = ipNum & mask;
-    return { family: 'ipv4', network, mask };
+    return buildSubnet('ipv4', ipNum, prefix);
   }
 
   if (ipFamily === 6) {
@@ -120,10 +159,7 @@ const parseSubnet = (entry: string): ParsedSubnet | null => {
     if (ipNum === null) return null;
     const prefix = parsePrefix(prefixStr, 128);
     if (prefix === null) return null;
-
-    const mask = prefix === 0 ? 0n : ((1n << BigInt(prefix)) - 1n) << BigInt(128 - prefix);
-    const network = ipNum & mask;
-    return { family: 'ipv6', network, mask };
+    return buildSubnet('ipv6', ipNum, prefix);
   }
 
   return null;
@@ -144,6 +180,8 @@ const isIpInSubnet = (clientIp: string, subnet: ParsedSubnet): boolean => {
   }
   return false;
 };
+
+export const isValidIpRange = (entry: string): boolean => parseSubnet(entry) !== null;
 
 export const isIpAllowed = (clientIp: string, allowedRanges?: string[]): boolean => {
   if (!allowedRanges || allowedRanges.length === 0) {
@@ -214,7 +252,7 @@ export const extractClientIp = (
         for (let i = hops.length - 1; i >= 0; i--) {
           if (!isTrustedProxyPeer(hops[i]!, trustedProxyRanges)) return hops[i]!;
         }
-        if (hops.length > 0) return hops[0]!;
+        return peerIp;
       }
     }
   }

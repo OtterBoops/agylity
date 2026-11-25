@@ -1,7 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type http from 'node:http';
-import { normalizeIp, isIpAllowed, isLoopbackIp, extractClientIp } from '../../src/web/ip.js';
+import {
+  normalizeIp,
+  isIpAllowed,
+  isValidIpRange,
+  isLoopbackIp,
+  extractClientIp,
+} from '../../src/web/ip.js';
 
 describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
   describe('normalizeIp', () => {
@@ -14,6 +20,23 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(normalizeIp('::ffff:7f00:1'), '127.0.0.1');
       assert.equal(normalizeIp('::ffff:c0a8:0101'), '192.168.1.1');
       assert.equal(normalizeIp('::ffff:192.168.1.1'), '192.168.1.1');
+    });
+
+    it('strips an IPv6 zone id only on IPv6 addresses', () => {
+      assert.equal(normalizeIp('fe80::1%eth0'), 'fe80::1');
+      assert.equal(normalizeIp('::ffff:10.0.0.1%eth0'), '10.0.0.1');
+      assert.equal(normalizeIp('10.0.0.1%garbage'), '10.0.0.1%garbage');
+      assert.equal(isIpAllowed('10.0.0.1%garbage', ['10.0.0.0/8']), false);
+    });
+  });
+
+  describe('isValidIpRange (Zone ID Rejection)', () => {
+    it('rejects zone IDs and trailing garbage in subnet entries instead of corrupting prefixes', () => {
+      assert.equal(isValidIpRange('10.0.0.1%garbage'), false);
+      assert.equal(isValidIpRange('::1%foo/notaprefix'), false);
+      assert.equal(isValidIpRange('fe80::1%eth0/64'), false);
+      assert.equal(isIpAllowed('fe80::1', ['fe80::1%eth0/64']), false);
+      assert.equal(isIpAllowed('10.0.0.1', ['10.0.0.1%garbage']), false);
     });
   });
 
@@ -85,6 +108,33 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
       assert.equal(isIpAllowed('2001:db8:ffff::1', whitelist), true);
       assert.equal(isIpAllowed('2001:db9::1', whitelist), false);
     });
+
+    it('matches client addresses carrying a zone id', () => {
+      assert.equal(isIpAllowed('fe80::1%eth0', ['fe80::/10']), true);
+      assert.equal(isIpAllowed('fe80::1%eth0', ['2001:db8::/32']), false);
+    });
+
+    it('parses an embedded IPv4 tail that directly follows ::', () => {
+      assert.equal(isIpAllowed('64:ff9b::1.2.3.4', ['64:ff9b::/96']), true);
+      assert.equal(isIpAllowed('64:ff9b::1.2.3.4', ['192.0.2.0/24']), false);
+      assert.equal(isIpAllowed('2001:db8::1.2.3.4', ['2001:db8::/32']), true);
+      assert.equal(isIpAllowed('::1.2.3.4', ['::102:304/128']), true);
+    });
+  });
+
+  describe('IPv4-mapped IPv6 CIDR Entries', () => {
+    it('reads the prefix as an IPv6 length and shifts it by 96 bits', () => {
+      assert.equal(isIpAllowed('10.1.2.3', ['::ffff:10.0.0.0/104']), true);
+      assert.equal(isIpAllowed('11.1.2.3', ['::ffff:10.0.0.0/104']), false);
+      assert.equal(isIpAllowed('10.1.2.3', ['::ffff:10.1.2.3/128']), true);
+      assert.equal(isIpAllowed('10.1.2.4', ['::ffff:10.1.2.3/128']), false);
+      assert.equal(isIpAllowed('10.1.2.3', ['::ffff:0a00:0/104']), true);
+    });
+
+    it('does not narrow a prefix below /96 into an IPv4 range', () => {
+      assert.equal(isIpAllowed('10.1.2.3', ['::ffff:10.0.0.0/24']), false);
+      assert.equal(isIpAllowed('10.1.2.3', ['::ffff:10.0.0.0/0']), false);
+    });
   });
 
   describe('extractClientIp', () => {
@@ -109,6 +159,20 @@ describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
         '172.18.0.1'
       );
       assert.equal(extractClientIp(req, false), '172.18.0.1');
+    });
+
+    it('honours a configured proxy subnet instead of refusing every private peer', () => {
+      const req = makeReq({ 'x-forwarded-for': '203.0.113.10' }, '172.18.0.1');
+      // Loopback-only default: a bridge-network proxy is not trusted, so the peer stands.
+      assert.equal(extractClientIp(req, true), '172.18.0.1');
+      assert.equal(extractClientIp(req, true, ['172.18.0.0/16']), '203.0.113.10');
+      // And a peer outside the configured subnet still cannot claim otherwise.
+      assert.equal(
+        extractClientIp(makeReq({ 'x-forwarded-for': '203.0.113.10' }, '10.1.2.3'), true, [
+          '172.18.0.0/16',
+        ]),
+        '10.1.2.3'
+      );
     });
 
     it('fails closed with an empty peer when the socket has no remote address', () => {

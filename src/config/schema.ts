@@ -7,6 +7,12 @@ import {
   type PrPolicy,
 } from '../shared/contracts.js';
 import { LEGACY_POOL_GROUPS } from '../shared/models.js';
+import {
+  DEFAULT_NOTIFICATION_TYPES,
+  NOTIFICATION_KIND_VALUES,
+  type NotificationKind,
+} from '../shared/notificationKinds.js';
+import { isValidIpRange } from '../web/ip.js';
 
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
@@ -62,12 +68,13 @@ const RepositorySchema = z.preprocess(
       let derivedPath = typeof raw.path === 'string' ? raw.path.trim() : '';
 
       if (!derivedId && cloneUrl) {
-        const match = cloneUrl.match(/([^/:]+)\/([^/]+?)(?:\.git)?$/);
+        const match = cloneUrl.match(/([^/:]+)\/([^/]+?)(?:\.git)?\/*$/);
         if (match && match[2]) {
           derivedId = match[2];
           if (!derivedName) derivedName = `${match[1]}/${match[2]}`;
         } else {
           derivedId = cloneUrl.replace(/[^a-zA-Z0-9_-]/g, '_');
+          if (!derivedName) derivedName = derivedId;
         }
       }
 
@@ -135,6 +142,16 @@ const PoolGroupPoliciesSchema = z.preprocess(
 
 export type PoolGroupPolicies = z.infer<typeof PoolGroupPoliciesSchema>;
 
+export const NotificationTypesSchema = z
+  .partialRecord(
+    z.enum(NOTIFICATION_KIND_VALUES as [NotificationKind, ...NotificationKind[]]),
+    z.boolean()
+  )
+  .transform((value) => ({ ...DEFAULT_NOTIFICATION_TYPES, ...value }))
+  .default(DEFAULT_NOTIFICATION_TYPES);
+
+export type NotificationTypes = z.infer<typeof NotificationTypesSchema>;
+
 const DEFAULT_POOL_GROUP_POLICIES: PoolGroupPolicies = {
   gemini: { alertsEnabled: true, dispatchEnabled: true },
   claude: { alertsEnabled: false, dispatchEnabled: false },
@@ -201,9 +218,21 @@ const AllowedIpRangesSchema = z.string().transform((raw) =>
     .filter(Boolean)
 );
 
+const IpRangeEntrySchema = z
+  .string()
+  .trim()
+  .refine((entry) => isValidIpRange(entry), {
+    message: 'invalid IP address or CIDR range',
+  });
+
+const TrustedProxyRangesOverrideSchema = z.array(IpRangeEntrySchema);
+
+const TrustedProxyRangesEnvSchema = AllowedIpRangesSchema.pipe(TrustedProxyRangesOverrideSchema);
+
 export interface AppConfig {
   notificationChannel: NotificationChannelType;
   notificationChannels: NotificationChannelType[];
+  notificationTypes: Record<NotificationKind, boolean>;
   notificationWebhookUrl?: string;
   webhookSecret?: string;
   webhookCustomHeaders?: Record<string, string>;
@@ -231,6 +260,9 @@ export interface AppConfig {
 
   coordinatorEnabled: boolean;
   routinesEnabled: boolean;
+  /** Commit identity for runner work; unset falls through to the runner's env, then the token. */
+  gitAuthorName?: string;
+  gitAuthorEmail?: string;
   githubBacklogLabel: string;
   defaultDispatchModel: string;
   defaultDispatchEffort: 'low' | 'medium' | 'high' | 'xhigh';
@@ -253,6 +285,7 @@ export interface AppConfig {
 
   allowedIpRanges: string[];
   trustedProxies: boolean;
+  trustedProxyRanges: string[];
 
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
@@ -550,7 +583,7 @@ export const CONFIG_REGISTRY = [
     example: 'set',
     key: 'quotaMilestoneHours',
     value: [...DEFAULT_MILESTONE_HOURS],
-    overrideSchema: z.array(z.number().positive()),
+    overrideSchema: z.array(z.number().positive()).min(1),
     env: 'QUOTA_MILESTONE_HOURS',
     envSchema: milestoneHoursEnv,
     invalidReason: 'no valid positive hour entries',
@@ -859,6 +892,20 @@ export const CONFIG_REGISTRY = [
       'When true, extracts client IP from proxy headers only when the direct peer socket is **loopback** (`127.0.0.0/8`, `::1/128`). Private ranges are deliberately NOT trusted \u2014 otherwise any host on the LAN or a Docker bridge could forge the client IP.',
   },
   {
+    group: 'security',
+    type: 'string',
+    defaultLabel: 'loopback only',
+    example: 'comment',
+    key: 'trustedProxyRanges',
+    value: [],
+    exampleValue: '172.18.0.0/16',
+    overrideSchema: TrustedProxyRangesOverrideSchema,
+    env: 'TRUSTED_PROXY_RANGES',
+    envSchema: TrustedProxyRangesEnvSchema,
+    description:
+      'Peer ranges that may supply `CF-Connecting-IP`, `X-Real-IP` and `X-Forwarded-For` when `TRUSTED_PROXIES` is on. Empty keeps the loopback-only default; list the proxy\u2019s own subnet (for example a Docker bridge) or header forwarding is ignored and every client shares one IP.',
+  },
+  {
     group: 'web',
     type: 'boolean',
     defaultLabel: 'false',
@@ -1032,21 +1079,29 @@ export const CONFIG_REGISTRY = [
   {
     group: 'runner',
     type: 'string',
-    defaultLabel: 'task `requestedBy`, else `User`',
+    defaultLabel: 'task `requestedBy`, else the token account',
     example: 'comment',
     exampleValue: '',
+    key: 'gitAuthorName',
+    value: undefined,
+    overrideSchema: z.string().max(120).optional(),
     env: 'GIT_AUTHOR_NAME',
+    envSchema: z.string(),
     description:
-      'Git commit author name for automated task completion commits. `GIT_COMMITTER_NAME` overrides the committer identity, which otherwise reuses this value.',
+      'Git commit author name for automated task completion commits. Resolved dashboard override first, then the environment, then the account behind the GitHub token. `GIT_COMMITTER_NAME` overrides the committer identity, which otherwise reuses this value.',
   },
   {
     group: 'runner',
     type: 'string',
     defaultLabel: 'noreply@agylity.local',
     example: 'comment',
+    key: 'gitAuthorEmail',
+    value: undefined,
+    overrideSchema: z.string().max(200).optional(),
     env: 'GIT_AUTHOR_EMAIL',
+    envSchema: z.string(),
     description:
-      'Git commit author email. `GIT_COMMITTER_EMAIL` overrides the committer identity, which otherwise reuses this value.',
+      'Git commit author email, resolved in the same order as `GIT_AUTHOR_NAME`. A commit wearing any identity the resolved one does not own is rewritten before the branch is pushed. `GIT_COMMITTER_EMAIL` overrides the committer identity.',
   },
   {
     group: 'notifications',
@@ -1070,6 +1125,18 @@ export const CONFIG_REGISTRY = [
     value: DEFAULT_POOL_GROUP_POLICIES,
     overrideSchema: PoolGroupPoliciesSchema,
     description: 'Per-pool alert and dispatch switches, written only from the dashboard.',
+  },
+  {
+    group: 'notifications',
+    type: 'boolean',
+    defaultLabel: 'on',
+    example: 'comment',
+    hidden: true,
+    key: 'notificationTypes',
+    value: DEFAULT_NOTIFICATION_TYPES,
+    overrideSchema: NotificationTypesSchema,
+    description:
+      'Per notification-type switches from the registry in `src/shared/notificationKinds.ts`. A type that is off still logs its event; it is never delivered.',
   },
 ] satisfies readonly ConfigRegistryEntry[];
 

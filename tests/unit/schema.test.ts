@@ -28,7 +28,11 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
         version: number;
       }>
     ).map((row) => row.version);
-    assert.deepEqual(versions, [1, 2, 3, 4, 5, 6, 7], 'every migration must be applied, in order');
+    assert.deepEqual(
+      versions,
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      'every migration must be applied, in order'
+    );
 
     // pr_policy is a NOT NULL sentinel column on all three tiers.
     for (const table of ['swarm_tasks', 'backlog_tasks', 'routine_tasks']) {
@@ -374,8 +378,8 @@ test('opening AppDatabase alone applies every migration and creates the coordina
     ).map((row) => Number(row.version));
     assert.deepEqual(
       versions,
-      [1, 2, 3, 4, 5, 6, 7],
-      'AppDatabase must take the database to v7 on open'
+      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      'AppDatabase must take the database to v9 on open'
     );
 
     const tables = new Set(

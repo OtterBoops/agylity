@@ -132,6 +132,26 @@ describe('Universal Logger', () => {
     assert.ok(entries[0]!.message.includes('[redacted]'));
   });
 
+  it('redacts a credentialed value whole when a scheme or quotes follow the keyword', () => {
+    const buffer = new LogBuffer(10, () => []);
+    buffer.push('info', 'token: Bearer abcdef1234567890XYZ');
+    buffer.push('warn', 'password: "my secret pass"');
+    buffer.push('error', "secret='two words here'");
+
+    const [bearer, quotedDouble, quotedSingle] = buffer.since(0);
+
+    assert.equal(bearer!.message, 'token: Bearer [redacted]');
+    assert.equal(quotedDouble!.message, 'password: "[redacted]"');
+    assert.equal(quotedSingle!.message, "secret='[redacted]'");
+  });
+
+  it('redacts a quoted value that itself carries a scheme', () => {
+    const buffer = new LogBuffer(10, () => []);
+    buffer.push('info', 'csrf_token="Bearer abcdef1234567890XYZ"');
+    const [entry] = buffer.since(0);
+    assert.equal(entry!.message, 'csrf_token="[redacted]"');
+  });
+
   it('redacts an Authorization credential while keeping the header name', () => {
     const buffer = new LogBuffer(10, () => []);
     buffer.push(
@@ -147,6 +167,46 @@ describe('Universal Logger', () => {
     assert.equal(headerEntry!.message.includes('eyJhbGciOiJIUzI1NiJ9'), false);
     assert.equal(bareEntry!.message.includes('ghp_barebearertoken123456'), false);
     assert.ok(bareEntry!.message.includes('[redacted]'));
+  });
+
+  it('redacts escaped quotes in JSON values and quoted multi-word Authorization headers', () => {
+    const buffer = new LogBuffer(10, () => []);
+    buffer.push('warn', '{"password":"foo\\"bar"}');
+    buffer.push('warn', "secret='escaped\\'tail'");
+    buffer.push('error', '{"Authorization": "Bearer multi word secret"}');
+    buffer.push('error', "Proxy-Authorization='Custom scheme tail'");
+    buffer.push('error', 'Authorization: "quoted\\"inner tail"');
+
+    const [jsonPw, singleEsc, jsonAuth, proxyAuth, escapedAuth] = buffer.since(0);
+
+    assert.equal(jsonPw!.message, '{"password":"[redacted]"}');
+    assert.equal(singleEsc!.message, "secret='[redacted]'");
+    assert.equal(jsonAuth!.message, '{"Authorization": "[redacted]"}');
+    assert.equal(proxyAuth!.message, "Proxy-Authorization='[redacted]'");
+    assert.equal(escapedAuth!.message, 'Authorization: "[redacted]"');
+  });
+
+  it('pages forward from a cursor instead of skipping to the newest lines', () => {
+    const buffer = new LogBuffer(10, () => []);
+    for (let i = 1; i <= 5; i += 1) buffer.push('info', `line ${i}`);
+
+    const firstPage = buffer.since(2, 'debug', 2);
+    assert.deepEqual(
+      firstPage.map((entry) => entry.id),
+      [3, 4]
+    );
+
+    const secondPage = buffer.since(4, 'debug', 2);
+    assert.deepEqual(
+      secondPage.map((entry) => entry.id),
+      [5]
+    );
+
+    const initialLoad = buffer.since(0, 'debug', 2);
+    assert.deepEqual(
+      initialLoad.map((entry) => entry.id),
+      [4, 5]
+    );
   });
 
   it('returns an empty array from since() when limit is zero', () => {

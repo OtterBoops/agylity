@@ -13,28 +13,41 @@ export const LEVEL_PRIORITY: Record<LogLevel, number> = {
 
 export const LOG_LEVELS = Object.keys(LEVEL_PRIORITY) as LogLevel[];
 
-const PATTERNS: RegExp[] = [
-  // Discord bot tokens: <id>.<ts>.<hmac>
-  /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6,7}\.[A-Za-z\d_-]{27,}/g,
-  /((?:token|secret|password|csrf[_-]?token|x-codeium-csrf-token)["']?\s*[:=]\s*["']?)[^\s"',}]+/gi,
-  // A proxy/fetch error keeps the header name, never the credential that rode on it.
-  /((?:proxy-)?authorization["']?\s*[:=]\s*["']?(?:bearer\s+|basic\s+|token\s+)?)[^\s"',}]+/gi,
-  // A bare bearer credential outside a header line still names its scheme, so the scheme stays.
-  /\b(bearer\s+)[A-Za-z\d._~+/-]{8,}=*/gi,
+const REDACTED = '[redacted]';
+
+const DISCORD_TOKEN_PATTERN = /[MNO][A-Za-z\d_-]{23,27}\.[A-Za-z\d_-]{6,7}\.[A-Za-z\d_-]{27,}/g;
+// A bare bearer credential outside a header line still names its scheme, so the scheme stays.
+const BARE_BEARER_PATTERN = /\b(bearer\s+)[A-Za-z\d._~+/-]{8,}=*/gi;
+
+// A proxy/fetch error keeps the header name, never the credential that rode on it.
+const AUTH_PREFIX = `(?:proxy-)?authorization["']?\\s*[:=]\\s*`;
+const AUTH_PATTERNS: Array<[RegExp, string]> = [
+  [new RegExp(`(${AUTH_PREFIX})"(?:\\\\.|[^"\\\\])*"?`, 'gi'), `$1"${REDACTED}"`],
+  [new RegExp(`(${AUTH_PREFIX})'(?:\\\\.|[^'\\\\])*'?`, 'gi'), `$1'${REDACTED}'`],
+  [new RegExp(`(${AUTH_PREFIX}(?:(?:bearer|basic|token)\\s+)?)[^\\s"',}]+`, 'gi'), `$1${REDACTED}`],
+];
+
+// The value runs through its closing quote or past a scheme, so a two-word credential keeps no tail.
+const KEYWORD_PREFIX = `(?:token|secret|password|csrf[_-]?token|x-codeium-csrf-token)["']?\\s*[:=]\\s*(?:(?:bearer|basic|token)\\s+)?`;
+
+const KEYWORD_PATTERNS: Array<[RegExp, string]> = [
+  [new RegExp(`(${KEYWORD_PREFIX})"(?:\\\\.|[^"\\\\])*"?`, 'gi'), `$1"${REDACTED}"`],
+  [new RegExp(`(${KEYWORD_PREFIX})'(?:\\\\.|[^'\\\\])*'?`, 'gi'), `$1'${REDACTED}'`],
+  [new RegExp(`(${KEYWORD_PREFIX})[^\\s"',}]+`, 'gi'), `$1${REDACTED}`],
 ];
 
 const redact = (text: string, secrets: Iterable<string | undefined> = []): string => {
   let out = text;
   for (const s of secrets) {
     if (!s) continue;
-    out = out.split(s).join('[redacted]');
+    out = out.split(s).join(REDACTED);
     const encoded = encodeURIComponent(s);
-    if (encoded !== s) out = out.split(encoded).join('[redacted]');
+    if (encoded !== s) out = out.split(encoded).join(REDACTED);
   }
-  out = out.replace(PATTERNS[0]!, '[redacted]');
-  out = out.replace(PATTERNS[1]!, '$1[redacted]');
-  out = out.replace(PATTERNS[2]!, '$1[redacted]');
-  out = out.replace(PATTERNS[3]!, '$1[redacted]');
+  out = out.replace(DISCORD_TOKEN_PATTERN, REDACTED);
+  for (const [pattern, replacement] of AUTH_PATTERNS) out = out.replace(pattern, replacement);
+  out = out.replace(BARE_BEARER_PATTERN, `$1${REDACTED}`);
+  for (const [pattern, replacement] of KEYWORD_PATTERNS) out = out.replace(pattern, replacement);
   return out;
 };
 
@@ -68,9 +81,11 @@ export class LogBuffer {
 
   since(sinceId = 0, minLevel: LogLevel = 'debug', limit = 500): LogEntry[] {
     if (limit <= 0) return [];
-    return this.entries
-      .filter((e) => e.id > sinceId && LEVEL_PRIORITY[e.level] >= LEVEL_PRIORITY[minLevel])
-      .slice(-limit);
+    const matches = this.entries.filter(
+      (e) => e.id > sinceId && LEVEL_PRIORITY[e.level] >= LEVEL_PRIORITY[minLevel]
+    );
+    // A first load wants the newest page; a polled cursor must page forward or it skips lines.
+    return sinceId > 0 ? matches.slice(0, limit) : matches.slice(-limit);
   }
 
   get size(): number {

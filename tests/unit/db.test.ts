@@ -1,15 +1,18 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { DatabaseSync } from 'node:sqlite';
+import { spawn } from 'node:child_process';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../../src/storage/migrations.js';
+import { ensureTableSchema } from '../../src/storage/schema.js';
 import { TaskQueue } from '../../src/coordinator/index.js';
 import {
   AppDatabase,
   encryptSecret,
   decryptSecret,
+  resolveMasterKey,
   SecretDecryptionError,
   isSecretKey,
 } from '../../src/storage/db.js';
@@ -35,6 +38,154 @@ describe('AppDatabase (node:sqlite Native Storage)', () => {
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='settings';")
       .get() as { name: string } | undefined;
     assert.ok(tableCheck);
+  });
+
+  it('lets several processes open the same fresh database at once', async () => {
+    const dir = join(tmpdir(), `agylity-bootrace-${Date.now()}-${Math.random()}`);
+    mkdirSync(dir, { recursive: true });
+    const dbPath = join(dir, 'race.db');
+    const dbUrl = new URL('../../src/storage/db.ts', import.meta.url).href;
+    const script = `import(${JSON.stringify(dbUrl)}).then((m) => {
+      try {
+        const db = new m.AppDatabase(process.argv[1]);
+        db.set('boot-race', 1);
+        db.close();
+        console.log('RESULT ok');
+      } catch (err) {
+        console.log('RESULT ' + err.message);
+      }
+    });`;
+
+    try {
+      const outcomes = await Promise.all(
+        Array.from(
+          { length: 8 },
+          () =>
+            new Promise<string>((resolve) => {
+              const child = spawn(
+                process.execPath,
+                ['--no-warnings', '--import', 'tsx', '-e', script, dbPath],
+                { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'] }
+              );
+              let out = '';
+              child.stdout.on('data', (chunk) => (out += chunk));
+              child.on('close', () =>
+                resolve(
+                  out
+                    .split('\n')
+                    .find((line) => line.startsWith('RESULT'))
+                    ?.trim() ?? 'no result'
+                )
+              );
+            })
+        )
+      );
+
+      assert.deepEqual(
+        outcomes.filter((outcome) => outcome !== 'RESULT ok'),
+        []
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('gives every concurrent first boot the key that ends up on disk', async () => {
+    const dir = join(tmpdir(), `agylity-keyrace-${Date.now()}-${Math.random()}`);
+    mkdirSync(dir, { recursive: true });
+    const keyPath = join(dir, '.agylity.key');
+    const cryptoUrl = new URL('../../src/storage/crypto.ts', import.meta.url).href;
+    const script = `import(${JSON.stringify(cryptoUrl)}).then((m) => {
+      process.stdout.write(m.resolveMasterKey(process.argv[1]).toString('hex'));
+    });`;
+
+    try {
+      const keys = await Promise.all(
+        Array.from(
+          { length: 4 },
+          () =>
+            new Promise<string>((resolve) => {
+              const child = spawn(
+                process.execPath,
+                ['--no-warnings', '--import', 'tsx', '-e', script, keyPath],
+                { cwd: join(process.cwd()), stdio: ['ignore', 'pipe', 'ignore'] }
+              );
+              let out = '';
+              child.stdout.on('data', (chunk) => (out += chunk));
+              child.on('close', () => resolve(out.trim()));
+            })
+        )
+      );
+
+      const onDisk = readFileSync(keyPath, 'utf8').trim();
+      assert.deepEqual(new Set(keys), new Set([onDisk]));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the newer cycle stamp when a legacy duplicate is folded', () => {
+    const raw = new DatabaseSync(':memory:');
+    raw.exec(`CREATE TABLE routine_tasks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_number INTEGER NOT NULL DEFAULT 0,
+      title TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL,
+      repository_id TEXT NOT NULL,
+      models_json TEXT NOT NULL DEFAULT '[]',
+      last_triggered_cycles_json TEXT
+    )`);
+    raw
+      .prepare(
+        'INSERT INTO routine_tasks (prompt, repository_id, last_triggered_cycles_json) VALUES (?, ?, ?)'
+      )
+      .run(
+        'P',
+        'r',
+        JSON.stringify({
+          gemini: '2026-11-26T09:00:00.000Z',
+          hydrogen: '2026-11-20T09:00:00.000Z',
+        })
+      );
+
+    applyMigrations(raw);
+
+    const row = raw
+      .prepare('SELECT last_triggered_cycles_json AS cycles FROM routine_tasks')
+      .get() as { cycles: string };
+    const cycles = JSON.parse(row.cycles) as Record<string, string>;
+    assert.equal(
+      cycles.gemini,
+      '2026-11-26T09:00:00.000Z',
+      'the canonical stamp must survive the fold'
+    );
+    assert.equal(cycles.hydrogen, undefined, 'the legacy key must be gone');
+    raw.close();
+  });
+
+  it('opens a populated legacy table whose defaulted columns cannot be added in place', () => {
+    const legacyPath = join(tmpdir(), `agylity-legacy-${Date.now()}-${Math.random()}.db`);
+    const seed = new DatabaseSync(legacyPath);
+    seed.exec('CREATE TABLE swarm_tasks (id TEXT PRIMARY KEY, title TEXT)');
+    seed.prepare('INSERT INTO swarm_tasks (id, title) VALUES (?, ?)').run('t1', 'old task');
+    seed.close();
+
+    try {
+      const upgraded = new AppDatabase(legacyPath);
+      try {
+        const row = upgraded
+          .getRawDb()
+          .prepare('SELECT title, created_at, updated_at FROM swarm_tasks')
+          .get() as { title: string; created_at: string; updated_at: string };
+        assert.equal(row.title, 'old task');
+        assert.match(row.created_at, /^\d{4}-\d{2}-\d{2}T/);
+        assert.match(row.updated_at, /^\d{4}-\d{2}-\d{2}T/);
+      } finally {
+        upgraded.close();
+      }
+    } finally {
+      rmSync(legacyPath, { force: true });
+    }
   });
 
   it('round-trips an object-valued secret and never stores it in plaintext', () => {
@@ -186,7 +337,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
 
     try {
       const raw = db.getRawDb();
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
       const column = issueColumn(raw);
       assert.ok(column, 'swarm_tasks.issue_urls_json must exist at head');
@@ -221,7 +372,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       assert.doesNotThrow(() => applyMigrations(raw));
 
       assert.deepEqual(appliedVersions(raw), before);
-      assert.equal(Math.max(...appliedVersions(raw)), 7);
+      assert.equal(Math.max(...appliedVersions(raw)), 9);
       assert.ok(issueColumn(raw), 'the re-run must leave the column in place');
     } finally {
       db.close();
@@ -243,7 +394,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       // Rewind to the v5 shape rather than inventing a fixture: drop the v6 column and its record,
       // and rewind v7 with it so the next apply runs the whole v6..v7 tail.
       raw.exec('ALTER TABLE swarm_tasks DROP COLUMN issue_urls_json');
-      raw.prepare('DELETE FROM schema_migrations WHERE version IN (6, 7)').run();
+      raw.prepare('DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)').run();
       assert.equal(issueColumn(raw), undefined);
       assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5]);
 
@@ -252,7 +403,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       const column = issueColumn(raw);
       assert.ok(column, 'the v6 migration must restore the column');
       assert.equal(column.dflt_value, "'[]'");
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
 
       const row = raw
         .prepare('SELECT issue_urls_json FROM swarm_tasks WHERE id = ?')
@@ -390,6 +541,21 @@ describe('Secret key classification (canonical map and env spellings)', () => {
 });
 
 describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
+  it('encrypts a secret whose plaintext only looks like ciphertext', () => {
+    const db = new AppDatabase(':memory:');
+
+    try {
+      db.set('githubToken', 'enc:v1:abc');
+      assert.equal(db.get('githubToken'), 'enc:v1:abc');
+      const raw = db.getRaw('githubToken');
+      assert.ok(raw && raw.includes('enc:v1:'), String(raw));
+      assert.notEqual(raw, JSON.stringify('enc:v1:abc'));
+      assert.equal(db.get('githubToken'), 'enc:v1:abc');
+    } finally {
+      db.close();
+    }
+  });
+
   it('asserts every SWARM_TASK_COLUMNS column through enqueue, claim, status report and read', () => {
     const db = new AppDatabase(':memory:');
 
@@ -411,6 +577,7 @@ describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
         originId: 'backlog-coverage-1',
         originNumber: 77,
         originTitle: 'Backlog origin for column coverage',
+        originIssueNumber: 77,
         repositoryId: 'agylity-coverage',
         repositoryName: 'OtterBoops/agylity',
         repositoryPath: 'clones/agylity-coverage',
@@ -480,6 +647,7 @@ describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
         origin_number: () => roundTrips('origin_number', task.originNumber, 77),
         origin_title: () =>
           roundTrips('origin_title', task.originTitle, 'Backlog origin for column coverage'),
+        origin_issue_number: () => roundTrips('origin_issue_number', task.originIssueNumber, 77),
         created_at: () => isStamped('created_at', task.createdAt),
         updated_at: () => isStamped('updated_at', task.updatedAt),
         repository_id: () => roundTrips('repository_id', task.repositoryId, 'agylity-coverage'),
@@ -521,6 +689,17 @@ describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
         num_turns: () => roundTrips('num_turns', task.numTurns, 7),
         total_tokens: () => roundTrips('total_tokens', task.totalTokens, 45_678),
         thinking_tokens: () => roundTrips('thinking_tokens', task.thinkingTokens, 1_234),
+        spawn_spent_attempt: () => {
+          const row = db
+            .getRawDb()
+            .prepare('SELECT spawn_spent_attempt FROM swarm_tasks WHERE id = ?')
+            .get(task.id) as { spawn_spent_attempt?: number } | undefined;
+          assert.equal(
+            Number(row?.spawn_spent_attempt),
+            0,
+            'an enqueue never spends a backlog attempt'
+          );
+        },
       };
 
       const declared = SWARM_TASK_COLUMNS.map((column) => column.name);
@@ -537,6 +716,88 @@ describe('swarm_tasks schema coverage (TaskQueue round-trip)', () => {
       for (const assertColumn of Object.values(coverage)) assertColumn();
     } finally {
       db.close();
+    }
+  });
+
+  it('preserves canonical routine cycle stamp when legacy key appears earlier in JSON', () => {
+    const raw = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(raw);
+      raw
+        .prepare(
+          `INSERT INTO routine_tasks (
+            id, task_number, title, prompt, repository_id, models_json,
+            last_triggered_cycles_json, created_at, updated_at
+          ) VALUES ('rt-order', 1, 'Order test', 'Run', 'agylity', '[]', ?, datetime('now'), datetime('now'))`
+        )
+        .run('{"gemini-hydrogen":"2026-01-01T00:00:00.000Z","gemini":"2026-02-02T00:00:00.000Z"}');
+
+      raw.prepare('DELETE FROM schema_migrations WHERE version = 7').run();
+      applyMigrations(raw);
+
+      const row = raw
+        .prepare(
+          "SELECT last_triggered_cycles_json AS cycles FROM routine_tasks WHERE id = 'rt-order'"
+        )
+        .get() as { cycles?: string } | undefined;
+      assert.deepEqual(JSON.parse(row?.cycles ?? '{}'), {
+        gemini: '2026-02-02T00:00:00.000Z',
+      });
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('handles v9 migration cleanly when swarm_tasks table does not exist', () => {
+    const raw = new DatabaseSync(':memory:');
+    try {
+      applyMigrations(raw);
+      raw.exec('DROP TABLE swarm_tasks');
+      raw.prepare('DELETE FROM schema_migrations WHERE version = 9').run();
+      assert.doesNotThrow(() => applyMigrations(raw));
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('rolls back ALTER TABLE atomically when an expression-default backfill fails', () => {
+    const raw = new DatabaseSync(':memory:');
+    try {
+      raw.exec('CREATE TABLE backfill_test (id INTEGER PRIMARY KEY)');
+      raw.exec('INSERT INTO backfill_test (id) VALUES (1)');
+
+      assert.throws(() =>
+        ensureTableSchema(raw, 'backfill_test', [
+          { name: 'id', ddl: 'id INTEGER PRIMARY KEY' },
+          { name: 'broken_col', ddl: 'broken_col TEXT NOT NULL DEFAULT (nonexistent_fn())' },
+        ])
+      );
+
+      const cols = (
+        raw.prepare('PRAGMA table_info(backfill_test)').all() as Array<{ name: string }>
+      ).map((c) => c.name);
+      assert.deepEqual(cols, ['id']);
+    } finally {
+      raw.close();
+    }
+  });
+
+  it('creates master key atomically via sibling temp file and leaves no temp files behind', () => {
+    const dir = join(tmpdir(), `agylity-key-atomic-${Date.now()}-${Math.random()}`);
+    const keyPath = join(dir, '.agylity.key');
+    const prevEnv = process.env.AGYLITY_SECRET_KEY;
+    delete process.env.AGYLITY_SECRET_KEY;
+    try {
+      const first = resolveMasterKey(keyPath);
+      const second = resolveMasterKey(keyPath);
+      assert.equal(first.length, 32);
+      assert.deepEqual(second, first);
+      assert.equal(readFileSync(keyPath, 'utf8').trim(), first.toString('hex'));
+      const leftover = readdirSync(dir).filter((name) => name.endsWith('.tmp'));
+      assert.deepEqual(leftover, []);
+    } finally {
+      if (prevEnv !== undefined) process.env.AGYLITY_SECRET_KEY = prevEnv;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

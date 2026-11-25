@@ -22,6 +22,7 @@ export const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'origin_id', ddl: 'origin_id TEXT' },
   { name: 'origin_number', ddl: 'origin_number INTEGER' },
   { name: 'origin_title', ddl: 'origin_title TEXT' },
+  { name: 'origin_issue_number', ddl: 'origin_issue_number INTEGER' },
   {
     name: 'created_at',
     ddl: "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))",
@@ -63,6 +64,7 @@ export const SWARM_TASK_COLUMNS: readonly ColumnSpec[] = [
   { name: 'num_turns', ddl: 'num_turns INTEGER' },
   { name: 'total_tokens', ddl: 'total_tokens INTEGER' },
   { name: 'thinking_tokens', ddl: 'thinking_tokens INTEGER' },
+  { name: 'spawn_spent_attempt', ddl: 'spawn_spent_attempt INTEGER NOT NULL DEFAULT 0' },
 ];
 
 const BACKLOG_TASK_COLUMNS: readonly ColumnSpec[] = [
@@ -333,12 +335,18 @@ const renameLegacyRoutineCycleKeys = (db: DatabaseSync): void => {
       continue;
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+    const entries = Object.entries(parsed as Record<string, unknown>);
     const cycles: Record<string, unknown> = {};
     let changed = false;
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    // Copy canonical keys first so a legacy duplicate appearing earlier in JSON order cannot win.
+    for (const [key, value] of entries) {
+      if (upgradePoolGroupId(key) === key) cycles[key] = value;
+    }
+    for (const [key, value] of entries) {
       const upgraded = upgradePoolGroupId(key);
-      if (upgraded !== key) changed = true;
-      cycles[upgraded] = value;
+      if (upgraded === key) continue;
+      changed = true;
+      if (cycles[upgraded] === undefined) cycles[upgraded] = value;
     }
     if (changed) update.run(JSON.stringify(cycles), Number(row.row_id));
   }
@@ -449,6 +457,18 @@ const addIssueUrlsColumn = (db: DatabaseSync): void => {
   db.exec("ALTER TABLE swarm_tasks ADD COLUMN issue_urls_json TEXT NOT NULL DEFAULT '[]'");
 };
 
+const addOriginIssueNumberColumn = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'swarm_tasks')) return;
+  if (tableHasColumn(db, 'swarm_tasks', 'origin_issue_number')) return;
+  db.exec('ALTER TABLE swarm_tasks ADD COLUMN origin_issue_number INTEGER');
+};
+
+const addSpawnSpentAttemptColumn = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'swarm_tasks')) return;
+  if (tableHasColumn(db, 'swarm_tasks', 'spawn_spent_attempt')) return;
+  db.exec('ALTER TABLE swarm_tasks ADD COLUMN spawn_spent_attempt INTEGER NOT NULL DEFAULT 0');
+};
+
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -523,6 +543,20 @@ const MIGRATIONS: readonly Migration[] = [
       migrateLegacyPoolGroups(db);
     },
   },
+  {
+    version: 8,
+    name: 'v8_origin_issue_number',
+    up: (db) => {
+      addOriginIssueNumberColumn(db);
+    },
+  },
+  {
+    version: 9,
+    name: 'v9_spawn_spent_attempt',
+    up: (db) => {
+      addSpawnSpentAttemptColumn(db);
+    },
+  },
 ];
 
 /** Applies every recorded-but-unapplied version in order; re-running replays only the gaps. */
@@ -538,10 +572,16 @@ export const applyMigrations = (db: DatabaseSync): void => {
   const record = db.prepare(
     'INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)'
   );
+  const isRecorded = db.prepare('SELECT 1 FROM schema_migrations WHERE version = ?');
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue;
     db.exec('BEGIN IMMEDIATE');
     try {
+      // A second process can record this version while we queue for the write lock.
+      if (isRecorded.get(migration.version)) {
+        db.exec('COMMIT');
+        continue;
+      }
       migration.up(db);
       record.run(migration.version, migration.name, new Date().toISOString());
       db.exec('COMMIT');

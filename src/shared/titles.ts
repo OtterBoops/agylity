@@ -11,7 +11,10 @@ export const UNTITLED_TASK_TITLE = 'Untitled task';
 
 // Markdown decoration a prompt usually opens with: headings, bullets, blockquotes and ordered
 // list numbering. Stripped repeatedly so `> ## - item` still yields `item`.
-const LEADING_MARKERS = /^(?:\s*(?:#{1,6}|[-*+>]|\d+[.)])\s*)+/;
+const LEADING_MARKERS = /^(?:\s*(?:#{1,6}(?:\s+|$)|[-*+>](?:\s+|$)|\d+[.)](?:\s+|$)))+/;
+// A fenced code block is body, not a heading: its info string would otherwise title the task.
+const CODE_FENCE = /^\s*```[\w+#.-]*\s*$/;
+const LEADING_BOLD_SPAN = /^\*\*([^*]+)\*\*\s*/;
 const TRAILING_MARKERS = /[\s*_`]+$/;
 
 const collapseWhitespace = (value: string): string => value.replace(/\s+/g, ' ').trim();
@@ -23,14 +26,26 @@ const clipToLength = (value: string, maxLen: number): string => {
   const budget = Math.max(1, maxLen - ELLIPSIS.length);
   const head = value.slice(0, budget + 1);
   const boundary = head.lastIndexOf(' ');
-  const body = boundary > 0 ? head.slice(0, boundary) : value.slice(0, budget);
+  const cut = boundary > 0 ? head.slice(0, boundary) : value.slice(0, budget);
+  // A cut between the halves of a surrogate pair leaves a code unit that renders as U+FFFD.
+  const last = cut.charCodeAt(cut.length - 1);
+  const body = last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
   return `${body.replace(/[\s.,;:!?–—-]+$/, '')}${ELLIPSIS}`;
 };
 
 const firstMeaningfulLine = (prompt: string): string => {
+  let inFence = false;
   for (const rawLine of prompt.split(/\r?\n/)) {
+    if (CODE_FENCE.test(rawLine)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
     const line = collapseWhitespace(
-      rawLine.replace(LEADING_MARKERS, '').replace(TRAILING_MARKERS, '')
+      rawLine
+        .replace(LEADING_MARKERS, '')
+        .replace(LEADING_BOLD_SPAN, '$1 ')
+        .replace(TRAILING_MARKERS, '')
     );
     if (line) return line;
   }

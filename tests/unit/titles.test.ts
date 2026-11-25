@@ -31,6 +31,43 @@ describe('Shared: resolveTaskTitle', () => {
     assert.equal(resolveTaskTitle(undefined, '2) Fix the parser'), 'Fix the parser');
   });
 
+  it('never leaves half a surrogate pair where it clipped', () => {
+    const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+    for (const prompt of [
+      '😀'.repeat(50),
+      `${'word '.repeat(14)}😀 and the rest`,
+      'a'.repeat(71),
+    ]) {
+      const title = resolveTaskTitle(undefined, prompt);
+      assert.doesNotMatch(title, LONE_SURROGATE, `clipped title was ${JSON.stringify(title)}`);
+      assert.ok(title.length <= 72);
+    }
+  });
+
+  it('skips a fenced code block instead of titling the task from its info string', () => {
+    assert.equal(
+      resolveTaskTitle(undefined, '```bash\nnpm test\n```\nFix the flaky test'),
+      'Fix the flaky test'
+    );
+    assert.equal(resolveTaskTitle(undefined, '```ts\nconst x = 1;\n```'), 'Untitled task');
+    assert.equal(resolveTaskTitle(undefined, '```\nnpm test\n```'), 'Untitled task');
+    // An unclosed fence swallows the rest: there is no prose to title from.
+    assert.equal(resolveTaskTitle(undefined, '```ts\nconst x = 1;'), 'Untitled task');
+  });
+
+  it('keeps characters that only look like Markdown markers', () => {
+    assert.equal(
+      resolveTaskTitle(undefined, '-1 is returned for empty input'),
+      '-1 is returned for empty input'
+    );
+    assert.equal(resolveTaskTitle(undefined, '3.14 is parsed as 3'), '3.14 is parsed as 3');
+    // A marker without whitespace after it is content, not decoration.
+    assert.equal(resolveTaskTitle(undefined, '###Fix the parser'), '###Fix the parser');
+    // A leading bold span is emphasis around the title, not part of it.
+    assert.equal(resolveTaskTitle(undefined, '**Fix** the parser'), 'Fix the parser');
+  });
+
   it('skips blank leading lines before deriving the title', () => {
     assert.equal(resolveTaskTitle(undefined, '\n\n   \n## Fix the parser\nbody'), 'Fix the parser');
     // A prompt that is nothing but decoration has no title to offer.

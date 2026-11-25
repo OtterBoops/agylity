@@ -11,6 +11,7 @@ import {
 } from './crypto.js';
 import { ensureTableSchema, type ColumnSpec } from './schema.js';
 import { applyMigrations } from './migrations.js';
+import { logger } from '../logs/logger.js';
 
 interface SettingRecord {
   key: string;
@@ -93,11 +94,27 @@ export class AppDatabase {
   }
 
   private initPragmas(busyTimeoutMs = 5000): void {
-    // WAL lets the dashboard read while a writer holds the database.
-    this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))};`);
     this.db.exec('PRAGMA synchronous = NORMAL;');
     this.db.exec('PRAGMA foreign_keys = ON;');
-    this.db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.floor(busyTimeoutMs))};`);
+    // WAL lets the dashboard read while a writer holds the database, but converting a fresh file needs
+    // an exclusive lock, so a second process opening it at the same moment must not fail the boot.
+    const journalMode = String(
+      (this.db.prepare('PRAGMA journal_mode').get() as { journal_mode?: string } | undefined)
+        ?.journal_mode ?? ''
+    ).toLowerCase();
+    if (journalMode === 'wal') return;
+    try {
+      this.db.exec('PRAGMA journal_mode = WAL;');
+    } catch (err) {
+      logger
+        .child('storage')
+        .warn(
+          'Database stayed in %s journal mode: %s',
+          journalMode || 'unknown',
+          err instanceof Error ? err.message : String(err)
+        );
+    }
   }
 
   private runMigrations(): void {

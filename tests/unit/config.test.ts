@@ -16,9 +16,6 @@ import {
   parseRawEnv,
   validateConfigOverridePatch,
   BUILTIN_DEFAULTS,
-  DEFAULT_MILESTONE_HOURS,
-  DEFAULT_QUOTA_BURN_MAX_HOURS,
-  DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
 } from '../../src/config/schema.js';
 import { applyConfigReference, renderEnvExample } from '../../src/config/docs.js';
 import { PR_POLICIES, PR_POLICY_HINTS } from '../../src/shared/policies.js';
@@ -92,6 +89,11 @@ describe('Zod Configuration Schema & Preprocessors', () => {
       () => validateConfigOverridePatch({ defaultDispatchEffort: 'invalid-effort' as any }),
       /Invalid option: expected one of/
     );
+    // The evaluator ignores an empty window list, so a patch must not be able to store one.
+    assert.throws(
+      () => validateConfigOverridePatch({ quotaMilestoneHours: [] }),
+      /Too small: expected array to have >=1 items/
+    );
     // An inherited Object member is not a config key, so it must not slip past the lookup.
     assert.throws(
       () => validateConfigOverridePatch({ toString: 'x' }),
@@ -123,13 +125,7 @@ describe('Zod Configuration Schema & Preprocessors', () => {
     assert.deepEqual(milestoneHoursEnv.parse([10, 5]), [10, 5]);
   });
 
-  it('ships 48/24/12 milestones, a 4h pre-reset burn window and gemini-4-hydrogen as built-in defaults', () => {
-    assert.deepEqual(DEFAULT_MILESTONE_HOURS, [48, 24, 12]);
-    assert.equal(BUILTIN_DEFAULTS.quotaBurnMaxHours, 4);
-    assert.equal(DEFAULT_QUOTA_BURN_MAX_HOURS, 4);
-    // Hydrogen is the shipped dispatch default; 3.8 Flash stays selectable, but not the default.
-    assert.equal(BUILTIN_DEFAULTS.defaultDispatchModel, 'gemini-4-hydrogen');
-
+  it('resolves the shipped milestones, burn window and dispatch model through the store', () => {
     const store = new ConfigStore(':memory:', {});
     const config = store.resolveConfig();
     assert.deepEqual(config.quotaMilestoneHours, [48, 24, 12]);
@@ -317,6 +313,28 @@ describe('ConfigStore Fallback Precedence Hierarchy (R5)', () => {
     // Removing another override restores Level 2
     store.removeOverride('notificationChannel');
     assert.equal(store.get('notificationChannel'), 'webhook');
+
+    store.close();
+  });
+
+  it('keeps a falsy override that an env value would otherwise win with', () => {
+    const store = new ConfigStore(':memory:', {
+      quotaAlertThresholdPercent: 40,
+      minDispatchHeadroomPercent: 25,
+      coordinatorEnabled: true,
+      allowedIpRanges: ['10.0.0.0/8'],
+    });
+
+    store.setOverride('quotaAlertThresholdPercent', 0);
+    store.setOverride('minDispatchHeadroomPercent', 0);
+    store.setOverride('coordinatorEnabled', false);
+    store.setOverride('allowedIpRanges', []);
+
+    const resolved = store.resolveConfig();
+    assert.equal(resolved.quotaAlertThresholdPercent, 0);
+    assert.equal(resolved.minDispatchHeadroomPercent, 0);
+    assert.equal(resolved.coordinatorEnabled, false);
+    assert.deepEqual(resolved.allowedIpRanges, []);
 
     store.close();
   });
@@ -568,8 +586,13 @@ describe('Antigravity CLI update scheduling configuration', () => {
     const parsed = RawEnvSchema.parse({ AGY_UPDATE_INTERVAL_HOURS: '6' });
     assert.equal(parsed.AGY_UPDATE_INTERVAL_HOURS, 6);
 
-    assert.equal(BUILTIN_DEFAULTS.agyUpdateIntervalHours, 24);
     assert.equal(parseRawEnv({}).agyUpdateIntervalHours, undefined);
+    const defaults = new ConfigStore(':memory:', {});
+    try {
+      assert.equal(defaults.resolveConfig().agyUpdateIntervalHours, 24);
+    } finally {
+      defaults.close();
+    }
     assert.equal(parseRawEnv({ AGY_UPDATE_INTERVAL_HOURS: '0' }).agyUpdateIntervalHours, 0);
 
     assert.equal(
@@ -594,9 +617,6 @@ describe('Antigravity CLI update scheduling configuration', () => {
 
 describe('Backlog dispatch headroom configuration', () => {
   it('defaults backlogMinHeadroomPercent to 40 and parses the env spelling, including 0 and 100', () => {
-    assert.equal(BUILTIN_DEFAULTS.backlogMinHeadroomPercent, 40);
-    assert.equal(DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT, 40);
-
     // Unset env leaves the field absent so the default applies downstream.
     assert.equal(parseRawEnv({}).backlogMinHeadroomPercent, undefined);
 
@@ -744,5 +764,43 @@ describe('PR_POLICIES (single source of policy copy)', () => {
       assert.ok(policy.label.trim() !== '', `${policy.value} needs a label`);
       assert.equal(PR_POLICY_HINTS[policy.value], policy.hint);
     }
+  });
+});
+
+describe('TRUSTED_PROXY_RANGES validation', () => {
+  it('accepts valid IPv4/IPv6 addresses and CIDR ranges in env and overrides', () => {
+    const parsed = parseRawEnv({
+      TRUSTED_PROXY_RANGES: '172.18.0.0/16, 10.0.0.1, ::1/128, fc00::/7',
+    });
+    assert.deepEqual(parsed.trustedProxyRanges, [
+      '172.18.0.0/16',
+      '10.0.0.1',
+      '::1/128',
+      'fc00::/7',
+    ]);
+
+    const override = validateConfigOverridePatch({
+      trustedProxyRanges: ['172.18.0.0/16', '::1/128'],
+    });
+    assert.deepEqual(override.trustedProxyRanges, ['172.18.0.0/16', '::1/128']);
+    assert.deepEqual(
+      validateConfigOverridePatch({ trustedProxyRanges: [] }).trustedProxyRanges,
+      []
+    );
+  });
+
+  it('rejects malformed entries in both TRUSTED_PROXY_RANGES env and override patches', () => {
+    assert.equal(
+      parseRawEnv({ TRUSTED_PROXY_RANGES: '172.18.0.0/16, not-an-ip' }).trustedProxyRanges,
+      undefined
+    );
+    assert.equal(
+      parseRawEnv({ TRUSTED_PROXY_RANGES: '10.0.0.0/33' }).trustedProxyRanges,
+      undefined
+    );
+    assert.throws(() => RawEnvSchema.parse({ TRUSTED_PROXY_RANGES: 'not-an-ip' }));
+    assert.throws(() => validateConfigOverridePatch({ trustedProxyRanges: ['not-an-ip'] }));
+    assert.throws(() => validateConfigOverridePatch({ trustedProxyRanges: ['10.0.0.0/33'] }));
+    assert.throws(() => validateConfigOverridePatch({ trustedProxyRanges: [''] }));
   });
 });

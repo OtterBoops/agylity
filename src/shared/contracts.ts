@@ -161,6 +161,7 @@ export interface SwarmTask {
   tier: TaskTier;
   originId?: string;
   originNumber?: number;
+  originIssueNumber?: number;
   originTitle?: string;
   createdAt: string;
   updatedAt: string;
