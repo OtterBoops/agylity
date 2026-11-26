@@ -66,7 +66,7 @@ Frontier models in Antigravity are governed by two distinct limits:
   - `Connect-Protocol-Version: 1`
   - `x-codeium-csrf-token: <token>`
 - **Payload**: `{}`
-- **Response**: Returns quota group objects detailing `weekly` and `5h` limits, remaining fractions (`remainingFraction`), and reset timestamps (`resetTime`).
+- **Response**: Returns quota group objects detailing `weekly` and `5h` limits, remaining fractions (`remainingFraction`), and reset timestamps (`resetTime`). An idle pool whose window has not started reports `1970-01-01T00:00:00Z`, which ingestion normalizes to an empty `resetTime` meaning "no active window".
 
 ### 2.2. Resilience & Fallback Hierarchy
 
@@ -178,7 +178,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 | `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
 | `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
 | `DELETE /api/backlog/:id`              | Bearer | Deletes the item.                                                 |
-| `POST /api/backlog/:id/dispatch`       | Bearer | Dispatches one item now.                                          |
+| `POST /api/backlog/:id/dispatch`       | Bearer | Dispatches one item now; 409 while it already runs.               |
 | `GET /api/routines`                    | Bearer | Routine definitions.                                              |
 | `POST /api/routines`                   | Bearer | Creates a routine.                                                |
 | `GET /api/routines/:id`                | Bearer | Single routine.                                                   |
@@ -229,7 +229,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 1. **Configuration Store (`src/config/`)**: `schema.ts` holds `CONFIG_REGISTRY`, the single declaration of every knob (env spelling, validator, built-in default, secret flag, description), from which `BUILTIN_DEFAULTS`, the env↔key maps, the secret list and the env parser are all derived; `docs.ts` renders the env reference table and `.env.example` from that same table. `store.ts` applies the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`) and emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
-3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners.
+3. **Pluggable Multi-Channel Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to active adapters (`Discord`, `Webhook`, `None`) with dynamic `import()` isolation. Inactive notification channels never load `discord.js` into memory or bind listeners. Notification types are declared once in `src/shared/notificationKinds.ts` with their labels, descriptions and defaults; `notificationTypes` is an API-only config map (`POST \`/api/config\`; the dashboard has no per-type switches yet) and `CompositeNotifier.gate()` is the single place it is enforced, so a switched-off kind is logged and reported as suppressed instead of delivered.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`). Mutation feedback routes through `frontend/src/state/toastStore.ts` (`pushToast`, `pushSuccessToast`, `pushErrorToast`), and an error toast also writes to `console.error`; view-level load failures stay inline in the view so an empty or degraded surface still explains itself.
 6. **Shared Wire Contracts (`src/shared/`)**: `contracts.ts` declares every payload the HTTP API emits (`SwarmTask`, `BacklogTaskRecord`, `RoutineTaskRecord`, `QuotaSnapshot`, `SentryAlertState`, `AlertEvent`, log entries, and the PR/tier/status enums) and `policies.ts` owns the PR-policy table (value, select label, hint). Both are type-only and free of runtime imports so the Vite client bundles them directly; backend modules re-export the declarations and `frontend/src/types.ts` is a pure re-export of the contract plus genuinely frontend-only shapes. Zod schemas stay beside their producers purely as validators.
@@ -385,12 +385,39 @@ lets the dashboard link a run back to the item that produced it.
   first candidate whose pool clears the floor (`evaluateModelPreferenceChain`). A model id that maps
   to no pool is refused rather than charged to another group's headroom; an id the active catalog
   withholds is first substituted by the newest model of its own group.
-- **Origin settlement**: a backlog item closes on `completed`/`no_changes`, returns to `pending` while
-  `attempt_count < max_attempts`, then `failed`. Settlement runs from the runner's status report _and_
-  from the reconciler sweep, which is what covers a reaped lease, a queued task that expired, and a
-  user cancel — none of those produce a runner report. A queued task that expires unclaimed returns its
-  origin to `pending` with `attempt_count` restored and `swarm_task_id` cleared, so no retry is burned
-  for a run no runner ever received. Expiry is enforced both lazily at claim time and by a sweep inside
+- **Origin runs stack; execution is serialized**: `POST /api/tasks/:id/retry`,
+  `POST /api/backlog/:id/dispatch` and `POST /api/routines/:id/trigger` all funnel through
+  `coordinator.dispatch`, which enqueues another run for an origin that already has one in flight
+  instead of refusing. `claimNext` is what enforces one execution per origin: a queued run whose
+  `origin_id` already has a `claimed`/`executing` run is skipped, so stacked runs execute in order
+  and never race the base commit. A stacked dispatch inherits the attempt its origin already spent,
+  because queueing again is not a retry. A backlog item that owes nothing (`paused`, `completed`,
+  `canceled`, or one that has spent all `max_attempts`) still answers 409 `ORIGIN_NOT_DISPATCHABLE`,
+  and any write that would return a row to `pending` at the cap settles it as `failed` instead
+  (`queue.updateBacklogTask` enforces this, so refunds, settlements and a bulk resume all obey it),
+  leaving no row parked where the scheduler's `attempt_count < max_attempts` filter cannot select it. A backlog dispatch, including a retry,
+  writes its `swarm_tasks` row and the origin's `dispatched`/`attempt_count`/`swarm_task_id` in one
+  transaction through `spawnBacklogTask`, before `task:available` is emitted.
+- **Live progress**: `agy` runs with `--output-format stream-json`; `AgyStreamFormatter`
+  (`src/runner/agyStream.ts`) renders tool starts, tool completions and agent step text as plain
+  lines for `onOutput`, keeps the final `result.response` as the deliverable text (raw NDJSON never
+  reaches a PR body or the pane), and falls back to text mode when the binary rejects the flag.
+- **Issue lifecycle**: a run spawned for a backlog item stores `origin_issue_number`, its PR body
+  opens with `Closes #<n>` (before the prompt, so a prompt's own Agylity footer still wins the
+  duplicate-footer check), and the terminal status report with a `prUrl` removes `githubBacklogLabel`
+  from that issue through `removeIssueLabel` so the label sync cannot re-import it. A GitHub failure
+  there is logged, never fatal: the run has already delivered.
+- **Origin settlement**: a backlog item closes on `completed`/`no_changes`, and only once the last
+  of its stacked runs is done: `applyBacklogOutcome` returns while another run of the origin is
+  still non-terminal. A failure spends its
+  attempt only when the run was actually claimed: an unclaimed queued run, and any run the operator
+  cancelled, return the origin to `pending` with `attempt_count` handed back, so cancelling never burns
+  a retry — unless that count is already at the cap, which settles `failed` with the error kept. A claimed failure re-arms while `attempt_count < max_attempts`, then marks the item
+  `failed`. An item paused while its run was live records the outcome (`last_error`) and stays
+  `paused`, so a pause is never undone by a background settlement. Every settlement clears
+  `swarm_task_id`. Settlement runs from the runner's status report _and_ from the reconciler sweep,
+  which is what covers a reaped lease, a queued task that expired, and a user cancel — none of those
+  produce a runner report. Expiry is enforced both lazily at claim time and by a sweep inside
   `reapStaleClaims`, so an offline runner or a pool dip cannot wedge the backlog tier behind a task
   nothing will claim. The two expiries read differently to the operator: an unclaimed queued task
   reports `no runner claimed the task within its queue window`, while a `pre_reset` or routine task
@@ -495,18 +522,24 @@ the status report the coordinator stores.
 
 The whole persistent schema — `settings`, the coordinator tables and the sentry tables — is declared as
 column specs and applied through one forward-only registry in `src/storage/migrations.ts`, recorded in
-`schema_migrations` (current head: `v7_gemini_pool_group`). `AppDatabase` owns it: opening the database creates
+`schema_migrations` (current head: `v9_spawn_spent_attempt`). One version per release: a schema change
+made while the head version is still unreleased folds into that head, and a new version is minted only
+once the head has shipped — a released migration is never edited, because every live database has
+already recorded it and would skip the change. `AppDatabase` owns it: opening the database creates
 `settings` and runs `applyMigrations()`, so every table reaches the head version in one place and
 `TaskQueue`/`SentryStateManager` only reuse what is already there. Each table is built with
 `ensureTableSchema()` (`CREATE TABLE IF NOT EXISTS` plus a `PRAGMA table_info` diff that
-`ALTER TABLE ... ADD COLUMN`s anything missing), so a restart never re-creates a table or drops a row and
-an existing database is upgraded in place. Table-level constraint specs (`PRIMARY KEY (...)`,
+`ALTER TABLE ... ADD COLUMN`s anything missing) at the baseline, so a restart never re-creates a table or
+drops a row. A column added later must be a numbered migration as well as a spec entry: the additive diff
+runs at the baseline only, so a fresh database gets the column from the spec while an existing one gets it
+from the migration. Table-level constraint specs (`PRIMARY KEY (...)`,
 `UNIQUE (...)`, `FOREIGN KEY (...)`, `CHECK (...)`) share the spec list but are skipped by the additive
 repair, which only speaks up when a genuinely un-addable column is missing.
 
 Every successful probe reconciles `pool_state` against the pools it actually reported: an entry the probe no
-longer lists (`gemini:gemini-4-argon` on a tier without that pool) is deleted along with its `pool_milestones` and
-`pool_samples` rows and its early-reset notice entry, so a retired pool cannot keep appearing in the offline
+longer lists (`gemini:gemini-4-argon` on a tier without that pool) is retired after three consecutive
+probes without it — one short probe must not wipe the milestone ledger — and is deleted along with its
+`pool_milestones` and `pool_samples` rows and its early-reset notice entry, so a retired pool cannot keep appearing in the offline
 fallback (`snapshotsFromSentryState`), the dashboard quota grid or the `/api/summary` percentages. A probe
 that reports nothing is not evidence of anything, so it retires nothing.
 

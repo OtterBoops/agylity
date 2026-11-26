@@ -11,6 +11,7 @@ Autonomous coding agents and AI pair programmers working in this repository must
 5. **Prettier & Canonical Tailwind Classes**: Keep formatting and Tailwind class ordering compliant with Prettier (`prettier-plugin-tailwindcss`) and ESLint (`eslint-plugin-better-tailwindcss`).
 6. **Zero-Clobber Invariant**: Never execute autonomous `agy` tasks headlessly on the monitoring daemon host; runner execution belongs in isolated runner containers or separate checkouts.
 7. **Node Native Test Hygiene**: Tests use `node:test` (`node --no-warnings --import tsx --test`). Any test binding HTTP servers, sockets, or timers must guarantee teardown in `try ... finally` or `t.after()`.
+8. **Sparse, Load-Bearing Comments**: A comment states only what the code cannot — an external quirk, the constraint and what breaks without it, a rejected alternative, or a wire contract another file reads. Names, types and functions carry the rest: nothing restates the next line or narrates a change.
 
 ## GitHub Release Standard
 
