@@ -22,6 +22,7 @@ import {
   resolveConcreteModelId,
   resolveDefaultDispatchModel,
   resolvePoolGroupForModel,
+  resolvePoolGroupForModelOrNull,
   isGithubRemoteTask,
   isTerminalTaskStatus,
   resolveReasoningEffortForModel,
@@ -39,7 +40,9 @@ import {
 } from './models.js';
 import {
   TaskQueue,
+  type BacklogTaskRecord,
   type CreateRegistrationTokenInput,
+  type EnqueueTaskInput,
   type ExchangeRegistrationTokenInput,
   type RoutineTaskRecord,
   type RunnerRegistrationTokenResult,
@@ -51,11 +54,20 @@ import {
 import { buildContinuationBranchName } from '../runner/policy.js';
 import { upgradePoolGroupId } from '../shared/models.js';
 import { resolveTaskTitle } from '../shared/titles.js';
+import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../shared/github.js';
 import type { ModelCatalogProvider } from './catalog.js';
+import { removeIssueLabel } from './githubIssues.js';
 
 // A queued backlog task that no runner claims in this window returns to its origin, so a pool dip or
 // an offline runner cannot wedge the tier behind a run nothing will ever pick up.
 const BACKLOG_QUEUE_TTL_MS = 2 * 60 * 60 * 1000;
+
+// A live row stacks another run behind it; the claim path runs one at a time per origin.
+const BACKLOG_DISPATCHABLE_STATUSES: ReadonlySet<string> = new Set<string>([
+  'pending',
+  'failed',
+  'dispatched',
+]);
 
 // A pool id is either the group id or `<group>:<slug>`; only the prefix names the group.
 const poolGroupOfPoolId = (poolId: string): string => {
@@ -113,6 +125,7 @@ interface DispatchTaskResponse {
     | 'OVERAGE_PROTECTION_TRIGGERED'
     | 'QUOTA_BURN_QUEUED'
     | 'TELEMETRY_UNAVAILABLE'
+    | 'ORIGIN_NOT_DISPATCHABLE'
     | 'EXECUTION_FAILED';
   minDispatchHeadroomPercent?: number;
   currentHeadroomPercent?: number;
@@ -138,6 +151,7 @@ interface CoordinatorOptions {
   notifier?: Notifier;
   logger?: Logger;
   modelCatalog?: ModelCatalogProvider;
+  issueLabelRemover?: typeof removeIssueLabel;
 }
 
 export class Coordinator {
@@ -151,8 +165,10 @@ export class Coordinator {
   private latestSnapshots: QuotaSnapshot[] = [];
   private lastSnapshotAt = 0;
   private lastManualDispatchAt = 0;
+  private readonly issueLabelRemover: typeof removeIssueLabel;
 
   constructor(options: CoordinatorOptions) {
+    this.issueLabelRemover = options.issueLabelRemover ?? removeIssueLabel;
     this.configStore = options.configStore;
     this.queue = new TaskQueue(options.configStore.getDatabase());
     this.sentryState = options.sentryState;
@@ -247,6 +263,7 @@ export class Coordinator {
     );
 
     await this.notifier?.notifyInfo({
+      kind: 'burn_kick',
       title: 'Pre-reset burn started',
       message:
         `${params.label} entered the pre-reset window (<=${params.triggerHours}h) with ` +
@@ -428,6 +445,12 @@ export class Coordinator {
     return Number.isNaN(Date.parse(pool.resetTime)) ? undefined : pool.resetTime;
   }
 
+  /** An unconfigured id becomes a path segment under `/repos`, so it may never carry a separator or a dot-only form. */
+  private isAddressableRepositoryId(repositoryId: string): boolean {
+    const id = repositoryId.trim();
+    return !/[\\/]/.test(id) && !id.startsWith('.') && id !== '' && !id.includes('..');
+  }
+
   /** A configured repository is addressed by either its id or its display name, case-insensitively. */
   private findConfiguredRepository(resolved: ResolvedConfig, repositoryId: string) {
     const key = repositoryId.toLowerCase();
@@ -439,11 +462,25 @@ export class Coordinator {
   /** The spawn/enqueue identity of a repository: its configuration when present, path defaults otherwise. */
   private repositoryTarget(resolved: ResolvedConfig, repositoryId: string) {
     const repo = this.findConfiguredRepository(resolved, repositoryId);
+    if (!repo) {
+      const sanitized = repositoryId.replace(/[^A-Za-z0-9._-]/g, '-').replace(/^\.+/, '');
+      if (!this.isAddressableRepositoryId(repositoryId) || !sanitized) {
+        throw new Error(
+          `repositoryId ${JSON.stringify(repositoryId)} must be a configured repository or a plain slug`
+        );
+      }
+      return {
+        repositoryName: repositoryId,
+        repositoryPath: `/repos/${sanitized}`,
+        cloneUrl: undefined,
+        defaultBranch: 'main',
+      };
+    }
     return {
-      repositoryName: repo?.name || repositoryId,
-      repositoryPath: repo?.path || `/repos/${repositoryId}`,
-      cloneUrl: repo?.cloneUrl,
-      defaultBranch: repo?.defaultBranch || 'main',
+      repositoryName: repo.name || repositoryId,
+      repositoryPath: repo.path,
+      cloneUrl: repo.cloneUrl,
+      defaultBranch: repo.defaultBranch || 'main',
     };
   }
 
@@ -534,7 +571,17 @@ export class Coordinator {
             continue;
           }
 
-          const target = this.repositoryTarget(resolved, nextBacklog.repositoryId);
+          let target;
+          try {
+            target = this.repositoryTarget(resolved, nextBacklog.repositoryId);
+          } catch (targetErr) {
+            this.log.warn(
+              'Skipping backlog task #%d: %s',
+              nextBacklog.taskNumber,
+              targetErr instanceof Error ? targetErr.message : String(targetErr)
+            );
+            continue;
+          }
 
           // Ready to run: the spawn already cleared headroom, so a queued backlog task must be
           // claimable by an idle runner and must not wait for a reset window it was never gated on.
@@ -548,6 +595,7 @@ export class Coordinator {
               originId: nextBacklog.id,
               originNumber: nextBacklog.taskNumber,
               originTitle: nextBacklog.title,
+              originIssueNumber: nextBacklog.githubIssueNumber ?? undefined,
               requestedBy: `backlog:${nextBacklog.id}`,
               prPolicy: resolved.prPolicy,
               scheduleMode: 'immediate',
@@ -609,7 +657,7 @@ export class Coordinator {
       return true;
     }
 
-    const previous = this.cycleRun(rt, poolKey);
+    const previous = this.cycleRun(rt, poolGroupOfPoolId(poolKey));
 
     // A stamped cycle whose run can no longer be found stays burned: looping blind burns quota.
     if (!previous) return false;
@@ -657,11 +705,10 @@ export class Coordinator {
       const passing: Array<{ hop: CascadeHop; poolGroup: string; pool: QuotaSnapshot }> = [];
       for (const hop of rt.cascade) {
         const concreteModel = this.resolveDispatchModel(hop.model, resolved.defaultDispatchModel);
-        const poolGroup = resolvePoolGroupForModel(concreteModel);
-
-        if (!poolDispatchEnabled(resolved, poolGroup)) {
-          continue;
-        }
+        const poolGroup = resolvePoolGroupForModelOrNull(concreteModel);
+        // An unmapped model must never authorise a dispatch through the fail-open 'gemini' default.
+        if (!poolGroup) continue;
+        if (!poolDispatchEnabled(resolved, poolGroup)) continue;
 
         const pool = findPoolForGroup(snapshots, poolGroup);
         if (!pool) continue;
@@ -721,9 +768,21 @@ export class Coordinator {
         calculateEffectiveHeadroomPercent(targetPool) ?? 0
       );
 
+      let target;
+      try {
+        target = this.repositoryTarget(resolved, rt.repositoryId);
+      } catch (targetErr) {
+        this.log.warn(
+          'Skipping routine task #%d: %s',
+          rt.taskNumber,
+          targetErr instanceof Error ? targetErr.message : String(targetErr)
+        );
+        continue;
+      }
+
       const task = this.queue.enqueue({
         repositoryId: rt.repositoryId,
-        ...this.repositoryTarget(resolved, rt.repositoryId),
+        ...target,
         prompt: rt.prompt,
         title: rt.title,
         tier: 'routine',
@@ -801,10 +860,14 @@ export class Coordinator {
 
     const { triggerHours, minHeadroom } = this.routineLimits(rt, resolved);
 
-    const targets = rt.cascade.map((hop) => {
+    const targets: Array<{ model: string; poolGroup: PoolGroup }> = [];
+    for (const hop of rt.cascade) {
       const model = this.resolveDispatchModel(hop.model, resolved.defaultDispatchModel);
-      return { model, poolGroup: resolvePoolGroupForModel(model) };
-    });
+      const poolGroup = resolvePoolGroupForModelOrNull(model);
+      // An unmapped model must never authorise a dispatch through the fail-open 'gemini' default.
+      if (!poolGroup) continue;
+      targets.push({ model, poolGroup });
+    }
     const poolGroups = Array.from(new Set(targets.map((t) => t.poolGroup)));
 
     const enabledPoolGroups = new Set(
@@ -840,7 +903,7 @@ export class Coordinator {
       }
 
       if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.poolGroup, pool.resetTime)) {
-        const previous = this.cycleRun(rt, pool.poolId || pool.poolGroup);
+        const previous = this.cycleRun(rt, poolGroup);
 
         const detail =
           `Cycle for ${poolLabel} is already burned for the reset at ${pool.resetTime}` +
@@ -945,12 +1008,30 @@ export class Coordinator {
     const repositoryName = req.repositoryName?.trim() || repositoryId;
     const scheduleMode: ScheduleMode = req.scheduleMode ?? 'immediate';
     const allowOverage = Boolean(req.allowOverage);
+    const tier: TaskTier = req.tier ?? 'immediate';
+    const originId = req.originId ?? req.standingTaskId;
+    const originNumber = req.originNumber;
+    const originTitle = req.originTitle;
 
     if (!repositoryId) {
       return {
         success: false,
         repo: 'unknown',
         error: 'repositoryId is required',
+        code: 'EXECUTION_FAILED',
+      };
+    }
+
+    // An id that is not configured gets `/repos/<id>` as its working directory, so a path-shaped id
+    // would run the agent outside that root — and whatever it committed would be pushed.
+    if (
+      !this.findConfiguredRepository(resolved, repositoryId) &&
+      !this.isAddressableRepositoryId(repositoryId)
+    ) {
+      return {
+        success: false,
+        repo: repositoryName,
+        error: `repositoryId ${JSON.stringify(repositoryId)} must be a configured repository or a plain slug`,
         code: 'EXECUTION_FAILED',
       };
     }
@@ -967,6 +1048,36 @@ export class Coordinator {
         error:
           'Single-User Binding: This Agylity instance is restricted to the configured Discord owner.',
         code: 'EXECUTION_FAILED',
+      };
+    }
+
+    const backlogOrigin =
+      tier === 'backlog' && originId ? this.queue.getBacklogTask(originId) : undefined;
+    if (tier === 'backlog' && originId && !backlogOrigin) {
+      return {
+        success: false,
+        repo: repositoryName,
+        error: `Backlog task ${originId} not found`,
+        code: 'EXECUTION_FAILED',
+      };
+    }
+    if (backlogOrigin && !BACKLOG_DISPATCHABLE_STATUSES.has(backlogOrigin.status)) {
+      return {
+        success: false,
+        repo: repositoryName,
+        error: `Backlog task ${originId} is ${backlogOrigin.status}; only a pending, failed or running item can be queued`,
+        code: 'ORIGIN_NOT_DISPATCHABLE',
+      };
+    }
+
+    // A live run already holds the origin's last attempt; stacking behind it is the only way in.
+    const stackedRun = backlogOrigin?.status === 'dispatched';
+    if (backlogOrigin && !stackedRun && backlogOrigin.attemptCount >= backlogOrigin.maxAttempts) {
+      return {
+        success: false,
+        repo: repositoryName,
+        error: `Backlog task ${originId} has spent all ${backlogOrigin.maxAttempts} of its attempts`,
+        code: 'ORIGIN_NOT_DISPATCHABLE',
       };
     }
 
@@ -1076,17 +1187,23 @@ export class Coordinator {
     const dispatchCascade: CascadeHop[] = [{ model: concreteModel, effort }, ...failoverHops];
     const requiredLabels = req.requiredLabels ?? [];
 
-    const tier: TaskTier = req.tier ?? 'immediate';
-    const originId = req.originId ?? req.standingTaskId;
-    const originNumber = req.originNumber;
-    const originTitle = req.originTitle;
     const title = req.title;
 
     if (tier === 'immediate') {
       this.setLastManualDispatchAt(Date.now());
     }
 
-    const task = this.queue.enqueue({
+    const routinePool =
+      tier === 'routine'
+        ? findPoolForGroup(this.getActivePools(), resolvePoolGroupForModel(concreteModel))
+        : undefined;
+    const expiresAt =
+      req.expiresAt ??
+      (tier === 'backlog'
+        ? new Date(Date.now() + BACKLOG_QUEUE_TTL_MS).toISOString()
+        : this.preResetExpiry(routinePool));
+
+    const enqueueInput: EnqueueTaskInput = {
       repositoryId: repoId,
       repositoryName: repoDisplayName,
       repositoryPath: repoPath,
@@ -1098,6 +1215,7 @@ export class Coordinator {
       originId,
       originNumber,
       originTitle,
+      originIssueNumber: backlogOrigin?.githubIssueNumber ?? undefined,
       requestedBy: req.requestedBy || 'web-ui',
       prPolicy: req.prPolicy ?? resolved.prPolicy,
       scheduleMode,
@@ -1106,9 +1224,27 @@ export class Coordinator {
       allowOverage,
       pushBranch: req.pushBranch ?? true,
       autoCreatePr: req.autoCreatePr ?? true,
-      expiresAt: req.expiresAt,
+      expiresAt,
       verifyCommand: req.verifyCommand,
-    });
+    };
+
+    // Queueing behind a live run is not a retry, so it inherits the spent attempt.
+    const task = backlogOrigin
+      ? this.queue.spawnBacklogTask(enqueueInput, {
+          id: backlogOrigin.id,
+          attemptCount: stackedRun
+            ? backlogOrigin.attemptCount
+            : Math.min(backlogOrigin.attemptCount + 1, backlogOrigin.maxAttempts),
+        })
+      : this.queue.enqueue(enqueueInput);
+
+    if (stackedRun) {
+      this.log.info(
+        'Task %s stacked behind the run already executing backlog #%d',
+        task.id,
+        backlogOrigin.taskNumber
+      );
+    }
 
     const plannedBranch = buildContinuationBranchName(
       task.id,
@@ -1158,6 +1294,8 @@ export class Coordinator {
   }
 
   public async retryTask(task: SwarmTask): Promise<DispatchTaskResponse> {
+    const expiresAt =
+      task.expiresAt && Date.parse(task.expiresAt) > Date.now() ? task.expiresAt : undefined;
     const result = await this.dispatch({
       repositoryId: task.repositoryId,
       repositoryName: task.repositoryName,
@@ -1174,24 +1312,15 @@ export class Coordinator {
       scheduleMode: task.scheduleMode,
       cascade: task.cascade,
       requiredLabels: task.requiredLabels,
-      expiresAt: task.expiresAt,
+      expiresAt,
       allowOverage: task.allowOverage,
       pushBranch: task.pushBranch,
       autoCreatePr: task.autoCreatePr,
       verifyCommand: task.verifyCommand,
     });
 
-    if (result.success && result.taskId) {
-      if (task.tier === 'backlog' && task.originId) {
-        this.queue.updateBacklogTask(task.originId, {
-          status: 'dispatched',
-          swarmTaskId: result.taskId,
-          lastError: null,
-        });
-      }
-      if (task.tier === 'routine' && task.originId) {
-        this.queue.updateRoutineTask(task.originId, { lastTaskId: result.taskId });
-      }
+    if (result.success && result.taskId && task.tier === 'routine' && task.originId) {
+      this.queue.updateRoutineTask(task.originId, { lastTaskId: result.taskId });
     }
 
     return result;
@@ -1371,21 +1500,108 @@ export class Coordinator {
     });
   }
 
-  private applyBacklogOutcome(originId: string, status: TaskStatus, error?: string): void {
+  private backlogIssueRepoSlug(origin: BacklogTaskRecord): string | undefined {
+    if (OWNER_REPO_SLUG_RE.test(origin.repositoryId)) return origin.repositoryId;
+    const repo = this.configStore
+      .resolveConfig()
+      .repositories.find((entry) => entry.id === origin.repositoryId);
+    const fromCloneUrl = parseGithubSlugFromUrl(repo?.cloneUrl);
+    if (fromCloneUrl) return fromCloneUrl;
+    if (!origin.githubIssueUrl) return undefined;
+    let parsed: URL;
     try {
-      const backlogTask = this.queue.getBacklogTask(originId);
+      parsed = new URL(origin.githubIssueUrl.trim());
+    } catch {
+      return undefined;
+    }
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
+    const host = parsed.hostname.toLowerCase();
+    if (host !== 'github.com' && host !== 'www.github.com') return undefined;
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (
+      segments.length !== 4 ||
+      segments[2]?.toLowerCase() !== 'issues' ||
+      !/^\d+$/.test(segments[3] ?? '') ||
+      segments[0] === '.' ||
+      segments[0] === '..' ||
+      segments[1] === '.' ||
+      segments[1] === '..'
+    ) {
+      return undefined;
+    }
+    const slug = `${segments[0]}/${segments[1]}`;
+    return OWNER_REPO_SLUG_RE.test(slug) ? slug : undefined;
+  }
+
+  private async clearBacklogLabelForPr(originId: string): Promise<void> {
+    const origin = this.queue.getBacklogTask(originId);
+    const issueNumber = origin?.githubIssueNumber;
+    if (!origin || !issueNumber) return;
+
+    const repoSlug = this.backlogIssueRepoSlug(origin);
+    if (!repoSlug) return;
+
+    const resolved = this.configStore.resolveConfig();
+    const label = resolved.githubBacklogLabel || 'backlog';
+    const outcome = await this.issueLabelRemover({
+      repoSlug,
+      issueNumber,
+      label,
+      token: resolved.githubToken,
+    });
+    if (outcome === 'failed') {
+      this.log.warn(
+        'Could not remove label "%s" from %s#%d after the PR opened',
+        label,
+        repoSlug,
+        issueNumber
+      );
+      return;
+    }
+    this.log.info(
+      'Removed label "%s" from %s#%d: a PR covers it now',
+      label,
+      repoSlug,
+      issueNumber
+    );
+  }
+
+  private applyBacklogOutcome(outcome: {
+    originId: string;
+    taskId?: string;
+    status: TaskStatus;
+    claimed: boolean;
+    error?: string;
+  }): void {
+    try {
+      const backlogTask = this.queue.getBacklogTask(outcome.originId);
       if (
         !backlogTask ||
         backlogTask.status === 'completed' ||
         backlogTask.status === 'failed' ||
-        backlogTask.status === 'canceled' ||
-        backlogTask.status === 'paused'
+        backlogTask.status === 'canceled'
       ) {
         return;
       }
 
-      if (status === 'completed' || status === 'no_changes') {
-        this.queue.updateBacklogTask(originId, { status: 'completed', lastError: null });
+      // Stacked runs settle the row once, when the last of them is done. When a cancelled run
+      // carries the refundable attempt flag, hand it to a surviving sibling so it is not lost.
+      if (outcome.taskId && this.queue.hasActiveTaskForOrigin(outcome.originId, outcome.taskId)) {
+        if (outcome.status === 'aborted') {
+          this.queue.transferSpawnSpentAttempt(outcome.taskId, outcome.originId);
+        }
+        return;
+      }
+
+      const delivered = outcome.status === 'completed' || outcome.status === 'no_changes';
+      const error = outcome.error || 'Execution failed';
+
+      if (delivered) {
+        this.queue.updateBacklogTask(outcome.originId, {
+          status: 'completed',
+          lastError: null,
+          swarmTaskId: null,
+        });
         this.log.info(
           'Backlog task #%d (%s) marked completed',
           backlogTask.taskNumber,
@@ -1394,24 +1610,48 @@ export class Coordinator {
         return;
       }
 
-      if (status !== 'failed' && status !== 'aborted') return;
+      if (outcome.status !== 'failed' && outcome.status !== 'aborted') return;
 
-      if (backlogTask.attemptCount < backlogTask.maxAttempts) {
-        this.queue.updateBacklogTask(originId, {
-          status: 'pending',
-          lastError: error || 'Execution failed',
-        });
+      if (backlogTask.status === 'paused') {
+        this.queue.updateBacklogTask(outcome.originId, { lastError: error, swarmTaskId: null });
         this.log.warn(
-          'Backlog task #%d (%s) returned to pending for retry (attempt %d/%d)',
+          'Backlog task #%d (%s) finished %s while paused; the item stays paused',
           backlogTask.taskNumber,
           backlogTask.title,
-          backlogTask.attemptCount,
-          backlogTask.maxAttempts
+          outcome.status
         );
-      } else {
-        this.queue.updateBacklogTask(originId, {
+        return;
+      }
+
+      // An earlier stacked run of this origin already delivered: close the item as completed
+      // instead of returning it to pending and re-dispatching a duplicate PR.
+      if (this.queue.hasDeliveredRunForOrigin(outcome.originId)) {
+        this.queue.updateBacklogTask(outcome.originId, {
+          status: 'completed',
+          lastError: null,
+          swarmTaskId: null,
+        });
+        this.log.info(
+          'Backlog task #%d (%s) marked completed; an earlier stacked run already delivered',
+          backlogTask.taskNumber,
+          backlogTask.title
+        );
+        return;
+      }
+
+      const spentAttempt = outcome.status === 'failed' && outcome.claimed;
+      const refundable =
+        !spentAttempt && outcome.taskId ? this.queue.taskSpawnSpentAttempt(outcome.taskId) : false;
+      const attemptCount = refundable
+        ? Math.max(0, backlogTask.attemptCount - 1)
+        : backlogTask.attemptCount;
+
+      if (spentAttempt && backlogTask.attemptCount >= backlogTask.maxAttempts) {
+        this.queue.updateBacklogTask(outcome.originId, {
           status: 'failed',
-          lastError: error || 'Max retry attempts exceeded',
+          attemptCount,
+          lastError: error,
+          swarmTaskId: null,
         });
         this.log.warn(
           'Backlog task #%d (%s) marked failed after exhausting %d attempts',
@@ -1419,7 +1659,35 @@ export class Coordinator {
           backlogTask.title,
           backlogTask.maxAttempts
         );
+        return;
       }
+
+      const settled = this.queue.updateBacklogTask(outcome.originId, {
+        status: 'pending',
+        attemptCount,
+        lastError: error,
+        swarmTaskId: null,
+      });
+      if (settled?.status === 'failed') {
+        this.log.warn(
+          'Backlog task #%d (%s) marked failed after exhausting %d attempts: %s',
+          backlogTask.taskNumber,
+          backlogTask.title,
+          backlogTask.maxAttempts,
+          error
+        );
+        return;
+      }
+      this.log.warn(
+        refundable
+          ? 'Backlog task #%d (%s) returned to pending with the attempt handed back (%d/%d): %s'
+          : 'Backlog task #%d (%s) returned to pending for retry (attempt %d/%d): %s',
+        backlogTask.taskNumber,
+        backlogTask.title,
+        attemptCount,
+        backlogTask.maxAttempts,
+        error
+      );
     } catch (backlogStatusErr) {
       this.log.error('Error updating backlog task status: %s', backlogStatusErr);
     }
@@ -1430,11 +1698,13 @@ export class Coordinator {
     for (const origin of this.queue.listDispatchedBacklogTasks()) {
       const swarmTask = origin.swarmTaskId ? this.queue.getTask(origin.swarmTaskId) : undefined;
       if (swarmTask && !isTerminalTaskStatus(swarmTask.status)) continue;
-      this.applyBacklogOutcome(
-        origin.id,
-        swarmTask ? swarmTask.status : 'failed',
-        swarmTask?.error || 'Task ended without a status report'
-      );
+      this.applyBacklogOutcome({
+        originId: origin.id,
+        taskId: swarmTask?.id,
+        status: swarmTask ? swarmTask.status : 'failed',
+        claimed: swarmTask ? Boolean(swarmTask.claimedAt) : true,
+        error: swarmTask?.error || 'Task ended without a status report',
+      });
       if (this.queue.getBacklogTask(origin.id)?.status !== 'dispatched') settled++;
     }
     return settled;
@@ -1480,8 +1750,33 @@ export class Coordinator {
             ? `Task ${updated.id} failed: ${updated.error || 'Unknown error'}`
             : `Executing task ${updated.id} on ${updated.repositoryName} (${updated.model})`;
 
+    if (isTerminalTaskStatus(updated.status)) {
+      const deliverables = [updated.prUrl, ...(updated.issueUrls ?? [])].filter(Boolean);
+      this.log.info(
+        'Task %s settled as %s on %s in %s%s',
+        updated.id,
+        updated.status,
+        updated.repositoryName,
+        updated.durationMs !== undefined
+          ? `${Math.round(updated.durationMs / 1000)}s`
+          : 'unknown time',
+        deliverables.length > 0 ? ` (${deliverables.join(' ')})` : ''
+      );
+    }
+
     if (updated.tier === 'backlog' && updated.originId) {
-      this.applyBacklogOutcome(updated.originId, updated.status, updated.error);
+      this.applyBacklogOutcome({
+        originId: updated.originId,
+        taskId: updated.id,
+        status: updated.status,
+        claimed: Boolean(updated.claimedAt),
+        error: updated.error,
+      });
+      if (updated.prUrl && isTerminalTaskStatus(updated.status)) {
+        void this.clearBacklogLabelForPr(updated.originId).catch((labelErr) =>
+          this.log.warn('Could not clear the backlog label on %s: %s', updated.originId, labelErr)
+        );
+      }
     }
 
     await this.notifyBestEffort({

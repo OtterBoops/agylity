@@ -53,20 +53,19 @@ const dispatchBacklogTask = (coordinator: Coordinator, dir: string) => {
     repositoryId: 'agylity',
     cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
   });
-  const task = coordinator.queue.enqueue({
-    repositoryId: 'agylity',
-    repositoryName: 'agylity',
-    repositoryPath: dir,
-    prompt: 'Do the thing',
-    cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
-    tier: 'backlog',
-    originId: backlog.id,
-  });
-  coordinator.queue.updateBacklogTask(backlog.id, {
-    status: 'dispatched',
-    attemptCount: 1,
-    swarmTaskId: task.id,
-  });
+  // Spawned through the real path so the run records that its spawn spent the attempt.
+  const task = coordinator.queue.spawnBacklogTask(
+    {
+      repositoryId: 'agylity',
+      repositoryName: 'agylity',
+      repositoryPath: dir,
+      prompt: 'Do the thing',
+      cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      tier: 'backlog',
+      originId: backlog.id,
+    },
+    { id: backlog.id, attemptCount: 1 }
+  );
   return { backlog, task };
 };
 
@@ -122,6 +121,12 @@ describe('Tier lifecycle: backlog origins are never stranded', () => {
     const { db, coordinator } = makeCoordinator(dir);
     try {
       const { backlog, task } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
       coordinator.queue.updateBacklogTask(backlog.id, { attemptCount: 2 });
       coordinator.queue.updateTaskStatus(task.id, { status: 'failed', error: 'agy exploded' });
       coordinator.reconcileBacklogOrigins();
@@ -542,6 +547,625 @@ describe('Runner: a mounted working copy is never destroyed', () => {
         false
       );
       assert.equal(res.success, true);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Tier lifecycle: origin runs stack, execution serialized', () => {
+  it('hands the attempt back when an unclaimed queued run is cancelled', async () => {
+    const { dir, cleanup } = makeTempDir('tier_cancel_unclaimed_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      const { backlog, task } = dispatchBacklogTask(coordinator, dir);
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      await coordinator.cancelTask(task.id);
+
+      const row = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(row?.status, 'pending');
+      assert.equal(row?.attemptCount, 0);
+      assert.equal(row?.swarmTaskId, undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('settles a run that ends while its origin is paused without re-arming it', async () => {
+    const { dir, cleanup } = makeTempDir('tier_paused_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      const { backlog, task } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
+      coordinator.queue.updateBacklogTask(backlog.id, { status: 'paused' });
+
+      await coordinator.reportTaskStatus(task.id, { status: 'failed', error: 'agy exploded' });
+
+      const row = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(row?.status, 'paused');
+      assert.equal(row?.lastError, 'agy exploded');
+      assert.equal(row?.swarmTaskId, undefined);
+      assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('spends the attempt on retry and stacks a second retry behind the live one', async () => {
+    const { dir, cleanup } = makeTempDir('tier_retry_attempt_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task } = dispatchBacklogTask(coordinator, dir);
+      coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
+      await coordinator.reportTaskStatus(task.id, { status: 'failed', error: 'boom' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'pending');
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      const retry = await coordinator.retryTask(coordinator.queue.getTask(task.id)!);
+      assert.equal(retry.success, true);
+
+      const row = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(row?.status, 'dispatched');
+      assert.equal(row?.attemptCount, 2);
+      assert.equal(row?.swarmTaskId, retry.taskId);
+
+      const again = await coordinator.retryTask(coordinator.queue.getTask(task.id)!);
+      assert.equal(again.success, true);
+      assert.notEqual(again.taskId, retry.taskId);
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 2);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('runs stacked origin runs one at a time and settles the origin once', async () => {
+    const { dir, cleanup } = makeTempDir('tier_stacked_runs_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task } = dispatchBacklogTask(coordinator, dir);
+
+      const stacked = coordinator.queue.enqueue({
+        repositoryId: 'agylity',
+        repositoryName: 'agylity',
+        repositoryPath: dir,
+        prompt: 'Do the thing',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        tier: 'backlog',
+        originId: backlog.id,
+      });
+      coordinator.queue.updateBacklogTask(backlog.id, { swarmTaskId: stacked.id });
+
+      const first = coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
+      assert.equal(first?.id, task.id);
+      const second = coordinator.queue.claimNext({
+        runnerId: 'r2',
+        runnerName: 'r2',
+        labels: [],
+        repositories: [],
+      });
+      assert.equal(second, null);
+
+      await coordinator.reportTaskStatus(task.id, { status: 'completed' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+
+      coordinator.queue.claimNext({
+        runnerId: 'r2',
+        runnerName: 'r2',
+        labels: [],
+        repositories: [],
+      });
+      await coordinator.reportTaskStatus(stacked.id, { status: 'completed' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'completed');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('stacks a manual dispatch behind the live run and stamps an expiry', async () => {
+    const { dir, cleanup } = makeTempDir('tier_manual_dispatch_');
+    const { db, configStore, coordinator } = makeCoordinator(dir);
+    const { server, port } = await startWebServer({
+      configStore,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const base = `http://127.0.0.1:${port}`;
+      const created = await ky
+        .post(`${base}/api/backlog`, {
+          json: { title: 'Manual', prompt: 'Do it', repositoryId: 'agylity' },
+          throwHttpErrors: false,
+        })
+        .json<{ id: string }>();
+
+      const first = await ky.post(
+        `${base}/api/backlog/${encodeURIComponent(created.id)}/dispatch`,
+        {
+          throwHttpErrors: false,
+        }
+      );
+      assert.equal(first.status, 200);
+      const firstBody = (await first.json()) as { taskId: string };
+      assert.equal(coordinator.queue.getBacklogTask(created.id)?.attemptCount, 1);
+      assert.ok(coordinator.queue.getTask(firstBody.taskId)?.expiresAt);
+
+      const second = await ky.post(
+        `${base}/api/backlog/${encodeURIComponent(created.id)}/dispatch`,
+        { throwHttpErrors: false }
+      );
+      assert.equal(second.status, 200);
+      const secondBody = (await second.json()) as { taskId: string };
+      assert.notEqual(secondBody.taskId, firstBody.taskId);
+      assert.equal(coordinator.queue.listActiveBacklogTasks().length, 2);
+      assert.equal(coordinator.queue.getBacklogTask(created.id)?.attemptCount, 1);
+      assert.equal(coordinator.queue.getBacklogTask(created.id)?.swarmTaskId, secondBody.taskId);
+    } finally {
+      await closeWebServer(server);
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('carries the origin issue number onto the run and drops the backlog label once a PR opens', async () => {
+    const { dir, cleanup } = makeTempDir('tier_issue_label_');
+    const { db, configStore } = makeCoordinator(dir);
+    const removed: Array<{ repoSlug: string; issueNumber: number; label: string }> = [];
+    const coordinator = new Coordinator({
+      configStore,
+      issueLabelRemover: async (params) => {
+        removed.push({
+          repoSlug: params.repoSlug,
+          issueNumber: params.issueNumber,
+          label: params.label,
+        });
+        return 'cli';
+      },
+    });
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const backlog = coordinator.queue.createBacklogTask({
+        title: 'Linked item',
+        prompt: 'Do the thing',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      coordinator.queue.updateBacklogTask(backlog.id, {
+        githubIssueNumber: 25,
+        githubIssueUrl: 'https://github.com/OtterBoops/agylity/issues/25',
+      });
+
+      const dispatched = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Do the thing',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(dispatched.success, true);
+      assert.equal(coordinator.queue.getTask(dispatched.taskId!)?.originIssueNumber, 25);
+
+      await coordinator.reportTaskStatus(dispatched.taskId!, {
+        status: 'completed',
+        prUrl: 'https://github.com/OtterBoops/agylity/pull/9',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      assert.deepEqual(removed, [
+        { repoSlug: 'OtterBoops/agylity', issueNumber: 25, label: 'backlog' },
+      ]);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('refuses to dispatch an item that no longer owes a run', async () => {
+    const { dir, cleanup } = makeTempDir('tier_dispatch_settled_');
+    const { db, configStore, coordinator } = makeCoordinator(dir);
+    const { server, port } = await startWebServer({
+      configStore,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+    try {
+      const created = await ky
+        .post(`http://127.0.0.1:${port}/api/backlog`, {
+          json: { title: 'Done', prompt: 'Already done', repositoryId: 'agylity' },
+          throwHttpErrors: false,
+        })
+        .json<{ id: string }>();
+      coordinator.queue.updateBacklogTask(created.id, { status: 'completed' });
+
+      const res = await ky.post(
+        `http://127.0.0.1:${port}/api/backlog/${encodeURIComponent(created.id)}/dispatch`,
+        { throwHttpErrors: false }
+      );
+      assert.equal(res.status, 409);
+      const body = (await res.json()) as { code?: string };
+      assert.equal(body.code, 'ORIGIN_NOT_DISPATCHABLE');
+      assert.equal(coordinator.queue.listActiveBacklogTasks().length, 0);
+    } finally {
+      await closeWebServer(server);
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('closes the origin as completed when a later stacked run fails after an earlier stacked run delivered', async () => {
+    const { dir, cleanup } = makeTempDir('tier_stacked_delivered_fail_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task: first } = dispatchBacklogTask(coordinator, dir);
+
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind the live run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.attemptCount, 1);
+      assert.equal(origin?.swarmTaskId, second.taskId);
+
+      // The first run delivers while the stacked run is still live: the origin stays dispatched.
+      await coordinator.reportTaskStatus(first.id, {
+        status: 'completed',
+        prUrl: 'https://github.com/OtterBoops/agylity/pull/1',
+      });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+
+      // The stacked run then fails: the earlier delivery must win, so the item closes as
+      // completed instead of returning to pending and opening a duplicate PR.
+      await coordinator.reportTaskStatus(second.taskId!, { status: 'failed', error: 'boom' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'completed');
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.swarmTaskId, undefined);
+      assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('closes the origin as completed when a later stacked run expires after an earlier stacked run delivered', async () => {
+    const { dir, cleanup } = makeTempDir('tier_stacked_delivered_expire_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task: first } = dispatchBacklogTask(coordinator, dir);
+
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind the live run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      await coordinator.reportTaskStatus(first.id, {
+        status: 'completed',
+        prUrl: 'https://github.com/OtterBoops/agylity/pull/1',
+      });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+
+      const pastIso = new Date(Date.now() - 60_000).toISOString();
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+        .run(pastIso, second.taskId!);
+      coordinator.reapStaleClaims();
+      assert.equal(coordinator.queue.getTask(second.taskId!)?.status, 'aborted');
+
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'completed');
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.swarmTaskId, undefined);
+      assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('refunds a spent attempt when its run expires after a stacked run reclaimed the pointer', async () => {
+    const { dir, cleanup } = makeTempDir('tier_refund_spent_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task: first } = dispatchBacklogTask(coordinator, dir);
+      // `first` is queued and unclaimed: its spawn spent the attempt.
+
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind the queued run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      // The stacked run fails first while `first` is still live, so the origin stays untouched.
+      await coordinator.reportTaskStatus(second.taskId!, { status: 'failed', error: 'boom' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      const pastIso = new Date(Date.now() - 60_000).toISOString();
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+        .run(pastIso, first.id);
+      coordinator.reapStaleClaims();
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'pending');
+      assert.equal(origin?.attemptCount, 0);
+      assert.equal(origin?.swarmTaskId, undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('does not hand back an attempt a stacked run never spent', async () => {
+    const { dir, cleanup } = makeTempDir('tier_stacked_no_refund_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task: first } = dispatchBacklogTask(coordinator, dir);
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind the live run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      // The first run settles while the stack is live, so its outcome is deferred.
+      await coordinator.reportTaskStatus(first.id, { status: 'failed', error: 'boom' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+
+      // The stacked run never spent an attempt, so settling it must not refund one.
+      await coordinator.reportTaskStatus(second.taskId!, { status: 'aborted', error: 'stopped' });
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'pending');
+      assert.equal(origin?.attemptCount, 1);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('does not refund an attempt when a stacked run expires unclaimed', async () => {
+    const { dir, cleanup } = makeTempDir('tier_no_refund_unspent_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const { backlog, task: first } = dispatchBacklogTask(coordinator, dir);
+
+      coordinator.queue.claimNext({
+        runnerId: 'r1',
+        runnerName: 'r1',
+        labels: [],
+        repositories: [],
+      });
+
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind the live run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      await coordinator.reportTaskStatus(first.id, { status: 'failed', error: 'boom' });
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.attemptCount, 1);
+
+      // `second` is a stacked spawn: it consumed no attempt. Expiring it must release the pointer
+      // and return the item to pending with its attempt count intact (no free retry handed back).
+      const pastIso = new Date(Date.now() - 60_000).toISOString();
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+        .run(pastIso, second.taskId!);
+      coordinator.reapStaleClaims();
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'pending');
+      assert.equal(origin?.attemptCount, 1);
+      assert.equal(origin?.swarmTaskId, undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('transfers spawn_spent_attempt to a stacked sibling when T1 expires unclaimed', async () => {
+    const { dir, cleanup } = makeTempDir('tier_transfer_expire_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const backlog = coordinator.queue.createBacklogTask({
+        title: 'Single-attempt backlog item',
+        prompt: 'Do it once',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        maxAttempts: 1,
+      });
+      const first = coordinator.queue.spawnBacklogTask(
+        {
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Do it once',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          tier: 'backlog',
+          originId: backlog.id,
+        },
+        { id: backlog.id, attemptCount: 1 }
+      );
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind T1',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      // T1 expires unclaimed while T2 is still queued -> attempt credit transfers to T2.
+      const pastIso = new Date(Date.now() - 60_000).toISOString();
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+        .run(pastIso, first.id);
+      coordinator.reapStaleClaims();
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+      assert.equal(coordinator.queue.taskSpawnSpentAttempt(first.id), false);
+      assert.equal(coordinator.queue.taskSpawnSpentAttempt(second.taskId!), true);
+
+      // T2 also expires unclaimed -> attempt is refunded instead of settling failed with 0 claims.
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+        .run(pastIso, second.taskId!);
+      coordinator.reapStaleClaims();
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'pending');
+      assert.equal(origin?.attemptCount, 0);
+      assert.equal(origin?.swarmTaskId, undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('transfers spawn_spent_attempt to a stacked sibling when T1 is cancelled', async () => {
+    const { dir, cleanup } = makeTempDir('tier_transfer_cancel_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const backlog = coordinator.queue.createBacklogTask({
+        title: 'Cancel-transfer item',
+        prompt: 'Do it once',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        maxAttempts: 1,
+      });
+      const first = coordinator.queue.spawnBacklogTask(
+        {
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Do it once',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          tier: 'backlog',
+          originId: backlog.id,
+        },
+        { id: backlog.id, attemptCount: 1 }
+      );
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked behind T1',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      await coordinator.cancelTask(first.id);
+      assert.equal(coordinator.queue.getBacklogTask(backlog.id)?.status, 'dispatched');
+      assert.equal(coordinator.queue.taskSpawnSpentAttempt(second.taskId!), true);
+
+      await coordinator.cancelTask(second.taskId!);
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'pending');
+      assert.equal(origin?.attemptCount, 0);
+      assert.equal(origin?.swarmTaskId, undefined);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('settles origin when the last queued task expires even if swarm_task_id points elsewhere', async () => {
+    const { dir, cleanup } = makeTempDir('tier_expire_nonprimary_');
+    const { db, coordinator } = makeCoordinator(dir);
+    try {
+      coordinator.onQuotaUpdated([poolAt('gemini', 0.9, 40)]);
+      const backlog = coordinator.queue.createBacklogTask({
+        title: 'Non-primary expiry item',
+        prompt: 'Do it',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        maxAttempts: 1,
+      });
+      const first = coordinator.queue.spawnBacklogTask(
+        {
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Do it',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          tier: 'backlog',
+          originId: backlog.id,
+        },
+        { id: backlog.id, attemptCount: 1 }
+      );
+      const second = await coordinator.dispatch({
+        repositoryId: 'agylity',
+        prompt: 'Stacked run',
+        tier: 'backlog',
+        originId: backlog.id,
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      assert.equal(second.success, true);
+
+      // Claim and fail T2 so origin.swarmTaskId points to T2 (terminal) while T1 is still queued.
+      // Clear T1's spawn_spent_attempt to simulate a non-spending non-primary last task expiring.
+      db.getRawDb()
+        .prepare("UPDATE swarm_tasks SET status = 'failed', claimed_at = ? WHERE id = ?")
+        .run(new Date().toISOString(), second.taskId!);
+      db.getRawDb()
+        .prepare('UPDATE swarm_tasks SET spawn_spent_attempt = 0, expires_at = ? WHERE id = ?')
+        .run(new Date(Date.now() - 60_000).toISOString(), first.id);
+
+      coordinator.reapStaleClaims();
+
+      const origin = coordinator.queue.getBacklogTask(backlog.id);
+      assert.equal(origin?.status, 'failed');
+      assert.equal(origin?.attemptCount, 1);
+      assert.equal(origin?.swarmTaskId, undefined);
     } finally {
       db.close();
       cleanup();

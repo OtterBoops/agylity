@@ -4,6 +4,7 @@ import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { isHttpUrl } from '../shared/urls.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { tailWindow } from '../shared/text.js';
 import { PR_POLICY_VALUES } from '../shared/contracts.js';
@@ -44,13 +45,14 @@ export type {
   SwarmTask,
 };
 
-interface EnqueueTaskInput {
+export interface EnqueueTaskInput {
   id?: string;
   taskNumber?: number;
   title?: string;
   tier?: TaskTier;
   originId?: string;
   originNumber?: number;
+  originIssueNumber?: number;
   originTitle?: string;
   repositoryId?: string;
   repositoryName: string;
@@ -156,6 +158,15 @@ const coerceCascade = (value: unknown, fallbackModel?: string): CascadeHop[] =>
 
 const coerceNumber = (value: unknown, fallback: number): number =>
   typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+
+// Attempt bookkeeping is a domain invariant, not a caller's choice: a row may never carry a negative
+// number of spent attempts or fewer than one allowed attempt.
+const coerceAttempts = (value: unknown, fallback: number, minimum: number): number =>
+  Math.max(minimum, Math.trunc(coerceNumber(value, fallback)));
+
+// The scheduler only selects attempt_count < max_attempts, so a refund at the cap must settle terminal.
+const settleStatusForAttempts = (attemptCount: number, maxAttempts: number): BacklogStatus =>
+  attemptCount >= maxAttempts ? 'failed' : 'pending';
 
 const coerceNullableNumber = (value: unknown, fallback: number | null): number | null => {
   if (value === null) return null;
@@ -545,7 +556,13 @@ export class TaskQueue {
   ): SwarmTask {
     const id = input.id ?? `task-${Date.now()}-${randomBytes(3).toString('hex')}`;
     this.inTransaction(() => {
-      this.insertTaskRow(id, input);
+      const current = this.getBacklogTask(origin.id);
+      if (!current) {
+        throw new Error(`Backlog origin ${origin.id} no longer exists`);
+      }
+      // Only a fresh dispatch consumes an attempt; a stacked spawn reuses the count.
+      const spawnSpentAttempt = origin.attemptCount > current.attemptCount;
+      this.insertTaskRow(id, input, spawnSpentAttempt);
       const settled = this.rawDb
         .prepare(
           `UPDATE backlog_tasks
@@ -566,7 +583,7 @@ export class TaskQueue {
   }
 
   // Assumes the caller holds the write transaction, so a spawn can add its own origin write to it.
-  private insertTaskRow(id: string, input: EnqueueTaskInput): void {
+  private insertTaskRow(id: string, input: EnqueueTaskInput, spawnSpentAttempt = false): void {
     const now = new Date().toISOString();
     const repoId = (input.repositoryId || input.repositoryName).trim();
     const repoName = input.repositoryName.trim();
@@ -593,17 +610,18 @@ export class TaskQueue {
     const originId = input.originId ?? null;
     const originNumber = input.originNumber ?? null;
     const originTitle = input.originTitle ?? null;
+    const originIssueNumber = input.originIssueNumber ?? null;
 
     const taskNumber = input.taskNumber ?? this.nextTaskNumber('swarm_tasks');
     this.rawDb
       .prepare(
         `INSERT INTO swarm_tasks (
-        id, task_number, title, tier, origin_id, origin_number, origin_title,
+        id, task_number, title, tier, origin_id, origin_number, origin_title, origin_issue_number,
         created_at, updated_at, repository_id, repository_name, repository_path,
         clone_url, default_branch, prompt, requested_by, pr_policy, schedule_mode,
         required_labels_json, model, candidate_models_json, pool_group, effort, allow_overage,
-        push_branch, auto_create_pr, expires_at, verify_command, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued')`
+        push_branch, auto_create_pr, expires_at, verify_command, spawn_spent_attempt
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -613,6 +631,7 @@ export class TaskQueue {
         originId,
         originNumber,
         originTitle,
+        originIssueNumber,
         now,
         now,
         repoId,
@@ -633,7 +652,8 @@ export class TaskQueue {
         pushBranch ? 1 : 0,
         autoCreatePr ? 1 : 0,
         input.expiresAt ?? null,
-        input.verifyCommand ?? null
+        input.verifyCommand ?? null,
+        bitFlag(spawnSpentAttempt)
       );
   }
 
@@ -692,14 +712,77 @@ export class TaskQueue {
     return row ? this.mapRowToTask(row) : undefined;
   }
 
-  public hasActiveTaskForOrigin(originId: string): boolean {
+  // A delivered run or an open PR finishes the origin; a later failed stacked run must not re-dispatch it.
+  public hasDeliveredRunForOrigin(originId: string): boolean {
+    const row = this.rawDb
+      .prepare(
+        `SELECT 1 AS delivered FROM swarm_tasks
+         WHERE origin_id = ? AND (status IN ('completed', 'no_changes') OR pr_url IS NOT NULL)
+         LIMIT 1`
+      )
+      .get(originId) as { delivered?: number } | undefined;
+    return row?.delivered === 1;
+  }
+
+  // Whether this task's own spawn consumed a backlog attempt (stacked spawns never do).
+  public taskSpawnSpentAttempt(taskId: string): boolean {
+    const row = this.rawDb
+      .prepare('SELECT spawn_spent_attempt FROM swarm_tasks WHERE id = ?')
+      .get(taskId) as { spawn_spent_attempt?: number } | undefined;
+    return Number(row?.spawn_spent_attempt) === 1;
+  }
+
+  /** Hands a refundable spawn-attempt flag to one surviving active sibling for the same origin. */
+  public transferSpawnSpentAttempt(fromTaskId: string, originId: string): boolean {
+    return this.inTransaction(() => {
+      if (!this.taskSpawnSpentAttempt(fromTaskId)) return false;
+      const recipient = this.rawDb
+        .prepare(
+          `SELECT id FROM swarm_tasks
+           WHERE origin_id = ? AND id != ? AND status NOT IN (${TERMINAL_STATUS_SQL})
+             AND spawn_spent_attempt = 0
+           ORDER BY created_at ASC, rowid ASC
+           LIMIT 1`
+        )
+        .get(originId, fromTaskId) as { id?: string } | undefined;
+      if (!recipient?.id) return false;
+      this.rawDb
+        .prepare('UPDATE swarm_tasks SET spawn_spent_attempt = 0 WHERE id = ?')
+        .run(fromTaskId);
+      this.rawDb
+        .prepare('UPDATE swarm_tasks SET spawn_spent_attempt = 1 WHERE id = ?')
+        .run(recipient.id);
+      return true;
+    });
+  }
+
+  private refundBacklogAttempt(origin: BacklogTaskRecord, error: string, now: string): void {
+    const attemptCount = Math.max(0, origin.attemptCount - 1);
+    this.rawDb
+      .prepare(
+        `UPDATE backlog_tasks
+         SET status = ?, attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        settleStatusForAttempts(attemptCount, origin.maxAttempts),
+        attemptCount,
+        error,
+        now,
+        origin.id
+      );
+  }
+
+  public hasActiveTaskForOrigin(originId: string, excludeTaskId?: string): boolean {
     const row = this.rawDb
       .prepare(
         `SELECT 1 AS active FROM swarm_tasks
          WHERE origin_id = ? AND status NOT IN (${TERMINAL_STATUS_SQL})
+         ${excludeTaskId ? 'AND id != ?' : ''}
          LIMIT 1`
       )
-      .get(originId) as { active?: number } | undefined;
+      .get(...(excludeTaskId ? [originId, excludeTaskId] : [originId])) as
+      { active?: number } | undefined;
     return row?.active === 1;
   }
 
@@ -751,9 +834,9 @@ export class TaskQueue {
     if (term) {
       const pattern = `%${TaskQueue.escapeLikeTerm(term)}%`;
       conditions.push(
-        "(title LIKE ? ESCAPE '\\' OR repository_name LIKE ? ESCAPE '\\' OR origin_title LIKE ? ESCAPE '\\')"
+        "(title LIKE ? ESCAPE '\\' OR repository_name LIKE ? ESCAPE '\\' OR origin_title LIKE ? ESCAPE '\\' OR model LIKE ? ESCAPE '\\')"
       );
-      params.push(pattern, pattern, pattern);
+      params.push(pattern, pattern, pattern, pattern);
     }
 
     return {
@@ -966,6 +1049,10 @@ export class TaskQueue {
     if (patchIsActive && existing.status === 'queued') {
       return refused;
     }
+    // A runner may not put its own task back in the claim pool.
+    if (patch.runnerId && (patch.status === 'queued' || patch.status === 'claimed')) {
+      return refused;
+    }
 
     // An external report claims ownership: a runner may only touch the task it was given.
     if (patch.runnerId && existing.runnerId !== patch.runnerId) return refused;
@@ -989,14 +1076,19 @@ export class TaskQueue {
     const title = patch.title?.trim()
       ? resolveTaskTitle(patch.title, existing.prompt)
       : existing.title;
-    const prUrl = patch.prUrl ?? existing.prUrl ?? null;
-    // The column is NOT NULL DEFAULT '[]', so "no issues" is an empty array, never NULL.
-    const issueUrlsJson =
+    // A runner is the least-trusted writer here: anything but a web URL is dropped at the door.
+    const prUrl =
+      patch.prUrl !== undefined
+        ? isHttpUrl(patch.prUrl)
+          ? patch.prUrl
+          : null
+        : (existing.prUrl ?? null);
+    const issueUrls =
       patch.issueUrls !== undefined
-        ? JSON.stringify(patch.issueUrls)
-        : existing.issueUrls
-          ? JSON.stringify(existing.issueUrls)
-          : '[]';
+        ? patch.issueUrls.filter(isHttpUrl)
+        : (existing.issueUrls ?? []);
+    // The column is NOT NULL DEFAULT '[]', so "no issues" is an empty array, never NULL.
+    const issueUrlsJson = JSON.stringify(issueUrls);
     const output = patch.output !== undefined ? capOutput(patch.output) : (existing.output ?? null);
     const error = patch.error !== undefined ? patch.error.slice(0, 4000) : (existing.error ?? null);
     const runnerId = patch.runnerId ?? existing.runnerId ?? null;
@@ -1032,7 +1124,9 @@ export class TaskQueue {
              updated_at = ?
          WHERE id = ?
            ${ownershipClause}
-           AND NOT (status = 'queued' AND ? IN ('claimed', 'executing'))`
+           AND status NOT IN (${TERMINAL_STATUS_SQL})
+           AND NOT (status = 'queued' AND ? IN ('claimed', 'executing'))
+           AND NOT (? IS NOT NULL AND ? IN ('queued', 'claimed'))`
       )
       .run(
         patch.status,
@@ -1052,6 +1146,8 @@ export class TaskQueue {
         now,
         taskId,
         ...ownershipParams,
+        patch.status,
+        patch.runnerId ?? null,
         patch.status
       ) as unknown as { changes?: number };
 
@@ -1144,14 +1240,54 @@ export class TaskQueue {
 
     if (!task.originId || task.claimedAt) return true;
     const origin = this.getBacklogTask(task.originId);
-    if (!origin || origin.status !== 'dispatched' || origin.swarmTaskId !== task.id) return true;
-    this.rawDb
-      .prepare(
-        `UPDATE backlog_tasks
-         SET status = 'pending', attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(Math.max(0, origin.attemptCount - 1), error, now, origin.id);
+    if (!origin) return true;
+    // A sibling run is still live, so the origin stays untouched — transfer any refundable
+    // attempt credit so the surviving run can refund it if it also finishes unclaimed.
+    if (this.hasActiveTaskForOrigin(origin.id, task.id)) {
+      this.transferSpawnSpentAttempt(task.id, origin.id);
+      return true;
+    }
+
+    const spentAttempt = this.taskSpawnSpentAttempt(task.id);
+
+    // An earlier run already delivered: a later failing stacked run must not re-dispatch the item.
+    if (this.hasDeliveredRunForOrigin(origin.id)) {
+      this.rawDb
+        .prepare(
+          `UPDATE backlog_tasks
+           SET status = 'completed', last_error = NULL, swarm_task_id = NULL, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(now, origin.id);
+      return true;
+    }
+    if (origin.status === 'paused') {
+      this.rawDb
+        .prepare(
+          'UPDATE backlog_tasks SET swarm_task_id = NULL, last_error = ?, updated_at = ? WHERE id = ?'
+        )
+        .run(error, now, origin.id);
+      return true;
+    }
+    if (origin.status !== 'dispatched') return true;
+    if (spentAttempt) {
+      this.refundBacklogAttempt(origin, error, now);
+    } else {
+      // A stacked spawn consumed no attempt, so the count stands.
+      this.rawDb
+        .prepare(
+          `UPDATE backlog_tasks
+           SET status = ?, attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          settleStatusForAttempts(origin.attemptCount, origin.maxAttempts),
+          origin.attemptCount,
+          error,
+          now,
+          origin.id
+        );
+    }
     return true;
   }
 
@@ -1342,6 +1478,7 @@ export class TaskQueue {
       tier: (row.tier as TaskTier) || 'immediate',
       originId: row.origin_id ? String(row.origin_id) : undefined,
       originNumber: numberOrUndefined(row.origin_number),
+      originIssueNumber: numberOrUndefined(row.origin_issue_number),
       originTitle: row.origin_title ? String(row.origin_title) : undefined,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
@@ -1439,7 +1576,7 @@ export class TaskQueue {
     const cascade = coerceCascade(input.cascade);
     const autoCreatePr = bitFlag(input.autoCreatePr !== false);
     const priorityOrder = coerceNumber(input.priorityOrder, 0);
-    const maxAttempts = coerceNumber(input.maxAttempts, 2);
+    const maxAttempts = coerceAttempts(input.maxAttempts, 2, 1);
 
     this.inTransaction(() => {
       const taskNumber = input.taskNumber ?? this.nextTaskNumber('backlog_tasks');
@@ -1506,9 +1643,13 @@ export class TaskQueue {
       typeof patch.autoCreatePr === 'boolean' ? patch.autoCreatePr : existing.autoCreatePr
     );
     const priorityOrder = coerceNumber(patch.priorityOrder, existing.priorityOrder);
-    const status = coerceBacklogStatus(patch.status ?? existing.status, existing.status);
-    const attemptCount = coerceNumber(patch.attemptCount, existing.attemptCount);
-    const maxAttempts = coerceNumber(patch.maxAttempts, existing.maxAttempts);
+    const requestedStatus = coerceBacklogStatus(patch.status ?? existing.status, existing.status);
+    const attemptCount = coerceAttempts(patch.attemptCount, existing.attemptCount, 0);
+    const maxAttempts = coerceAttempts(patch.maxAttempts, existing.maxAttempts, 1);
+    const status =
+      requestedStatus === 'pending'
+        ? settleStatusForAttempts(attemptCount, maxAttempts)
+        : requestedStatus;
     const lastError = coerceNullableString(patch.lastError, existing.lastError ?? null);
     const swarmTaskId = coerceNullableString(patch.swarmTaskId, existing.swarmTaskId ?? null);
     const githubIssueNumber = coerceNullableNumber(

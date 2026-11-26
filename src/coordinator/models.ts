@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isGithubRemoteUrl } from '../shared/github.js';
 import {
   calculateHoursUntilReset,
   POOL_GROUP_ALIASES,
@@ -62,8 +63,7 @@ export const isGithubRemoteTask = (task: {
   cloneUrl?: string;
   repositoryName?: string;
 }): boolean => {
-  const cloneUrl = task.cloneUrl?.trim().toLowerCase();
-  if (cloneUrl) return cloneUrl.includes('github.com');
+  if (task.cloneUrl?.trim()) return isGithubRemoteUrl(task.cloneUrl);
   // A bare owner/repo name is how a cloned GitHub repository is configured.
   return /^[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(task.repositoryName?.trim() ?? '');
 };
