@@ -55,8 +55,17 @@ const DOC_SPECIAL_BASENAMES = new Set([
   'security',
 ]);
 
+// `git diff --name-only` C-quotes unusual paths (`"docs/caf\303\251.md"`) when path quoting is on,
+// and a quoted path must classify exactly like the bare one.
+const GIT_C_QUOTED_PATH_RE = /^"([^"]*)"$/;
+
+const unquoteGitPath = (filePath: string): string => {
+  const match = GIT_C_QUOTED_PATH_RE.exec(filePath);
+  return match?.[1] ?? filePath;
+};
+
 export const isDocumentationFile = (filePath: string): boolean => {
-  const normalized = filePath.replace(/\\/g, '/').replace(/^\/+/, '');
+  const normalized = unquoteGitPath(filePath).replace(/\\/g, '/').replace(/^\/+/, '');
   const baseName = path.basename(normalized);
   const ext = path.extname(baseName).toLowerCase();
   const nameWithoutExt = ext

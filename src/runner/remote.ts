@@ -15,18 +15,22 @@ import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 // finished task into a 413 and a lease-expiry failure.
 export const STATUS_BODY_MAX_BYTES = 56 * 1024;
 
+const jsonStringBytes = (value: string): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
+
 const clipReportText = (text: string, budgetBytes: number): string => {
   if (budgetBytes <= 0) return '';
-  if (Buffer.byteLength(text, 'utf8') <= budgetBytes) return text;
+  if (jsonStringBytes(text) <= budgetBytes) return text;
 
   const marker = '\n\n[... middle of the output truncated by the runner ...]\n\n';
-  let keep = Math.floor((budgetBytes - Buffer.byteLength(marker, 'utf8')) / 2);
-  // Slice lengths are UTF-16 units, so the byte budget is re-measured and halved until it holds.
-  for (let attempt = 0; keep > 0 && attempt < 12; attempt++) {
+  const markerBytes = jsonStringBytes(marker) - 2;
+  let keep = Math.floor((budgetBytes - markerBytes - 2) / 2);
+  // Slice lengths are UTF-16 units and JSON escaping can expand control chars up to 6x,
+  // so the JSON-encoded length is re-measured and halved until it holds.
+  for (let attempt = 0; keep > 0 && attempt < 20; attempt++) {
     const head = text.slice(0, keep).replace(/\s+$/, '');
     const tail = text.slice(text.length - keep).replace(/^\s+/, '');
     const candidate = `${head}${marker}${tail}`;
-    if (Buffer.byteLength(candidate, 'utf8') <= budgetBytes) return candidate;
+    if (jsonStringBytes(candidate) <= budgetBytes) return candidate;
     keep = Math.floor(keep / 2);
   }
   return '';
@@ -41,12 +45,24 @@ export const fitStatusPayload = (
   if (bytesOf(payload) <= maxBytes) return payload;
 
   const fitted: Record<string, unknown> = { ...payload };
-  for (const key of ['output', 'error'] as const) {
+  for (const key of ['output', 'error', 'message', 'title', 'branchName']) {
+    if (bytesOf(fitted) <= maxBytes) break;
     if (typeof fitted[key] !== 'string' || fitted[key] === '') continue;
     fitted[key] = '';
-    fitted[key] = clipReportText(String(payload[key]), maxBytes - bytesOf(fitted) - 32);
-    if (bytesOf(fitted) <= maxBytes) break;
-    delete fitted[key];
+    // `fitted[key] = ''` already accounts for the key, colon, and surrounding quotes (2 bytes).
+    const budget = maxBytes - bytesOf(fitted) + 2;
+    fitted[key] = budget > 2 ? clipReportText(String(payload[key]), budget) : '';
+    if (!fitted[key] || bytesOf(fitted) > maxBytes) delete fitted[key];
+  }
+
+  // A report that still does not fit loses its oldest deliverables rather than the whole outcome.
+  if (bytesOf(fitted) > maxBytes && Array.isArray(fitted.issueUrls)) {
+    const urls = [...fitted.issueUrls];
+    fitted.issueUrls = urls;
+    while (urls.length > 0 && bytesOf(fitted) > maxBytes) {
+      urls.pop();
+    }
+    if (urls.length === 0) delete fitted.issueUrls;
   }
   return fitted;
 };
@@ -66,6 +82,7 @@ interface PollResponse {
   credentialsAvailable?: boolean;
   leaseBlocked?: 'missing_github_token';
   githubToken?: string;
+  gitIdentity?: { name?: string; email?: string };
 }
 
 export const collectRunnerSystemInfo = (agyVersion?: string | null): RunnerSystemInfo => ({
@@ -108,6 +125,7 @@ export class RemoteSwarmRunner {
   private readonly agyUpdateIntervalHours: number;
   private agyUpdateTimer: NodeJS.Timeout | null = null;
   private agyUpdateInFlight = false;
+  private pollInFlight = false;
   private runnerId: string;
   private runnerName: string;
   private labels: string[];
@@ -118,6 +136,7 @@ export class RemoteSwarmRunner {
   private abortController: AbortController | null = null;
   private taskAbortController: AbortController | null = null;
   private authOkUntil = 0;
+  private authProbeFailedUntil = 0;
   private authBlockedUntil = 0;
   private warnedAuthRequired = false;
   private credentialRejectedUntil = 0;
@@ -176,6 +195,9 @@ export class RemoteSwarmRunner {
     if (now < this.authOkUntil) {
       return true;
     }
+    if (now < this.authProbeFailedUntil) {
+      return true;
+    }
 
     try {
       const execFile = this.options.execFileFn ?? defaultExecFileAsync;
@@ -186,6 +208,7 @@ export class RemoteSwarmRunner {
       });
       this.authOkUntil = now + 5 * 60 * 1000;
       this.authBlockedUntil = 0;
+      this.authProbeFailedUntil = 0;
       if (this.warnedAuthRequired) {
         this.log.info('Antigravity CLI authenticated; resuming swarm task polling');
         this.warnedAuthRequired = false;
@@ -203,6 +226,9 @@ export class RemoteSwarmRunner {
         }
         return false;
       }
+      // A probe that failed for any other reason (missing binary, timeout, upstream 500) would
+      // otherwise respawn on every idle poll; the poll still proceeds, just without probing.
+      this.authProbeFailedUntil = now + 30 * 1000;
       return true;
     }
   }
@@ -350,9 +376,20 @@ export class RemoteSwarmRunner {
   }
 
   public async pollOnce(): Promise<SwarmTask | null> {
+    // The binary is mid-replacement, so a task claimed now would run against a half-written install.
+    if (this.agyUpdateInFlight) return null;
     // A rejected credential cannot fix itself: polling on would only repeat the same 401.
     if (Date.now() < this.credentialRejectedUntil) return null;
 
+    this.pollInFlight = true;
+    try {
+      return await this.pollOnceInner();
+    } finally {
+      this.pollInFlight = false;
+    }
+  }
+
+  private async pollOnceInner(): Promise<SwarmTask | null> {
     const isAuthed = await this.checkAuthPreClaim();
     if (!isAuthed) {
       return null;
@@ -426,6 +463,7 @@ export class RemoteSwarmRunner {
         },
         // Held in memory for this task only: the lease is never written to runner.json or a log.
         githubToken: res.githubToken,
+        gitIdentity: res.gitIdentity,
       });
     } finally {
       clearInterval(heartbeatTimer);
@@ -543,9 +581,11 @@ export class RemoteSwarmRunner {
     arm();
   }
 
-  /** Idle-only: an executing task owns the binary, so the refresh waits for the next idle tick. */
+  /** Idle-only: an active poll or executing task owns the binary, so the refresh waits for idle. */
   public async runScheduledAgyUpdate(): Promise<boolean> {
-    if (this.currentExecutingTaskId !== null || this.agyUpdateInFlight) return false;
+    if (this.pollInFlight || this.currentExecutingTaskId !== null || this.agyUpdateInFlight) {
+      return false;
+    }
     this.agyUpdateInFlight = true;
     try {
       await this.agyUpdater.update();

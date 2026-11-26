@@ -61,6 +61,8 @@ export class AgyUpdater implements AgyUpdaterLike {
   private cachedAtMs = 0;
   private probed = false;
   private pending: Promise<string | null> | null = null;
+  private pendingForced = false;
+  private generation = 0;
 
   constructor(options: AgyUpdaterOptions = {}) {
     this.agyBinPath = options.agyBinPath?.trim() || 'agy';
@@ -77,18 +79,30 @@ export class AgyUpdater implements AgyUpdaterLike {
   }
 
   public invalidate(): void {
+    this.generation += 1;
     this.cachedVersion = null;
     this.probed = false;
     this.cachedAtMs = 0;
+    this.pending = null;
+    this.pendingForced = false;
   }
 
   public async getVersion(options: { force?: boolean } = {}): Promise<string | null> {
     if (!options.force && this.isFresh()) return this.cachedVersion;
-    // Two callers in the same window would otherwise spawn the binary twice for one answer.
-    this.pending ??= this.probe().finally(() => {
-      this.pending = null;
+    // Two callers in the same window would otherwise spawn the binary twice for one answer, but a
+    // forced read exists because the cache is suspect: it may not inherit a probe started before it.
+    if (this.pending && (this.pendingForced || !options.force)) return this.pending;
+    // Bump generation so an older in-flight probe cannot overwrite the cache if it resolves later.
+    if (options.force) this.generation += 1;
+    const probe = this.probe().finally(() => {
+      if (this.pending === probe) {
+        this.pending = null;
+        this.pendingForced = false;
+      }
     });
-    return this.pending;
+    this.pending = probe;
+    this.pendingForced = options.force === true;
+    return probe;
   }
 
   public async update(): Promise<AgyUpdateResult> {
@@ -120,22 +134,27 @@ export class AgyUpdater implements AgyUpdaterLike {
   }
 
   private async probe(): Promise<string | null> {
+    const generation = this.generation;
+    let version: string | null = null;
     try {
       const { stdout } = await this.execFileFn(this.agyBinPath, ['--version'], {
         timeout: AGY_VERSION_TIMEOUT_MS,
         windowsHide: true,
       });
-      this.cachedVersion = parseAgyVersion(stdout);
-      if (!this.cachedVersion) {
+      version = parseAgyVersion(stdout);
+      if (generation === this.generation) this.cachedVersion = version;
+      if (!version) {
         this.log.debug('agy --version printed no recognisable version');
       }
     } catch (err) {
-      this.cachedVersion = null;
+      if (generation === this.generation) this.cachedVersion = null;
       this.log.debug('agy --version probe failed: %s', describeFailure(err));
     }
-    this.probed = true;
-    this.cachedAtMs = this.now();
-    return this.cachedVersion;
+    if (generation === this.generation) {
+      this.probed = true;
+      this.cachedAtMs = this.now();
+    }
+    return version;
   }
 }
 

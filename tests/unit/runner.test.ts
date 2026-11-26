@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import type net from 'node:net';
 import type { ChildProcess } from 'node:child_process';
@@ -14,7 +14,7 @@ import { TaskQueue, type SwarmTask } from '../../src/coordinator/queue.js';
 import {
   buildPullRequestBody,
   hasCoAuthorTrailer,
-  isUnownedNoreplyEmail,
+  isUnownedIdentity,
   parseBranchCommitLog,
   stripCoAuthorTrailers,
 } from '../../src/runner/executor.js';
@@ -39,9 +39,6 @@ import { GITHUB_ISSUE_TITLE_PREFIX } from '../../src/runner/policy.js';
 const TELEMETRY_LINE = '{"num_turns":4,"usage":{"total_tokens":1234,"thinking_tokens":321}}';
 
 describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
-  /* ==================================================================== */
-  /* 1. Zero-diff execute() keeps the agy telemetry it already captured    */
-  /* ==================================================================== */
   describe('1. Zero-diff TaskExecutor result', () => {
     it('reports telemetry on the noChanges path instead of dropping the cost of the run', async () => {
       const { dir, cleanup } = makeTempDir('runner_nochanges_');
@@ -87,11 +84,55 @@ describe('Unit Tests: Runner telemetry preservation (Workstream 2)', () => {
         cleanup();
       }
     });
+
+    it('fails the run and keeps the branch when the commit itself fails', async () => {
+      const { dir, cleanup } = makeTempDir('runner_commit_fail_');
+      const { task, db } = enqueueTask(dir);
+      const gitCalls: string[][] = [];
+
+      try {
+        const { spawnFn } = recordSpawn((call) => finishChild(call.child, 0, 'work done\n'));
+
+        const executor = new TaskExecutor({
+          agyBinPath: 'agy',
+          dirExistsFn: () => true,
+          spawnFn,
+          killProcessTreeFn: async () => {},
+          execFileFn: async (file, args) => {
+            if (file !== 'git') return { stdout: '', stderr: '' };
+            gitCalls.push([...args]);
+            if (args[0] === 'status') return { stdout: ' M src/app.ts', stderr: '' };
+            if (args[0] === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+              throw Object.assign(new Error('staged changes'), { code: 1 });
+            }
+            if (args[0] === 'commit') {
+              const err: any = new Error('git commit failed');
+              err.stderr = 'fatal: pre-commit hook declined';
+              throw err;
+            }
+            if (args[0] === 'rev-list') return { stdout: '0\n', stderr: '' };
+            return { stdout: '', stderr: '' };
+          },
+        });
+
+        const result = await executor.execute(task);
+
+        assert.equal(result.success, false);
+        assert.equal(result.noChanges, undefined);
+        assert.match(result.error ?? '', /pre-commit hook declined/);
+        assert.ok(result.branchName, 'the branch holding the uncommitted work must be kept');
+        assert.equal(
+          gitCalls.some((args) => args[0] === 'branch' && args.includes('-D')),
+          false,
+          'a failed commit must not discard the branch'
+        );
+      } finally {
+        db.close();
+        cleanup();
+      }
+    });
   });
 
-  /* ==================================================================== */
-  /* 2. parseAgyTelemetry line handling                                   */
-  /* ==================================================================== */
   describe('2. parseAgyTelemetry', () => {
     it('reads NDJSON telemetry lines and accepts the turns alias', () => {
       const telemetry = parseAgyTelemetry(
@@ -628,6 +669,102 @@ describe('Runner: capacity fallback with continuation context', () => {
     }
   });
 
+  it('does not fail over when only the attempt’s own transcript mentions a capacity signal', async () => {
+    const { dir, cleanup } = makeTempDir('runner_transcript_capacity_');
+    const { task, db } = enqueueTask(dir, {
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
+    });
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(
+            call.child,
+            1,
+            [
+              JSON.stringify({ event: 'init', conversation_id: 'c1' }),
+              JSON.stringify({
+                event: 'step_update',
+                step_update: {
+                  step_index: 1,
+                  state: 'DONE',
+                  step_type: 'agent_response',
+                  text_delta: 'The tool returned 429 too many requests, so I retried it',
+                },
+              }),
+            ].join('\n')
+          );
+          return;
+        }
+        finishChild(call.child, 0, 'done\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createGitExecFile({ status: () => '', revList: () => '0\n' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(calls.length, 1);
+      assert.equal(result.success, false);
+      assert.ok(String(result.output).includes('429'), String(result.output));
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('still fails over when the CLI result event itself reports capacity exhaustion', async () => {
+    const { dir, cleanup } = makeTempDir('runner_result_status_capacity_');
+    const { task, db } = enqueueTask(dir, {
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
+    });
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(
+            call.child,
+            1,
+            [
+              JSON.stringify({ event: 'init', conversation_id: 'c1' }),
+              JSON.stringify({ event: 'result', result: { status: 'CAPACITY_EXHAUSTED' } }),
+            ].join('\n')
+          );
+          return;
+        }
+        finishChild(call.child, 0, 'done\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createGitExecFile({ status: () => '', revList: () => '0\n' }),
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.success, true);
+      assert.equal(calls.length, 2);
+      assert.equal(modelOf(calls[1]), 'gemini-4-hydrogen');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
   it('sums telemetry across every attempt that ran', async () => {
     const { dir, cleanup } = makeTempDir('runner_fallback_telemetry_');
     const { task, db } = enqueueTask(dir, {
@@ -936,6 +1073,30 @@ describe('Runner: status report payload budget', () => {
     assert.ok(reported.includes('ERR_TAIL'));
   });
 
+  it('fits a body whose bulk sits outside output and error', () => {
+    const base = terminalPayload('ok');
+    const shapes: Array<Record<string, unknown>> = [
+      { ...base, title: 't'.repeat(200 * 1024) },
+      { ...base, branchName: 'b'.repeat(200 * 1024) },
+      {
+        ...base,
+        issueUrls: Array.from(
+          { length: 5000 },
+          (_, i) => `https://github.com/o/r/issues/${i}${'z'.repeat(40)}`
+        ),
+      },
+    ];
+
+    for (const payload of shapes) {
+      const fitted = fitStatusPayload(payload);
+      assert.ok(
+        bodyBytesOf(fitted) <= STATUS_BODY_MAX_BYTES,
+        `body is ${bodyBytesOf(fitted)} bytes for ${Object.keys(payload).join(',')}`
+      );
+      assert.equal(fitted.status, 'completed');
+    }
+  });
+
   it('never overshoots the budget for multibyte output', () => {
     const fitted = fitStatusPayload(terminalPayload('漢'.repeat(60 * 1024)));
 
@@ -981,6 +1142,73 @@ describe('Runner: git credential redaction', () => {
   });
 });
 
+describe('Runner: leased token redaction', () => {
+  it('keeps the leased token out of the run output, the heartbeat tail and the routine PR body', async () => {
+    const { dir, cleanup } = makeTempDir('runner_token_redaction_');
+    const token = 'ghp_leased_redaction_4f7c19ab';
+    const { task, db } = enqueueTask(dir, {
+      tier: 'routine',
+      prompt: 'Summarise the open issues',
+    });
+    const agentText = `Exported GITHUB_TOKEN=${token} while checking the environment.`;
+    const ndjson = [
+      { event: 'init', conversation_id: 'c1' },
+      {
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'DONE',
+          step_type: 'agent_response',
+          text_delta: agentText,
+        },
+      },
+      { event: 'result', result: { status: 'SUCCESS', response: agentText, num_turns: 1 } },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+    const tails: string[] = [];
+    const exec = createWorkspaceExecFile({
+      status: () => ' M src/a.ts\n',
+      revList: () => '1\n',
+      onGh: () => 'https://github.com/OtterBoops/agylity/pull/9\n',
+    });
+    const { spawnFn } = recordSpawn((call) => finishChild(call.child, 0, `${ndjson}\n`));
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      resolveGithubIdentityFn: async () => ({ name: 'Runner', email: 'runner@example.com' }),
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task, {
+        githubToken: token,
+        onOutput: (tail) => tails.push(tail),
+      });
+
+      assert.equal(result.success, true, result.error ?? 'the run must succeed');
+      assert.equal(result.output.includes(token), false, result.output);
+      assert.ok(result.output.includes('[redacted]'), result.output);
+
+      assert.ok(tails.length > 0, 'the run emitted no heartbeat tail');
+      for (const tail of tails) assert.equal(tail.includes(token), false, tail);
+
+      const prCall = exec.calls.find(
+        (entry) => entry[0] === 'gh' && entry[1] === 'pr' && entry[2] === 'create'
+      );
+      assert.ok(prCall, 'expected a gh pr create invocation');
+      const body = String(prCall![prCall!.indexOf('--body') + 1] ?? '');
+      assert.equal(body.includes(token), false, body);
+      assert.ok(body.includes('[redacted]'), body);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+});
+
 describe('Runner: pr policy and documentation classification', () => {
   it('accepts every schema policy regardless of case or padding, and refuses anything else', () => {
     for (const policy of ['none', 'docs_only', 'issues_only', 'all'] as const) {
@@ -1015,6 +1243,15 @@ describe('Runner: pr policy and documentation classification', () => {
     }
   });
 
+  it('classifies a C-quoted non-ASCII path the way git reports it when path quoting is on', () => {
+    for (const file of ['"docs/caf\\303\\251.md"', '"docs/caf\\303\\251.png"', '"docs/guide.md"']) {
+      assert.equal(isDocumentationFile(file), true, `expected documentation: ${file}`);
+    }
+    for (const file of ['"src/caf\\303\\251.ts"', '"package.json"']) {
+      assert.equal(isDocumentationFile(file), false, `expected code: ${file}`);
+    }
+  });
+
   it('builds descriptive branch names that can never collide with the base branches', () => {
     const branch = buildContinuationBranchName(
       'task-1794914459794-50a10f',
@@ -1025,6 +1262,49 @@ describe('Runner: pr policy and documentation classification', () => {
     assert.equal(branch.includes('main'), false);
 
     assert.equal(buildContinuationBranchName('task-1-abc', ''), 'agy/abc-work');
+  });
+
+  it('emits a git-valid ref for every title shape it can be handed', () => {
+    const invalid = (ref: string): boolean =>
+      ref === '' ||
+      /\s/.test(ref) ||
+      /[~^:?*\[\]\\]/.test(ref) ||
+      ref.includes('..') ||
+      ref.includes('//') ||
+      ref.includes('@{') ||
+      ref.startsWith('-') ||
+      ref.endsWith('/') ||
+      ref.endsWith('.') ||
+      ref.endsWith('.lock') ||
+      /[\x00-\x1f\x7f]/.test(ref);
+
+    const titles = [
+      '',
+      '   ',
+      '[GH #12]',
+      'main',
+      'master',
+      'HEAD',
+      '..dots..',
+      '@{upstream}',
+      'fix: a/b',
+      'a'.repeat(200),
+      'emoji 🚀 only',
+      'multi\nline',
+      '-leading dash',
+    ];
+
+    for (const title of titles) {
+      const branch = buildContinuationBranchName('task-1795693744039-6524c4', title);
+      assert.equal(
+        invalid(branch),
+        false,
+        `${JSON.stringify(title)} -> ${branch} is not a valid ref`
+      );
+      assert.ok(branch.startsWith('agy/'), `${JSON.stringify(title)} -> ${branch}`);
+      assert.notEqual(branch, 'main');
+      assert.notEqual(branch, 'master');
+    }
   });
 
   it('slugs the resolved title and strips a GitHub issue label prefix first', () => {
@@ -1090,6 +1370,12 @@ const createWorkspaceExecFile = (options: WorkspaceFakeOptions = {}) => {
     if (cmd === 'log') return { stdout: options.onLog?.() ?? '', stderr: '' };
     if (cmd === 'diff' && args[1] === '--stat')
       return { stdout: options.diffStat ?? '', stderr: '' };
+    if (cmd === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+      if ((options.status?.() ?? '').trim() !== '') {
+        throw Object.assign(new Error('staged changes'), { code: 1 });
+      }
+      return { stdout: '', stderr: '' };
+    }
     if (cmd === 'diff' && args[1] === '--name-only') {
       return { stdout: options.diffNameOnly?.() ?? '', stderr: '' };
     }
@@ -1207,6 +1493,229 @@ describe('Runner: process control edge cases', () => {
 /* Verification command guard                                                  */
 /* -------------------------------------------------------------------------- */
 
+describe('Runner: commit identity precedence', () => {
+  interface IdentityRun {
+    leaseIdentity?: { name: string; email: string };
+    envIdentity?: { name: string; email: string };
+    agentIdentity?: { name: string; email: string };
+  }
+
+  const pushedAuthor = async (run: IdentityRun): Promise<string> => {
+    const { dir, cleanup } = makeTempDir('runner_identity_');
+    const work = path.join(dir, 'work');
+    const remote = path.join(dir, 'remote.git');
+    const saved = {
+      name: process.env.GIT_AUTHOR_NAME,
+      email: process.env.GIT_AUTHOR_EMAIL,
+      committerName: process.env.GIT_COMMITTER_NAME,
+      committerEmail: process.env.GIT_COMMITTER_EMAIL,
+    };
+    const git = async (cwd: string, args: string[], env?: Record<string, string>) =>
+      (
+        await defaultExecFileAsync('git', args, {
+          cwd,
+          timeout: 30000,
+          env: { ...process.env, ...env },
+        })
+      ).stdout;
+
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      await git(dir, ['init', '-q', '--bare', remote]);
+      await git(work, ['remote', 'add', 'origin', remote.split(path.sep).join('/')]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], {
+        GIT_AUTHOR_NAME: 'Human',
+        GIT_AUTHOR_EMAIL: 'human@example.com',
+        GIT_COMMITTER_NAME: 'Human',
+        GIT_COMMITTER_EMAIL: 'human@example.com',
+      });
+
+      for (const key of [
+        'GIT_AUTHOR_NAME',
+        'GIT_AUTHOR_EMAIL',
+        'GIT_COMMITTER_NAME',
+        'GIT_COMMITTER_EMAIL',
+      ]) {
+        delete process.env[key];
+      }
+      if (run.envIdentity) {
+        Object.assign(process.env, {
+          GIT_AUTHOR_NAME: run.envIdentity.name,
+          GIT_AUTHOR_EMAIL: run.envIdentity.email,
+          GIT_COMMITTER_NAME: run.envIdentity.name,
+          GIT_COMMITTER_EMAIL: run.envIdentity.email,
+        });
+      }
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        prPolicy: 'all',
+        resolveGithubIdentityFn: async () => ({
+          name: 'Inferred',
+          email: '7777+Inferred@users.noreply.github.com',
+        }),
+        execFileFn: async (file, args, opts) => {
+          if (file === 'agy') {
+            writeFileSync(path.join(work, 'a.txt'), 'a\n');
+            await git(work, ['add', '-A']);
+            await git(
+              work,
+              run.agentIdentity
+                ? ['commit', '-q', '-m', 'feat: add a']
+                : ['commit', '-q', '-m', 'feat: add a'],
+              run.agentIdentity
+                ? {
+                    GIT_AUTHOR_NAME: run.agentIdentity.name,
+                    GIT_AUTHOR_EMAIL: run.agentIdentity.email,
+                    GIT_COMMITTER_NAME: run.agentIdentity.name,
+                    GIT_COMMITTER_EMAIL: run.agentIdentity.email,
+                  }
+                : undefined
+            );
+            return { stdout: 'Done.', stderr: '' };
+          }
+          if (file === 'gh') throw new Error('no pull request for this task');
+          return defaultExecFileAsync(file, args, opts);
+        },
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Add a',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        prPolicy: 'all',
+        pushBranch: true,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task, {
+        githubToken: 'ghp_test_token_123',
+        ...(run.leaseIdentity ? { gitIdentity: run.leaseIdentity } : {}),
+      });
+      assert.equal(result.success, true, result.error ?? 'the run must succeed');
+      return (await git(remote, ['log', '-1', '--format=%ae', result.branchName ?? ''])).trim();
+    } finally {
+      db.close();
+      for (const [key, value] of [
+        ['GIT_AUTHOR_NAME', saved.name],
+        ['GIT_AUTHOR_EMAIL', saved.email],
+        ['GIT_COMMITTER_NAME', saved.committerName],
+        ['GIT_COMMITTER_EMAIL', saved.committerEmail],
+      ] as const) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      cleanup();
+    }
+  };
+
+  it('lets the configured identity outrank the environment and the token', async () => {
+    const author = await pushedAuthor({
+      leaseIdentity: { name: 'OtterBoops', email: '12345+OtterBoops@users.noreply.github.com' },
+      envIdentity: { name: 'Ilya Solovyov', email: 'ilya@example.com' },
+    });
+    assert.equal(author, '12345+OtterBoops@users.noreply.github.com');
+  });
+
+  it('falls back to the environment before the identity inferred from the token', async () => {
+    const author = await pushedAuthor({
+      envIdentity: { name: 'Build Bot', email: 'build@example.com' },
+    });
+    assert.equal(author, 'build@example.com');
+  });
+
+  it('rewrites a commit by an identity the resolved one does not own', async () => {
+    const author = await pushedAuthor({
+      leaseIdentity: { name: 'OtterBoops', email: '12345+OtterBoops@users.noreply.github.com' },
+      agentIdentity: { name: 'Ilya Solovyov', email: 'ilya@example.com' },
+    });
+    assert.equal(
+      author,
+      '12345+OtterBoops@users.noreply.github.com',
+      'a stranger on the branch must not reach the remote'
+    );
+  });
+});
+
+describe('Runner: verification artifacts', () => {
+  it('commits the agent work but not what the verification run writes', async () => {
+    const { dir, cleanup } = makeTempDir('runner_verify_artifacts_');
+    const work = path.join(dir, 'work');
+    const git = async (cwd: string, args: string[], env?: Record<string, string>) =>
+      (
+        await defaultExecFileAsync('git', args, {
+          cwd,
+          timeout: 30000,
+          env: { ...process.env, ...env },
+        })
+      ).stdout;
+
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], {
+        GIT_AUTHOR_NAME: 'Human',
+        GIT_AUTHOR_EMAIL: 'human@example.com',
+        GIT_COMMITTER_NAME: 'Human',
+        GIT_COMMITTER_EMAIL: 'human@example.com',
+      });
+
+      const { spawnFn } = recordSpawn((call) => {
+        if (call.file === 'agy') {
+          writeFileSync(path.join(work, 'notes.md'), '# docs\n');
+          finishChild(call.child, 0, 'Done.\n');
+          return;
+        }
+        mkdirSync(path.join(work, 'coverage'), { recursive: true });
+        writeFileSync(path.join(work, 'coverage', 'lcov.info'), 'TN:\n');
+        finishChild(call.child, 0, 'ok\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args, opts) => defaultExecFileAsync(file, args, opts),
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Write the docs',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        verifyCommand: 'npm test',
+        prPolicy: 'all',
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, true, result.error ?? 'the run must succeed');
+
+      const committed = (await git(work, ['ls-tree', '-r', '--name-only', 'HEAD']))
+        .split('\n')
+        .filter(Boolean);
+      assert.ok(committed.includes('notes.md'), 'the agent file must be committed');
+      assert.equal(
+        committed.some((file) => file.startsWith('coverage/')),
+        false,
+        'an artifact the verification run wrote must stay out of the commit'
+      );
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+});
+
 describe('Runner: verification command guard', () => {
   const executeWithVerify = async (verifyCommand: string) => {
     const { dir, cleanup } = makeTempDir('runner_verify_');
@@ -1254,6 +1763,39 @@ describe('Runner: verification command guard', () => {
     const { result } = await executeWithVerify('npm test -e "console.log(1)"');
     assert.equal(result.success, false);
     assert.match(String(result.error), /inline-code flag/);
+  });
+
+  it('keeps a quoted verification argument together instead of splitting it on whitespace', async () => {
+    const { dir, cleanup } = makeTempDir('runner_verify_quoted_');
+    const { task, db } = enqueueTask(dir, {
+      verifyCommand: 'npm test -- --grep "two words"',
+    });
+    const { spawnFn, calls } = recordSpawn((call) => finishChild(call.child, 0, 'ok\n'));
+    const exec = createWorkspaceExecFile({ status: () => '', revList: () => '0\n' });
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task);
+      assert.equal(result.success, true);
+      const verify = calls.find((call) => call.file === 'npm');
+      assert.deepEqual(verify?.args, ['test', '--', '--grep', 'two words']);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('refuses a verification command whose quote is never closed', async () => {
+    const { result, spawned } = await executeWithVerify('npm test "two words');
+    assert.equal(result.success, false);
+    assert.match(String(result.error), /unterminated/);
+    assert.deepEqual(spawned, ['agy']);
   });
 
   it('fails the run when the verification command itself fails', async () => {
@@ -1331,6 +1873,234 @@ describe('Runner: push, pull request and policy guards', () => {
     return { title: flag('--title'), body: flag('--body') };
   };
 
+  it('asks agy for stream-json and renders its progress instead of raw NDJSON', async () => {
+    const { dir, cleanup } = makeTempDir('runner_stream_json_');
+    const { task, db } = enqueueTask(dir);
+    const ndjson = [
+      { event: 'init', conversation_id: 'c1', init: { model: 'gemini-4-argon' } },
+      {
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'ACTIVE',
+          step_type: 'tool',
+          tool_name: 'run_command',
+          tool_info: { parameters: { CommandLine: 'npm test' } },
+        },
+      },
+      {
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'DONE',
+          step_type: 'tool',
+          tool_name: 'run_command',
+          duration_seconds: 2.5,
+        },
+      },
+      {
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'All green\n',
+          num_turns: 1,
+          usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        },
+      },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+    const tails: string[] = [];
+    const exec = createWorkspaceExecFile({ status: () => '', revList: () => '0\n' });
+    const { spawnFn, calls } = recordSpawn((call) => finishChild(call.child, 0, ndjson));
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task, { onOutput: (tail) => tails.push(tail) });
+      const args = calls[0]!.args;
+      assert.equal(args[args.indexOf('--output-format') + 1], 'stream-json');
+      const tail = tails.at(-1) ?? '';
+      assert.ok(tail.includes('[tool] run_command: npm test'), tail);
+      assert.equal(tail.includes('"event"'), false);
+      assert.equal(result.output.trim(), 'All green');
+      assert.equal(result.totalTokens, 110);
+      assert.equal(result.numTurns, 1);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('re-runs the attempt in text mode when agy rejects --output-format', async () => {
+    const { dir, cleanup } = makeTempDir('runner_stream_fallback_');
+    const { task, db } = enqueueTask(dir);
+    const exec = createWorkspaceExecFile({ status: () => '', revList: () => '0\n' });
+    const { spawnFn, calls } = recordSpawn((call, index) =>
+      index === 0
+        ? finishChild(call.child, 1, '', 'unknown flag: --output-format\n')
+        : finishChild(call.child, 0, 'plain text output\n')
+    );
+    const executor = new TaskExecutor({
+      agyBinPath: 'agy',
+      dirExistsFn: () => true,
+      spawnFn,
+      killProcessTreeFn: async () => {},
+      execFileFn: exec.execFileFn,
+    });
+
+    try {
+      const result = await executor.execute(task);
+      assert.equal(calls.length, 2);
+      assert.equal(calls[0]!.args.includes('--output-format'), true);
+      assert.equal(calls[1]!.args.includes('--output-format'), false);
+      assert.equal(result.output.trim(), 'plain text output');
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('keeps a failed attempt instead of re-running it when its own output prints an invalid argument', async () => {
+    const { dir, cleanup } = makeTempDir('runner_flag_reject_');
+    const { task, db } = enqueueTask(dir);
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(call.child, 1, 'step 3 failed: invalid argument in the tool payload\n');
+          return;
+        }
+        finishChild(call.child, 0, 'retried\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(calls.length, 1);
+      assert.equal(result.success, false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('does not re-run a failure whose stderr echoes the phrase inside a long transcript', async () => {
+    const { dir, cleanup } = makeTempDir('runner_flag_reject_long_');
+    const { task, db } = enqueueTask(dir);
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(call.child, 1, '', `unknown flag: --output-format\n${'x'.repeat(2000)}`);
+          return;
+        }
+        finishChild(call.child, 0, 'retried\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(calls.length, 1);
+      assert.equal(result.success, false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('does not re-run once the stream formatter has seen a stream-json event', async () => {
+    const { dir, cleanup } = makeTempDir('runner_flag_reject_stream_');
+    const { task, db } = enqueueTask(dir);
+
+    try {
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(
+            call.child,
+            1,
+            [
+              JSON.stringify({ event: 'init', conversation_id: 'c1' }),
+              JSON.stringify({ event: 'result', result: { status: 'ERROR' } }),
+            ].join('\n'),
+            'invalid argument: --output-format\n'
+          );
+          return;
+        }
+        finishChild(call.child, 0, 'retried\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(calls.length, 1);
+      assert.equal(result.success, false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('decodes stdout chunks split across a multi-byte character boundary', async () => {
+    const { dir, cleanup } = makeTempDir('runner_utf8_split_');
+    const { task, db } = enqueueTask(dir);
+
+    try {
+      const payload = Buffer.from('done ✅ 中文 end', 'utf8');
+      const { spawnFn } = recordSpawn((call) => {
+        setImmediate(() => {
+          call.child.stdout.emit('data', payload.subarray(0, 4));
+          call.child.stdout.emit('data', payload.subarray(4, 7));
+          call.child.stdout.emit('data', payload.subarray(7, 11));
+          call.child.stdout.emit('data', payload.subarray(11));
+          call.child.emit('close', 0, null);
+        });
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+      });
+
+      const result = await executor.execute(task);
+
+      assert.equal(result.output, 'done ✅ 中文 end');
+      assert.equal(result.output.includes('�'), false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
   it('pushes the branch and reports the pull request URL the CLI printed', async () => {
     const { result, exec } = await runWithWorkspace(
       {},
@@ -1340,6 +2110,16 @@ describe('Runner: push, pull request and policy guards', () => {
     assert.equal(result.success, true);
     assert.equal(result.prUrl, 'https://github.com/OtterBoops/agylity/pull/42');
     assert.equal(exec.pushed(), true);
+  });
+
+  it('opens the pull request asking GitHub to close the issue the run came from', async () => {
+    const { exec } = await runWithWorkspace(
+      { tier: 'backlog', originIssueNumber: 25 },
+      { onGh: () => 'https://github.com/OtterBoops/agylity/pull/77\n' }
+    );
+
+    const { body } = prCreateFrom(exec);
+    assert.equal(body?.startsWith('Closes #25\n\n'), true);
   });
 
   it('titles the pull request with the resolved task title instead of an id-prefixed prompt slice', async () => {
@@ -1506,6 +2286,18 @@ describe('Runner: push, pull request and policy guards', () => {
     );
 
     assert.equal(result.success, true);
+    assert.equal(result.noChanges, undefined);
+    assert.equal(exec.pushed(), true);
+  });
+
+  it('reads the docs_only diff unquoted so a non-ASCII documentation path passes', async () => {
+    const { result, exec } = await runWithWorkspace(
+      { tier: 'backlog', prPolicy: 'docs_only' },
+      { diffNameOnly: () => 'docs/café.md\0docs/guide.md\0' }
+    );
+
+    const diffCall = exec.calls.find((call) => call[1] === 'diff' && call[2] === '--name-only');
+    assert.equal(diffCall?.includes('-z'), true);
     assert.equal(result.noChanges, undefined);
     assert.equal(exec.pushed(), true);
   });
@@ -2245,6 +3037,21 @@ describe('Runner CLI: argument and environment precedence', () => {
     assert.equal(parseRunnerCliArgs(['--pr-policy=issue_only'], {}).prPolicy, undefined);
   });
 
+  it('lets REMOTE_AGY_BIN_PATH outrank AGY_BIN_PATH for a spawned runner', () => {
+    assert.equal(
+      parseRunnerCliArgs([], {
+        REMOTE_AGY_BIN_PATH: '/opt/override/agy',
+        AGY_BIN_PATH: '/usr/bin/agy',
+      }).agyBinPath,
+      '/opt/override/agy'
+    );
+    assert.equal(
+      parseRunnerCliArgs(['--agy-bin', '/flag/agy'], { REMOTE_AGY_BIN_PATH: '/opt/override/agy' })
+        .agyBinPath,
+      '/flag/agy'
+    );
+  });
+
   it('keeps the long-poll defaults when compose exports empty interval variables', () => {
     const opts = parseRunnerCliArgs([], {
       RUNNER_POLL_TIMEOUT_MS: '',
@@ -2323,6 +3130,58 @@ describe('Runner: idle-only agy update', () => {
       assert.deepEqual(updates, ['update']);
     } finally {
       releaseTask();
+      await closeStubServer(stub.server);
+      db.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Runner: agy update gate', () => {
+  it('claims nothing while the update is replacing the binary', async () => {
+    const { dir, cleanup } = makeTempDir('runner_agy_update_gate_');
+    const { task, db } = enqueueTask(dir);
+    const stub = await startCoordinatorStub({ task });
+
+    let releaseUpdate = (): void => {};
+    const updateGate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+
+    const runner = new RemoteSwarmRunner({
+      coordinatorUrl: stub.baseUrl,
+      runnerToken: 'agyr_run_test',
+      runnerStatePath: path.join(dir, 'runner.json'),
+      executor: {
+        execute: async () => ({ success: true, output: '', durationMs: 1 }),
+      } as unknown as TaskExecutor,
+      execFileFn: async () => ({ stdout: '', stderr: '' }),
+      agyUpdater: {
+        getVersion: async () => null,
+        getCachedVersion: () => null,
+        invalidate: () => {},
+        update: async () => {
+          await updateGate;
+          return { before: null, after: null, updated: false };
+        },
+      },
+      logger: quietLogger,
+    });
+
+    try {
+      const updating = runner.runScheduledAgyUpdate();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      assert.equal(await runner.pollOnce(), null);
+      assert.deepEqual(
+        stub.requests.filter((request) => request.body?.status === 'executing'),
+        []
+      );
+
+      releaseUpdate();
+      assert.equal(await updating, true);
+    } finally {
+      releaseUpdate();
       await closeStubServer(stub.server);
       db.close();
       cleanup();
@@ -2454,18 +3313,19 @@ describe('Runner: branch attribution guard', () => {
     assert.equal(stripped, 'feat: x\n\nBody line.\n');
   });
 
-  it('treats only noreply addresses the lease does not own as unowned', () => {
+  it('treats any address the lease does not own as unowned, not only a noreply one', () => {
     const owned = '12345+OtterBoops@users.noreply.github.com';
-    assert.equal(isUnownedNoreplyEmail('user@users.noreply.github.com', owned), true);
-    assert.equal(isUnownedNoreplyEmail('999+stranger@users.noreply.github.com', owned), true);
-    assert.equal(isUnownedNoreplyEmail('12345+OtterBoops@users.noreply.github.com', owned), false);
-    assert.equal(isUnownedNoreplyEmail('12345+OTTERBOOPS@users.noreply.github.com', owned), false);
-    assert.equal(isUnownedNoreplyEmail('dev@example.com', owned), false);
-    assert.equal(isUnownedNoreplyEmail('user@users.noreply.github.com', undefined), true);
+    assert.equal(isUnownedIdentity('user@users.noreply.github.com', owned), true);
+    assert.equal(isUnownedIdentity('999+stranger@users.noreply.github.com', owned), true);
+    // A stranger with an ordinary address is still a stranger.
+    assert.equal(isUnownedIdentity('ilya@example.com', owned), true);
+    assert.equal(isUnownedIdentity('12345+OtterBoops@users.noreply.github.com', owned), false);
+    assert.equal(isUnownedIdentity('12345+OTTERBOOPS@users.noreply.github.com', owned), false);
+    assert.equal(isUnownedIdentity('user@users.noreply.github.com', undefined), true);
   });
 
   it('parses a git log dump into oldest-first commits with the message intact', () => {
-    const record = (fields: string[]): string => `${fields.join('\u001f')}\u001e\n`;
+    const record = (fields: string[]): string => `${fields.join('\u0000')}\u0000`;
     const stdout =
       record([
         'sha1',
@@ -2509,6 +3369,32 @@ describe('Runner: branch attribution guard', () => {
     assert.deepEqual(commits[1]?.parents, ['sha1', 'p9']);
     assert.match(commits[1]?.message ?? '', /Co-authored-by: A <a@b\.c>/);
     assert.deepEqual(parseBranchCommitLog(''), []);
+  });
+
+  it('keeps a commit message that contains the old record and field separators in one record', () => {
+    const record = (fields: string[]): string => `${fields.join('\u0000')}\u0000`;
+    const forged =
+      'feat: legit\n\u001e' +
+      ['deadbeef', 'treeX', '', 'Eve', 'e@x.y', 'T', 'Eve', 'e@x.y', 'T', 'forged tip'].join(
+        '\u001f'
+      );
+    const stdout = record([
+      'sha1',
+      'tree1',
+      '',
+      'Ada',
+      'ada@example.com',
+      '2026-01-01T00:00:00+02:00',
+      'Ada',
+      'ada@example.com',
+      '2026-01-01T00:00:00+02:00',
+      forged,
+    ]);
+
+    const commits = parseBranchCommitLog(stdout);
+    assert.equal(commits.length, 1, 'a message must never split into a second record');
+    assert.equal(commits[0]?.sha, 'sha1');
+    assert.match(commits[0]?.message ?? '', /forged tip/);
   });
 
   it('strips trailers and rewrites a placeholder identity before the branch reaches the remote', async () => {
@@ -2619,7 +3505,8 @@ describe('Runner: branch attribution guard', () => {
         const pushed = await git(remote, [
           'log',
           '--reverse',
-          `--format=%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1e`,
+          `-z`,
+          `--format=%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B`,
           result.branchName,
           `^${baseSha}`,
         ]);
@@ -2651,6 +3538,607 @@ describe('Runner: branch attribution guard', () => {
       if (saved.committerName !== undefined) process.env.GIT_COMMITTER_NAME = saved.committerName;
       if (saved.committerEmail !== undefined)
         process.env.GIT_COMMITTER_EMAIL = saved.committerEmail;
+      cleanup();
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Audited bug regression tests                                               */
+/* -------------------------------------------------------------------------- */
+
+describe('Runner: audited bug regressions', () => {
+  const git = async (cwd: string, args: string[], env?: Record<string, string>): Promise<string> =>
+    (
+      await defaultExecFileAsync('git', args, {
+        cwd,
+        timeout: 30000,
+        env: { ...process.env, ...env },
+      })
+    ).stdout;
+
+  const baseCommitEnv = {
+    GIT_AUTHOR_NAME: 'Human',
+    GIT_AUTHOR_EMAIL: 'human@example.com',
+    GIT_COMMITTER_NAME: 'Human',
+    GIT_COMMITTER_EMAIL: 'human@example.com',
+  };
+
+  it('Bug 1: skips git commit cleanly when the agent committed its work and verification leaves untracked artifacts', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug1_verify_only_');
+    const work = path.join(dir, 'work');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], baseCommitEnv);
+
+      const { spawnFn } = recordSpawn((call) => {
+        if (call.file === 'agy') {
+          writeFileSync(path.join(work, 'feature.ts'), 'export const x = 1;\n');
+          void git(work, ['add', '-A'])
+            .then(() => git(work, ['commit', '-q', '-m', 'feat: add feature'], baseCommitEnv))
+            .then(() => finishChild(call.child, 0, 'Committed.\n'));
+          return;
+        }
+        // Verification leaves an untracked artifact behind after the agent's tree was clean.
+        writeFileSync(path.join(work, 'verify.log'), 'passed\n');
+        finishChild(call.child, 0, 'ok\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args, opts) => defaultExecFileAsync(file, args, opts),
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Add feature',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        verifyCommand: 'npm test',
+        prPolicy: 'all',
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, true, result.error ?? 'must not fail with nothing to commit');
+      assert.equal(result.noChanges, undefined);
+      const committed = (await git(work, ['ls-tree', '-r', '--name-only', 'HEAD']))
+        .split('\n')
+        .filter(Boolean);
+      assert.ok(committed.includes('feature.ts'));
+      assert.equal(committed.includes('verify.log'), false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 2: stages remaining untracked files in a batch when one vanished before commit', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug2_vanished_');
+    const work = path.join(dir, 'work');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], baseCommitEnv);
+
+      const { spawnFn } = recordSpawn((call) => {
+        if (call.file === 'agy') {
+          writeFileSync(path.join(work, 'keep.ts'), 'export const keep = true;\n');
+          writeFileSync(path.join(work, 'temp.tmp'), 'ephemeral\n');
+          finishChild(call.child, 0, 'Done.\n');
+          return;
+        }
+        // Verification deletes temp.tmp after listUntracked already captured it.
+        rmSync(path.join(work, 'temp.tmp'), { force: true });
+        finishChild(call.child, 0, 'ok\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args, opts) => defaultExecFileAsync(file, args, opts),
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Add keep.ts',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        verifyCommand: 'npm test',
+        prPolicy: 'all',
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, true, result.error ?? 'must succeed');
+      const committed = (await git(work, ['ls-tree', '-r', '--name-only', 'HEAD']))
+        .split('\n')
+        .filter(Boolean);
+      assert.ok(
+        committed.includes('keep.ts'),
+        'keep.ts must not be dropped when temp.tmp vanished'
+      );
+      assert.equal(committed.includes('temp.tmp'), false);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 3: listUntracked expands new directories with -uall and skips rename source paths', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug3_uall_');
+    const work = path.join(dir, 'work');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], baseCommitEnv);
+
+      const { spawnFn } = recordSpawn((call) => {
+        if (call.file === 'agy') {
+          mkdirSync(path.join(work, 'newdir'), { recursive: true });
+          writeFileSync(path.join(work, 'newdir', 'agent.ts'), 'export const a = 1;\n');
+          finishChild(call.child, 0, 'Done.\n');
+          return;
+        }
+        // Verification writes a file inside the SAME new directory the agent created.
+        writeFileSync(path.join(work, 'newdir', 'verify-artifact.log'), 'noise\n');
+        finishChild(call.child, 0, 'ok\n');
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args, opts) => defaultExecFileAsync(file, args, opts),
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Create newdir/agent.ts',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        verifyCommand: 'npm test',
+        prPolicy: 'all',
+        pushBranch: false,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, true, result.error ?? 'must succeed');
+      const committed = (await git(work, ['ls-tree', '-r', '--name-only', 'HEAD']))
+        .split('\n')
+        .filter(Boolean);
+      assert.ok(committed.includes('newdir/agent.ts'));
+      assert.equal(
+        committed.includes('newdir/verify-artifact.log'),
+        false,
+        '-uall must expand newdir/ so verification artifacts inside it are not staged'
+      );
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 3b: listUntracked skips the source path of a rename entry in -z output', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug3_rename_');
+    const { task, db } = enqueueTask(dir, { pushBranch: false, autoCreatePr: false });
+    const addedBatches: string[][] = [];
+
+    try {
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn: recordSpawn((call) => finishChild(call.child, 0, 'Done.\n')).spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: async (file, args) => {
+          if (file !== 'git') return { stdout: '', stderr: '' };
+          if (args[0] === 'status' && args.includes('-z')) {
+            assert.equal(args.includes('-uall'), true, 'listUntracked must pass -uall');
+            // Rename source literally starts with `?? ` to catch naive filtering.
+            return { stdout: 'R  new.ts\u0000?? old-source.ts\u0000?? real.ts\u0000', stderr: '' };
+          }
+          if (args[0] === 'status') return { stdout: '?? real.ts\n', stderr: '' };
+          if (args[0] === 'add' && args[1] === '--') {
+            addedBatches.push([...args.slice(2)]);
+            return { stdout: '', stderr: '' };
+          }
+          if (args[0] === 'diff' && args[1] === '--cached' && args[2] === '--quiet') {
+            throw Object.assign(new Error('staged'), { code: 1 });
+          }
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, true, result.error ?? 'must succeed');
+      assert.deepEqual(addedBatches, [['real.ts']]);
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 4: stripUntrustedAttribution uses --topo-order and resets to rewritten HEAD on skewed-timestamp merges', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug4_topo_');
+    const work = path.join(dir, 'work');
+    const remote = path.join(dir, 'remote.git');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+
+    try {
+      await git(dir, ['init', '-q', '-b', 'main', work]);
+      await git(dir, ['init', '-q', '--bare', remote]);
+      await git(work, ['remote', 'add', 'origin', remote.split(path.sep).join('/')]);
+      writeFileSync(path.join(work, 'README.md'), 'base\n');
+      await git(work, ['add', '-A']);
+      await git(work, ['commit', '-q', '-m', 'chore: base'], {
+        ...baseCommitEnv,
+        GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
+        GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z',
+      });
+      const baseSha = (await git(work, ['rev-parse', 'HEAD'])).trim();
+
+      const lease = { name: 'OtterBoops', email: '12345+OtterBoops@users.noreply.github.com' };
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        prPolicy: 'all',
+        resolveGithubIdentityFn: async () => lease,
+        execFileFn: async (file, args, opts) => {
+          if (file === 'agy') {
+            // Create a side branch with a FUTURE timestamp and merge it with an EARLIER timestamp.
+            // Without --topo-order, `git log --reverse` places the merge commit before its parent.
+            await git(work, ['checkout', '-q', '-b', 'side']);
+            writeFileSync(path.join(work, 'side.txt'), 'side\n');
+            await git(work, ['add', '-A']);
+            await git(
+              work,
+              ['commit', '-q', '-m', 'feat: side\n\nCo-authored-by: Bot <bot@example.com>'],
+              {
+                GIT_AUTHOR_NAME: 'Stranger',
+                GIT_AUTHOR_EMAIL: 'stranger@example.com',
+                GIT_COMMITTER_NAME: 'Stranger',
+                GIT_COMMITTER_EMAIL: 'stranger@example.com',
+                GIT_AUTHOR_DATE: '2027-06-01T00:00:00Z',
+                GIT_COMMITTER_DATE: '2027-06-01T00:00:00Z',
+              }
+            );
+            await git(work, ['checkout', '-q', '-']);
+            writeFileSync(path.join(work, 'mainline.txt'), 'mainline\n');
+            await git(work, ['add', '-A']);
+            await git(work, ['commit', '-q', '-m', 'feat: mainline'], {
+              GIT_AUTHOR_NAME: lease.name,
+              GIT_AUTHOR_EMAIL: lease.email,
+              GIT_COMMITTER_NAME: lease.name,
+              GIT_COMMITTER_EMAIL: lease.email,
+              GIT_AUTHOR_DATE: '2026-02-01T00:00:00Z',
+              GIT_COMMITTER_DATE: '2026-02-01T00:00:00Z',
+            });
+            await git(work, ['merge', '-q', '--no-ff', 'side', '-m', 'merge: side'], {
+              GIT_AUTHOR_NAME: lease.name,
+              GIT_AUTHOR_EMAIL: lease.email,
+              GIT_COMMITTER_NAME: lease.name,
+              GIT_COMMITTER_EMAIL: lease.email,
+              GIT_AUTHOR_DATE: '2026-03-01T00:00:00Z',
+              GIT_COMMITTER_DATE: '2026-03-01T00:00:00Z',
+            });
+            return { stdout: 'Done.', stderr: '' };
+          }
+          if (file === 'gh') throw new Error('no PR');
+          return defaultExecFileAsync(file, args, opts);
+        },
+      });
+
+      const task = new TaskQueue(db).enqueue({
+        repositoryName: 'agylity',
+        repositoryPath: work,
+        prompt: 'Merge side',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        prPolicy: 'all',
+        pushBranch: true,
+        autoCreatePr: false,
+      });
+
+      const result = await executor.execute(task, { githubToken: 'ghp_test_token_123' });
+      assert.equal(result.success, true, result.error ?? 'must succeed');
+      assert.ok(result.branchName);
+
+      // Tip of pushed branch must be the merge commit containing BOTH files, not the side parent.
+      assert.equal(await git(remote, ['show', `${result.branchName}:side.txt`]), 'side\n');
+      assert.equal(await git(remote, ['show', `${result.branchName}:mainline.txt`]), 'mainline\n');
+      const tipSubject = (
+        await git(remote, ['log', '-1', '--format=%s', result.branchName])
+      ).trim();
+      assert.equal(tipSubject, 'merge: side');
+
+      const pushedLog = await git(remote, [
+        'log',
+        '-z',
+        '--topo-order',
+        '--reverse',
+        `--format=%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B`,
+        result.branchName,
+        `^${baseSha}`,
+      ]);
+      const commits = parseBranchCommitLog(pushedLog);
+      for (const c of commits) {
+        assert.equal(c.authorEmail, lease.email);
+        assert.equal(c.committerEmail, lease.email);
+        assert.doesNotMatch(c.message, /co-authored-by/i);
+      }
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 5: ambient GIT_COMMITTER_EMAIL does not override leaseIdentity and skips token lookup when lease provides both', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug5_committer_');
+    const { task, db } = enqueueTask(dir, { pushBranch: false, autoCreatePr: false });
+    const prevCommitterName = process.env.GIT_COMMITTER_NAME;
+    const prevCommitterEmail = process.env.GIT_COMMITTER_EMAIL;
+    process.env.GIT_COMMITTER_NAME = 'Ambient Host';
+    process.env.GIT_COMMITTER_EMAIL = 'ambient@host.local';
+
+    try {
+      let resolveCalls = 0;
+      const capturedEnvs: Array<Record<string, string | undefined>> = [];
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        resolveGithubIdentityFn: async () => {
+          resolveCalls += 1;
+          return { name: 'TokenUser', email: 'token@users.noreply.github.com' };
+        },
+        execFileFn: async (file, args, opts) => {
+          if (file === 'agy') {
+            capturedEnvs.push({ ...(opts?.env as Record<string, string | undefined>) });
+            return { stdout: 'Done.', stderr: '' };
+          }
+          if (file === 'git' && args[0] === 'status') return { stdout: '', stderr: '' };
+          if (file === 'git' && args[0] === 'rev-list') return { stdout: '0\n', stderr: '' };
+          return { stdout: '', stderr: '' };
+        },
+      });
+
+      await executor.execute(task, {
+        githubToken: 'ghp_test_token_123',
+        gitIdentity: { name: 'Lease User', email: 'lease@example.com' },
+      });
+
+      assert.equal(resolveCalls, 0, 'must skip GitHub identity lookup when lease provides both');
+      assert.equal(capturedEnvs[0]?.GIT_AUTHOR_NAME, 'Lease User');
+      assert.equal(capturedEnvs[0]?.GIT_AUTHOR_EMAIL, 'lease@example.com');
+      assert.equal(capturedEnvs[0]?.GIT_COMMITTER_NAME, 'Lease User');
+      assert.equal(capturedEnvs[0]?.GIT_COMMITTER_EMAIL, 'lease@example.com');
+    } finally {
+      if (prevCommitterName === undefined) delete process.env.GIT_COMMITTER_NAME;
+      else process.env.GIT_COMMITTER_NAME = prevCommitterName;
+      if (prevCommitterEmail === undefined) delete process.env.GIT_COMMITTER_EMAIL;
+      else process.env.GIT_COMMITTER_EMAIL = prevCommitterEmail;
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 6: redacts leased githubToken from cascade continuation prompt and gh error logs', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug6_redaction_');
+    const token = 'ghp_secret_cascade_token_987654321';
+    const { task, db } = enqueueTask(dir, {
+      repositoryName: 'OtterBoops/agylity',
+      prPolicy: 'all',
+      pushBranch: true,
+      autoCreatePr: true,
+      cascade: [
+        { model: 'gemini-4-argon', effort: 'high' },
+        { model: 'gemini-4-hydrogen', effort: 'medium' },
+      ],
+    });
+    const logs: string[] = [];
+    const testLogger = createLogger({
+      minLevel: 'warn',
+      sinks: [(record) => logs.push(record.formatted)],
+    });
+
+    try {
+      let statusCalls = 0;
+      const { spawnFn, calls } = recordSpawn((call, index) => {
+        if (index === 0) {
+          finishChild(call.child, 1, `TOKEN=${token}\nMODEL_CAPACITY_EXHAUSTED\n`);
+        } else {
+          finishChild(call.child, 0, 'finished\n');
+        }
+      });
+
+      const exec = createWorkspaceExecFile({
+        status: () => {
+          statusCalls += 1;
+          return statusCalls === 1 ? '' : ' M src/a.ts\n';
+        },
+        revList: () => '1\n',
+        diffStat: ' src/a.ts | 1 +\n',
+        onGh: () => {
+          throw new Error(`gh failed with token ${token}`);
+        },
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        resolveGithubIdentityFn: async () => ({ name: 'Bot', email: 'bot@example.com' }),
+        execFileFn: exec.execFileFn,
+        logger: testLogger,
+      });
+
+      const result = await executor.execute(task, { githubToken: token });
+      assert.equal(result.success, true);
+      assert.equal(calls.length, 2);
+      const handoff = promptOf(calls[1]);
+      assert.equal(handoff.includes(token), false, 'continuation prompt must redact githubToken');
+      assert.ok(handoff.includes('[redacted]'));
+
+      assert.ok(logs.some((line) => line.includes('Auto PR creation failed')));
+      for (const line of logs) {
+        assert.equal(line.includes(token), false, `log leaked token: ${line}`);
+      }
+    } finally {
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 7: runScheduledAgyUpdate defers while pollOnce is actively long-polling', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug7_poll_toctou_');
+    const db = new AppDatabase(path.join(dir, 'test.db'));
+    let releasePoll: (() => void) | null = null;
+    const finishPoll = (): void => {
+      const fn = releasePoll;
+      releasePoll = null;
+      fn?.();
+    };
+    let pollArrived = false;
+    const server = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        if (req.url === '/api/tasks/poll') {
+          pollArrived = true;
+          releasePoll = () => {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ task: null }));
+          };
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true }));
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    const port = (server.address() as net.AddressInfo).port;
+    const updates: string[] = [];
+
+    try {
+      const runner = new RemoteSwarmRunner({
+        coordinatorUrl: `http://127.0.0.1:${port}`,
+        runnerToken: 'agyr_run_test',
+        runnerStatePath: path.join(dir, 'runner.json'),
+        execFileFn: async () => ({ stdout: '', stderr: '' }),
+        agyUpdater: {
+          getVersion: async () => null,
+          getCachedVersion: () => null,
+          invalidate: () => {},
+          update: async () => {
+            updates.push('update');
+            return { before: null, after: null, updated: false };
+          },
+        },
+        logger: quietLogger,
+      });
+
+      const polling = runner.pollOnce();
+      await waitForCondition(() => pollArrived, 'long-poll request to arrive');
+
+      // While pollOnce is waiting on /api/tasks/poll, scheduled update must defer.
+      assert.equal(await runner.runScheduledAgyUpdate(), false);
+      assert.deepEqual(updates, []);
+
+      finishPoll();
+      await polling;
+
+      assert.equal(await runner.runScheduledAgyUpdate(), true);
+      assert.deepEqual(updates, ['update']);
+    } finally {
+      finishPoll();
+      await closeStubServer(server);
+      db.close();
+      cleanup();
+    }
+  });
+
+  it('Bug 8: fitStatusPayload bounds JSON-escaped byte length and does not mutate issueUrls', () => {
+    const issueUrls = [
+      'https://github.com/OtterBoops/agylity/issues/1',
+      'https://github.com/OtterBoops/agylity/issues/2',
+      'https://github.com/OtterBoops/agylity/issues/3',
+    ];
+    const originalUrls = [...issueUrls];
+
+    // ANSI escape bytes expand 6x under JSON.stringify (`\u001b`).
+    const ansiPayload: Record<string, unknown> = {
+      status: 'completed',
+      runnerId: 'runner-1',
+      output: '\u001b[31m"error"\n'.repeat(10_000),
+      issueUrls,
+    };
+    const fittedAnsi = fitStatusPayload(ansiPayload, STATUS_BODY_MAX_BYTES);
+    assert.ok(
+      Buffer.byteLength(JSON.stringify(fittedAnsi), 'utf8') <= STATUS_BODY_MAX_BYTES,
+      'JSON-escaped payload must fit within maxBytes'
+    );
+
+    // Force issueUrls trimming with a tight budget and verify the caller array is not mutated.
+    const tightPayload: Record<string, unknown> = {
+      status: 'completed',
+      runnerId: 'runner-1',
+      issueUrls,
+    };
+    const fittedTight = fitStatusPayload(tightPayload, 120);
+    assert.ok(Buffer.byteLength(JSON.stringify(fittedTight), 'utf8') <= 120);
+    assert.deepEqual(issueUrls, originalUrls, 'caller issueUrls must not be mutated in place');
+  });
+
+  it('Bug 10: runStreamedCommand flushes trailing decoder bytes before constructing commandError', async () => {
+    const { dir, cleanup } = makeTempDir('runner_bug10_decoder_');
+    const { task, db } = enqueueTask(dir, { pushBranch: false, autoCreatePr: false });
+
+    try {
+      const { spawnFn } = recordSpawn((call) => {
+        setImmediate(() => {
+          // Emit an incomplete 2-byte UTF-8 lead byte (0xc3) on stderr, then close with exit 1.
+          // StringDecoder buffers 0xc3 until .end(), which flushes U+FFFD (\ufffd).
+          call.child.stderr.emit('data', Buffer.from([0x65, 0x72, 0x72, 0xc3]));
+          call.child.emit('close', 1, null);
+        });
+      });
+
+      const executor = new TaskExecutor({
+        agyBinPath: 'agy',
+        dirExistsFn: () => true,
+        spawnFn,
+        killProcessTreeFn: async () => {},
+        execFileFn: createWorkspaceExecFile({ status: () => '', revList: () => '0\n' }).execFileFn,
+      });
+
+      const result = await executor.execute(task);
+      assert.equal(result.success, false);
+      assert.ok(
+        result.output.includes('err\ufffd') || (result.error ?? '').includes('err\ufffd'),
+        'flushed UTF-8 tail must appear in the command error / output'
+      );
+    } finally {
+      db.close();
       cleanup();
     }
   });

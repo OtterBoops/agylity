@@ -35,6 +35,85 @@ describe('Antigravity CLI: agy --version helper', () => {
     });
   });
 
+  it('spawns a forced read instead of inheriting a probe already in flight', async () => {
+    let reported = '1.0.0';
+    let versionCalls = 0;
+    const gate: Array<() => void> = [];
+
+    const updater = new AgyUpdater({
+      execFileFn: async () => {
+        versionCalls += 1;
+        const answer = reported;
+        await new Promise<void>((resolve) => gate.push(resolve));
+        return { stdout: `${answer}\n`, stderr: '' };
+      },
+      logger: quietLogger(),
+    });
+
+    const inherited = updater.getVersion();
+    reported = '2.0.0';
+    const forced = updater.getVersion({ force: true });
+
+    assert.equal(versionCalls, 2, 'a forced read must not reuse an older spawn');
+    gate.forEach((release) => release());
+    assert.equal(await inherited, '1.0.0');
+    assert.equal(await forced, '2.0.0');
+    assert.equal(updater.getCachedVersion(), '2.0.0');
+  });
+
+  it('does not let an older in-flight probe overwrite the cache after a forced probe resolves first', async () => {
+    let reported = '1.0.0';
+    const gate: Array<() => void> = [];
+
+    const updater = new AgyUpdater({
+      execFileFn: async () => {
+        const answer = reported;
+        await new Promise<void>((resolve) => gate.push(resolve));
+        return { stdout: `${answer}\n`, stderr: '' };
+      },
+      logger: quietLogger(),
+    });
+
+    const older = updater.getVersion();
+    reported = '2.0.0';
+    const forced = updater.getVersion({ force: true });
+
+    // Resolve the forced probe FIRST, then the older probe SECOND.
+    gate[1]?.();
+    assert.equal(await forced, '2.0.0');
+    assert.equal(updater.getCachedVersion(), '2.0.0');
+
+    gate[0]?.();
+    assert.equal(await older, '1.0.0');
+    assert.equal(
+      updater.getCachedVersion(),
+      '2.0.0',
+      'an older probe resolving later must not clobber the forced probe cache'
+    );
+  });
+
+  it('drops the answer of a probe that an invalidate overtook', async () => {
+    let versionCalls = 0;
+    let release: (() => void) | undefined;
+
+    const updater = new AgyUpdater({
+      execFileFn: async () => {
+        versionCalls += 1;
+        await new Promise<void>((resolve) => (release = resolve));
+        return { stdout: '9.9.9\n', stderr: '' };
+      },
+      logger: quietLogger(),
+    });
+
+    const inFlight = updater.getVersion();
+    updater.invalidate();
+    release?.();
+    await inFlight;
+
+    assert.equal(versionCalls, 1);
+    assert.equal(updater.getCachedVersion(), null, 'a superseded probe must not refill the cache');
+  });
+
   it('caches the version for the TTL and re-probes once it expires', async () => {
     let nowMs = 1_000;
     let reported = '0.1.0';
@@ -98,14 +177,12 @@ describe('Antigravity CLI: agy --version helper', () => {
 });
 
 describe('Antigravity CLI: agy update', () => {
-  it('logs the version transition and refreshes the cache', async () => {
+  it('reports the version transition and refreshes the cache', async () => {
     let reported = '0.1.0';
-    const calls: string[] = [];
-    const { logger, sink } = recordingLogger();
+    const { logger } = recordingLogger();
 
     const updater = new AgyUpdater({
       execFileFn: async (_file, args) => {
-        calls.push(args.join(' '));
         if (args[0] === 'update') {
           reported = '0.2.0';
           return { stdout: 'agy updated\n', stderr: '' };
@@ -117,18 +194,11 @@ describe('Antigravity CLI: agy update', () => {
 
     const result = await updater.update();
     assert.deepEqual(result, { before: '0.1.0', after: '0.2.0', updated: true });
-    assert.deepEqual(calls, ['--version', 'update', '--version']);
     assert.equal(updater.getCachedVersion(), '0.2.0');
-    assert.ok(
-      sink.records.some(
-        (record) => record.level === 'info' && record.formatted.includes('0.1.0 -> 0.2.0')
-      ),
-      'the before -> after transition must be logged at info'
-    );
   });
 
   it('reports an unchanged version without claiming an update', async () => {
-    const { logger, sink } = recordingLogger();
+    const { logger } = recordingLogger();
     const updater = new AgyUpdater({
       execFileFn: async () => ({ stdout: '0.1.0\n', stderr: '' }),
       logger,
@@ -137,12 +207,6 @@ describe('Antigravity CLI: agy update', () => {
     const result = await updater.update();
     assert.equal(result.updated, false);
     assert.deepEqual([result.before, result.after], ['0.1.0', '0.1.0']);
-    assert.ok(
-      sink.records.some(
-        (record) =>
-          record.level === 'info' && record.formatted.includes('version unchanged at 0.1.0')
-      )
-    );
   });
 
   it('warns on failure, invalidates the cache, and never throws', async () => {

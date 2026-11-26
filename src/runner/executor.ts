@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
 import { logger, type Logger } from '../logs/logger.js';
@@ -17,6 +18,7 @@ import {
 import type { PrPolicy } from '../config/schema.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../shared/github.js';
+import { AgyStreamFormatter } from './agyStream.js';
 import { tailWindow } from '../shared/text.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
@@ -50,6 +52,8 @@ export interface TaskExecuteOptions {
   onOutput?: (tail: string) => void;
   /** Leased from the coordinator for this task only; never read from the runner's own environment. */
   githubToken?: string;
+  /** The coordinator's configured commit identity, when it has one: dashboard override, then its env. */
+  gitIdentity?: { name?: string; email?: string };
 }
 
 export type SpawnFn = (
@@ -138,39 +142,39 @@ export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
   if (!stdout || !stdout.trim()) return {};
   const telemetry: TaskExecutionTelemetry = {};
 
-  const lines = stdout.split(/\r?\n/);
-  for (const line of lines) {
+  for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
     try {
-      const parsed = JSON.parse(trimmed);
-      if (parsed.conversation_id && !telemetry.conversationId) {
-        telemetry.conversationId = String(parsed.conversation_id);
-      }
-      if (parsed.num_turns !== undefined && telemetry.numTurns === undefined) {
-        telemetry.numTurns = finiteNumber(parsed.num_turns);
-      } else if (parsed.turns !== undefined && telemetry.numTurns === undefined) {
-        telemetry.numTurns = finiteNumber(parsed.turns);
-      }
+      const parsed = JSON.parse(trimmed) as Record<string, any>;
+      // `stream-json` wraps each payload one level down; a plain JSON line is its own payload.
+      const payload: Record<string, any> =
+        (parsed.result as Record<string, any>) ??
+        (parsed.step_update as Record<string, any>) ??
+        parsed;
+      // Only the final result carries the run's aggregate usage, so it outranks a step's numbers.
+      const aggregated = parsed.event === 'result';
+      const take = (key: keyof TaskExecutionTelemetry, value: unknown): void => {
+        const numeric = finiteNumber(value);
+        if (numeric === undefined) return;
+        if (aggregated || telemetry[key] === undefined) {
+          (telemetry as Record<string, unknown>)[key] = numeric;
+        }
+      };
 
-      const usage = parsed.usage || parsed.token_usage;
+      if (!telemetry.conversationId && typeof payload.conversation_id === 'string') {
+        telemetry.conversationId = payload.conversation_id;
+      }
+      take('numTurns', payload.num_turns ?? payload.turns);
+
+      const usage = (payload.usage ?? payload.token_usage) as Record<string, any> | undefined;
       if (usage && typeof usage === 'object') {
-        if (usage.input_tokens !== undefined && telemetry.inputTokens === undefined) {
-          telemetry.inputTokens = finiteNumber(usage.input_tokens);
-        }
-        if (usage.output_tokens !== undefined && telemetry.outputTokens === undefined) {
-          telemetry.outputTokens = finiteNumber(usage.output_tokens);
-        }
-        if (usage.thinking_tokens !== undefined && telemetry.thinkingTokens === undefined) {
-          telemetry.thinkingTokens = finiteNumber(usage.thinking_tokens);
-        }
-        if (usage.total_tokens !== undefined && telemetry.totalTokens === undefined) {
-          telemetry.totalTokens = finiteNumber(usage.total_tokens);
-        }
+        take('inputTokens', usage.input_tokens);
+        take('outputTokens', usage.output_tokens);
+        take('thinkingTokens', usage.thinking_tokens);
+        take('totalTokens', usage.total_tokens);
       }
-      if (parsed.total_tokens !== undefined && telemetry.totalTokens === undefined) {
-        telemetry.totalTokens = finiteNumber(parsed.total_tokens);
-      }
+      take('totalTokens', payload.total_tokens);
     } catch {}
   }
 
@@ -212,6 +216,74 @@ export const isCapacityExhaustedOutput = (text: string | undefined): boolean => 
     normalized.includes('too many requests') ||
     normalized.includes('overloaded')
   );
+};
+
+const FLAG_REJECTION_RE =
+  /unknown flag|flag provided but not defined|unknown shorthand|invalid argument/i;
+const AGY_USAGE_ERROR_MAX_BYTES = 1024;
+
+const scanAgyStdout = (stdout: string): { sawStreamEvent: boolean; status: string } => {
+  let sawStreamEvent = false;
+  const status: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('{')) continue;
+    let parsed: Record<string, any>;
+    try {
+      parsed = JSON.parse(trimmed) as Record<string, any>;
+    } catch {
+      continue;
+    }
+    if (typeof parsed.event !== 'string') continue;
+    sawStreamEvent = true;
+    if (parsed.event !== 'result' || !parsed.result || typeof parsed.result !== 'object') continue;
+    for (const key of ['status', 'error', 'state']) {
+      const value = parsed.result[key];
+      if (typeof value === 'string') status.push(value);
+    }
+  }
+  return { sawStreamEvent, status: status.join('\n') };
+};
+
+const capacityFailureSurface = (err: any): string => {
+  const stdout = typeof err?.stdout === 'string' ? err.stdout : '';
+  const stderr = typeof err?.stderr === 'string' ? err.stderr : '';
+  const { sawStreamEvent, status } = scanAgyStdout(stdout);
+  // Stream-json stdout is the agent's own narration; only its final result status is the CLI's.
+  return [stderr, sawStreamEvent ? status : stdout].filter(Boolean).join('\n');
+};
+
+const tokenizeCommand = (value: string): string[] => {
+  const tokens: string[] = [];
+  let current = '';
+  let openQuote: '"' | "'" | null = null;
+  let tokenOpen = false;
+  for (const char of value) {
+    if (openQuote) {
+      if (char === openQuote) openQuote = null;
+      else current += char;
+      tokenOpen = true;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      openQuote = char;
+      tokenOpen = true;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (tokenOpen) {
+        tokens.push(current);
+        current = '';
+        tokenOpen = false;
+      }
+      continue;
+    }
+    current += char;
+    tokenOpen = true;
+  }
+  if (openQuote) throw new Error(`Verification command has an unterminated ${openQuote} quote`);
+  if (tokenOpen) tokens.push(current);
+  return tokens;
 };
 
 export interface CapacityContinuationContext {
@@ -373,11 +445,11 @@ const defaultResolveGithubIdentity = async (
 
 // A squash-merge credits every `Co-authored-by:` trailer and every noreply address on the branch,
 // so an agent that improvises an identity inside the container can attribute work to a stranger.
-const GITHUB_NOREPLY_SUFFIX = '@users.noreply.github.com';
 const CO_AUTHOR_TRAILER_RE = /^[ \t]*co-authored-by[ \t]*:/i;
-const ATTRIBUTION_FIELD = '\u001f';
-const ATTRIBUTION_RECORD = '\u001e';
-const ATTRIBUTION_LOG_FORMAT = '%H%x1f%T%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1e';
+// A NUL cannot appear in a commit message, so it is the one separator a message cannot forge.
+const ATTRIBUTION_FIELD = '\u0000';
+const ATTRIBUTION_FIELD_COUNT = 10;
+const ATTRIBUTION_LOG_FORMAT = '%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B';
 
 /** One commit as the attribution guard reads and replays it. */
 export interface BranchCommit {
@@ -405,37 +477,58 @@ export const stripCoAuthorTrailers = (message: string): string =>
     .join('\n')
     .replace(/\s+$/, '')}\n`;
 
-/** True for a GitHub noreply address the identity holding the lease does not own. */
-export const isUnownedNoreplyEmail = (email: string, ownedEmail?: string): boolean => {
-  const candidate = email.trim().toLowerCase();
-  if (!candidate.endsWith(GITHUB_NOREPLY_SUFFIX)) return false;
-  return candidate !== (ownedEmail ?? '').trim().toLowerCase();
-};
+/** True for any address the identity holding the lease does not own, noreply or not. */
+export const isUnownedIdentity = (email: string, ownedEmail?: string): boolean =>
+  email.trim().toLowerCase() !== (ownedEmail ?? '').trim().toLowerCase();
 
 /** Parses `git log --reverse --format=<ATTRIBUTION_LOG_FORMAT>` output, oldest commit first. */
-export const parseBranchCommitLog = (stdout: string): BranchCommit[] =>
-  stdout
-    .split(ATTRIBUTION_RECORD)
-    .map((record) => record.replace(/^\r?\n/, ''))
-    .filter((record) => record.trim() !== '')
-    .map((record) => {
-      // Field order mirrors ATTRIBUTION_LOG_FORMAT; the message is last and keeps its separators.
-      const fields = record.split(ATTRIBUTION_FIELD);
-      const field = (index: number): string => (fields[index] ?? '').trim();
-      const parents = field(2);
-      return {
-        sha: field(0),
-        tree: field(1),
-        parents: parents === '' ? [] : parents.split(' '),
-        authorName: field(3),
-        authorEmail: field(4),
-        authorDate: field(5),
-        committerName: field(6),
-        committerEmail: field(7),
-        committerDate: field(8),
-        message: fields.slice(9).join(ATTRIBUTION_FIELD),
-      };
+export const parseBranchCommitLog = (stdout: string): BranchCommit[] => {
+  const fields = stdout.split(ATTRIBUTION_FIELD);
+  if (fields[fields.length - 1] === '') fields.pop();
+  const commits: BranchCommit[] = [];
+  for (
+    let index = 0;
+    index + ATTRIBUTION_FIELD_COUNT <= fields.length;
+    index += ATTRIBUTION_FIELD_COUNT
+  ) {
+    // Field order mirrors ATTRIBUTION_LOG_FORMAT; the message is last and keeps its own newlines.
+    const field = (offset: number): string => (fields[index + offset] ?? '').trim();
+    const sha = field(0);
+    if (!sha) continue;
+    const parents = field(2);
+    commits.push({
+      sha,
+      tree: field(1),
+      parents: parents === '' ? [] : parents.split(' '),
+      authorName: field(3),
+      authorEmail: field(4),
+      authorDate: field(5),
+      committerName: field(6),
+      committerEmail: field(7),
+      committerDate: field(8),
+      message: fields[index + 9] ?? '',
     });
+  }
+  return commits;
+};
+
+const BRANCH_REF_FORBIDDEN = /[\s~^:?*\[\\\u0000-\u001f\u007f]/;
+
+// Git's ref rules that matter before one is handed to clone/checkout/push: no leading '-', no control
+// characters, no '..', no '@{', and nothing that leaves a dangling path segment.
+const isUsableBranchRef = (value: string): boolean =>
+  value.length > 0 &&
+  value.length <= 255 &&
+  !value.startsWith('-') &&
+  !value.startsWith('/') &&
+  !value.startsWith('.') &&
+  !BRANCH_REF_FORBIDDEN.test(value) &&
+  !value.includes('..') &&
+  !value.includes('@{') &&
+  !value.includes('//') &&
+  !value.endsWith('/') &&
+  !value.endsWith('.') &&
+  !value.endsWith('.lock');
 
 export class TaskExecutor {
   private readonly agyBinPath: string;
@@ -485,6 +578,45 @@ export class TaskExecutor {
     }
   }
 
+  // Stream-json is the only way the pane sees progress mid-run; a binary that rejects the flag
+  // still gets its attempt, in text mode.
+  private async runAgy(
+    args: readonly string[],
+    options: {
+      cwd: string;
+      timeoutMs: number;
+      signal?: AbortSignal | undefined;
+      onOutput?: ((tail: string) => void) | undefined;
+      redactTokens?: readonly (string | undefined)[] | undefined;
+      env?: NodeJS.ProcessEnv;
+    }
+  ): Promise<{ stdout: string; stderr: string; text: string }> {
+    const formatter = new AgyStreamFormatter();
+    try {
+      const streamed = await this.runStreamedCommand(
+        this.agyBinPath,
+        [...args, '--output-format', 'stream-json'],
+        { ...options, streamFormatter: formatter }
+      );
+      return { ...streamed, text: formatter.text };
+    } catch (err: any) {
+      const stderr = typeof err?.stderr === 'string' ? err.stderr : '';
+      const stdout = typeof err?.stdout === 'string' ? err.stdout : '';
+      const rejectedFlag =
+        !options.signal?.aborted &&
+        !scanAgyStdout(stdout).sawStreamEvent &&
+        stderr.length <= AGY_USAGE_ERROR_MAX_BYTES &&
+        FLAG_REJECTION_RE.test(stderr);
+      if (!rejectedFlag) {
+        if (err && typeof err === 'object') (err as any).agyText = formatter.text;
+        throw err;
+      }
+      this.log.warn('agy rejected --output-format stream-json; retrying this attempt in text mode');
+      const streamed = await this.runStreamedCommand(this.agyBinPath, args, options);
+      return { ...streamed, text: '' };
+    }
+  }
+
   private async runStreamedCommand(
     file: string,
     args: readonly string[],
@@ -494,9 +626,12 @@ export class TaskExecutor {
       env?: NodeJS.ProcessEnv;
       signal?: AbortSignal | undefined;
       onOutput?: ((tail: string) => void) | undefined;
+      redactTokens?: readonly (string | undefined)[] | undefined;
+      streamFormatter?: AgyStreamFormatter | undefined;
     }
   ): Promise<{ stdout: string; stderr: string }> {
     const signal = options.signal;
+    const redactTokens = options.redactTokens ?? [];
     if (signal?.aborted) {
       throw commandError(`Command aborted before start: ${file}`);
     }
@@ -551,10 +686,45 @@ export class TaskExecutor {
         signal?.removeEventListener('abort', onAbort);
       };
 
+      const stdoutDecoder = new StringDecoder('utf8');
+      const stderrDecoder = new StringDecoder('utf8');
+      let decodersFlushed = false;
+
+      const flushDecoders = (): void => {
+        if (decodersFlushed) return;
+        decodersFlushed = true;
+        const stdoutTail = stdoutDecoder.end();
+        if (stdoutTail) {
+          stdoutChunks.push(stdoutTail);
+          const display = options.streamFormatter
+            ? options.streamFormatter.feed(stdoutTail)
+            : stdoutTail;
+          if (display) {
+            tail = redactGitSecrets(tailWindow(tail + display, STREAM_TAIL_BYTES), redactTokens);
+            pendingEmit += display.length;
+          }
+        }
+        const formatterTail = options.streamFormatter?.flush() ?? '';
+        if (formatterTail) {
+          tail = redactGitSecrets(
+            tailWindow(tail + formatterTail, STREAM_TAIL_BYTES),
+            redactTokens
+          );
+          pendingEmit += formatterTail.length;
+        }
+        const stderrTail = stderrDecoder.end();
+        if (stderrTail) {
+          stderrChunks.push(stderrTail);
+          tail = redactGitSecrets(tailWindow(tail + stderrTail, STREAM_TAIL_BYTES), redactTokens);
+          pendingEmit += stderrTail.length;
+        }
+      };
+
       const settle = (error: Error | null): void => {
         if (settled) return;
         settled = true;
         cleanup();
+        flushDecoders();
         flushOutput();
         const stdout = stdoutChunks.join('');
         const stderr = stderrChunks.join('');
@@ -566,13 +736,17 @@ export class TaskExecutor {
         void ensureKilled().then(() => reject(error));
       };
 
-      const appendChunk = (chunk: unknown, sink: string[]): void => {
+      const appendChunk = (chunk: unknown, sink: string[], decoder: StringDecoder): void => {
         const text =
-          typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? chunk.toString('utf8') : '';
+          typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? decoder.write(chunk) : '';
         if (!text) return;
         sink.push(text);
-        tail = (tail + text).slice(-STREAM_TAIL_BYTES);
-        pendingEmit += text.length;
+        const display =
+          sink === stdoutChunks && options.streamFormatter
+            ? options.streamFormatter.feed(text)
+            : text;
+        tail = redactGitSecrets(tailWindow(tail + display, STREAM_TAIL_BYTES), redactTokens);
+        pendingEmit += display.length;
         const now = Date.now();
         if (
           options.onOutput &&
@@ -590,6 +764,7 @@ export class TaskExecutor {
 
       const onAbort = (): void => {
         aborted = true;
+        flushDecoders();
         killAndSettle(
           commandError(`Command aborted: ${file} was killed after the abort signal fired`, {
             stdout: stdoutChunks.join(''),
@@ -607,6 +782,7 @@ export class TaskExecutor {
         timeoutMs > 0
           ? setTimeout(() => {
               timedOut = true;
+              flushDecoders();
               killAndSettle(
                 commandError(`Command timed out after ${timeoutMs}ms: ${file}`, {
                   stdout: stdoutChunks.join(''),
@@ -618,8 +794,12 @@ export class TaskExecutor {
             }, timeoutMs)
           : null;
 
-      child.stdout?.on('data', (chunk: Buffer | string) => appendChunk(chunk, stdoutChunks));
-      child.stderr?.on('data', (chunk: Buffer | string) => appendChunk(chunk, stderrChunks));
+      child.stdout?.on('data', (chunk: Buffer | string) =>
+        appendChunk(chunk, stdoutChunks, stdoutDecoder)
+      );
+      child.stderr?.on('data', (chunk: Buffer | string) =>
+        appendChunk(chunk, stderrChunks, stderrDecoder)
+      );
 
       child.once('error', (err: Error) => {
         settle(commandError(`Failed to run ${file}: ${err?.message ?? err}`));
@@ -628,6 +808,7 @@ export class TaskExecutor {
       child.once('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
         if (aborted) return;
         if (timedOut) return;
+        flushDecoders();
         const stdout = stdoutChunks.join('');
         const stderr = stderrChunks.join('');
         if (code === 0) {
@@ -757,6 +938,31 @@ export class TaskExecutor {
       timeout: 15000,
     });
     return stdout.replace(/\s+$/, '');
+  }
+
+  /** Untracked files as git spells them: `-uall` expands new directories and `-z` preserves spaces/quotes. */
+  private async listUntracked(cwd: string): Promise<string[]> {
+    const { stdout } = await this.execFileFn('git', ['status', '--porcelain', '-z', '-uall'], {
+      cwd,
+      timeout: 15000,
+    });
+    const entries = stdout.split('\u0000');
+    const untracked: string[] = [];
+    for (let i = 0; i < entries.length; i += 1) {
+      const entry = entries[i];
+      if (!entry) continue;
+      if (entry.startsWith('?? ')) {
+        untracked.push(entry.slice(3));
+        continue;
+      }
+      // Renames and copies emit a second NUL-terminated entry carrying the source path.
+      const x = entry[0];
+      const y = entry[1];
+      if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
+        i += 1;
+      }
+    }
+    return untracked;
   }
 
   /** Commits on HEAD that `baseBranch` does not have. */
@@ -962,13 +1168,19 @@ export class TaskExecutor {
 
   private async resolveGitIdentityEnv(
     githubToken?: string,
-    fallbackName?: string
-  ): Promise<Record<string, string>> {
-    const envAuthorName = process.env.GIT_AUTHOR_NAME?.trim();
-    const envAuthorEmail = process.env.GIT_AUTHOR_EMAIL?.trim();
+    fallbackName?: string,
+    leaseIdentity?: { name?: string; email?: string }
+  ): Promise<{ env: Record<string, string>; owned: { name: string; email: string } }> {
+    // Dashboard override, then the coordinator's env (both arrive on the lease), then this host's env,
+    // then the account behind the token.
+    const leaseName = leaseIdentity?.name?.trim();
+    const leaseEmail = leaseIdentity?.email?.trim();
+    const envAuthorName = leaseName || process.env.GIT_AUTHOR_NAME?.trim();
+    const envAuthorEmail = leaseEmail || process.env.GIT_AUTHOR_EMAIL?.trim();
     let resolved: { name: string; email: string } | undefined;
 
-    if ((!envAuthorName || !envAuthorEmail) && githubToken) {
+    // Query the token's GitHub account only when name or email is still missing after lease/env.
+    if (githubToken && (!envAuthorName || !envAuthorEmail)) {
       const cacheKey = createHash('sha256').update(githubToken).digest('hex');
       if (this.githubIdentityCache.has(cacheKey)) {
         resolved = this.githubIdentityCache.get(cacheKey) ?? undefined;
@@ -981,10 +1193,16 @@ export class TaskExecutor {
     const authorName = envAuthorName || resolved?.name || fallbackName || 'Agylity Runner';
     const authorEmail = envAuthorEmail || resolved?.email || 'noreply@agylity.local';
     return {
-      GIT_AUTHOR_NAME: authorName,
-      GIT_AUTHOR_EMAIL: authorEmail,
-      GIT_COMMITTER_NAME: process.env.GIT_COMMITTER_NAME?.trim() || authorName,
-      GIT_COMMITTER_EMAIL: process.env.GIT_COMMITTER_EMAIL?.trim() || authorEmail,
+      env: {
+        GIT_AUTHOR_NAME: authorName,
+        GIT_AUTHOR_EMAIL: authorEmail,
+        // Keep committer aligned with the owned identity so ambient GIT_COMMITTER_* never
+        // overrides leaseIdentity or triggers self-inflicted attribution rewrites.
+        GIT_COMMITTER_NAME: authorName,
+        GIT_COMMITTER_EMAIL: authorEmail,
+      },
+      // The identity this run actually commits as is the one the guard treats as owned.
+      owned: { name: authorName, email: authorEmail },
     };
   }
 
@@ -1058,11 +1276,12 @@ export class TaskExecutor {
       );
 
       try {
-        const streamed = await this.runStreamedCommand(this.agyBinPath, agyArgs, {
+        const streamed = await this.runAgy(agyArgs, {
           cwd,
           timeoutMs: this.timeoutMs,
           signal: context.signal,
           onOutput: context.onOutput,
+          redactTokens: [context.githubToken],
           // The lease is the only credential the child sees; the empty fallback keeps a stale
           // GITHUB_TOKEN inherited from the runner environment out of the agent's reach.
           // Provide a deterministic git identity so `agy` never hits "Author identity unknown"
@@ -1074,18 +1293,21 @@ export class TaskExecutor {
           },
         });
         lastStdout = streamed.stdout || '';
-        output = combineOutput(streamed.stdout, streamed.stderr);
+        output = combineOutput(streamed.text || streamed.stdout, streamed.stderr);
         attemptTelemetry.push(parseAgyTelemetry(lastStdout));
         failure = null;
         break;
       } catch (agyErr: any) {
         lastStdout = agyErr?.stdout || '';
-        const attemptOutput = combineOutput(agyErr?.stdout, agyErr?.stderr);
+        const attemptOutput = redactGitSecrets(
+          combineOutput(agyErr?.agyText || agyErr?.stdout, agyErr?.stderr),
+          [context.githubToken]
+        );
         output = attemptOutput;
         attemptTelemetry.push(parseAgyTelemetry(lastStdout));
         failure = agyErr;
 
-        const failureText = [attemptOutput, agyErr?.message ?? ''].filter(Boolean).join('\n');
+        const failureText = capacityFailureSurface(agyErr);
         if (context.signal?.aborted || !isCapacityExhaustedOutput(failureText)) break;
 
         const nextHop = this.pickNextCandidateHop(task, attemptHop.model, attemptedModels);
@@ -1144,7 +1366,7 @@ export class TaskExecutor {
       throw new Error('Verification command contains illegal shell metacharacters');
     }
 
-    const [cmd, ...cmdArgs] = trimmed.split(/\s+/);
+    const [cmd, ...cmdArgs] = tokenizeCommand(trimmed);
     if (!cmd || !ALLOWED_TEST_RUNNERS.has(cmd)) {
       throw new Error(
         `Verification command '${cmd ?? ''}' is not in approved test runner allowlist (${Array.from(
@@ -1156,8 +1378,11 @@ export class TaskExecutor {
       throw new Error('Verification command must not use an inline-code flag (-e/--eval/-c)');
     }
 
+    this.log.info('Running verification for %s: %s', cwd, trimmed);
+    const verifyStartedAt = Date.now();
     try {
       await this.runStreamedCommand(cmd, cmdArgs, { cwd, timeoutMs: VERIFY_TIMEOUT_MS, signal });
+      this.log.info('Verification passed for %s in %dms', cwd, Date.now() - verifyStartedAt);
     } catch (verifyErr: any) {
       const message =
         verifyErr?.stderr?.trim() ||
@@ -1178,34 +1403,42 @@ export class TaskExecutor {
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
-    gitIdentityEnv: Record<string, string>
-  ): Promise<{ commitsProduced: boolean; deliverableTitle?: string }> {
+    gitIdentityEnv: Record<string, string>,
+    untrackedPaths: readonly string[]
+  ): Promise<{ commitsProduced: boolean; deliverableTitle?: string; commitError?: string }> {
     const cwd = task.repositoryPath;
     const deliverableTitle = await this.authoredCommitSubject(cwd, baseBranch);
     let committed = false;
+    let commitError: string | undefined;
 
     try {
       const statusOut = await this.gitStatusPorcelain(cwd);
       if (statusOut !== '') {
-        await this.execFileFn('git', ['add', '-A'], { cwd, timeout: 15000 });
-        await this.execFileFn('git', ['commit', '-m', resolveTaskTitle(task.title, task.prompt)], {
-          cwd,
-          timeout: 30000,
-          env: {
-            ...process.env,
-            ...gitIdentityEnv,
-          },
-        });
-        committed = true;
+        await this.execFileFn('git', ['add', '-u'], { cwd, timeout: 15000 });
+        await this.stageUntrackedPaths(cwd, untrackedPaths);
+        if (await this.hasStagedChanges(cwd)) {
+          await this.execFileFn(
+            'git',
+            ['commit', '-m', resolveTaskTitle(task.title, task.prompt)],
+            {
+              cwd,
+              timeout: 30000,
+              env: {
+                ...process.env,
+                ...gitIdentityEnv,
+              },
+            }
+          );
+          committed = true;
+          this.log.info('Committed the working tree on %s', branchName);
+        }
       }
     } catch (commitErr: any) {
-      this.log.warn(
-        'Failed to commit working tree changes on %s: %s',
-        branchName,
-        commitErr?.message ?? commitErr
-      );
+      commitError = commitErr?.stderr?.trim() || commitErr?.message || String(commitErr);
+      this.log.error('Failed to commit working tree changes on %s: %s', branchName, commitError);
     }
 
+    if (commitError) return { commitsProduced: false, deliverableTitle, commitError };
     if (committed) return { commitsProduced: true, deliverableTitle };
 
     try {
@@ -1215,6 +1448,38 @@ export class TaskExecutor {
       };
     } catch {
       return { commitsProduced: false, deliverableTitle };
+    }
+  }
+
+  /** Stages untracked paths in batches, falling back per-file if one vanished or is ignored. */
+  private async stageUntrackedPaths(cwd: string, untrackedPaths: readonly string[]): Promise<void> {
+    for (let index = 0; index < untrackedPaths.length; index += 50) {
+      const batch = untrackedPaths.slice(index, index + 50);
+      try {
+        await this.execFileFn('git', ['add', '--', ...batch], { cwd, timeout: 15000 });
+      } catch {
+        for (const filePath of batch) {
+          try {
+            await this.execFileFn('git', ['add', '--', filePath], { cwd, timeout: 15000 });
+          } catch (addErr: any) {
+            this.log.warn(
+              'Skipped an untracked path that could not be staged (%s): %s',
+              filePath,
+              addErr?.message
+            );
+          }
+        }
+      }
+    }
+  }
+
+  /** Returns true when the index has staged changes (`git diff --cached --quiet` exits 1). */
+  private async hasStagedChanges(cwd: string): Promise<boolean> {
+    try {
+      await this.execFileFn('git', ['diff', '--cached', '--quiet'], { cwd, timeout: 15000 });
+      return false;
+    } catch {
+      return true;
     }
   }
 
@@ -1257,31 +1522,35 @@ export class TaskExecutor {
   private async stripUntrustedAttribution(
     cwd: string,
     baseBranch: string,
-    gitIdentityEnv: Record<string, string>
+    ownedIdentity: { name: string; email: string }
   ): Promise<void> {
     const commits = await this.readBranchCommits(cwd, baseBranch);
     if (commits.length === 0) return;
 
-    const safeName = gitIdentityEnv.GIT_AUTHOR_NAME || 'Agylity Runner';
-    const safeEmail = gitIdentityEnv.GIT_AUTHOR_EMAIL || 'noreply@agylity.local';
+    const { stdout: headOut } = await this.execFileFn('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      timeout: 10000,
+    });
+    const originalHead = headOut.trim() || commits[commits.length - 1]!.sha;
+
+    const safeName = ownedIdentity.name || 'Agylity Runner';
+    const safeEmail = ownedIdentity.email || 'noreply@agylity.local';
     const rewritten = new Map<string, string>();
-    let head = '';
     let flagged = 0;
 
     for (const commit of commits) {
       const parents = commit.parents.map((parent) => rewritten.get(parent) ?? parent);
       const parentsMoved = parents.some((parent, index) => parent !== commit.parents[index]);
-      const authorUnowned = isUnownedNoreplyEmail(commit.authorEmail, safeEmail);
-      const committerUnowned = isUnownedNoreplyEmail(commit.committerEmail, safeEmail);
+      const authorUnowned = isUnownedIdentity(commit.authorEmail, safeEmail);
+      const committerUnowned = isUnownedIdentity(commit.committerEmail, safeEmail);
       const carriesTrailer = hasCoAuthorTrailer(commit.message);
 
       if (!parentsMoved && !authorUnowned && !committerUnowned && !carriesTrailer) {
         rewritten.set(commit.sha, commit.sha);
-        head = commit.sha;
         continue;
       }
 
-      head = await this.replayCommit(cwd, {
+      const nextSha = await this.replayCommit(cwd, {
         ...commit,
         parents,
         authorName: authorUnowned ? safeName : commit.authorName,
@@ -1290,25 +1559,37 @@ export class TaskExecutor {
         committerEmail: committerUnowned ? safeEmail : commit.committerEmail,
         message: carriesTrailer ? stripCoAuthorTrailers(commit.message) : commit.message,
       });
-      rewritten.set(commit.sha, head);
+      rewritten.set(commit.sha, nextSha);
       flagged += 1;
     }
 
     if (flagged === 0) return;
 
+    const head = rewritten.get(originalHead);
+    if (!head) {
+      throw new Error(`Rewritten commit map did not contain HEAD (${originalHead})`);
+    }
+
     this.log.info(
-      'Rewrote attribution on %d of %d commit(s) before pushing: co-author trailers and unowned noreply identities never reach GitHub',
+      'Rewrote attribution on %d of %d commit(s) before pushing: co-author trailers and identities the lease does not own never reach GitHub',
       flagged,
       commits.length
     );
     await this.execFileFn('git', ['reset', '--hard', head], { cwd, timeout: 15000 });
   }
 
-  /** The commits this branch adds to `baseBranch`, oldest first so parents replay before children. */
+  /** The commits this branch adds to `baseBranch`, oldest first in topological order so parents replay before children. */
   private async readBranchCommits(cwd: string, baseBranch: string): Promise<BranchCommit[]> {
     const { stdout } = await this.execFileFn(
       'git',
-      ['log', '--reverse', `--format=${ATTRIBUTION_LOG_FORMAT}`, `${baseBranch}..HEAD`],
+      [
+        'log',
+        '-z',
+        '--topo-order',
+        '--reverse',
+        `--format=${ATTRIBUTION_LOG_FORMAT}`,
+        `${baseBranch}..HEAD`,
+      ],
       { cwd, timeout: 20000 }
     );
     return parseBranchCommitLog(stdout ?? '');
@@ -1362,6 +1643,7 @@ export class TaskExecutor {
         cwd: task.repositoryPath,
         timeout: 60000,
       });
+      this.log.info('Pushed %s to origin', branchName);
       return null;
     } catch (gitPushErr: any) {
       const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr), [githubToken]);
@@ -1386,7 +1668,9 @@ export class TaskExecutor {
       const tierLabel = task.tier || 'immediate';
       // A failover hop is the model that actually wrote the branch, so the footer names that one.
       const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      const rawBody = buildPullRequestBody(task, title, capturedOutput);
+      // First, so the footer check still sees the prompt's own tail.
+      const closes = task.originIssueNumber ? `Closes #${task.originIssueNumber}\n\n` : '';
+      const rawBody = `${closes}${buildPullRequestBody(task, title, capturedOutput)}`;
       // Avoid stacking a second Agylity footer when the source prompt/output already ends with one.
       const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(rawBody);
       const prBody = hasDispatchFooter
@@ -1418,7 +1702,11 @@ export class TaskExecutor {
       this.log.info('Created pull request for %s: %s', branchName, match[0]);
       return match[0].trim();
     } catch (prErr: any) {
-      this.log.warn('Auto PR creation failed for %s: %s', branchName, prErr?.message ?? prErr);
+      this.log.warn(
+        'Auto PR creation failed for %s: %s',
+        branchName,
+        redactGitSecrets(prErr?.message ?? String(prErr), [githubToken])
+      );
       return undefined;
     }
   }
@@ -1469,12 +1757,12 @@ export class TaskExecutor {
     try {
       const { stdout: diffOut } = await this.execFileFn(
         'git',
-        ['diff', '--name-only', `${baseBranch}..HEAD`],
+        ['diff', '--name-only', '-z', `${baseBranch}..HEAD`],
         { cwd: task.repositoryPath, timeout: 15000 }
       );
       nonDocFiles = diffOut
-        .split(/\r?\n/)
-        .map((line) => line.trim())
+        .split(/[\0\r\n]+/)
+        .map((file) => file.trim())
         .filter(Boolean)
         .filter((file) => !isDocumentationFile(file));
     } catch (diffErr: any) {
@@ -1571,7 +1859,9 @@ export class TaskExecutor {
       this.log.warn(
         'Could not query GitHub issues for %s: %s',
         slug,
-        listErr instanceof Error ? listErr.message : String(listErr)
+        redactGitSecrets(listErr instanceof Error ? listErr.message : String(listErr), [
+          githubToken,
+        ])
       );
       return [];
     }
@@ -1620,11 +1910,16 @@ export class TaskExecutor {
       task.branchName ||
       buildContinuationBranchName(task.id, resolveTaskTitle(task.title, task.prompt));
 
-    if (branchName === 'main' || branchName === 'master') {
+    // A stored branch name can arrive from a runner report, so it has to be a usable ref before any
+    // clone, checkout or push spends a run on it.
+    const unusableBranch = !isUsableBranchRef(branchName);
+    if (branchName === 'main' || branchName === 'master' || unusableBranch) {
       return this.failureResult(
         branchName,
         startMs,
-        'Branch isolation invariant violation: refusing to execute directly on main/master'
+        unusableBranch
+          ? `Branch isolation invariant violation: '${branchName}' is not a usable git branch name`
+          : 'Branch isolation invariant violation: refusing to execute directly on main/master'
       );
     }
 
@@ -1668,7 +1963,11 @@ export class TaskExecutor {
         modelSupportsEffort(task.model) ? primaryHop.effort : undefined
       );
 
-      const gitIdentityEnv = await this.resolveGitIdentityEnv(githubToken, task.requestedBy);
+      const { env: gitIdentityEnv, owned: ownedIdentity } = await this.resolveGitIdentityEnv(
+        githubToken,
+        task.requestedBy,
+        options.gitIdentity
+      );
 
       const agent = await this.runAgentWithCascade(task, {
         cwd,
@@ -1683,16 +1982,37 @@ export class TaskExecutor {
         githubToken,
         gitIdentityEnv,
       });
-      capturedOutput = agent.output;
+      capturedOutput = redactGitSecrets(agent.output, [githubToken]);
       capturedTelemetryRaw = agent.lastStdout;
       telemetry = agent.telemetry;
       if (agent.failure) throw agent.failure;
 
+      // Read the agent's own untracked files before verification, so its artifacts cannot be committed.
+      const agentUntracked = await this.listUntracked(cwd);
       if (task.verifyCommand && task.verifyCommand.trim() !== '') {
         await this.runVerification(task.verifyCommand, cwd, options.signal);
       }
 
-      const commit = await this.commitWorkingTree(task, branchName, baseBranch, gitIdentityEnv);
+      const commit = await this.commitWorkingTree(
+        task,
+        branchName,
+        baseBranch,
+        gitIdentityEnv,
+        agentUntracked
+      );
+      if (commit.commitError) {
+        return {
+          success: false,
+          branchName,
+          output: capturedOutput,
+          error: redactGitSecrets(
+            `Failed to commit the working tree on ${branchName}: ${commit.commitError}`,
+            [githubToken]
+          ),
+          durationMs: Date.now() - startMs,
+          ...this.telemetryFields(telemetry),
+        };
+      }
       if (!commit.commitsProduced) {
         await this.discardBranch(cwd, baseBranch, branchName);
         const issues = await this.collectIssueDeliverables(task, startMs, githubToken);
@@ -1770,7 +2090,7 @@ export class TaskExecutor {
       let prUrl: string | undefined;
       if (task.pushBranch) {
         // Nothing unowned reaches the remote: the guard runs before the leased token can push.
-        await this.stripUntrustedAttribution(cwd, baseBranch, gitIdentityEnv);
+        await this.stripUntrustedAttribution(cwd, baseBranch, ownedIdentity);
         const pushError = await this.pushTaskBranch(task, finalBranchName, githubToken);
         if (pushError) {
           return {

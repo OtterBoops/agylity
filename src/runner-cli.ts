@@ -110,7 +110,12 @@ export const parseRunnerCliArgs = (
     'data/runner.json'
   ).trim();
 
-  const agyBinPath = (args['agy-bin'] || env.AGY_BIN_PATH || 'agy').trim();
+  const agyBinPath = (
+    args['agy-bin'] ||
+    env.REMOTE_AGY_BIN_PATH ||
+    env.AGY_BIN_PATH ||
+    'agy'
+  ).trim();
 
   return {
     coordinatorUrl,
