@@ -44,14 +44,19 @@ interface CachedQuotaPayload {
   lastUpdated: number | null;
 }
 
+// Quota poll defaults to 60s; a snapshot older than a few intervals is no longer evidence of live state.
+const QUOTA_CACHE_MAX_AGE_MS = 5 * 60_000;
+
 const loadInitialQuotaState = (): QuotaState => {
   const cached = readUiCache<CachedQuotaPayload>(QUOTA_CACHE_KEY);
-  if (cached && Array.isArray(cached.quota) && cached.quota.length > 0) {
+  const cachedAt = typeof cached?.lastUpdated === 'number' ? cached.lastUpdated : null;
+  const cacheIsFresh = cachedAt !== null && Date.now() - cachedAt <= QUOTA_CACHE_MAX_AGE_MS;
+  if (cached && cacheIsFresh && Array.isArray(cached.quota) && cached.quota.length > 0) {
     return {
       quota: cached.quota,
       alerts: cached.alerts ?? null,
       loading: false,
-      lastUpdated: typeof cached.lastUpdated === 'number' ? cached.lastUpdated : null,
+      lastUpdated: cachedAt,
       error: null,
     };
   }

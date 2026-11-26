@@ -11,6 +11,7 @@ import {
 import type { SwarmTask } from '../../types';
 import { modelSupportsEffort } from '../../../../src/shared/models.ts';
 import { PR_POLICY_SHORT_LABELS } from '../../../../src/shared/policies.ts';
+import { isHttpUrl } from '../../../../src/shared/urls.ts';
 import { resolveTaskTitle, UNTITLED_TASK_TITLE } from '../../../../src/shared/titles.ts';
 import { getTask } from '../../api';
 import { formatDateTime, formatDuration, useTimeFormat } from '../../utils/time';
@@ -85,13 +86,16 @@ export const ExecutionInspectorContent = ({
   const [live, setLive] = useState<SwarmTask>(task);
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [outputUnavailable, setOutputUnavailable] = useState(false);
 
   useEffect(() => {
     setLive((prev) => {
       if (prev.id !== task.id) return task;
       const prevAt = Date.parse(prev.updatedAt);
       const nextAt = Date.parse(task.updatedAt);
-      return Number.isFinite(prevAt) && Number.isFinite(nextAt) && prevAt > nextAt ? prev : task;
+      if (Number.isFinite(prevAt) && Number.isFinite(nextAt) && prevAt > nextAt) return prev;
+      // The list projection omits output; a refresh must not blank the hydrated log.
+      return { ...prev, ...task, output: task.output ?? prev.output };
     });
   }, [task]);
 
@@ -100,15 +104,24 @@ export const ExecutionInspectorContent = ({
 
   // List projections omit output to keep /api/tasks compact; hydrate once when opening a terminal task.
   useEffect(() => {
+    setOutputUnavailable(false);
+    setError(null);
     if (task.output !== undefined) return;
     let cancelled = false;
     getTask(taskId)
       .then(({ task: fresh, fingerprint }) => {
         if (cancelled) return;
         lastFingerprint.current = fingerprint ?? null;
+        setOutputUnavailable(false);
+        setError(null);
         setLive((prev) => (prev.id === fresh.id ? { ...prev, ...fresh } : fresh));
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.error('[agylity] output hydration failed', err);
+        setOutputUnavailable(true);
+        setError(`Model output unavailable: ${err instanceof Error ? err.message : String(err)}`);
+      });
     return () => {
       cancelled = true;
     };
@@ -121,6 +134,7 @@ export const ExecutionInspectorContent = ({
       getTask(taskId)
         .then(({ task: fresh, fingerprint }) => {
           if (cancelled) return;
+          setOutputUnavailable(false);
           // Equal digests mean nothing rendered moved; skipping setLive skips the re-render and autoscroll pass.
           if (fingerprint !== undefined && fingerprint === lastFingerprint.current) {
             setError(null);
@@ -294,7 +308,7 @@ export const ExecutionInspectorContent = ({
             <DetailItem label="Pull Request">
               {live.prUrl ? (
                 <a
-                  href={live.prUrl}
+                  href={isHttpUrl(live.prUrl) ? live.prUrl : undefined}
                   target="_blank"
                   rel="noreferrer"
                   class="inline-flex items-center gap-1 text-pine-iris hover:underline"
@@ -314,7 +328,7 @@ export const ExecutionInspectorContent = ({
                   {live.issueUrls.map((url) => (
                     <a
                       key={url}
-                      href={url}
+                      href={isHttpUrl(url) ? url : undefined}
                       target="_blank"
                       rel="noreferrer"
                       aria-label={`Open issue ${githubIssueLabel(url)}`}
@@ -368,7 +382,7 @@ export const ExecutionInspectorContent = ({
           </div>
         )}
 
-        {live.output && (
+        {(live.output || polling || outputUnavailable) && (
           <div>
             <div class="mb-1 flex items-center gap-2">
               <h3 class="text-xs font-semibold text-pine-subtle uppercase">Model Output Log</h3>
@@ -387,7 +401,10 @@ export const ExecutionInspectorContent = ({
               }}
               class="m-0 max-h-48 overflow-y-auto overscroll-contain rounded-lg border border-pine-highlight bg-pine-base p-3 font-mono text-xs wrap-break-word break-all whitespace-pre-wrap text-pine-foam"
             >
-              {live.output}
+              {live.output ||
+                (outputUnavailable
+                  ? 'Model output could not be loaded for this run.'
+                  : 'Waiting for the first heartbeat…')}
             </pre>
           </div>
         )}

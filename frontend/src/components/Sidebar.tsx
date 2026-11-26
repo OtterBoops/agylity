@@ -184,7 +184,7 @@ export const Sidebar = ({
     let mounted = true;
     if (build.channel === 'main' && build.commit) {
       const current = build.commit;
-      fetchLatestMainCommit().then((latest) => {
+      fetchLatestMainCommit(current).then((latest) => {
         if (!mounted || !latest || !isNewerMainCommit(current, latest.sha)) return;
         setUpdateInfo({
           hasUpdate: true,
@@ -566,12 +566,12 @@ export const Sidebar = ({
                 )}
               </button>
 
-              <div class="flex items-center justify-between border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle">
+              <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 border-t border-pine-highlight pt-2 font-mono text-xs text-pine-subtle">
                 <a
                   href={versionHref}
                   target="_blank"
                   rel="noopener noreferrer"
-                  class="inline-flex items-center gap-1 transition-colors hover:text-pine-text"
+                  class="inline-flex items-center gap-1 whitespace-nowrap transition-colors hover:text-pine-text"
                   title={
                     buildChannel === 'main' && buildCommit
                       ? `Commit ${buildCommit} on main`
@@ -586,14 +586,14 @@ export const Sidebar = ({
                     href={updateInfo.url || RELEASES_LATEST_URL}
                     target="_blank"
                     rel="noopener noreferrer"
-                    class="inline-flex items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold text-pine-iris transition-colors hover:bg-pine-iris/30"
+                    class="inline-flex shrink-0 items-center gap-1 rounded-sm bg-pine-iris/20 px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap text-pine-iris transition-colors hover:bg-pine-iris/30"
                     title={updateInfo.title ?? undefined}
                   >
                     <span>Update {updateInfo.label}</span>
-                    <Icon icon={faArrowUpRightFromSquare} class="size-2.5" />
+                    <Icon icon={faArrowUpRightFromSquare} class="size-2.5 shrink-0" />
                   </a>
                 ) : (
-                  <span class="text-xs text-pine-subtle">Up to date</span>
+                  <span class="text-xs whitespace-nowrap text-pine-subtle">Up to date</span>
                 )}
               </div>
             </div>

@@ -83,6 +83,20 @@ export const resolveModelEffort = (
 
 export const COORDINATOR_FIELDS: FieldDef[] = [
   {
+    key: 'gitAuthorName',
+    label: 'Commit author name',
+    type: 'text',
+    placeholder: 'OtterBoops',
+    hint: 'Name runners commit as. Falls back to the environment, then to the account behind the GitHub token.',
+  },
+  {
+    key: 'gitAuthorEmail',
+    label: 'Commit author email',
+    type: 'text',
+    placeholder: '12345+OtterBoops@users.noreply.github.com',
+    hint: 'Address runners commit with, resolved in the same order. Any other identity is rewritten before the push.',
+  },
+  {
     key: 'defaultDispatchModel',
     label: 'Default dispatch model',
     type: 'select',
@@ -154,7 +168,7 @@ export const COORDINATOR_FIELDS: FieldDef[] = [
     key: 'minDispatchHeadroomPercent',
     label: 'AI safety floor (%)',
     type: 'number',
-    hint: 'Block dispatches when quota <= this floor to prevent paid overages (default: 10). Set to 0 if overages do not apply.',
+    hint: 'Block dispatches while quota is below this floor to prevent paid overages (default: 10). Set to 0 to disable the floor.',
   },
   {
     key: 'allowOverage',
@@ -197,6 +211,7 @@ export const SENTRY_GENERAL_FIELDS: FieldDef[] = [
     key: 'quotaMilestoneHours',
     label: 'Alert milestones (hours before reset)',
     type: 'list',
+    itemType: 'number',
     placeholder: '48, 24, 12',
     hint: 'Comma-separated hours before reset to trigger warnings.',
   },

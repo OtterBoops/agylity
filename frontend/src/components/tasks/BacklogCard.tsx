@@ -1,6 +1,7 @@
 import { faCodeBranch, faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { BacklogStatus, BacklogTaskRecord } from '../../types';
 import { toneBadgeClass } from '../../utils/status';
+import { isHttpUrl } from '../../../../src/shared/urls.ts';
 import { STATUS_PILL_CLASS, taskCardClass } from './badges';
 import { Icon } from '../Icon';
 import { CardActionButtons } from './CardActionButtons';
@@ -40,7 +41,8 @@ export const BacklogCard = ({
   onConfirmDelete,
   onCancelDelete,
 }: BacklogCardProps) => {
-  const dispatchable = item.status === 'pending' || item.status === 'failed';
+  const live = item.status === 'dispatched';
+  const dispatchable = item.status === 'pending' || item.status === 'failed' || live;
 
   return (
     <article id={`task-row-${item.id}`} onClick={onEdit} class={taskCardClass(highlighted)}>
@@ -96,7 +98,7 @@ export const BacklogCard = ({
       <div class="mt-auto flex items-center justify-between gap-2 border-t border-pine-highlight/40 pt-2.5">
         {item.githubIssueUrl ? (
           <a
-            href={item.githubIssueUrl}
+            href={isHttpUrl(item.githubIssueUrl) ? item.githubIssueUrl : undefined}
             target="_blank"
             rel="noreferrer"
             onClick={(event) => event.stopPropagation()}
@@ -118,9 +120,13 @@ export const BacklogCard = ({
               }}
               disabled={busy}
               class="cursor-pointer rounded-sm border border-pine-iris/30 bg-pine-iris/10 px-2.5 py-1 text-xs font-semibold whitespace-nowrap text-pine-iris transition-colors hover:bg-pine-iris hover:text-pine-base disabled:opacity-50"
-              title="Dispatch immediately to swarm queue"
+              title={
+                live
+                  ? 'Queue another run behind the live one'
+                  : 'Dispatch immediately to swarm queue'
+              }
             >
-              Dispatch
+              {live ? 'Queue' : 'Dispatch'}
             </button>
           )}
           <CardActionButtons

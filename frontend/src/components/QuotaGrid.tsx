@@ -9,28 +9,22 @@ import {
   type PoolGroup,
 } from '../../../src/shared/models.ts';
 import { QUOTA_GRID_COLUMNS, quotaGridPlaceholders } from '../../../src/shared/layout.ts';
+import {
+  quotaStatus,
+  resetDateLabel,
+  resetWindowLabel,
+  resetWindowState,
+  type QuotaTone,
+} from '../utils/quota.ts';
+import { formatTime } from '../utils/time';
 
 interface QuotaGridProps {
   quota: QuotaSnapshot[];
   minHeadroomPercent?: number;
   error?: string | null;
+  lastUpdated?: number | null;
   onRetry?: () => void;
 }
-
-const formatResetHuman = (hours: number): string => {
-  if (hours <= 0) return '0m';
-  if (hours >= 24) {
-    const days = Math.floor(hours / 24);
-    const rem = Math.floor(hours % 24);
-    return rem > 0 ? `${days}d ${rem}h` : `${days}d`;
-  }
-  const totalMinutes = Math.round(hours * 60);
-  const h = Math.floor(totalMinutes / 60);
-  const m = totalMinutes % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-};
 
 // `burnRatePerHour` is a fraction of the pool per hour, so every render scales it to percent.
 const burnPercentPerHour = (projection: QuotaBurnProjection): number =>
@@ -40,25 +34,22 @@ const burnPercentPerHour = (projection: QuotaBurnProjection): number =>
 const percentFloor = (fraction: number): number =>
   Math.floor(Number((fraction * 100).toPrecision(12)));
 
-const formatResetDate = (isoStr?: string): string => {
-  if (!isoStr) return 'N/A';
-  try {
-    const d = new Date(isoStr);
-    if (Number.isNaN(d.getTime())) return 'N/A';
-    return d.toLocaleDateString(undefined, {
-      weekday: 'short',
-      hour: 'numeric',
-      minute: 'numeric',
-    });
-  } catch {
-    return 'N/A';
-  }
+const STATUS_CLASSES: Record<QuotaTone, { tone: string; bar: string }> = {
+  ready: { tone: 'text-pine-iris', bar: 'bg-pine-iris' },
+  burst: { tone: 'text-pine-gold', bar: 'bg-pine-gold' },
+  tapped: { tone: 'text-pine-foam', bar: 'bg-pine-pine' },
+  floor: { tone: 'text-pine-foam', bar: 'bg-pine-foam' },
+  spent: { tone: 'text-pine-foam', bar: 'bg-pine-foam' },
+  urgent: { tone: 'text-pine-love', bar: 'bg-pine-love' },
+  soon: { tone: 'text-pine-gold', bar: 'bg-pine-gold' },
+  idle: { tone: 'text-pine-subtle', bar: 'bg-pine-iris' },
 };
 
 export const QuotaGrid = ({
   quota,
   minHeadroomPercent = 10,
   error = null,
+  lastUpdated = null,
   onRetry,
 }: QuotaGridProps) => {
   const [now, setNow] = useState(Date.now());
@@ -107,25 +98,6 @@ export const QuotaGrid = ({
     return () => clearInterval(timer);
   }, []);
 
-  const getLiveCountdown = (isoStr?: string, fallbackHours?: number | null): string => {
-    if (!isoStr) return formatResetHuman(fallbackHours ?? 0);
-    const targetMs = new Date(isoStr).getTime();
-    if (isNaN(targetMs)) return formatResetHuman(fallbackHours ?? 0);
-    const diffMs = targetMs - now;
-    if (diffMs <= 0) return 'Resetting now';
-
-    const totalSecs = Math.floor(diffMs / 1000);
-    const days = Math.floor(totalSecs / 86400);
-    const hours = Math.floor((totalSecs % 86400) / 3600);
-    const mins = Math.floor((totalSecs % 3600) / 60);
-    const secs = totalSecs % 60;
-
-    if (days > 0) return `${days}d ${hours}h`;
-    if (hours >= 2) return `${hours}h ${mins}m`;
-    if (hours > 0) return `${hours}h ${mins}m ${secs}s`;
-    return `${mins}m ${secs}s`;
-  };
-
   if (quota.length === 0) {
     if (error) {
       return (
@@ -165,6 +137,30 @@ export const QuotaGrid = ({
       id="quotaGrid"
       class={`grid gap-px overflow-hidden rounded-xl border border-pine-highlight ${QUOTA_GRID_COLUMNS}`}
     >
+      {error && (
+        <div
+          role="alert"
+          class="col-span-full flex flex-col gap-2 border-b border-pine-love/40 bg-pine-love/10 p-5 text-pine-love sm:p-6"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <span class="text-sm font-semibold">[Stale] Quota Refresh Failed</span>
+            {onRetry && (
+              <button
+                type="button"
+                onClick={onRetry}
+                class="cursor-pointer rounded-lg border border-pine-love/40 bg-pine-love/20 px-3 py-1 text-xs font-semibold hover:bg-pine-love hover:text-pine-base focus-visible:ring-2 focus-visible:ring-pine-love focus-visible:outline-hidden"
+              >
+                Retry Connection
+              </button>
+            )}
+          </div>
+          <p class="text-xs text-pine-subtle">
+            Showing the last cached snapshot
+            {lastUpdated ? `, saved ${formatTime(lastUpdated)}` : ''}; these percentages are not
+            live. {error}
+          </p>
+        </div>
+      )}
       {quota.map((pool) => {
         const poolDisplayName = pool.displayName || pool.poolGroup || pool.poolId;
         // The card is one bucket: a group holding several pools is named by the bucket, a single
@@ -195,40 +191,18 @@ export const QuotaGrid = ({
           ...(poolRouteLabels.length > 0 ? [poolRouteLabels.join(', ')] : []),
         ];
 
-        const effectivePct = shortTermPct !== null ? Math.min(weeklyPct, shortTermPct) : weeklyPct;
-        let statusTone = 'text-pine-iris';
-        let barColor = 'bg-pine-iris';
-        let statusText = 'Ready to burn';
+        const windowActive = resetWindowState(weeklyResetTime, now) !== 'unset';
+        const { tone, text: statusText } = quotaStatus({
+          weeklyPercent: weeklyPct,
+          shortTermPercent: shortTermPct,
+          minHeadroomPercent,
+          weeklyHours,
+          windowActive,
+        });
+        const { tone: statusTone, bar: barColor } = STATUS_CLASSES[tone];
 
-        // The safety floor is settable up to 100, so it can sit above the 25% notice band.
-        if (
-          shortTermPct !== null &&
-          shortTermPct <= minHeadroomPercent &&
-          weeklyPct > minHeadroomPercent
-        ) {
-          statusTone = 'text-pine-gold';
-          barColor = 'bg-pine-gold';
-          statusText = '5h Burst Cooldown';
-        } else if (weeklyPct === 0) {
-          statusTone = 'text-pine-foam';
-          barColor = 'bg-pine-pine';
-          statusText = 'Tapped out';
-        } else if (effectivePct <= Math.max(25, minHeadroomPercent)) {
-          statusTone = 'text-pine-foam';
-          barColor = 'bg-pine-foam';
-          statusText = effectivePct <= minHeadroomPercent ? 'Safety floor' : 'Well spent';
-        } else if (weeklyHours <= 3) {
-          statusTone = 'text-pine-love';
-          barColor = 'bg-pine-love';
-          statusText = 'Use it or lose it';
-        } else if (weeklyHours <= 12) {
-          statusTone = 'text-pine-gold';
-          barColor = 'bg-pine-gold';
-          statusText = 'Expiring soon';
-        }
-
-        const weeklyCountdown = getLiveCountdown(weeklyResetTime, weeklyHours);
-        const weeklyDateStr = formatResetDate(weeklyResetTime);
+        const weeklyCountdown = resetWindowLabel(weeklyResetTime, now, 'Resets');
+        const weeklyDateStr = resetDateLabel(weeklyResetTime);
 
         // Burn projection rides in the reset footer: no extra row, no chip that can clip.
         const projection = pool.burnProjection;
@@ -239,7 +213,7 @@ export const QuotaGrid = ({
           : null;
 
         let paceLabel = null;
-        if (weeklyPct <= minHeadroomPercent) {
+        if (weeklyPct < minHeadroomPercent) {
           paceLabel = (
             <span class="font-mono text-xs font-semibold whitespace-nowrap text-pine-foam">
               Floor engaged
@@ -324,8 +298,10 @@ export const QuotaGrid = ({
               </div>
               <div class="mt-0.5 flex flex-col gap-0.5 text-xs text-pine-subtle">
                 <div class="flex items-center justify-between gap-2">
-                  <span class="font-mono text-pine-text">Resets in {weeklyCountdown}</span>
-                  <span class="font-mono whitespace-nowrap">{weeklyDateStr}</span>
+                  <span class="font-mono text-pine-text">{weeklyCountdown}</span>
+                  {weeklyDateStr && (
+                    <span class="font-mono whitespace-nowrap">{weeklyDateStr}</span>
+                  )}
                 </div>
                 {(paceLabel || projectionText) && (
                   <div class="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
@@ -381,9 +357,7 @@ export const QuotaGrid = ({
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center justify-between gap-1 text-xs text-pine-subtle">
                   <span>Rolling window</span>
-                  <span>
-                    Refreshes in {getLiveCountdown(shortTerm.resetTime, shortTerm.hoursUntilReset)}
-                  </span>
+                  <span>{resetWindowLabel(shortTerm.resetTime, now, 'Refreshes')}</span>
                 </div>
               </div>
             ) : (

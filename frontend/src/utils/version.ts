@@ -5,7 +5,7 @@ import { normalizeBuildCommit } from '../../../src/shared/build.ts';
 export const APP_VERSION = __APP_VERSION__;
 const GITHUB_REPO = 'OtterBoops/agylity';
 const CACHE_KEY = 'agylity_release_cache';
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CACHE_TTL_MS = 60 * 60 * 1000;
 const MAIN_COMMIT_CACHE_KEY = 'agylity_main_commit_cache';
 const MAIN_COMMIT_TTL_MS = 10 * 60 * 1000; // main moves per commit, so it outdates faster than a tag
 
@@ -82,14 +82,18 @@ export const fetchLatestRelease = (): Promise<{ latest: string; url: string } | 
 let inFlightMainCommit: Promise<{ sha: string; url: string } | null> | null = null;
 
 /** Newest commit on `main`, or null when GitHub is unreachable or rate limited (no indicator). */
-export const fetchLatestMainCommit = (): Promise<{ sha: string; url: string } | null> => {
+export const fetchLatestMainCommit = (
+  currentCommit?: string | null
+): Promise<{ sha: string; url: string } | null> => {
+  const normalizedCurrent = normalizeBuildCommit(currentCommit);
   if (inFlightMainCommit) return inFlightMainCommit;
   inFlightMainCommit = (async () => {
     try {
       const cached = localStorage.getItem(MAIN_COMMIT_CACHE_KEY);
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (Date.now() - parsed.timestamp < MAIN_COMMIT_TTL_MS && parsed.sha) {
+        const sameBuild = !normalizedCurrent || parsed.forCommit === normalizedCurrent;
+        if (sameBuild && Date.now() - parsed.timestamp < MAIN_COMMIT_TTL_MS && parsed.sha) {
           return { sha: parsed.sha, url: parsed.url };
         }
       }
@@ -114,6 +118,7 @@ export const fetchLatestMainCommit = (): Promise<{ sha: string; url: string } | 
           JSON.stringify({
             sha,
             url,
+            forCommit: normalizedCurrent,
             timestamp: Date.now(),
           })
         );

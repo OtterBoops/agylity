@@ -1,5 +1,6 @@
 import type { SwarmTask } from '../../types';
 import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
+import { isHttpUrl } from '../../../../src/shared/urls.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { ACTIVE_TASK_STATUSES } from './badges';
 import { formatCompactDateTime, summarizeIssueLinks } from './executionRow';
@@ -112,7 +113,7 @@ export const MobileTaskCard = ({
             {issues.links.map((issue) => (
               <a
                 key={issue.url}
-                href={issue.url}
+                href={isHttpUrl(issue.url) ? issue.url : undefined}
                 target="_blank"
                 rel="noreferrer"
                 aria-label={`Open issue ${issue.label}`}

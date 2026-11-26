@@ -30,10 +30,14 @@ export const CoordinatorView = ({ config, onChanged, searchQuery }: CoordinatorV
   const isCoordinatorEnabled = Boolean(config.resolved?.coordinatorEnabled);
 
   const refreshRunners = useCallback(() => {
-    getRunners().then((next) => {
-      setRunners(next.runners);
-      setCredentialsAvailable(next.credentialsAvailable);
-    });
+    getRunners()
+      .then((next) => {
+        setRunners(next.runners);
+        setCredentialsAvailable(next.credentialsAvailable);
+      })
+      .catch(() => {
+        // Keep the last known fleet: a failed poll is not an empty one.
+      });
   }, []);
 
   useEffect(() => {

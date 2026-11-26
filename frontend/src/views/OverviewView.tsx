@@ -11,6 +11,7 @@ import { Icon } from '../components/Icon';
 import { VerdictBar } from '../components/VerdictBar';
 import { SwarmRunnersStrip } from '../components/SwarmRunnersStrip';
 import { dismissEarlyReset, getRunners } from '../api';
+import { pushErrorToast } from '../state/toastStore';
 import { readUiCache, RUNNERS_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 import { formatWindow } from '../utils/time';
 
@@ -47,9 +48,14 @@ const EarlyResetBanner = ({
     if (dismissing) return;
     setDismissing(true);
     try {
-      await dismissEarlyReset();
+      const res = await dismissEarlyReset();
+      if (res.dismissed !== true) {
+        pushErrorToast('Could not dismiss notice', 'The coordinator did not dismiss the notice.');
+        return;
+      }
       onDismissed?.();
-    } catch {
+    } catch (err: any) {
+      pushErrorToast('Could not dismiss notice', err?.message || 'The request failed.');
     } finally {
       setDismissing(false);
     }
@@ -152,6 +158,7 @@ export const OverviewView = ({
         quota={quota}
         minHeadroomPercent={minHeadroomPercent}
         error={error}
+        lastUpdated={quotaUpdatedAt}
         onRetry={onRetry}
       />
       <SwarmRunnersStrip

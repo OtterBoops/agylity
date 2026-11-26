@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useState } from 'preact/hooks';
 import type { AlertEvent, SentryAlertState } from '../types';
 import { getAlertEvents } from '../api';
 import { formatTime, useTimeFormat } from '../utils/time';
@@ -27,7 +27,7 @@ export const AlertsView = ({ alerts }: AlertsViewProps) => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const load = async (before?: string) => {
+  const load = useCallback(async (before?: string) => {
     setLoading(true);
     try {
       const page = await getAlertEvents({ limit: 50, before });
@@ -40,11 +40,14 @@ export const AlertsView = ({ alerts }: AlertsViewProps) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // A delivered alert only shows up after a new probe, so the probe stamp is the refresh trigger.
+  const lastProbeAt = alerts?.lastProbeAt ?? null;
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load, lastProbeAt]);
 
   const pools = alerts?.pools ? Object.entries(alerts.pools) : [];
 

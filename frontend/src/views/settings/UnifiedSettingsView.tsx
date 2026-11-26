@@ -1,11 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { ConfigData } from '../../types';
 import { UnsavedBar } from '../../components/settings/UnsavedBar';
-import {
-  loadedSettingsSection,
-  readSettingsSection,
-  type SettingsSectionId,
-} from '../../utils/settingsHash';
+import { readSettingsSection, type SettingsSectionId } from '../../utils/settingsHash';
 import { AdvancedView } from './AdvancedView';
 import { CoordinatorView } from './CoordinatorView';
 import { GeneralView } from './GeneralView';
@@ -18,8 +14,8 @@ interface UnifiedSettingsViewProps {
 }
 
 export const UnifiedSettingsView = ({ config, onChanged }: UnifiedSettingsViewProps) => {
-  const [activeSection, setActiveSection] = useState<SettingsSectionId | null>(
-    () => readSettingsSection() ?? loadedSettingsSection()
+  const [activeSection, setActiveSection] = useState<SettingsSectionId | null>(() =>
+    readSettingsSection()
   );
 
   useEffect(() => {

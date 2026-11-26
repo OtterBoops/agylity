@@ -11,6 +11,7 @@ const importClient = (specifier: string): Promise<Record<string, any>> => import
 const status = await importClient('../../frontend/src/utils/status.ts');
 const statusLabels = await importClient('../../frontend/src/components/tasks/statusLabels.ts');
 const executionRow = await importClient('../../frontend/src/components/tasks/executionRow.ts');
+const quota = await importClient('../../frontend/src/utils/quota.ts');
 
 interface DisplayInput {
   status: string;
@@ -31,6 +32,23 @@ const taskDisplayDotTextClass = statusLabels.taskDisplayDotTextClass as (
 ) => string;
 const githubIssueLabel = executionRow.githubIssueLabel as (url: string) => string;
 const githubPrLabel = executionRow.githubPrLabel as (url: string) => string;
+const resetWindowState = quota.resetWindowState as (
+  rawResetTime: string | null | undefined,
+  nowMs: number
+) => string;
+const resetWindowLabel = quota.resetWindowLabel as (
+  rawResetTime: string | null | undefined,
+  nowMs: number,
+  verb?: 'Resets' | 'Refreshes'
+) => string;
+const resetDateLabel = quota.resetDateLabel as (rawResetTime: string | null | undefined) => string;
+const quotaStatus = quota.quotaStatus as (input: {
+  weeklyPercent: number;
+  shortTermPercent: number | null;
+  minHeadroomPercent: number;
+  weeklyHours: number;
+  windowActive: boolean;
+}) => { tone: string; text: string };
 
 describe('Frontend: derived issue-filed display status', () => {
   it('treats only a completed run with issues and no PR as an issue deliverable', () => {
@@ -115,5 +133,128 @@ describe('Frontend: GitHub link labels', () => {
     // A tab path appended by the browser must not become the label.
     assert.equal(githubPrLabel('https://github.com/OtterBoops/agylity/pull/99/files'), 'PR #99');
     assert.equal(githubPrLabel(''), '');
+  });
+});
+
+describe('Frontend: quota reset-window helpers', () => {
+  const EPOCH_ZERO = '1970-01-01T00:00:00Z';
+  const NOW_MS = Date.parse('2026-11-14T12:00:00Z');
+
+  it('reads the epoch placeholder as an unstarted window, never as a passed deadline', () => {
+    assert.equal(resetWindowState(EPOCH_ZERO, NOW_MS), 'unset');
+    // Every other way of saying "no deadline" lands on the same state.
+    assert.equal(resetWindowState('', NOW_MS), 'unset');
+    assert.equal(resetWindowState(null, NOW_MS), 'unset');
+    assert.equal(resetWindowState(undefined, NOW_MS), 'unset');
+    assert.equal(resetWindowState('not-a-date', NOW_MS), 'unset');
+
+    // Both verbs describe an idle pool the same way; neither counts anything down.
+    assert.equal(resetWindowLabel(EPOCH_ZERO, NOW_MS, 'Resets'), 'Starts on first use');
+    assert.equal(resetWindowLabel(EPOCH_ZERO, NOW_MS, 'Refreshes'), 'Starts on first use');
+    assert.equal(resetDateLabel(EPOCH_ZERO), '');
+  });
+
+  it('counts down a live deadline and phrases an expired one without stacking verbs', () => {
+    const inTwoHours = new Date(NOW_MS + 2 * 3600 * 1000).toISOString();
+    assert.equal(resetWindowState(inTwoHours, NOW_MS), 'counting');
+    assert.equal(resetWindowLabel(inTwoHours, NOW_MS), 'Resets in 2h 0m');
+
+    const past = new Date(NOW_MS - 60_000).toISOString();
+    assert.equal(resetWindowState(past, NOW_MS), 'now');
+    // The label owns the verb, so an expired window must read "Resetting now".
+    assert.equal(resetWindowLabel(past, NOW_MS), 'Resetting now');
+    assert.equal(resetWindowLabel(past, NOW_MS, 'Refreshes'), 'Refreshing now');
+  });
+
+  it('calls a full pool whose window never opened idle instead of wasting quota', () => {
+    const unstarted = quotaStatus({
+      weeklyPercent: 100,
+      shortTermPercent: null,
+      minHeadroomPercent: 10,
+      weeklyHours: 0,
+      windowActive: false,
+    });
+    assert.equal(unstarted.text, 'Idle');
+    assert.equal(unstarted.tone, 'idle');
+    assert.notEqual(unstarted.text, 'Use it or lose it');
+
+    // The same figures on a window that has started are an expiring balance.
+    const expiring = quotaStatus({
+      weeklyPercent: 100,
+      shortTermPercent: null,
+      minHeadroomPercent: 10,
+      weeklyHours: 2,
+      windowActive: true,
+    });
+    assert.equal(expiring.text, 'Use it or lose it');
+    assert.equal(expiring.tone, 'urgent');
+  });
+
+  it('treats the headroom floor as a strict lower bound rather than engaging at equality', () => {
+    const atFloor = quotaStatus({
+      weeklyPercent: 10,
+      shortTermPercent: null,
+      minHeadroomPercent: 10,
+      weeklyHours: 20,
+      windowActive: true,
+    });
+    assert.equal(atFloor.tone, 'spent');
+    assert.equal(atFloor.text, 'Well spent');
+
+    const belowFloor = quotaStatus({
+      weeklyPercent: 9,
+      shortTermPercent: null,
+      minHeadroomPercent: 10,
+      weeklyHours: 20,
+      windowActive: true,
+    });
+    assert.equal(belowFloor.tone, 'floor');
+    assert.equal(belowFloor.text, 'Safety floor');
+
+    // A short-term window sitting exactly at the floor is not in burst cooldown.
+    const shortTermAtFloor = quotaStatus({
+      weeklyPercent: 50,
+      shortTermPercent: 10,
+      minHeadroomPercent: 10,
+      weeklyHours: 20,
+      windowActive: true,
+    });
+    assert.notEqual(shortTermAtFloor.tone, 'burst');
+
+    const shortTermBelowFloor = quotaStatus({
+      weeklyPercent: 10,
+      shortTermPercent: 9,
+      minHeadroomPercent: 10,
+      weeklyHours: 20,
+      windowActive: true,
+    });
+    assert.equal(shortTermBelowFloor.tone, 'burst');
+    assert.equal(shortTermBelowFloor.text, '5h Burst Cooldown');
+
+    // A floor above 25% must not mislabel a pool sitting exactly at the floor as "Well spent".
+    const highFloorAtBoundary = quotaStatus({
+      weeklyPercent: 50,
+      shortTermPercent: null,
+      minHeadroomPercent: 50,
+      weeklyHours: 20,
+      windowActive: true,
+    });
+    assert.equal(highFloorAtBoundary.tone, 'ready');
+    assert.equal(highFloorAtBoundary.text, 'Ready to burn');
+  });
+});
+
+describe('Dashboard client: runner polling', () => {
+  it('surfaces a failed poll instead of reporting an empty fleet', async () => {
+    const api = await importClient('../../frontend/src/api.ts');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response('{"error":"boom"}', { status: 500 })) as unknown as typeof fetch;
+
+    try {
+      await assert.rejects(api.getRunners(), 'a 500 must not read as "no runners registered"');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

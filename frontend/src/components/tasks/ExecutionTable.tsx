@@ -1,6 +1,7 @@
 import { faExternalLinkAlt } from '@fortawesome/free-solid-svg-icons';
 import type { SwarmTask } from '../../types';
 import { resolveTaskTitle } from '../../../../src/shared/titles.ts';
+import { isHttpUrl } from '../../../../src/shared/urls.ts';
 import { formatDuration, useTimeFormat } from '../../utils/time';
 import { Icon } from '../Icon';
 import { TableHeadRow, TableRow, TableShell, TH } from '../TableShell';
@@ -219,7 +220,7 @@ export const ExecutionTable = ({
                     <div class="flex items-center justify-end gap-1.5">
                       {task.prUrl ? (
                         <a
-                          href={task.prUrl}
+                          href={isHttpUrl(task.prUrl) ? task.prUrl : undefined}
                           target="_blank"
                           rel="noreferrer"
                           onClick={(event) => event.stopPropagation()}
@@ -234,7 +235,7 @@ export const ExecutionTable = ({
                           {issues.links.map((issue) => (
                             <a
                               key={issue.url}
-                              href={issue.url}
+                              href={isHttpUrl(issue.url) ? issue.url : undefined}
                               target="_blank"
                               rel="noreferrer"
                               onClick={(event) => event.stopPropagation()}

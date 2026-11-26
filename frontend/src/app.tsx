@@ -21,7 +21,6 @@ import {
   triggerDispatch,
 } from './api';
 import {
-  loadedSettingsSection,
   readSettingsSection,
   settingsSectionLabel,
   type SettingsSectionId,
@@ -104,7 +103,7 @@ export const App = () => {
     const fromPath = SECTION_BY_PATH[path];
     if (!fromPath) return;
     const hashInUrl = /#([a-z-]+)$/.exec(e.url)?.[1] as SettingsSectionId | undefined;
-    const next = hashInUrl ?? readSettingsSection() ?? loadedSettingsSection() ?? fromPath;
+    const next = hashInUrl ?? readSettingsSection() ?? fromPath;
     setSection(next);
     window.history.replaceState(null, '', `/settings#${next}`);
     window.dispatchEvent(new HashChangeEvent('hashchange'));
@@ -210,7 +209,7 @@ export const App = () => {
     Promise.all([
       refreshQuota({ force }),
       refreshConfig(),
-      loadModelCatalog().catch(() => []),
+      loadModelCatalog(force).catch(() => []),
     ]).catch((err) => {
       console.error('[agylity] Fetch error:', err);
     });

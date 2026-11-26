@@ -15,6 +15,8 @@ import { ModelCascadeField } from './ModelCascadeField';
 
 type ComposerMode = 'run' | 'backlog' | 'routine';
 
+const INHERIT_PR_POLICY_HINT = 'inherit — the PR policy in Settings applies at dispatch time';
+
 /** `verifyCommand` is absent when blank; an edit that must clear it passes `null` through. */
 export type ComposerPayload =
   | {
@@ -47,7 +49,7 @@ export type ComposerPayload =
       title: string;
       prompt: string;
       cascade: CascadeHop[];
-      prPolicy: PrPolicy;
+      prPolicy: PrPolicy | null;
       autoCreatePr: boolean;
       verifyCommand?: string | null;
       triggerBeforeResetHours: number;
@@ -130,11 +132,19 @@ export const UnifiedTaskComposer = ({
         : task?.model
           ? [{ model: task.model, effort: task.effort }]
           : defaultChain();
-  // A backlog row has no PR policy column: its stored autoCreatePr is the whole intent.
-  const seedPrPolicy: PrPolicy =
-    routine?.prPolicy ??
-    task?.prPolicy ??
-    (backlog ? (backlog.autoCreatePr === false ? 'none' : 'docs_only') : 'docs_only');
+  const startMode: ComposerMode = lockedMode ?? initial?.mode ?? 'run';
+  // A backlog row has no PR policy column: its stored autoCreatePr is the whole intent, and a new
+  // routine starts on inherit so it follows the Settings policy at dispatch time.
+  const seedPrPolicy: PrPolicy | null = routine
+    ? (routine.prPolicy ?? null)
+    : (task?.prPolicy ??
+      (backlog
+        ? backlog.autoCreatePr === false
+          ? 'none'
+          : 'docs_only'
+        : startMode === 'routine'
+          ? null
+          : 'docs_only'));
   const seedVerify = (backlog?.verifyCommand ?? routine?.verifyCommand ?? task?.verifyCommand ?? '')
     .toString()
     .trim();
@@ -145,12 +155,12 @@ export const UnifiedTaskComposer = ({
   const seedTriggerHours = String(routine?.triggerBeforeResetHours ?? 4);
   const seedMinHeadroom = String(routine?.minHeadroomPercent ?? 10);
 
-  const [mode, setMode] = useState<ComposerMode>(lockedMode ?? initial?.mode ?? 'run');
+  const [mode, setMode] = useState<ComposerMode>(startMode);
   const [repositoryId, setRepositoryId] = useState(seedRepo || singleRepoId);
   const [title, setTitle] = useState(seedTitle);
   const [prompt, setPrompt] = useState(seedPrompt);
   const [cascade, setCascade] = useState<CascadeHop[]>(seedCascade);
-  const [prPolicy, setPrPolicy] = useState<PrPolicy>(seedPrPolicy);
+  const [prPolicy, setPrPolicy] = useState<PrPolicy | null>(seedPrPolicy);
   const [verifyCommand, setVerifyCommand] = useState(seedVerify);
   const [priority, setPriority] = useState(String(seedPriority));
   const [triggerHours, setTriggerHours] = useState(seedTriggerHours);
@@ -202,7 +212,12 @@ export const UnifiedTaskComposer = ({
   const minHeadroomValue = parseBounded(minHeadroom, 1, 90);
   const routineBoundsValid = triggerHoursValue !== null && minHeadroomValue !== null;
   const ready = repositoryId !== '' && title.trim() !== '' && prompt.trim() !== '';
-  const submitDisabled = submitting || !ready || (mode === 'routine' && !routineBoundsValid);
+  const priorityValid = parseBounded(priority, 0, 9999) !== null;
+  const submitDisabled =
+    submitting ||
+    !ready ||
+    (mode === 'routine' && !routineBoundsValid) ||
+    (mode === 'backlog' && !priorityValid);
 
   const submitLabel = submitting
     ? 'Saving...'
@@ -236,7 +251,7 @@ export const UnifiedTaskComposer = ({
         title: cleanTitle,
         prompt: cleanPrompt,
         cascade: chain,
-        prPolicy,
+        prPolicy: prPolicy ?? 'docs_only',
         autoCreatePr: prPolicy !== 'none',
         verifyCommand: cleanVerify,
         scheduleMode: 'immediate',
@@ -288,7 +303,12 @@ export const UnifiedTaskComposer = ({
               type="button"
               aria-pressed={mode === option}
               disabled={isLocked}
-              onClick={() => setMode(option)}
+              onClick={() => {
+                setMode(option);
+                if (option !== 'routine') {
+                  setPrPolicy((current) => current ?? 'docs_only');
+                }
+              }}
               class={`flex-1 cursor-pointer rounded-md px-3 py-1.5 text-xs font-bold whitespace-nowrap uppercase transition-colors disabled:cursor-not-allowed ${
                 mode === option
                   ? 'bg-pine-iris text-pine-base'
@@ -373,11 +393,13 @@ export const UnifiedTaskComposer = ({
               id="composer-pr-policy"
               name="prPolicy"
               class={`cursor-pointer appearance-none pr-9 ${fieldClass}`}
-              value={prPolicy}
-              onChange={(event) =>
-                setPrPolicy((event.target as HTMLSelectElement).value as PrPolicy)
-              }
+              value={prPolicy ?? ''}
+              onChange={(event) => {
+                const next = (event.target as HTMLSelectElement).value;
+                setPrPolicy(next === '' ? null : (next as PrPolicy));
+              }}
             >
+              {mode === 'routine' && <option value="">Inherit from Settings</option>}
               {PR_POLICY_OPTIONS.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}
@@ -389,7 +411,7 @@ export const UnifiedTaskComposer = ({
               class="pointer-events-none absolute top-1/2 right-3 size-3 -translate-y-1/2 text-pine-subtle"
             />
           </div>
-          <p class={hintClass}>{PR_POLICY_HINTS[prPolicy]}</p>
+          <p class={hintClass}>{prPolicy ? PR_POLICY_HINTS[prPolicy] : INHERIT_PR_POLICY_HINT}</p>
         </div>
 
         {mode === 'routine' && (

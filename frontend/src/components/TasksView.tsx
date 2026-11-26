@@ -50,6 +50,15 @@ const ABORT_CONFIRM_WINDOW_MS = 3000;
 
 const CARD_GRID = 'grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3';
 
+const TASK_PAGE_SIZE = 100;
+
+const taskFilterParams = (raw: string): { q?: string; taskNumber?: number } => {
+  const term = raw.trim().replace(/^#/, '');
+  if (!term) return {};
+  const taskNumber = /^\d+$/.test(term) ? Number(term) : 0;
+  return taskNumber > 0 ? { taskNumber } : { q: term };
+};
+
 const SECTION = 'mt-6 flex flex-col first:mt-0';
 
 const FINISHED_BACKLOG_STATUSES: ReadonlySet<string> = new Set(FINISHED_BACKLOG_STATUS_VALUES);
@@ -104,6 +113,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [actionLoading, setActionLoading] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [totalTasks, setTotalTasks] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const [routines, setRoutines] = useState<RoutineTaskRecord[]>([]);
   const [routinesInitialLoaded, setRoutinesInitialLoaded] = useState(false);
@@ -116,7 +126,10 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   const [bulkBusy, setBulkBusy] = useState(false);
   const [showFinishedBacklog, setShowFinishedBacklog] = useState(false);
 
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // One slot per fetch: a success must only ever clear its own failure.
+  const [executionsError, setExecutionsError] = useState<string | null>(null);
+  const [backlogError, setBacklogError] = useState<string | null>(null);
+  const [routinesError, setRoutinesError] = useState<string | null>(null);
   const [runners, setRunners] = useState<SwarmRunnerRecord[]>([]);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
@@ -124,8 +137,14 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
   const abortConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const loadedTasksLimit = useRef(TASK_PAGE_SIZE);
+  const executionsRequest = useRef(0);
+  const searchTermRef = useRef('');
   // Tracks in-flight routine toggle requests so 4s polls never flicker the switch back.
   const pendingRoutineToggles = useRef<Map<string, boolean>>(new Map());
+
+  const searchTerm = query.trim();
+  searchTermRef.current = searchTerm;
 
   const config = useStore(configStore).config;
   const repos: RepositoryConfig[] = config.resolved?.repositories || [];
@@ -157,27 +176,57 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
   );
 
   const loadExecutions = useCallback(() => {
-    getTasks({ limit: 100 })
+    const request = ++executionsRequest.current;
+    const limit = Math.max(TASK_PAGE_SIZE, loadedTasksLimit.current);
+    getTasks({ ...taskFilterParams(searchTermRef.current), limit, offset: 0 })
       .then((res) => {
+        if (request !== executionsRequest.current) return;
+        loadedTasksLimit.current = Math.max(TASK_PAGE_SIZE, res.tasks.length);
         setTasks(res.tasks);
         setTotalTasks(res.total);
-        setLoadError(null);
+        setExecutionsError(null);
         setExecutionsInitialLoaded(true);
       })
       .catch((err) => {
+        if (request !== executionsRequest.current) return;
         console.error('[agylity] could not load executions', err);
-        setLoadError(err?.message || String(err));
+        setExecutionsError(err?.message || String(err));
         setExecutionsInitialLoaded(true);
       });
   }, []);
 
+  const handleLoadMore = async () => {
+    if (loadingMore) return;
+    setLoadingMore(true);
+    const request = executionsRequest.current;
+    const offset = tasks.length;
+    try {
+      const res = await getTasks({
+        ...taskFilterParams(searchTermRef.current),
+        limit: TASK_PAGE_SIZE,
+        offset,
+      });
+      if (request !== executionsRequest.current) return;
+      loadedTasksLimit.current = offset + res.tasks.length;
+      setTasks((prev) => {
+        const seen = new Set(prev.map((task) => task.id));
+        return [...prev, ...res.tasks.filter((task) => !seen.has(task.id))];
+      });
+      setTotalTasks(res.total);
+    } catch (err: any) {
+      showNotification('error', `Could not load more executions: ${err?.message || String(err)}`);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
   const loadBacklog = useCallback(async () => {
     try {
       setBacklogTasks(await getBacklogTasks());
-      setLoadError(null);
+      setBacklogError(null);
     } catch (err: any) {
       console.error('[agylity] could not load backlog', err);
-      setLoadError(err?.message || String(err));
+      setBacklogError(err?.message || String(err));
     } finally {
       setBacklogInitialLoaded(true);
     }
@@ -192,18 +241,22 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
           ? next
           : next.map((r) => (pending.has(r.id) ? { ...r, enabled: pending.get(r.id)! } : r))
       );
-      setLoadError(null);
+      setRoutinesError(null);
     } catch (err: any) {
       console.error('[agylity] could not load routines', err);
-      setLoadError(err?.message || String(err));
+      setRoutinesError(err?.message || String(err));
     } finally {
       setRoutinesInitialLoaded(true);
     }
   }, []);
 
   const loadRunners = useCallback(async () => {
-    const response = await getRunners();
-    setRunners(response.runners);
+    try {
+      const response = await getRunners();
+      setRunners(response.runners);
+    } catch {
+      // Keep the last known fleet: a failed poll is not an empty one.
+    }
   }, []);
 
   useEffect(() => {
@@ -224,6 +277,14 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
       document.removeEventListener('visibilitychange', refreshAll);
     };
   }, [loadExecutions, loadBacklog, loadRoutines, loadRunners]);
+
+  const appliedSearchTerm = useRef(searchTerm);
+  useEffect(() => {
+    if (appliedSearchTerm.current === searchTerm) return;
+    appliedSearchTerm.current = searchTerm;
+    loadedTasksLimit.current = TASK_PAGE_SIZE;
+    loadExecutions();
+  }, [searchTerm, loadExecutions]);
 
   const handledTabScroll = useRef(false);
   useEffect(() => {
@@ -588,19 +649,11 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
     tasks.find((t) => t.originId === routine.id && t.tier === 'routine');
 
   const bucketLabel = STATUS_BUCKETS.find((entry) => entry.id === bucket)?.label ?? 'All';
-  const search = query.trim().toLowerCase();
-  const visibleTasks = tasks.filter((task) => {
-    if (!statusMatchesBucket(task.status, bucket)) return false;
-    if (!search) return true;
-    const haystack = [task.title, task.prompt, task.repositoryName, task.model];
-    if (String(task.taskNumber ?? '').includes(search)) return true;
-    return haystack.some((field) => (field ?? '').toLowerCase().includes(search));
-  });
-  const activeFilterLabel = search ? `${bucketLabel} \u00b7 "${query.trim()}"` : bucketLabel;
+  const visibleTasks = tasks.filter((task) => statusMatchesBucket(task.status, bucket));
+  const activeFilterLabel = searchTerm ? `${bucketLabel} \u00b7 "${searchTerm}"` : bucketLabel;
   const executionRange =
-    visibleTasks.length === 0
-      ? `0 of ${totalTasks}`
-      : `1\u2013${visibleTasks.length} of ${totalTasks}`;
+    tasks.length === 0 ? `0 of ${totalTasks}` : `1\u2013${tasks.length} of ${totalTasks}`;
+  const hasMoreTasks = tasks.length < totalTasks;
   const clearFilters = () => {
     setBucket('all');
     setQuery('');
@@ -711,7 +764,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
             <EmptyCard>Loading backlog tasks...</EmptyCard>
           ) : visibleBacklog.length === 0 ? (
             <EmptyCard>
-              {loadError ? `Could not load backlog: ${loadError}` : backlogEmptyCopy}
+              {backlogError ? `Could not load backlog: ${backlogError}` : backlogEmptyCopy}
             </EmptyCard>
           ) : (
             <div id="backlog-grid" class={CARD_GRID}>
@@ -745,8 +798,8 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
               <EmptyCard>Loading routine templates...</EmptyCard>
             ) : routines.length === 0 ? (
               <EmptyCard>
-                {loadError
-                  ? `Could not load routines: ${loadError}`
+                {routinesError
+                  ? `Could not load routines: ${routinesError}`
                   : "No routines configured. Create one with 'New Task' to burn quota before weekly resets."}
               </EmptyCard>
             ) : (
@@ -838,7 +891,7 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
 
               <ExecutionTable
                 tasks={visibleTasks}
-                loadError={loadError}
+                loadError={executionsError}
                 activeTaskId={activeTaskId}
                 onActiveTaskId={setActiveTaskId}
                 onOpen={setSelectedTask}
@@ -875,11 +928,11 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
               {visibleTasks.length === 0 && (
                 <div class="rounded-xl border border-pine-highlight bg-pine-surface p-6 text-center text-xs text-pine-subtle">
                   <p>
-                    {loadError
-                      ? `Could not load executions: ${loadError}`
+                    {executionsError
+                      ? `Could not load executions: ${executionsError}`
                       : `No executions match ${activeFilterLabel}.`}
                   </p>
-                  {!loadError && (
+                  {!executionsError && (
                     <button
                       type="button"
                       onClick={clearFilters}
@@ -891,6 +944,17 @@ export const TasksView = ({ onRefresh, onOpenComposer }: TasksViewProps = {}) =>
                 </div>
               )}
             </div>
+
+            {hasMoreTasks && (
+              <button
+                type="button"
+                onClick={() => void handleLoadMore()}
+                disabled={loadingMore}
+                class="min-h-11 cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text enabled:hover:bg-pine-highlight disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading...' : `Load more (${tasks.length} of ${totalTasks})`}
+              </button>
+            )}
           </div>
         </section>
       </div>

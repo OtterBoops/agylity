@@ -278,12 +278,9 @@ export const getModels = (): Promise<ModelsResponse> =>
       models: [],
     }));
 
+// A failed poll must reach the caller: an empty list is a real answer, not an error stand-in.
 export const getRunners = (): Promise<RunnersResponse> =>
-  api
-    .get('runners')
-    .json<RunnersResponse>()
-    // A failed poll says nothing about configuration, so do not accuse it of a missing token.
-    .catch(() => ({ runners: [], credentialsAvailable: true }));
+  api.get('runners').json<RunnersResponse>();
 
 export const createRegistrationToken = (payload: {
   nameHint?: string;

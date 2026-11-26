@@ -6,6 +6,7 @@ import { useModelCatalog } from '../state/modelCatalogStore';
 import { readUiCache, VERDICT_CACHE_KEY, writeUiCache } from '../state/quotaStore';
 import { CANONICAL_AGY_MODELS } from '../../../src/shared/models.ts';
 import { dialogBackdropClickHandler, useDialogScrollLock } from '../utils/dialog';
+import { resetWindowState } from '../utils/quota.ts';
 import { formatDateTime, formatWindow, useTimeFormat } from '../utils/time';
 
 const VERDICT_POLL_MS = 15_000;
@@ -157,23 +158,27 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
     }
   };
 
-  const tone = verdict ? toneOf(verdict) : null;
+  // A failed poll leaves the last verdict on screen: say so rather than showing it as current.
+  const stale = failed && verdict !== null;
+  const tone = verdict ? (stale ? 'off' : toneOf(verdict)) : null;
   const label = verdict ? modelLabel(verdict.model, catalog.models) : '';
   const sentence = verdict
-    ? describe(verdict, label)
+    ? stale
+      ? `Last verdict ${formatProbeAge(verdict.evaluatedAt)} · probe failing`
+      : describe(verdict, label)
     : failed
       ? 'Dispatch verdict unavailable'
       : 'Checking dispatch eligibility...';
 
-  const pool = verdict?.pool ?? null;
-  const showRunners = verdict?.willRunNow === true;
+  const pool = stale ? null : (verdict?.pool ?? null);
+  const showRunners = !stale && verdict?.willRunNow === true;
 
   return (
     <>
       <button
         type="button"
         onClick={openDetail}
-        aria-label={`Dispatch verdict: ${tone ?? 'checking'}`}
+        aria-label={`Dispatch verdict: ${stale ? 'stale' : (tone ?? 'checking')}`}
         class="flex h-9 w-full cursor-pointer items-center gap-2 rounded-xl border border-pine-highlight bg-pine-surface px-4 text-left text-xs transition-colors hover:border-pine-iris/50 hover:bg-pine-overlay/40 focus-visible:ring-2 focus-visible:ring-pine-iris focus-visible:outline-hidden"
       >
         <span
@@ -251,11 +256,13 @@ export const VerdictBar = ({ syncKey = null }: { syncKey?: number | null }) => {
             <DetailRow label="Effective">{pool ? `${pool.effectivePercent}%` : 'N/A'}</DetailRow>
             <DetailRow label="Safety floor">{verdict.floorPercent}%</DetailRow>
             <DetailRow label="Reset in">
-              {pool
-                ? `${formatWindow(pool.hoursUntilReset)}${
-                    pool.resetTime ? ` · ${formatDateTime(pool.resetTime, { timeFormat })}` : ''
-                  }`
-                : 'N/A'}
+              {!pool
+                ? 'N/A'
+                : resetWindowState(pool.resetTime, Date.now()) === 'unset'
+                  ? 'No active window'
+                  : `${formatWindow(pool.hoursUntilReset)}${
+                      pool.resetTime ? ` · ${formatDateTime(pool.resetTime, { timeFormat })}` : ''
+                    }`}
             </DetailRow>
             <DetailRow label="Overage allowed">{verdict.allowOverage ? 'Yes' : 'No'}</DetailRow>
             <DetailRow label="Autonomy quench">

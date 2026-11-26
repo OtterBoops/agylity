@@ -53,10 +53,20 @@ const parseDraftValue = (key: string, raw: string): unknown => {
     return Number.isFinite(num) ? num : undefined;
   }
   if (field.type === 'list') {
-    return raw
+    const entries = raw
       .split(',')
       .map((entry) => entry.trim())
       .filter(Boolean);
+    if (field.itemType !== 'number') return entries;
+    return entries.map((entry) => {
+      const num = Number(entry);
+      if (!Number.isFinite(num) || num <= 0) {
+        throw new Error(
+          `${field.label} must be a list of positive numbers; "${entry}" is not one.`
+        );
+      }
+      return num;
+    });
   }
   if (field.type === 'select' && (raw === 'true' || raw === 'false')) return raw === 'true';
   if (field.type === 'boolean') return raw === 'true';
@@ -201,7 +211,16 @@ export const saveDrafts = async (keys?: string[]): Promise<ConfigWriteResult> =>
       savedKeys.push(key);
       continue;
     }
-    const value = parseDraftValue(key, raw);
+    let value: unknown;
+    try {
+      value = parseDraftValue(key, raw);
+    } catch (err: unknown) {
+      configStore.setState((prev) => ({
+        ...prev,
+        error: err instanceof Error ? err.message : String(err),
+      }));
+      throw err;
+    }
     if (value === undefined) continue; // an unparsable row stays dirty rather than vanishing
     set[key] = value;
     savedKeys.push(key);

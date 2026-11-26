@@ -17,6 +17,7 @@ export interface FieldDef {
   key: string;
   label: string;
   type: 'text' | 'number' | 'list' | 'select' | 'password' | 'boolean';
+  itemType?: 'number';
   hint?: string;
   placeholder?: string;
   options?: Array<{ value: string; label: string }>;

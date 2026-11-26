@@ -16,9 +16,3 @@ export const readSettingsSection = (): SettingsSectionId | null => {
 
 export const settingsSectionLabel = (id: SettingsSectionId | null): string | null =>
   SETTINGS_SECTIONS.find((section) => section.id === id)?.label ?? null;
-
-// Captured at import so the section you landed on survives later hash changes.
-const loadedSection: SettingsSectionId | null =
-  typeof window === 'undefined' ? null : readSettingsSection();
-
-export const loadedSettingsSection = (): SettingsSectionId | null => loadedSection;
