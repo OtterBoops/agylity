@@ -4,22 +4,28 @@ import { handleRequest, type WebServerOptions } from './routes.js';
 import { logger } from '../logs/logger.js';
 import { resolveWebUiAuthToken, BUILTIN_DEFAULTS } from '../config/schema.js';
 
+const IN_FLIGHT_GRACE_MS = 5000;
+
 const createWebServer = (options: WebServerOptions): http.Server => {
-  const server = http.createServer(async (req, res) => {
-    try {
-      await handleRequest(req, res, options);
-    } catch (err: any) {
-      logger
-        .child('web')
-        .error('Unhandled route error for %s %s: %s', req.method, req.url, err?.stack ?? err);
-      // The message stays in the log: it can carry absolute paths and SQL detail.
-      if (!res.headersSent) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal Server Error' }));
-      } else if (!res.writableEnded && !res.destroyed) {
-        res.end();
+  const inFlight = new Set<Promise<void>>();
+  const shutdownController = new AbortController();
+  const server = http.createServer((req, res) => {
+    const handled = handleRequest(req, res, options, shutdownController.signal).catch(
+      (err: any) => {
+        logger
+          .child('web')
+          .error('Unhandled route error for %s %s: %s', req.method, req.url, err?.stack ?? err);
+        // The message stays in the log: it can carry absolute paths and SQL detail.
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal Server Error' }));
+        } else if (!res.writableEnded && !res.destroyed) {
+          res.end();
+        }
       }
-    }
+    );
+    inFlight.add(handled);
+    void handled.finally(() => inFlight.delete(handled));
   });
 
   const sockets = new Set<net.Socket>();
@@ -31,6 +37,8 @@ const createWebServer = (options: WebServerOptions): http.Server => {
   });
 
   (server as any).__activeSockets = sockets;
+  (server as any).__inFlight = inFlight;
+  (server as any).__shutdownController = shutdownController;
 
   return server;
 };
@@ -96,27 +104,12 @@ export const startWebServer = async (
 };
 
 export const closeWebServer = async (server: http.Server): Promise<void> => {
-  return new Promise((resolve, reject) => {
-    const sockets = (server as any).__activeSockets as Set<net.Socket> | undefined;
-    if (sockets) {
-      for (const socket of sockets) {
-        socket.destroy();
-      }
-      sockets.clear();
-    }
+  // Abort long-polls first so shutdown never stalls waiting on idle runners.
+  const shutdownController = (server as any).__shutdownController as AbortController | undefined;
+  shutdownController?.abort();
 
-    if (typeof server.closeAllConnections === 'function') {
-      try {
-        server.closeAllConnections();
-      } catch {}
-    }
-
-    if (typeof server.closeIdleConnections === 'function') {
-      try {
-        server.closeIdleConnections();
-      } catch {}
-    }
-
+  // Stop accepting new connections before draining in-flight work.
+  const closePromise = new Promise<void>((resolve, reject) => {
     server.close((err) => {
       if (err) {
         if ((err as any).code === 'ERR_SERVER_NOT_RUNNING') {
@@ -130,4 +123,51 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
       }
     });
   });
+
+  if (typeof server.closeIdleConnections === 'function') {
+    try {
+      server.closeIdleConnections();
+    } catch {}
+  }
+
+  // Accepted work may still be writing, and the caller closes the database right after this resolves.
+  const inFlight = (server as any).__inFlight as Set<Promise<void>> | undefined;
+  if (inFlight && inFlight.size > 0) {
+    const deadline = Date.now() + IN_FLIGHT_GRACE_MS;
+    while (inFlight.size > 0) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled([...inFlight]),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, remaining);
+          timer.unref();
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  const sockets = (server as any).__activeSockets as Set<net.Socket> | undefined;
+  if (sockets) {
+    for (const socket of sockets) {
+      socket.destroy();
+    }
+    sockets.clear();
+  }
+
+  if (typeof server.closeAllConnections === 'function') {
+    try {
+      server.closeAllConnections();
+    } catch {}
+  }
+
+  if (typeof server.closeIdleConnections === 'function') {
+    try {
+      server.closeIdleConnections();
+    } catch {}
+  }
+
+  await closePromise;
 };

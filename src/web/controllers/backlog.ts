@@ -7,7 +7,7 @@ import {
   toStringOrUndefined,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
-  isSafetyBlockCode,
+  dispatchRefusalStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { cascadeFromBody, configuredCascade, resolveCoordinator } from './dispatch.js';
@@ -21,7 +21,11 @@ import type { BacklogTaskRecord } from '../../coordinator/queue.js';
 import type { RepositoryEntry } from '../../config/schema.js';
 import { FINISHED_BACKLOG_STATUS_VALUES } from '../../shared/contracts.js';
 import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../../shared/github.js';
-import { isPlainJsonObject, validateTextFieldPatch } from './patchFields.js';
+import {
+  isPlainJsonObject,
+  rejectUnknownPatchKeys,
+  validateTextFieldPatch,
+} from './patchFields.js';
 
 export const handleBacklogTasks = async (
   req: http.IncomingMessage,
@@ -35,6 +39,9 @@ export const handleBacklogTasks = async (
   if (method === 'GET') {
     const statusParam = url.searchParams.get('status');
     const parsedStatus = statusParam ? BacklogStatusSchema.safeParse(statusParam) : undefined;
+    if (statusParam && !parsedStatus?.success) {
+      return sendJson(res, 400, { error: `Unknown backlog status: ${statusParam}` });
+    }
     const list = coordinator.queue.listBacklogTasks(
       parsedStatus?.success ? parsedStatus.data : undefined
     );
@@ -61,6 +68,15 @@ export const handleBacklogTasks = async (
       return sendJson(res, 400, { error: cascadeParse.error });
     }
 
+    // A number that cannot be read is refused rather than rounded to 0, which sorts ahead of everything.
+    const unreadableNumber = (value: unknown): boolean =>
+      value !== undefined && value !== null && toFiniteNumberOrUndefined(value) === undefined;
+    if (unreadableNumber(payload.priorityOrder) || unreadableNumber(payload.maxAttempts)) {
+      return sendJson(res, 400, {
+        error: 'priorityOrder and maxAttempts must be finite numbers when provided',
+      });
+    }
+
     const created = coordinator.queue.createBacklogTask({
       title,
       prompt,
@@ -70,8 +86,6 @@ export const handleBacklogTasks = async (
       autoCreatePr: payload.autoCreatePr !== false,
       priorityOrder: toFiniteNumberOrUndefined(payload.priorityOrder) ?? 0,
       maxAttempts: toFiniteNumberOrUndefined(payload.maxAttempts) ?? 2,
-      githubIssueNumber: toFiniteNumberOrUndefined(payload.githubIssueNumber),
-      githubIssueUrl: toStringOrUndefined(payload.githubIssueUrl),
     });
 
     return sendJson(res, 201, created);
@@ -103,7 +117,6 @@ export const handleBacklogTaskById = async (
 
     const dispatchRes = await coordinator.dispatch({
       repositoryId: task.repositoryId,
-      repositoryName: task.repositoryId,
       prompt: task.prompt,
       title: task.title,
       tier: 'backlog',
@@ -119,19 +132,13 @@ export const handleBacklogTaskById = async (
     });
 
     if (dispatchRes.success && dispatchRes.taskId) {
-      coordinator.queue.updateBacklogTask(task.id, {
-        status: 'dispatched',
-        attemptCount: task.attemptCount + 1,
-        swarmTaskId: dispatchRes.taskId,
-        lastError: null,
-      });
       return sendJson(res, 200, dispatchRes);
     }
 
     coordinator.queue.updateBacklogTask(task.id, {
       lastError: dispatchRes.error || 'Dispatch refused',
     });
-    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
+    return sendJson(res, dispatchRefusalStatus(dispatchRes.code), dispatchRes);
   }
 
   if (method === 'GET') {
@@ -148,6 +155,10 @@ export const handleBacklogTaskById = async (
       return sendJson(res, 400, { error: 'Request body must be a JSON object' });
     }
 
+    // A row's lifecycle columns belong to the coordinator, never to a browser patch.
+    const unknownError = rejectUnknownPatchKeys(patch, BACKLOG_PATCH_FIELDS);
+    if (unknownError) return sendJson(res, 400, { error: unknownError });
+
     const textError = validateTextFieldPatch(patch);
     if (textError) return sendJson(res, 400, { error: textError });
 
@@ -157,12 +168,28 @@ export const handleBacklogTaskById = async (
       patch.cascade = cascadeParse.cascade;
     }
 
+    if (
+      ('priorityOrder' in patch && toFiniteNumberOrUndefined(patch.priorityOrder) === undefined) ||
+      ('maxAttempts' in patch && toFiniteNumberOrUndefined(patch.maxAttempts) === undefined)
+    ) {
+      return sendJson(res, 400, {
+        error: 'priorityOrder and maxAttempts must be finite numbers when provided',
+      });
+    }
+
     const updated = coordinator.queue.updateBacklogTask(id, patch);
     if (!updated) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
     return sendJson(res, 200, updated);
   }
 
   if (method === 'DELETE') {
+    const existing = coordinator.queue.getBacklogTask(id);
+    if (!existing) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
+    if (hasInFlightRun(coordinator, existing)) {
+      return sendJson(res, 409, {
+        error: `Backlog task ${id} has an in-flight run and cannot be deleted`,
+      });
+    }
     const deleted = coordinator.queue.deleteBacklogTask(id);
     if (!deleted) return sendJson(res, 404, { error: `Backlog task ${id} not found` });
     return sendJson(res, 200, { success: true, deleted: true });
@@ -170,6 +197,27 @@ export const handleBacklogTaskById = async (
 
   return methodNotAllowed(res);
 };
+
+const hasInFlightRun = (
+  coordinator: ReturnType<typeof resolveCoordinator>,
+  row: BacklogTaskRecord
+): boolean => {
+  if (row.status === 'dispatched') return true;
+  // A paused row still owns its swarm task, so a live run keeps the row even when the status says otherwise.
+  const liveRun = row.swarmTaskId ? coordinator.queue.getTask(row.swarmTaskId) : undefined;
+  return Boolean(liveRun && !isTerminalTaskStatus(liveRun.status));
+};
+
+const BACKLOG_PATCH_FIELDS = [
+  'title',
+  'prompt',
+  'repositoryId',
+  'cascade',
+  'verifyCommand',
+  'autoCreatePr',
+  'priorityOrder',
+  'maxAttempts',
+] as const;
 
 const BULK_BACKLOG_MAX_IDS = 200;
 
@@ -226,8 +274,7 @@ export const handleBulkBacklogTasks = async (
     const deleted: string[] = [];
     for (const id of uniqueIds) {
       const row = coordinator.queue.getBacklogTask(id);
-      // A dispatched row is bound to a live swarm task, so it stays until that run settles.
-      if (!row || row.status === 'dispatched' || !coordinator.queue.deleteBacklogTask(id)) {
+      if (!row || hasInFlightRun(coordinator, row) || !coordinator.queue.deleteBacklogTask(id)) {
         skipped.push(id);
         continue;
       }

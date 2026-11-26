@@ -6,13 +6,31 @@ import {
   toStringOrUndefined,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
-  isSafetyBlockCode,
+  dispatchRefusalStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { cascadeFromBody, resolveCoordinator } from './dispatch.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
 import { PR_POLICY_VALUES } from '../../shared/contracts.js';
-import { isPlainJsonObject, validateTextFieldPatch } from './patchFields.js';
+import {
+  isPlainJsonObject,
+  rejectUnknownPatchKeys,
+  validateTextFieldPatch,
+} from './patchFields.js';
+
+const ROUTINE_PATCH_FIELDS = [
+  'title',
+  'prompt',
+  'repositoryId',
+  'cascade',
+  'verifyCommand',
+  'autoCreatePr',
+  'prPolicy',
+  'enabled',
+  'sortOrder',
+  'triggerBeforeResetHours',
+  'minHeadroomPercent',
+] as const;
 
 const parseOptionalPrPolicy = (
   raw: unknown
@@ -142,11 +160,17 @@ export const handleRoutineTaskById = async (
     const rt = coordinator.queue.getRoutineTask(id);
     if (!rt) return sendJson(res, 404, { error: `Routine task ${id} not found` });
 
+    // The same controller reports this routine as "disabled and will not dispatch", so it may not dispatch.
+    if (!rt.enabled) {
+      return sendJson(res, 409, {
+        error: `Routine task ${id} is disabled; enable it before triggering a run`,
+      });
+    }
+
     const resolved = options.configStore.resolveConfig();
 
     const dispatchRes = await coordinator.dispatch({
       repositoryId: rt.repositoryId,
-      repositoryName: rt.repositoryId,
       prompt: rt.prompt,
       title: rt.title,
       tier: 'routine',
@@ -181,7 +205,7 @@ export const handleRoutineTaskById = async (
       }
     }
 
-    return sendJson(res, isSafetyBlockCode(dispatchRes.code) ? 400 : 200, dispatchRes);
+    return sendJson(res, dispatchRefusalStatus(dispatchRes.code), dispatchRes);
   }
 
   if (method === 'GET') {
@@ -202,6 +226,9 @@ export const handleRoutineTaskById = async (
     if (!isPlainJsonObject(patch)) {
       return sendJson(res, 400, { error: 'Request body must be a JSON object' });
     }
+
+    const unknownError = rejectUnknownPatchKeys(patch, ROUTINE_PATCH_FIELDS);
+    if (unknownError) return sendJson(res, 400, { error: unknownError });
 
     const textError = validateTextFieldPatch(patch);
     if (textError) return sendJson(res, 400, { error: textError });

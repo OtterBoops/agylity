@@ -22,6 +22,7 @@
     "format": "eslint --fix frontend/src && prettier --write .",
     "test": "node --no-warnings --import tsx --test tests/**/*.test.ts",
     "docs:config": "tsx scripts/gen-config-docs.ts",
+    "docs:api": "tsx --no-warnings scripts/gen-api-docs.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit && npm --prefix frontend run typecheck"
   },
   "dependencies": {

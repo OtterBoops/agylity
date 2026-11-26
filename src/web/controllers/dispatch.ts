@@ -9,7 +9,7 @@ import {
   toStringArray,
   toFiniteNumberOrUndefined,
   safeDecodeSegment,
-  isSafetyBlockCode,
+  dispatchRefusalStatus,
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { PR_POLICY_VALUES, type PrPolicy, type RunnersResponse } from '../../shared/contracts.js';
@@ -160,9 +160,11 @@ const noteRunnerAuth = (
   options: WebServerOptions,
   authenticated: boolean
 ): void => {
+  const resolved = options.configStore?.resolveConfig();
   const clientIp = extractClientIp(
     req,
-    options.configStore?.resolveConfig()?.trustedProxies ?? false
+    resolved?.trustedProxies ?? false,
+    resolved?.trustedProxyRanges ?? []
   );
   if (authenticated) clearAuthFailures(clientIp, 'runner');
   else recordAuthFailure(clientIp, 'runner');
@@ -254,9 +256,10 @@ export const handlePostDispatch = async (
   }
 
   const scheduleModeParse = ScheduleModeSchema.safeParse(payload.scheduleMode ?? 'immediate');
-  const scheduleMode: ScheduleMode = scheduleModeParse.success
-    ? scheduleModeParse.data
-    : 'immediate';
+  if (!scheduleModeParse.success) {
+    return sendJson(res, 400, { error: "scheduleMode must be 'immediate' or 'pre_reset'" });
+  }
+  const scheduleMode: ScheduleMode = scheduleModeParse.data;
 
   const cascadeParse = cascadeFromBody(payload.cascade, options);
   if (!cascadeParse.ok) {
@@ -265,11 +268,26 @@ export const handlePostDispatch = async (
 
   const requiredLabels = toStringArray(payload.requiredLabels);
 
+  const requestedRepoPath = toTrimmedStringOrUndefined(payload.repositoryPath);
+  if (requestedRepoPath !== undefined) {
+    const configuredPaths = new Set(
+      options.configStore
+        .resolveConfig()
+        .repositories.map((repo) => repo.path?.trim())
+        .filter((p): p is string => Boolean(p))
+    );
+    if (!configuredPaths.has(requestedRepoPath)) {
+      return sendJson(res, 400, {
+        error: 'repositoryPath must match a configured repository path',
+      });
+    }
+  }
+
   const coordinator = resolveCoordinator(options);
   const result = await coordinator.dispatch({
     repositoryId,
     repositoryName: toStringOrUndefined(payload.repositoryName),
-    repositoryPath: toStringOrUndefined(payload.repositoryPath),
+    repositoryPath: requestedRepoPath,
     cloneUrl: typeof payload.cloneUrl === 'string' ? payload.cloneUrl.trim() : undefined,
     prompt,
     title: toStringOrUndefined(payload.title),
@@ -290,8 +308,8 @@ export const handlePostDispatch = async (
     verifyCommand: toStringOrUndefined(payload.verifyCommand),
   });
 
-  if (!result.success && isSafetyBlockCode(result.code)) {
-    return sendJson(res, 400, result);
+  if (!result.success) {
+    return sendJson(res, dispatchRefusalStatus(result.code), result);
   }
 
   return sendJson(res, 200, result);
@@ -353,7 +371,8 @@ export const handlePollTasks = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
   options: WebServerOptions,
-  method: string
+  method: string,
+  shutdownSignal?: AbortSignal
 ): Promise<void> => {
   if (method !== 'POST') return methodNotAllowed(res);
 
@@ -364,6 +383,12 @@ export const handlePollTasks = async (
 
   const githubToken = resolved.githubToken?.trim() || undefined;
   const credentialsAvailable = Boolean(githubToken);
+  const gitIdentityName = resolved.gitAuthorName?.trim();
+  const gitIdentityEmail = resolved.gitAuthorEmail?.trim();
+  const gitIdentity =
+    gitIdentityName || gitIdentityEmail
+      ? { name: gitIdentityName, email: gitIdentityEmail }
+      : undefined;
 
   if (!resolved.coordinatorEnabled) {
     return sendJson(res, 200, {
@@ -392,6 +417,11 @@ export const handlePollTasks = async (
 
   const abortController = new AbortController();
   const onClose = () => abortController.abort();
+  if (shutdownSignal?.aborted) {
+    abortController.abort();
+  } else {
+    shutdownSignal?.addEventListener('abort', onClose, { once: true });
+  }
   // The request's 'close' has already fired after the body read; only the response reports a mid-poll hangup.
   res.once('close', onClose);
 
@@ -429,6 +459,8 @@ export const handlePollTasks = async (
         {
           task,
           credentialsAvailable,
+          // Same channel as the token: the identity configured for this deployment, when it has one.
+          ...(task && gitIdentity ? { gitIdentity } : {}),
           // The lease travels in memory on this response only: never a row, never a log.
           ...(task && githubToken ? { githubToken } : {}),
           ...(task ? {} : leaseBlocked ? { leaseBlocked } : {}),
@@ -438,6 +470,7 @@ export const handlePollTasks = async (
     }
   } finally {
     res.off('close', onClose);
+    shutdownSignal?.removeEventListener('abort', onClose);
   }
 };
 
@@ -612,12 +645,7 @@ export const handleTaskRetry = async (
 
   const retryRes = await coordinator.retryTask(task);
 
-  // A retry is a dispatch, so a safety-floor refusal is a 4xx here too, not a 200 body.
-  if (!retryRes.success && isSafetyBlockCode(retryRes.code)) {
-    return sendJson(res, 400, retryRes);
-  }
-
-  return sendJson(res, 200, retryRes);
+  return sendJson(res, dispatchRefusalStatus(retryRes.code), retryRes);
 };
 
 export const handleGetRunners = (

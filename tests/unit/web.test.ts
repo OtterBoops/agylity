@@ -6,9 +6,14 @@ import path from 'node:path';
 import ky from 'ky';
 import { makeTempDir } from '../e2e/harness/index.js';
 import { ConfigStore } from '../../src/config/store.js';
+import { CONFIG_REGISTRY } from '../../src/config/schema.js';
+import { AppDatabase } from '../../src/storage/db.js';
+import { TaskQueue } from '../../src/coordinator/queue.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { startWebServer, closeWebServer } from '../../src/web/server.js';
+import { readBody } from '../../src/web/http.js';
 import { clearAuthFailures } from '../../src/web/routes.js';
+import { ROUTES } from '../../src/web/routeRegistry.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
 import {
@@ -24,11 +29,21 @@ import {
   resolveBuildChannel,
 } from '../../src/shared/build.js';
 import type { Logger } from '../../src/logs/logger.js';
+import { AGYLITY_VERSION } from '../../src/version.js';
+
+type BacklogStatusValue = 'pending' | 'dispatched' | 'completed' | 'failed' | 'canceled' | 'paused';
+
+// Lifecycle columns belong to the coordinator, so a test that needs a settled row writes it directly.
+const setBacklogStatus = (dbPath: string, id: string, status: BacklogStatusValue): void => {
+  const db = new AppDatabase(dbPath);
+  try {
+    new TaskQueue(db).updateBacklogTask(id, { status });
+  } finally {
+    db.close();
+  }
+};
 
 describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
-  /* ==================================================================== */
-  /* 1. Server Lifecycle & Port Collision                                 */
-  /* ==================================================================== */
   describe('1. Server Lifecycle & Port Management', () => {
     it('starts on ephemeral port (0) and exposes bound port and host', async () => {
       const { dir, cleanup } = makeTempDir('web_test_start_');
@@ -127,9 +142,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 2. Static Dashboard HTML & Offline Invariant                         */
-  /* ==================================================================== */
   describe('2. Static Dashboard HTML', () => {
     it('serves self-contained dashboard on GET / with UTF-8 Content-Type', async () => {
       const { dir, cleanup } = makeTempDir('web_test_html_');
@@ -181,10 +193,85 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 3. REST API: Quota & Alert Endpoints                                 */
-  /* ==================================================================== */
   describe('3. Quota & Alert Endpoints', () => {
+    it('answers HEAD with the headers a GET would send', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_head_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+
+      const started = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${started.port}`;
+        const health = await ky.head(`${base}/api/health`, { retry: 0 });
+        assert.equal(health.status, 200, 'HEAD must not be refused on a GET route');
+        assert.equal(await health.text(), '');
+
+        const page = await ky.head(`${base}/tasks`, { retry: 0 });
+        assert.equal(page.status, 200);
+        assert.equal(await page.text(), '');
+      } finally {
+        await closeWebServer(started.server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('finishes an accepted request before the server reports itself closed', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_drain_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let release: () => void = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let entered = false;
+
+      const slowQuotaClient: QuotaClient = {
+        fetchQuota: async (): Promise<QuotaSnapshot[]> => {
+          entered = true;
+          await gate;
+          return [];
+        },
+      };
+
+      const started = await startWebServer({
+        configStore: store,
+        quotaClient: slowQuotaClient,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const request = ky
+          .get(`http://127.0.0.1:${started.port}/api/quota?refresh=1`, { retry: 0 })
+          .json()
+          .catch(() => null);
+
+        while (!entered) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+        }
+
+        let closed = false;
+        const closing = closeWebServer(started.server).then(() => {
+          closed = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        assert.equal(closed, false, 'closing must wait for the request already accepted');
+
+        release();
+        await closing;
+        await request;
+      } finally {
+        release();
+        await closeWebServer(started.server).catch(() => {});
+        store.close();
+        cleanup();
+      }
+    });
+
     it('GET /api/quota returns live snapshots from QuotaClient', async () => {
       const { dir, cleanup } = makeTempDir('web_test_quota_');
       const store = new ConfigStore(path.join(dir, 'test.db'), {});
@@ -433,9 +520,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 4. REST API: Config Store (GET, POST, DELETE)                        */
-  /* ==================================================================== */
   describe('4. Configuration Store API', () => {
     it('GET /api/config returns resolved config and overrides', async () => {
       const { dir, cleanup } = makeTempDir('web_test_config_get_');
@@ -657,6 +741,53 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         assert.equal(postRes.overrides.discordToken, '••••••••');
       } finally {
         if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('refuses an unparseable allowedIpRanges entry instead of locking every client out', async () => {
+      const { dir, cleanup } = makeTempDir('web_config_ranges_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const cases: Array<[string, string[]]> = [
+          ['allowedIpRanges', ['10.0.0.0-10.0.0.9']],
+          ['allowedIpRanges', ['127.0.0.1/33']],
+          ['allowedIpRanges', ['not-an-ip']],
+          ['trustedProxyRanges', ['loopback only']],
+        ];
+        for (const [key, ranges] of cases) {
+          const res = await ky.post(`${base}/api/config`, {
+            json: { [key]: ranges },
+            retry: 0,
+            throwHttpErrors: false,
+          });
+          assert.equal(res.status, 400, `${key}=${JSON.stringify(ranges)}`);
+          const body = await res.json<{ error?: string }>();
+          assert.match(String(body.error), /not a valid IP or CIDR/);
+        }
+        assert.equal('allowedIpRanges' in store.getAllOverrides(), false);
+        assert.equal('trustedProxyRanges' in store.getAllOverrides(), false);
+
+        const ok = await ky.post(`${base}/api/config`, {
+          json: { allowedIpRanges: ['127.0.0.0/8', '::1/128'] },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(ok.status, 200);
+
+        // A valid loopback allowlist still serves the control plane it was set from.
+        const health = await ky.get(`${base}/api/health`, { retry: 0, throwHttpErrors: false });
+        assert.equal(health.status, 200);
+      } finally {
+        await closeWebServer(server);
         store.close();
         cleanup();
       }
@@ -921,9 +1052,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 5. REST API: Dispatch Task Endpoint                                  */
-  /* ==================================================================== */
   describe('5. Task Dispatch Endpoint', () => {
     it('POST /api/dispatch reports disabled in alerting-only mode', async () => {
       const { dir, cleanup } = makeTempDir('web_test_dispatch_');
@@ -1018,6 +1146,71 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         );
       } finally {
         if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('POST /api/dispatch rejects an unparseable scheduleMode instead of coercing it to immediate', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_dispatch_schedule_mode_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        coordinatorEnabled: true,
+        defaultDispatchModel: 'gemini-4-hydrogen',
+      });
+      const sentryState = new SentryStateManager({ db: store.getDatabase() });
+      sentryState.setState({
+        version: 1,
+        lastProbeAt: new Date().toISOString(),
+        lastProbeSource: 'connect_rpc',
+        pools: {
+          gemini: {
+            resetTime: new Date(Date.now() + 3600000).toISOString(),
+            remainingFraction: 0.8,
+            firedMilestones: [],
+            lastAlertSentAt: null,
+          },
+        },
+      });
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        sentryState,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const post = (extra: Record<string, unknown>) =>
+          ky.post(`${base}/api/dispatch`, {
+            json: { repositoryId: 'agylity', prompt: 'Schedule mode contract', ...extra } as any,
+            retry: 0,
+            throwHttpErrors: false,
+          });
+        const storedMode = async (taskId: string) =>
+          (await ky.get(`${base}/api/tasks/${taskId}`, { retry: 0 }).json<any>()).scheduleMode;
+
+        const rejected = await post({ scheduleMode: 'pre-reset' });
+        assert.equal(rejected.status, 400);
+        const rejectedBody = (await rejected.json()) as { error?: string };
+        assert.equal(typeof rejectedBody.error, 'string');
+
+        const listed = await ky.get(`${base}/api/tasks`, { retry: 0 }).json<any>();
+        assert.equal(listed.total, 0, 'a rejected scheduleMode must not create a task row');
+
+        const preReset = await post({ scheduleMode: 'pre_reset' });
+        assert.equal(preReset.status, 200);
+        const preResetBody = (await preReset.json()) as any;
+        assert.equal(preResetBody.success, true);
+        assert.equal(await storedMode(preResetBody.taskId), 'pre_reset');
+
+        const omitted = await post({});
+        assert.equal(omitted.status, 200);
+        const omittedBody = (await omitted.json()) as any;
+        assert.equal(omittedBody.success, true);
+        assert.equal(await storedMode(omittedBody.taskId), 'immediate');
+      } finally {
+        await closeWebServer(server);
         store.close();
         cleanup();
       }
@@ -1260,9 +1453,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 6. Route Guards: 404 & 405 Status Codes                              */
-  /* ==================================================================== */
   describe('6. Route Guards (404 & 405)', () => {
     it('hands unknown client routes to the app and 404s unknown assets', async () => {
       const { dir, cleanup } = makeTempDir('web_test_404_');
@@ -1376,9 +1566,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 8. HTTP Body Bounding & Payload Protection                           */
-  /* ==================================================================== */
   describe('8. HTTP Body Bounding & Payload Protection', () => {
     it('POST /api/config rejects bodies exceeding 64 KB with HTTP 413', async () => {
       const { dir, cleanup } = makeTempDir('web_test_413_config_');
@@ -1537,9 +1724,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 9. Hardened Security & Edge Protection                               */
-  /* ==================================================================== */
   describe('9. Hardened Security & Edge Protection', () => {
     it('sets standard security headers on API responses', async () => {
       const { dir, cleanup } = makeTempDir('web_test_sec_headers_');
@@ -1885,9 +2069,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 10. Backlog Sub-route Guards                                         */
-  /* ==================================================================== */
   describe('10. Backlog Sub-route Guards', () => {
     it('rejects PATCH on the dispatch sub-route with 405 and leaves the row unchanged', async () => {
       const { dir, cleanup } = makeTempDir('web_backlog_dispatch_patch_');
@@ -1977,10 +2158,183 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 10b. Task Text Fields Must Be Strings On POST                        */
-  /* ==================================================================== */
   describe('10b. Task Text Fields Must Be Strings On POST', () => {
+    it('refuses to trigger a routine that is disabled', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_routine_trigger_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Disabled routine',
+              prompt: 'P',
+              repositoryId: 'agylity',
+              enabled: false,
+            },
+            retry: 0,
+          })
+          .json<{ id: string; enabled: boolean; eligibility: { state: string } }>();
+        assert.equal(created.enabled, false);
+        assert.equal(created.eligibility.state, 'disabled');
+
+        const triggered = await ky.post(
+          `${base}/api/routines/${encodeURIComponent(created.id)}/trigger`,
+          { retry: 0, throwHttpErrors: false }
+        );
+        assert.equal(triggered.status, 409);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('keeps a paused row whose run is still in flight', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_backlog_bulk_delete_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: { title: 'T', prompt: 'P', repositoryId: 'agylity' },
+            retry: 0,
+          })
+          .json<{ id: string }>();
+
+        const queue = new TaskQueue(store.getDatabase());
+        const run = queue.enqueue({
+          repositoryName: 'agylity',
+          repositoryPath: dir,
+          prompt: 'P',
+          cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+          prPolicy: 'all',
+          pushBranch: true,
+          autoCreatePr: false,
+        });
+        store
+          .getDatabase()
+          .getRawDb()
+          .prepare('UPDATE backlog_tasks SET status = ?, swarm_task_id = ? WHERE id = ?')
+          .run('paused', run.id, created.id);
+
+        const removed = await ky
+          .post(`${base}/api/backlog/bulk`, {
+            json: { action: 'delete', ids: [created.id] },
+            retry: 0,
+          })
+          .json<{ deleted: number; skipped: string[] }>();
+
+        assert.equal(removed.deleted, 0, 'a row whose run is still queued may not be deleted');
+        assert.deepEqual(removed.skipped, [created.id]);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('refuses an unknown backlog status instead of listing every row', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_backlog_status_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        await ky.post(`${base}/api/backlog`, {
+          json: { title: 'T', prompt: 'P', repositoryId: 'agylity' },
+          retry: 0,
+        });
+
+        const mistyped = await ky.get(`${base}/api/backlog?status=Paused`, {
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(mistyped.status, 400);
+
+        const correct = await ky
+          .get(`${base}/api/backlog?status=pending`, { retry: 0 })
+          .json<unknown[]>();
+        assert.equal(correct.length, 1);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('refuses a backlog row whose priority cannot be read instead of queueing it at 0', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_backlog_priority_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const rejected = await ky.post(`${base}/api/backlog`, {
+          json: { title: 'T', prompt: 'P', repositoryId: 'agylity', priorityOrder: 'urgent' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(rejected.status, 400);
+
+        const listed = await ky.get(`${base}/api/backlog`, { retry: 0 }).json<unknown[]>();
+        assert.deepEqual(listed, [], 'a refused create must not leave a row at priority 0');
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('does not let a client bind a new backlog row to a GitHub issue', async () => {
+      const { dir, cleanup } = makeTempDir('web_test_backlog_bind_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      let server: http.Server | undefined;
+
+      try {
+        const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+        server = started.server;
+        const base = `http://127.0.0.1:${started.port}`;
+
+        const created = await ky
+          .post(`${base}/api/backlog`, {
+            json: {
+              title: 'Bound',
+              prompt: 'P',
+              repositoryId: 'agylity',
+              githubIssueNumber: 999,
+              githubIssueUrl: 'https://github.com/someone/else/issues/999',
+            },
+            retry: 0,
+            throwHttpErrors: false,
+          })
+          .json<{ id: string; githubIssueNumber?: number; githubIssueUrl?: string }>();
+
+        assert.equal(created.githubIssueNumber, undefined);
+        assert.equal(created.githubIssueUrl, undefined);
+      } finally {
+        if (server) await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
     it('rejects POST /api/backlog with a non-string text field and creates no row', async () => {
       const { dir, cleanup } = makeTempDir('web_backlog_post_nonstring_');
       const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
@@ -2101,9 +2455,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 10c. Bulk Backlog Actions                                            */
-  /* ==================================================================== */
   describe('10c. Bulk Backlog Actions', () => {
     it('pauses only pending/dispatched rows, reports skipped ids and rejects a bad body', async () => {
       const { dir, cleanup } = makeTempDir('web_backlog_bulk_pause_');
@@ -2130,12 +2481,13 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
 
         const pending = await create('Pending row');
         const settled = await create('Completed row');
-        const patched = await ky.patch(`${base}/api/backlog/${encodeURIComponent(settled.id)}`, {
-          json: { status: 'completed' },
-          retry: 0,
-          throwHttpErrors: false,
-        });
-        assert.equal(patched.status, 200);
+        // Settling is the coordinator's job: a browser patch may not reach a lifecycle column.
+        const direct = new AppDatabase(path.join(dir, 'test.db'));
+        try {
+          new TaskQueue(direct).updateBacklogTask(settled.id, { status: 'completed' });
+        } finally {
+          direct.close();
+        }
 
         const missing = 'backlog-does-not-exist';
         const res = await ky.patch(`${base}/api/backlog/bulk`, {
@@ -2301,13 +2653,8 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
               throwHttpErrors: false,
             })
             .json<{ id: string }>();
-        const setStatus = async (id: string, status: string) => {
-          const patched = await ky.patch(`${base}/api/backlog/${encodeURIComponent(id)}`, {
-            json: { status },
-            retry: 0,
-            throwHttpErrors: false,
-          });
-          assert.equal(patched.status, 200);
+        const setStatus = async (id: string, status: BacklogStatusValue) => {
+          setBacklogStatus(path.join(dir, 'test.db'), id, status);
         };
 
         const completed = await create('Completed row');
@@ -2372,12 +2719,7 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           })
           .json<{ id: string }>();
         const url = `${base}/api/backlog/${encodeURIComponent(created.id)}`;
-        const patched = await ky.patch(url, {
-          json: { status: 'dispatched' },
-          retry: 0,
-          throwHttpErrors: false,
-        });
-        assert.equal(patched.status, 200);
+        setBacklogStatus(path.join(dir, 'test.db'), created.id, 'dispatched');
 
         const res = await ky.post(`${base}/api/backlog/bulk`, {
           json: { ids: [created.id], action: 'delete' },
@@ -2443,9 +2785,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 6. Runner Status Callbacks: Refusals & Token Telemetry               */
-  /* ==================================================================== */
   describe('6. Runner Status Callbacks: Refusals & Token Telemetry', () => {
     const authHeaders = { 'x-agylity-runner-token': 'swarm-secret-token-999' };
 
@@ -2708,9 +3047,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 10. Task Retry, Routine Trigger Stamping & Patch Validation          */
-  /* ==================================================================== */
   describe('10. Task Retry, Routine Trigger Stamping & Patch Validation', () => {
     const runnerHeaders = { 'x-agylity-runner-token': 'swarm-secret-token-999' };
 
@@ -3090,6 +3426,10 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
         const url = `${base}/api/routines/${routine.id}`;
 
         const rejected: Array<Record<string, unknown>> = [
+          { status: 'dispatched' },
+          { attemptCount: 9 },
+          { swarmTaskId: 'someone-elses-task' },
+          { taskNumber: 99 },
           { title: '   ' },
           { title: '' },
           { title: 42 },
@@ -3107,6 +3447,11 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           { cascade: 'gemini-4-hydrogen' },
           { cascade: [{}] },
           { cascade: [{ model: 'gemini-9-turbo', effort: 'low' }] },
+          // Lifecycle columns belong to the coordinator; a browser patch must not forge them.
+          { lastTriggeredResetTime: '2099-01-01T00:00:00.000Z' },
+          { lastTriggeredCycles: { gemini: '2099-01-01T00:00:00.000Z' } },
+          { lastTaskId: 'task-elsewhere' },
+          { prPolicy: 'bogus-policy' },
         ];
         for (const patch of rejected) {
           const res = await ky.patch(url, { json: patch, retry: 0, throwHttpErrors: false });
@@ -3172,6 +3517,49 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
           { model: 'gemini-4-hydrogen', effort: 'low' },
           { model: 'claude-sonnet-5-5', effort: 'high' },
         ]);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('PATCH /api/routines/:id clears a pinned PR policy back to inherit with null', async () => {
+      const { dir, cleanup } = makeTempDir('web_routine_pr_policy_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const base = `http://127.0.0.1:${port}`;
+        const routine = await ky
+          .post(`${base}/api/routines`, {
+            json: {
+              title: 'Pinned policy routine',
+              prompt: 'Keep the policy round-tripping',
+              repositoryId: 'agylity',
+              cascade: [{ model: 'gemini-3.8-flash', effort: 'medium' }],
+              prPolicy: 'all',
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(routine.prPolicy, 'all');
+        const url = `${base}/api/routines/${routine.id}`;
+
+        const cleared = await ky.patch(url, { json: { prPolicy: null }, retry: 0 }).json<any>();
+        assert.equal('prPolicy' in cleared, false, 'null means inherit, so no policy is stored');
+
+        const reread = await ky.get(url).json<any>();
+        assert.equal('prPolicy' in reread, false);
+
+        const repinned = await ky
+          .patch(url, { json: { prPolicy: 'docs_only' }, retry: 0 })
+          .json<any>();
+        assert.equal(repinned.prPolicy, 'docs_only');
       } finally {
         await closeWebServer(server);
         store.close();
@@ -3251,9 +3639,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
-  /* ==================================================================== */
-  /* 11. Routine Eligibility & Runner Heartbeat                           */
-  /* ==================================================================== */
   describe('11. Routine Eligibility & Runner Heartbeat', () => {
     const runnerToken = 'swarm-secret-token-999';
     const runnerHeaders = { 'x-agylity-runner-token': runnerToken };
@@ -3707,9 +4092,6 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
       }
     });
   });
-  /* ==================================================================== */
-  /* 12. Alert History Ledger & Dispatch Eligibility Preview              */
-  /* ==================================================================== */
   describe('12. Alert History & Dispatch Eligibility Preview', () => {
     const runnerToken = 'swarm-secret-token-999';
 
@@ -4691,5 +5073,579 @@ describe('Shared: build channel helpers', () => {
     assert.equal(isNewerMainCommit('32789fb', '32789fb0000000000'), false);
     assert.equal(isNewerMainCommit('32789fb', null), false);
     assert.equal(isNewerMainCommit(null, '9e1c0aa'), false);
+  });
+});
+
+describe('Control plane: every documented setting is writable', () => {
+  it('accepts its own default for every registry key', async () => {
+    const { dir, cleanup } = makeTempDir('web_settings_matrix_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+    const { server, port } = await startWebServer({
+      configStore: store,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const refused: string[] = [];
+
+      for (const entry of CONFIG_REGISTRY) {
+        if (entry.key === undefined) continue;
+        const res = await ky.post(`${base}/api/config`, {
+          json: { [entry.key]: entry.value },
+          retry: 0,
+          throwHttpErrors: false,
+          timeout: 10000,
+        });
+        if (res.status !== 200) {
+          refused.push(`${entry.key} (${entry.group}) -> ${res.status} ${await res.text()}`);
+        }
+      }
+
+      assert.deepEqual(refused, [], `settings the API refuses: ${refused.join(' | ')}`);
+    } finally {
+      await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Control plane: malformed bodies never crash a route', () => {
+  it('answers every state-changing route with a 4xx, never a 500', async () => {
+    const { dir, cleanup } = makeTempDir('web_body_matrix_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), { coordinatorEnabled: true });
+    const { server, port } = await startWebServer({
+      configStore: store,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const bodies = [
+        '{}',
+        '[]',
+        '"hello"',
+        '42',
+        'null',
+        '{"title":5,"prompt":[],"cascade":"x","status":1,"enabled":"yes","ids":{},"action":9}',
+        '{"__proto__":{"polluted":true},"constructor":{"prototype":{"x":1}}}',
+      ];
+      const targets: Array<[string, string]> = [
+        ['POST', '/api/config'],
+        ['POST', '/api/dispatch'],
+        ['POST', '/api/backlog'],
+        ['PATCH', '/api/backlog/probe-id'],
+        ['POST', '/api/backlog/bulk'],
+        ['POST', '/api/routines'],
+        ['PATCH', '/api/routines/probe-id'],
+        ['POST', '/api/alerts/dismiss'],
+        ['POST', '/api/notify/test'],
+        ['POST', '/api/tasks/probe-id/cancel'],
+        ['POST', '/api/tasks/probe-id/retry'],
+        ['POST', '/api/tasks/poll'],
+        ['POST', '/api/runners/register'],
+        ['PATCH', '/api/runners/probe-id'],
+        ['POST', '/api/routines/probe-id/trigger'],
+      ];
+
+      for (const [method, path] of targets) {
+        for (const body of bodies) {
+          const res = await ky(`${base}${path}`, {
+            method,
+            body,
+            headers: { 'Content-Type': 'application/json' },
+            retry: 0,
+            throwHttpErrors: false,
+            timeout: 10000,
+          });
+          assert.notEqual(res.status, 500, `${method} ${path} crashed on ${body.slice(0, 40)}`);
+        }
+      }
+    } finally {
+      // The runner targets above count as auth failures, so clear the lockout the matrix earned.
+      clearAuthFailures('127.0.0.1', 'runner');
+      clearAuthFailures('127.0.0.1', 'control');
+      await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Control plane: cross-site write protection', () => {
+  it('refuses a browser write from another origin but serves same-origin and non-browser clients', async () => {
+    const { dir, cleanup } = makeTempDir('web_csrf_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const { server, port } = await startWebServer({
+      configStore: store,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${port}`;
+      const post = (headers: Record<string, string>) =>
+        ky.post(`${base}/api/config`, {
+          headers,
+          body: '{"quotaAlertThresholdPercent": 42}',
+          retry: 0,
+          throwHttpErrors: false,
+        });
+
+      const foreignOrigin = await post({ Origin: 'https://evil.example' });
+      assert.equal(foreignOrigin.status, 403);
+
+      const foreignFetchSite = await post({ 'Sec-Fetch-Site': 'cross-site' });
+      assert.equal(foreignFetchSite.status, 403);
+
+      // Another service on loopback is a different origin, so the port matters without Sec-Fetch-Site.
+      const otherPort = await post({ Origin: 'http://127.0.0.1:1' });
+      assert.equal(otherPort.status, 403);
+
+      const sameSite = await post({ 'Sec-Fetch-Site': 'same-site' });
+      assert.equal(sameSite.status, 403);
+
+      // The refused writes left the override store alone.
+      assert.equal('quotaAlertThresholdPercent' in store.getAllOverrides(), false);
+
+      const browserSameOrigin = await post({ 'Sec-Fetch-Site': 'same-origin', Origin: base });
+      assert.notEqual(browserSameOrigin.status, 403);
+      assert.equal(store.getAllOverrides().quotaAlertThresholdPercent, 42);
+
+      const sameOrigin = await post({ Origin: base });
+      assert.notEqual(sameOrigin.status, 403);
+      assert.equal(store.getAllOverrides().quotaAlertThresholdPercent, 42);
+
+      const nonBrowser = await post({});
+      assert.notEqual(nonBrowser.status, 403);
+    } finally {
+      await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Route registry: advertised verbs match the handlers', () => {
+  const PROBED_METHODS = ['GET', 'POST', 'PATCH', 'DELETE'] as const;
+
+  it('serves every registered method and refuses every other one', async () => {
+    const { dir, cleanup } = makeTempDir('web_test_route_verbs_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    let server: http.Server | undefined;
+
+    try {
+      const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+      server = started.server;
+      const base = `http://127.0.0.1:${started.port}`;
+
+      for (const route of ROUTES) {
+        const target = `${base}${route.path.replace(/\{[^}]+\}/g, 'route-verb-probe')}`;
+        for (const method of PROBED_METHODS) {
+          const res = await ky(target, {
+            method,
+            body: method === 'GET' || method === 'DELETE' ? undefined : '',
+            retry: 0,
+            throwHttpErrors: false,
+            timeout: 15000,
+          });
+
+          if (route.methods.includes(method)) {
+            assert.notEqual(
+              res.status,
+              405,
+              `${method} ${route.path} is registered but the handler answered 405`
+            );
+          } else {
+            assert.equal(
+              res.status,
+              405,
+              `${method} ${route.path} is not registered but the handler served it`
+            );
+          }
+        }
+      }
+    } finally {
+      if (server) await closeWebServer(server);
+      store.close();
+      cleanup();
+    }
+  });
+});
+
+describe('Request body reading', () => {});
+
+describe('Request body reading', () => {
+  it('reads a body that arrived while the handler was busy', async () => {
+    const received: string[] = [];
+    const server = http.createServer(async (req, res) => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      received.push(await readBody(req));
+      res.writeHead(200).end('ok');
+    });
+
+    try {
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+      const port = (server.address() as net.AddressInfo).port;
+
+      const response = await ky.post(`http://127.0.0.1:${port}/anything`, {
+        body: '{"title":"x"}',
+        headers: { 'content-type': 'application/json' },
+      });
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(received, ['{"title":"x"}']);
+    } finally {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('Control plane: audited regressions', () => {
+  const sendRawRequest = (
+    port: number,
+    method: string,
+    reqPath: string,
+    headers: Record<string, string>,
+    body?: string
+  ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }> =>
+    new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port, method, path: reqPath, headers },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (chunk) =>
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+          );
+          res.on('end', () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              headers: res.headers,
+              body: Buffer.concat(chunks).toString('utf8'),
+            })
+          );
+        }
+      );
+      req.on('error', reject);
+      if (body !== undefined) req.write(body);
+      req.end();
+    });
+
+  it('aborts active runner long-polls on shutdown without stalling for the 5s grace window', async () => {
+    const { dir, cleanup } = makeTempDir('web_shutdown_longpoll_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {
+      coordinatorEnabled: true,
+      runnerSharedSecret: 'runner-secret',
+    });
+    const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+    let closed = false;
+
+    try {
+      let settled = false;
+      const pollPromise = ky
+        .post(`http://127.0.0.1:${started.port}/api/tasks/poll`, {
+          headers: { Authorization: 'Bearer runner-secret' },
+          json: { runnerId: 'r-shutdown', timeoutMs: 25_000 },
+          retry: 0,
+          throwHttpErrors: false,
+        })
+        .then((res) => {
+          settled = true;
+          return res;
+        })
+        .catch(() => {
+          settled = true;
+          return null;
+        });
+
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      assert.equal(settled, false, 'long-poll must still be waiting before shutdown');
+
+      const t0 = Date.now();
+      await closeWebServer(started.server);
+      closed = true;
+      const elapsedMs = Date.now() - t0;
+      const pollRes = await pollPromise;
+
+      assert.ok(elapsedMs < 1500, `expected fast shutdown, took ${elapsedMs}ms`);
+      if (pollRes) {
+        assert.equal(pollRes.status, 200);
+      }
+    } finally {
+      if (!closed) await closeWebServer(started.server).catch(() => {});
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('refuses DELETE /api/backlog/{id} with 409 when a run is in flight', async () => {
+    const { dir, cleanup } = makeTempDir('web_backlog_delete_guard_');
+    const dbPath = path.join(dir, 'test.db');
+    const store = new ConfigStore(dbPath, {});
+    const coordinator = new Coordinator({ configStore: store });
+    const started = await startWebServer({
+      configStore: store,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${started.port}`;
+      const dispatchedItem = coordinator.queue.createBacklogTask({
+        title: 'Dispatched item',
+        prompt: 'Work',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      coordinator.queue.updateBacklogTask(dispatchedItem.id, { status: 'dispatched' });
+
+      const pausedWithLiveRun = coordinator.queue.createBacklogTask({
+        title: 'Paused with live run',
+        prompt: 'Work',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      const liveTask = coordinator.queue.enqueue({
+        repositoryId: 'agylity',
+        repositoryName: 'agylity',
+        repositoryPath: '/repos/agylity',
+        prompt: 'Work',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+        prPolicy: 'all',
+        tier: 'backlog',
+        originId: pausedWithLiveRun.id,
+      });
+      coordinator.queue.updateBacklogTask(pausedWithLiveRun.id, {
+        status: 'paused',
+        swarmTaskId: liveTask.id,
+      });
+
+      const r1 = await ky.delete(`${base}/api/backlog/${dispatchedItem.id}`, {
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(r1.status, 409);
+      assert.ok(coordinator.queue.getBacklogTask(dispatchedItem.id));
+
+      const r2 = await ky.delete(`${base}/api/backlog/${pausedWithLiveRun.id}`, {
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(r2.status, 409);
+      assert.ok(coordinator.queue.getBacklogTask(pausedWithLiveRun.id));
+
+      // Once settled, deletion succeeds.
+      coordinator.queue.updateTaskStatus(liveTask.id, { status: 'completed' });
+      const r3 = await ky.delete(`${base}/api/backlog/${pausedWithLiveRun.id}`, {
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(r3.status, 200);
+      assert.equal(coordinator.queue.getBacklogTask(pausedWithLiveRun.id), undefined);
+    } finally {
+      await closeWebServer(started.server);
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('validates priorityOrder and maxAttempts on PATCH /api/backlog/{id}', async () => {
+    const { dir, cleanup } = makeTempDir('web_backlog_patch_nums_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const coordinator = new Coordinator({ configStore: store });
+    const started = await startWebServer({
+      configStore: store,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${started.port}`;
+      const item = coordinator.queue.createBacklogTask({
+        title: 'Patch target',
+        prompt: 'Prompt',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+
+      for (const badPatch of [
+        { priorityOrder: 'not-a-number' },
+        { priorityOrder: null },
+        { maxAttempts: '3' },
+        { maxAttempts: null },
+      ]) {
+        const res = await ky.patch(`${base}/api/backlog/${item.id}`, {
+          json: badPatch,
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+      }
+
+      const ok = await ky
+        .patch(`${base}/api/backlog/${item.id}`, {
+          json: { priorityOrder: 5, maxAttempts: 4 },
+          retry: 0,
+        })
+        .json<any>();
+      assert.equal(ok.priorityOrder, 5);
+      assert.equal(ok.maxAttempts, 4);
+    } finally {
+      await closeWebServer(started.server);
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('rejects unconfigured repositoryPath with 400 and maps ORIGIN_NOT_DISPATCHABLE to 409 on POST /api/dispatch', async () => {
+    const { dir, cleanup } = makeTempDir('web_dispatch_guards_');
+    const configuredPath = path.join(dir, 'configured-repo');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    store.setOverride('repositories', [{ id: 'agylity', name: 'agylity', path: configuredPath }]);
+    const coordinator = new Coordinator({ configStore: store });
+    const started = await startWebServer({
+      configStore: store,
+      coordinator,
+      host: '127.0.0.1',
+      port: 0,
+    });
+
+    try {
+      const base = `http://127.0.0.1:${started.port}`;
+
+      for (const badPath of ['/etc', '/repos/../../foo']) {
+        const res = await ky.post(`${base}/api/dispatch`, {
+          json: { repositoryId: 'agylity', repositoryPath: badPath, prompt: 'Inspect' },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+      }
+
+      // Configured repositoryPath passes validation (allowOverage bypasses telemetry gate).
+      const okRes = await ky.post(`${base}/api/dispatch`, {
+        json: {
+          repositoryId: 'agylity',
+          repositoryPath: configuredPath,
+          prompt: 'Inspect',
+          allowOverage: true,
+        },
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(okRes.status, 200);
+
+      // Dispatching a backlog origin that is already completed returns 409.
+      const backlogItem = coordinator.queue.createBacklogTask({
+        title: 'Already completed',
+        prompt: 'Work',
+        repositoryId: 'agylity',
+        cascade: [{ model: 'gemini-4-hydrogen', effort: 'medium' }],
+      });
+      coordinator.queue.updateBacklogTask(backlogItem.id, { status: 'completed' });
+
+      const conflictRes = await ky.post(`${base}/api/dispatch`, {
+        json: {
+          repositoryId: 'agylity',
+          prompt: 'Work',
+          tier: 'backlog',
+          originId: backlogItem.id,
+          allowOverage: true,
+        },
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(conflictRes.status, 409);
+      const conflictBody = (await conflictRes.json()) as { code?: string };
+      assert.equal(conflictBody.code, 'ORIGIN_NOT_DISPATCHABLE');
+    } finally {
+      await closeWebServer(started.server);
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('serves AGYLITY_VERSION on /api/openapi.json and returns JSON 405 with security headers', async () => {
+    const { dir, cleanup } = makeTempDir('web_openapi_live_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+
+    try {
+      const base = `http://127.0.0.1:${started.port}`;
+      const doc = await ky.get(`${base}/api/openapi.json`, { retry: 0 }).json<any>();
+      assert.equal(doc.info.version, AGYLITY_VERSION);
+      assert.equal(doc.paths['/api/runners/register'].post.security, undefined);
+
+      const badMethod = await ky.post(`${base}/api/openapi.json`, {
+        retry: 0,
+        throwHttpErrors: false,
+      });
+      assert.equal(badMethod.status, 405);
+      assert.equal(badMethod.headers.get('x-content-type-options'), 'nosniff');
+      assert.equal(badMethod.headers.get('content-type'), 'application/json');
+      assert.deepEqual(await badMethod.json(), { error: 'Method Not Allowed' });
+    } finally {
+      await closeWebServer(started.server);
+      store.close();
+      cleanup();
+    }
+  });
+
+  it('normalizes explicit default ports (:80/:443) in Origin vs Host cross-site checks', async () => {
+    const { dir, cleanup } = makeTempDir('web_csrf_default_ports_');
+    const store = new ConfigStore(path.join(dir, 'test.db'), {});
+    const started = await startWebServer({ configStore: store, host: '127.0.0.1', port: 0 });
+
+    try {
+      const body = '{"quotaAlertThresholdPercent": 45}';
+      const httpsDefault = await sendRawRequest(
+        started.port,
+        'POST',
+        '/api/config',
+        {
+          Host: 'example.com:443',
+          Origin: 'https://example.com',
+          'Content-Type': 'application/json',
+        },
+        body
+      );
+      assert.notEqual(httpsDefault.status, 403);
+
+      const httpDefault = await sendRawRequest(
+        started.port,
+        'POST',
+        '/api/config',
+        {
+          Host: 'example.com:80',
+          Origin: 'http://example.com',
+          'Content-Type': 'application/json',
+        },
+        body
+      );
+      assert.notEqual(httpDefault.status, 403);
+
+      const portMismatch = await sendRawRequest(
+        started.port,
+        'POST',
+        '/api/config',
+        {
+          Host: 'example.com:80',
+          Origin: 'http://example.com:8080',
+          'Content-Type': 'application/json',
+        },
+        body
+      );
+      assert.equal(portMismatch.status, 403);
+    } finally {
+      await closeWebServer(started.server);
+      store.close();
+      cleanup();
+    }
   });
 });

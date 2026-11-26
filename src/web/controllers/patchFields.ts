@@ -18,3 +18,11 @@ export const validateTextFieldPatch = (body: unknown): string | undefined => {
   }
   return undefined;
 };
+
+export const rejectUnknownPatchKeys = (
+  body: Record<string, unknown>,
+  allowed: readonly string[]
+): string | undefined => {
+  const unknown = Object.keys(body).filter((key) => !allowed.includes(key));
+  return unknown.length > 0 ? `Unknown field(s): ${unknown.join(', ')}` : undefined;
+};

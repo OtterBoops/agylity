@@ -10,6 +10,7 @@ import {
 } from '../../config/schema.js';
 import { logger } from '../../logs/logger.js';
 import { isPlainJsonObject } from './patchFields.js';
+import { isValidIpRange } from '../ip.js';
 
 const isSecretSet = (value: unknown): boolean => {
   if (typeof value === 'string') return value.trim() !== '';
@@ -127,6 +128,19 @@ export const handleConfigEndpoint = async (
         continue;
       }
       keysToValidate[k] = v;
+    }
+
+    // An allowlist that parses to nothing denies every client, loopback included, and the override
+    // outranks the env — so an unparseable entry is rejected instead of locking the operator out.
+    for (const key of ['allowedIpRanges', 'trustedProxyRanges'] as const) {
+      const rawRanges = keysToValidate[key];
+      if (!Array.isArray(rawRanges)) continue;
+      const bad = rawRanges.find((entry) => typeof entry !== 'string' || !isValidIpRange(entry));
+      if (bad !== undefined) {
+        return sendJson(res, 400, {
+          error: `${key} entry is not a valid IP or CIDR: ${String(bad)}`,
+        });
+      }
     }
 
     let validatedPatch: Record<string, unknown> = {};

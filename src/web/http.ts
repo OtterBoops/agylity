@@ -137,7 +137,7 @@ export const readBody = async (
   res?: http.ServerResponse,
   maxBytes: number = MAX_BODY_BYTES
 ): Promise<string> => {
-  if (req.readableEnded || req.complete) {
+  if (req.readableEnded) {
     return '';
   }
   if (req.destroyed) {
@@ -255,6 +255,13 @@ export const toTrimmedStringOrUndefined = (value: unknown): string | undefined =
 /** A safety-floor or missing-telemetry refusal is a 4xx, not a 200 body. */
 export const isSafetyBlockCode = (code?: string): boolean =>
   code === 'OVERAGE_PROTECTION_TRIGGERED' || code === 'TELEMETRY_UNAVAILABLE';
+
+export const isOriginConflictCode = (code?: string): boolean => code === 'ORIGIN_NOT_DISPATCHABLE';
+
+export const dispatchRefusalStatus = (code?: string): number => {
+  if (isSafetyBlockCode(code)) return 400;
+  return isOriginConflictCode(code) ? 409 : 200;
+};
 
 export const toStringArray = (value: unknown): string[] | undefined =>
   Array.isArray(value) ? value.map((item) => String(item).trim()).filter(Boolean) : undefined;

@@ -4,43 +4,10 @@ import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';
 import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from './ip.js';
-import { PayloadTooLargeError, sendPayloadTooLarge, sendJson, methodNotAllowed } from './http.js';
+import { PayloadTooLargeError, sendPayloadTooLarge, sendJson } from './http.js';
 import { handleStaticAsset, handleIndexHtml } from './controllers/static.js';
-import {
-  handleGetQuota,
-  handleGetSummary,
-  handleGetAlerts,
-  handleDismissAlerts,
-} from './controllers/quota.js';
-import { handleGetAlertEvents } from './controllers/alerts.js';
-import { handleDispatchEligibility } from './controllers/eligibility.js';
-import { handleGetLogs } from './controllers/logs.js';
-import { handleConfigEndpoint, handleDeleteConfigOverride } from './controllers/config.js';
-import { handleTestNotify } from './controllers/notify.js';
-import {
-  handlePostDispatch,
-  handleGetModels,
-  handleGetTasks,
-  handleGetTaskById,
-  handlePollTasks,
-  handleRunnerHeartbeat,
-  handleTaskStatus,
-  handleTaskCancel,
-  handleTaskRetry,
-  handleGetRunners,
-  handleCreateRegistrationToken,
-  handleRegisterRunner,
-  handleManageRunnerById,
-} from './controllers/dispatch.js';
-import {
-  handleBacklogTasks,
-  handleBacklogTaskById,
-  handleBulkBacklogTasks,
-  handleSyncGithubBacklog,
-} from './controllers/backlog.js';
-import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
+import { matchRoute, routeAuthFor } from './routeRegistry.js';
 import { clearAuthFailures, isIpRateLimited, recordAuthFailure } from './authFailures.js';
-import { normalizeBuildCommit, resolveBuildChannel } from '../shared/build.js';
 
 export type { WebServerOptions };
 
@@ -59,6 +26,41 @@ const isAuthorized = (req: http.IncomingMessage, expectedToken: string): boolean
 // Re-exported so a test can reset the module-level lockout table.
 export { clearAuthFailures };
 
+// A browser sends Origin (and usually Sec-Fetch-Site) on every cross-site write; any other client
+// sends neither, so this blocks a hostile page driving the loopback control plane while leaving
+// runners, curl and the dashboard untouched.
+const isCrossSiteWrite = (req: http.IncomingMessage): boolean => {
+  const site = req.headers['sec-fetch-site'];
+  if (typeof site === 'string' && site.trim() !== '') {
+    // The browser's own verdict: a port or subdomain change is not the dashboard, and 'none' is a
+    // user-initiated navigation rather than another page's fetch.
+    const value = site.trim().toLowerCase();
+    return value !== 'same-origin' && value !== 'none';
+  }
+
+  const origin = req.headers.origin;
+  if (typeof origin !== 'string' || origin.trim() === '') return false;
+  const host = req.headers.host;
+  if (typeof host !== 'string' || host.trim() === '') return true;
+
+  // Without Sec-Fetch-Site the port matters: another service on loopback is a different origin.
+  const trimmedHost = host.trim();
+  if (/[\s/?#@]/.test(trimmedHost)) return true;
+  try {
+    const originUrl = new URL(origin);
+    if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return true;
+    // Parsing Host under the Origin's scheme normalizes explicit default ports (:80 / :443).
+    const requestUrl = new URL(`${originUrl.protocol}//${trimmedHost}`);
+    return originUrl.host.toLowerCase() !== requestUrl.host.toLowerCase();
+  } catch {
+    return true;
+  }
+};
+
+const sendCrossSiteRefused = (res: http.ServerResponse): void => {
+  sendJson(res, 403, { error: 'Forbidden: cross-site request' });
+};
+
 const sendRateLimited = (res: http.ServerResponse): void => {
   sendJson(
     res,
@@ -72,37 +74,25 @@ const sendRateLimited = (res: http.ServerResponse): void => {
   );
 };
 
-/** Outbound pull-runner endpoints: authenticated by a runner credential, not the control-plane token. */
-const isRunnerAuthRoute = (pathname: string): boolean =>
-  pathname === '/api/tasks/poll' ||
-  pathname === '/api/runner/heartbeat' ||
-  pathname === '/api/runners/register' ||
-  (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status'));
-
-const isControlPlaneRoute = (pathname: string): boolean => {
-  if (!pathname.startsWith('/api/')) return false;
-  if (pathname === '/api/health') return false;
-  if (isRunnerAuthRoute(pathname)) return false;
-
-  return true;
-};
-
 export const handleRequest = async (
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  options: WebServerOptions
+  options: WebServerOptions,
+  shutdownSignal?: AbortSignal
 ): Promise<void> => {
   try {
     // A constant base: a malformed Host header must not make routing throw.
     const url = new URL(req.url ?? '/', 'http://localhost');
     const { pathname } = url;
-    const method = req.method ?? 'GET';
+    // Node drops the body of a HEAD response itself, so only the routing decision needs the GET.
+    const method = req.method === 'HEAD' ? 'GET' : (req.method ?? 'GET');
 
     const resolvedConfig = options.configStore?.resolveConfig();
     const allowedRanges = resolvedConfig?.allowedIpRanges ?? [];
     const trustedProxies = resolvedConfig?.trustedProxies ?? false;
+    const trustedProxyRanges = resolvedConfig?.trustedProxyRanges ?? [];
 
-    const clientIp = extractClientIp(req, trustedProxies);
+    const clientIp = extractClientIp(req, trustedProxies, trustedProxyRanges);
 
     if (!isIpAllowed(clientIp, allowedRanges)) {
       logger
@@ -117,12 +107,19 @@ export const handleRequest = async (
     const exemptLocalhost = resolvedConfig?.webUiAuthExemptLocalhost ?? true;
     const authRequired = Boolean(expectedToken) && !(isLocalhost && exemptLocalhost);
 
-    // A runner credential is brute-forceable too, so it keeps its own lockout counter.
-    if (isRunnerAuthRoute(pathname)) {
-      if (isIpRateLimited(clientIp, 'runner')) return sendRateLimited(res);
+    if (method !== 'GET' && method !== 'HEAD' && isCrossSiteWrite(req)) {
+      logger.child('security').warn('Rejected cross-site %s %s', method, pathname);
+      return sendCrossSiteRefused(res);
     }
 
-    if (authRequired && expectedToken && isControlPlaneRoute(pathname)) {
+    const routeAuth = routeAuthFor(pathname);
+
+    // A runner credential is brute-forceable too, so it keeps its own lockout counter.
+    if (routeAuth === 'runner' && isIpRateLimited(clientIp, 'runner')) {
+      return sendRateLimited(res);
+    }
+
+    if (authRequired && expectedToken && routeAuth === 'bearer') {
       if (isIpRateLimited(clientIp, 'control')) {
         logger
           .child('security')
@@ -153,23 +150,6 @@ export const handleRequest = async (
       return;
     }
 
-    if (pathname === '/api/health') {
-      if (method !== 'GET') {
-        return methodNotAllowed(res);
-      }
-      // Cache-only: a healthcheck must answer while `agy update` is rewriting the binary.
-      void options.agyUpdater?.getVersion();
-      return sendJson(res, 200, {
-        status: 'ok',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        authRequired,
-        agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
-        buildChannel: resolveBuildChannel(process.env.BUILD_CHANNEL),
-        buildCommit: normalizeBuildCommit(process.env.BUILD_COMMIT),
-      });
-    }
-
     // Awaited so a rejection lands in this try block; a bare return would skip the 413 mapping below.
     if (
       pathname.startsWith('/assets/') ||
@@ -185,121 +165,19 @@ export const handleRequest = async (
       return await handleIndexHtml(req, res, method);
     }
 
-    if (pathname === '/api/quota') {
-      return await handleGetQuota(req, res, options, method);
-    }
-
-    if (pathname === '/api/summary') {
-      return handleGetSummary(req, res, options, method);
-    }
-
-    if (pathname === '/api/alerts') {
-      return await handleGetAlerts(req, res, options, method);
-    }
-
-    if (pathname === '/api/alerts/dismiss') {
-      return await handleDismissAlerts(req, res, options, method);
-    }
-
-    if (pathname === '/api/alerts/events') {
-      return handleGetAlertEvents(req, res, options, url, method);
-    }
-
-    if (pathname === '/api/logs') {
-      return await handleGetLogs(req, res, options, url, method);
-    }
-
-    if (pathname === '/api/config') {
-      return await handleConfigEndpoint(req, res, options, method);
-    }
-
-    if (pathname.startsWith('/api/config/')) {
-      return await handleDeleteConfigOverride(req, res, options, pathname, method);
-    }
-
-    if (pathname === '/api/notify/test') {
-      return await handleTestNotify(req, res, options, method);
-    }
-
-    if (pathname === '/api/dispatch') {
-      return await handlePostDispatch(req, res, options, method);
-    }
-
-    if (pathname === '/api/models') {
-      return await handleGetModels(req, res, options, method);
-    }
-
-    if (pathname === '/api/dispatch/eligibility') {
-      return handleDispatchEligibility(req, res, options, url, method);
-    }
-
-    if (pathname === '/api/tasks') {
-      return await handleGetTasks(req, res, options, url, method);
-    }
-
-    if (pathname === '/api/tasks/poll') {
-      return await handlePollTasks(req, res, options, method);
-    }
-
-    if (pathname === '/api/runner/heartbeat') {
-      return await handleRunnerHeartbeat(req, res, options, method);
-    }
-
-    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/status')) {
-      return await handleTaskStatus(req, res, options, pathname, method);
-    }
-
-    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/cancel')) {
-      return await handleTaskCancel(req, res, options, pathname, method);
-    }
-
-    if (pathname.startsWith('/api/tasks/') && pathname.endsWith('/retry')) {
-      return await handleTaskRetry(req, res, options, pathname, method);
-    }
-
-    if (pathname.startsWith('/api/tasks/') && !pathname.slice('/api/tasks/'.length).includes('/')) {
-      return await handleGetTaskById(req, res, options, pathname, method);
-    }
-
-    if (pathname === '/api/backlog/sync-github') {
-      return await handleSyncGithubBacklog(req, res, options, method);
-    }
-
-    if (pathname === '/api/backlog') {
-      return await handleBacklogTasks(req, res, options, url, method);
-    }
-
-    // Must precede the /api/backlog/<id> branch below, which would otherwise read "bulk" as an id.
-    if (pathname === '/api/backlog/bulk') {
-      return await handleBulkBacklogTasks(req, res, options, method);
-    }
-
-    if (pathname.startsWith('/api/backlog/')) {
-      return await handleBacklogTaskById(req, res, options, pathname, method);
-    }
-
-    if (pathname === '/api/routines') {
-      return await handleRoutineTasks(req, res, options, url, method);
-    }
-
-    if (pathname.startsWith('/api/routines/')) {
-      return await handleRoutineTaskById(req, res, options, pathname, method);
-    }
-
-    if (pathname === '/api/runners') {
-      return await handleGetRunners(req, res, options, method);
-    }
-
-    if (pathname === '/api/runners/registration-token') {
-      return await handleCreateRegistrationToken(req, res, options, method);
-    }
-
-    if (pathname === '/api/runners/register') {
-      return await handleRegisterRunner(req, res, options, method);
-    }
-
-    if (pathname.startsWith('/api/runners/')) {
-      return await handleManageRunnerById(req, res, options, pathname, method);
+    const matched = matchRoute(pathname);
+    if (matched) {
+      return await matched.route.invoke({
+        req,
+        res,
+        options,
+        url,
+        pathname,
+        method,
+        params: matched.params,
+        authRequired,
+        shutdownSignal,
+      });
     }
 
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }).end('Not Found');

@@ -1,0 +1,1025 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Agylity control plane",
+    "version": "0.7.1",
+    "description": "Generated from src/web/routeRegistry.ts. Runner routes take a runner credential, not the control-plane token."
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "WEB_UI_AUTH_TOKEN control-plane token"
+      },
+      "runnerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Runner credential from POST /api/runners/register"
+      }
+    }
+  },
+  "paths": {
+    "/api/health": {
+      "get": {
+        "summary": "Liveness, auth requirement and build provenance.",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/openapi.json": {
+      "get": {
+        "summary": "This document, generated from the route registry.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/quota": {
+      "get": {
+        "summary": "Current quota pools and credit balances.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/summary": {
+      "get": {
+        "summary": "Headroom percentage per pool group plus the cached agy version.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/alerts": {
+      "get": {
+        "summary": "Active sentry alerts.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/alerts/dismiss": {
+      "post": {
+        "summary": "Dismiss the named alerts.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/alerts/events": {
+      "get": {
+        "summary": "Keyset-paginated alert history.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/logs": {
+      "get": {
+        "summary": "Recent log lines, filtered by level and cursor.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "summary": "Resolved configuration, or a validated override write.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "post": {
+        "summary": "Resolved configuration, or a validated override write.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/config/{key}": {
+      "delete": {
+        "summary": "Clear one stored override.",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/notify/test": {
+      "post": {
+        "summary": "Send a test notification to one destination.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/dispatch": {
+      "post": {
+        "summary": "Queue a task.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/models": {
+      "get": {
+        "summary": "The model catalog with effort variants.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/dispatch/eligibility": {
+      "get": {
+        "summary": "Whether a dispatch would clear the safety floor.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks": {
+      "get": {
+        "summary": "Task list, filtered and paginated.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks/poll": {
+      "post": {
+        "summary": "Runner long-poll that leases the next task.",
+        "security": [
+          {
+            "runnerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/runner/heartbeat": {
+      "post": {
+        "summary": "Runner heartbeat carrying the live output tail.",
+        "security": [
+          {
+            "runnerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/status": {
+      "post": {
+        "summary": "Runner status report for the task it leased.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "runnerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/cancel": {
+      "post": {
+        "summary": "Abort a task.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}/retry": {
+      "post": {
+        "summary": "Queue another run of a finished task.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/tasks/{id}": {
+      "get": {
+        "summary": "One task, including its output and a change fingerprint.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/backlog/sync-github": {
+      "post": {
+        "summary": "Import labelled GitHub issues as backlog items.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/backlog/bulk": {
+      "post": {
+        "summary": "Bulk pause, resume or delete backlog items.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "patch": {
+        "summary": "Bulk pause, resume or delete backlog items.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/backlog": {
+      "get": {
+        "summary": "Backlog list, or a new backlog item.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "post": {
+        "summary": "Backlog list, or a new backlog item.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/backlog/{id}/dispatch": {
+      "post": {
+        "summary": "Queue a run for a backlog item.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/backlog/{id}": {
+      "get": {
+        "summary": "One backlog item: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "patch": {
+        "summary": "One backlog item: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "delete": {
+        "summary": "One backlog item: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/routines": {
+      "get": {
+        "summary": "Routine templates, or a new routine.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "post": {
+        "summary": "Routine templates, or a new routine.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/routines/{id}/trigger": {
+      "post": {
+        "summary": "Queue a routine run now.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/routines/{id}": {
+      "get": {
+        "summary": "One routine template: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "patch": {
+        "summary": "One routine template: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "delete": {
+        "summary": "One routine template: read, edit or delete.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/runners/registration-token": {
+      "post": {
+        "summary": "Mint a one-time runner registration token.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/runners/register": {
+      "post": {
+        "summary": "Exchange a registration token for a runner credential.",
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/runners": {
+      "get": {
+        "summary": "Registered runners and their leases.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    },
+    "/api/runners/{id}": {
+      "patch": {
+        "summary": "One runner: enable, disable or revoke.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      },
+      "delete": {
+        "summary": "One runner: enable, disable or revoke.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success"
+          },
+          "401": {
+            "description": "Missing or invalid token"
+          },
+          "429": {
+            "description": "Brute-force lockout"
+          }
+        }
+      }
+    }
+  }
+}
