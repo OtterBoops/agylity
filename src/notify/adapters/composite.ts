@@ -8,6 +8,8 @@ import type {
   InfoNotice,
 } from '../types.js';
 import type { ResolvedConfig } from '../../config/schema.js';
+import type { NotificationDestination } from '../../shared/contracts.js';
+import { destinationChannelName } from '../../config/destinations.js';
 import { logger } from '../../logs/logger.js';
 import { notificationKindEnabled, type NotificationKind } from '../../shared/notificationKinds.js';
 
@@ -22,6 +24,7 @@ export class CompositeNotifier implements Notifier {
   private readonly options?: NotifierOptions;
   private lastConfig: Partial<ResolvedConfig> = {};
   private readonly silenced = new Set<NotificationKind>();
+  private destinations: NotificationDestination[] = [];
 
   get channelName(): string {
     if (this.notifiers.length === 0) return 'none';
@@ -45,6 +48,23 @@ export class CompositeNotifier implements Notifier {
     return this.notifiers.find((n) => n.channelName === channelName);
   }
 
+  /** The instances this composite was built from; `updateConfig` diffs against it. */
+  public setDestinations(destinations: NotificationDestination[]): void {
+    this.destinations = destinations.map((destination) => ({ ...destination }));
+  }
+
+  public getDestinations(): NotificationDestination[] {
+    return this.destinations.map((destination) => ({ ...destination }));
+  }
+
+  private isDiscordNotifier(notifier: Notifier): boolean {
+    return (
+      notifier.destinationType === 'discord' ||
+      notifier.channelName === 'discord' ||
+      notifier.channelName.startsWith('discord:')
+    );
+  }
+
   async initialize(): Promise<void> {
     const results = await Promise.allSettled(this.notifiers.map((n) => n.initialize()));
     results.forEach((res, i) => {
@@ -61,7 +81,7 @@ export class CompositeNotifier implements Notifier {
   }
 
   private async syncResolvedOwner(): Promise<void> {
-    const discordNotifier = this.notifiers.find((n) => n.channelName === 'discord') as any;
+    const discordNotifier = this.notifiers.find((n) => this.isDiscordNotifier(n)) as any;
     if (discordNotifier && typeof discordNotifier.resolveOwnerUserId === 'function') {
       const resolvedOwner = await discordNotifier.resolveOwnerUserId();
       if (resolvedOwner) {
@@ -100,7 +120,8 @@ export class CompositeNotifier implements Notifier {
     return { delivered, results: channelResults };
   }
 
-  // A suppressed type still logs where it fired; only the delivery is skipped.
+  // A suppressed type still logs where it fired; only the delivery is skipped, and the ledger row
+  // names each active destination as suppressed so the history shows what a switch silenced.
   private gate(kind: NotificationKind): DeliveryOutcome | undefined {
     if (notificationKindEnabled(this.lastConfig.notificationTypes, kind)) return undefined;
     if (!this.silenced.has(kind)) {
@@ -112,7 +133,15 @@ export class CompositeNotifier implements Notifier {
           kind
         );
     }
-    return { delivered: false, suppressed: true, results: {} };
+    const results: Record<string, DeliveryChannelResult> = {};
+    if (this.notifiers.length === 0) {
+      results.none = { success: false, suppressed: true };
+    } else {
+      for (const notifier of this.notifiers) {
+        results[notifier.channelName] = { success: false, suppressed: true };
+      }
+    }
+    return { delivered: false, suppressed: true, results };
   }
 
   async notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome> {
@@ -138,16 +167,92 @@ export class CompositeNotifier implements Notifier {
     return this.gate(notice.kind) ?? this.fanOutOutcome('Info notice', (n) => n.notifyInfo(notice));
   }
 
+  private async syncDestinations(next: NotificationDestination[]): Promise<void> {
+    const enabled = next.filter((destination) => destination.enabled);
+    const wanted = new Set(enabled.map((destination) => destinationChannelName(destination)));
+    const { createNotifierForDestination, applyDestinationConfig } = await import('../factory.js');
+
+    const toKeep: Notifier[] = [];
+    for (const notifier of this.notifiers) {
+      if (wanted.has(notifier.channelName)) {
+        toKeep.push(notifier);
+        continue;
+      }
+      try {
+        await notifier.shutdown();
+      } catch (err: any) {
+        logger
+          .child('notify:composite')
+          .error('Shutdown error on %s: %s', notifier.channelName, err?.message ?? err);
+      }
+    }
+
+    const current = new Set(toKeep.map((notifier) => notifier.channelName));
+    for (const destination of enabled) {
+      const name = destinationChannelName(destination);
+      if (!current.has(name)) {
+        try {
+          const created = await createNotifierForDestination(
+            destination,
+            this.lastConfig as ResolvedConfig,
+            this.options
+          );
+          await created.initialize();
+          toKeep.push(created);
+        } catch (err: any) {
+          logger
+            .child('notify:composite')
+            .error('Failed to activate %s: %s', name, err?.message ?? err);
+        }
+      }
+    }
+
+    this.notifiers.length = 0;
+    this.notifiers.push(...toKeep);
+    this.setDestinations(next);
+
+    const byName = new Map(
+      enabled.map((destination) => [destinationChannelName(destination), destination])
+    );
+    await Promise.all(
+      toKeep.map(async (notifier) => {
+        const destination = byName.get(notifier.channelName);
+        if (!destination || !notifier.updateConfig) return;
+        try {
+          await notifier.updateConfig(
+            applyDestinationConfig(this.lastConfig as ResolvedConfig, destination)
+          );
+        } catch (err: any) {
+          logger
+            .child('notify:composite')
+            .error('Failed to update config on %s: %s', notifier.channelName, err?.message ?? err);
+        }
+      })
+    );
+  }
+
   async updateConfig(newConfig: Partial<ResolvedConfig>): Promise<void> {
     this.lastConfig = { ...this.lastConfig, ...newConfig };
+
+    if (newConfig.destinations !== undefined) {
+      await this.syncDestinations(newConfig.destinations as NotificationDestination[]);
+      // Each adapter already took its own instance config; a second pass with the top-level legacy
+      // fields would overwrite its token/url/pingOwner with whatever the global config says.
+      return;
+    }
+
+    // A destination write carries its own membership; the legacy channel toggle only runs when the
+    // caller did not send instances, so an instance edit never shuts the other instances down.
     const rawChannels =
-      newConfig.notificationChannels !== undefined
-        ? newConfig.notificationChannels
-        : newConfig.notificationChannel !== undefined
-          ? newConfig.notificationChannel === 'none'
-            ? []
-            : [newConfig.notificationChannel]
-          : undefined;
+      newConfig.destinations !== undefined
+        ? undefined
+        : newConfig.notificationChannels !== undefined
+          ? newConfig.notificationChannels
+          : newConfig.notificationChannel !== undefined
+            ? newConfig.notificationChannel === 'none'
+              ? []
+              : [newConfig.notificationChannel]
+            : undefined;
 
     if (rawChannels !== undefined) {
       const targetChannelNames = normalizeChannelNames(
@@ -190,6 +295,32 @@ export class CompositeNotifier implements Notifier {
           }
         }
       }
+    }
+
+    if (this.destinations.length > 0) {
+      const { applyDestinationConfig } = await import('../factory.js');
+      const byName = new Map(
+        this.destinations
+          .filter((destination) => destination.enabled)
+          .map((destination) => [destinationChannelName(destination), destination])
+      );
+      await Promise.all(
+        this.notifiers.map(async (n) => {
+          if (!n.updateConfig) return;
+          const destination = byName.get(n.channelName);
+          if (!destination) return;
+          try {
+            await n.updateConfig(
+              applyDestinationConfig(this.lastConfig as ResolvedConfig, destination)
+            );
+          } catch (err: any) {
+            logger
+              .child('notify:composite')
+              .error('Failed to update config on %s: %s', n.channelName, err.message);
+          }
+        })
+      );
+      return;
     }
 
     await Promise.all(

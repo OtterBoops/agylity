@@ -8,6 +8,11 @@ import {
   FORBIDDEN_CONFIG_KEYS,
   validateConfigOverridePatch,
 } from '../../config/schema.js';
+import {
+  maskNotificationDestinations,
+  mergeDestinationSecrets,
+} from '../../config/destinations.js';
+import type { NotificationDestination } from '../../shared/contracts.js';
 import { logger } from '../../logs/logger.js';
 import { isPlainJsonObject } from './patchFields.js';
 import { isValidIpRange } from '../ip.js';
@@ -32,6 +37,11 @@ const sanitizeConfigForClient = (config: Record<string, any>): Record<string, an
     if (!isSecretKey(k)) continue;
     result[k] = typeof v === 'string' ? maskSecret(v) : isSecretSet(v) ? SECRET_MASK : '';
   }
+  if (Array.isArray(result.destinations)) {
+    result.destinations = maskNotificationDestinations(
+      result.destinations as NotificationDestination[]
+    ).destinations;
+  }
   return result;
 };
 
@@ -45,6 +55,14 @@ const getSecretsMeta = (config: Record<string, any>): Record<string, { isSet: bo
   return meta;
 };
 
+/** Per-instance secret presence, keyed `<destinationId>.<field>` under `destinationsMeta`. */
+const getDestinationsMeta = (
+  config: Record<string, any>
+): Record<string, Record<string, { isSet: boolean }>> => {
+  if (!Array.isArray(config.destinations)) return {};
+  return maskNotificationDestinations(config.destinations as NotificationDestination[]).meta;
+};
+
 /** The client view of the store, shared by every write and read so no response drops a field. */
 const configView = (options: WebServerOptions) => {
   const resolved = options.configStore.resolveConfig();
@@ -53,6 +71,7 @@ const configView = (options: WebServerOptions) => {
     overrides: sanitizeConfigForClient(options.configStore.getAllOverrides()),
     sources: options.configStore.getSources?.() ?? {},
     secretsMeta: getSecretsMeta(resolved),
+    destinationsMeta: getDestinationsMeta(resolved),
   };
 };
 
@@ -172,6 +191,16 @@ export const handleConfigEndpoint = async (
           handleClear(key);
           return;
         }
+      }
+      if (key === 'destinations' && Array.isArray(value)) {
+        // The resolved list is decrypted and includes env-seeded instances, so a first UI save of a
+        // destination that came from the environment still finds the secret its mask stands for.
+        const stored = options.configStore.resolveConfig().destinations;
+        options.configStore.setOverride(
+          key,
+          mergeDestinationSecrets(value as NotificationDestination[], stored)
+        );
+        return;
       }
       options.configStore.setOverride(key, value);
     };

@@ -1,520 +1,383 @@
-import { faLink, faRobot } from '@fortawesome/free-solid-svg-icons';
-import { useState, useEffect, useMemo } from 'preact/hooks';
-import type { ConfigData } from '../types';
-import { pushSuccessToast, pushErrorToast } from '../state/toastStore';
-import { updateConfig, testNotification, deleteConfigOverride } from '../api';
+import { faLink, faRobot, type IconDefinition } from '@fortawesome/free-solid-svg-icons';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { ConfigData, NotificationDestination, NotificationDestinationType } from '../types';
+import { pushErrorToast, pushSuccessToast } from '../state/toastStore';
+import { testDestination, updateConfig } from '../api';
 import { DiscordChannelForm } from '../components/DiscordChannelForm';
+import { NotificationActionBar } from '../components/NotificationActionBar';
+import { NotificationChannelCard } from '../components/NotificationChannelCard';
+import { SettingsLayout } from '../components/SettingsLayout';
+import { ToggleSwitch } from '../components/ToggleSwitch';
 import { WebhookChannelForm } from '../components/WebhookChannelForm';
 import {
-  NotificationChannelCard,
-  type ChannelDef,
-  type ChannelId,
-} from '../components/NotificationChannelCard';
-import { NotificationActionBar } from '../components/NotificationActionBar';
-import { SettingsLayout } from '../components/SettingsLayout';
+  DEFAULT_NOTIFICATION_TYPES,
+  NOTIFICATION_KINDS,
+} from '../../../src/shared/notificationKinds.ts';
 
 interface NotificationsViewProps {
   config: ConfigData;
   onSaved: () => void;
 }
 
-const CHANNELS: ChannelDef[] = [
-  {
-    id: 'discord',
-    label: 'Discord Bot',
-    description: 'Slash commands and rich alert embeds.',
-    icon: faRobot,
-    iconColor: 'text-pine-iris',
-  },
-  {
-    id: 'webhook',
-    label: 'Generic Webhook',
-    description: 'HTTP POST milestone payloads with optional HMAC-SHA256 signatures.',
-    icon: faLink,
-    iconColor: 'text-pine-foam',
-  },
-];
+const SECRET_MASK = '••••••••';
 
-// A stored secret renders as a mask; it must never be saved back as if it were the URL.
-const MASKED_SECRET = new Set(['••••••••', '********']);
+const TYPE_META: Record<
+  NotificationDestinationType,
+  { label: string; icon: IconDefinition; iconColor: string }
+> = {
+  discord: { label: 'Discord', icon: faRobot, iconColor: 'text-pine-iris' },
+  webhook: { label: 'Webhook', icon: faLink, iconColor: 'text-pine-foam' },
+};
 
-const getInitialChannels = (resolved: Record<string, unknown>): ChannelId[] => {
-  if (Array.isArray(resolved.notificationChannels)) {
-    return resolved.notificationChannels
-      .map((c) => String(c).trim().toLowerCase() as ChannelId)
-      .filter((c): c is ChannelId => c === 'discord' || c === 'webhook');
+const randomSuffix = (): string =>
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+
+const newDestination = (type: NotificationDestinationType): NotificationDestination => ({
+  id: `${type}-${randomSuffix()}`,
+  type,
+  label: type === 'discord' ? 'Discord Bot' : 'Webhook',
+  enabled: true,
+  pingOwner: true,
+  config: {},
+});
+
+const normalizeConfig = (config: Record<string, unknown> | undefined): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(config ?? {}).map(([key, value]) => [
+      key,
+      typeof value === 'string' || value == null ? (value ?? '') : String(value),
+    ])
+  );
+
+const normalizeDestination = (raw: any): NotificationDestination => ({
+  id: String(raw?.id ?? ''),
+  type: raw?.type === 'webhook' ? 'webhook' : 'discord',
+  label: String(raw?.label ?? ''),
+  enabled: raw?.enabled !== false,
+  pingOwner: raw?.pingOwner !== false,
+  config: normalizeConfig(raw?.config),
+});
+
+const stringField = (destination: NotificationDestination, field: string): string =>
+  String(destination.config[field] ?? '');
+
+const isMask = (value: string): boolean => {
+  const trimmed = value.trim();
+  return trimmed === SECRET_MASK || trimmed === '********';
+};
+
+// The backend parses this string as a flat header map, so a typo has to fail here, not on delivery.
+const customHeadersError = (destination: NotificationDestination): string | null => {
+  if (destination.type !== 'webhook') return null;
+  const raw = stringField(destination, 'customHeaders').trim();
+  if (raw === '' || isMask(raw)) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return 'Custom headers must be a JSON object';
+    }
+    return null;
+  } catch {
+    return 'Custom headers must be valid JSON';
   }
-  return [];
 };
 
 export const NotificationsView = ({ config, onSaved }: NotificationsViewProps) => {
-  const resolved = config.resolved || {};
+  const serverDestinations = useMemo<NotificationDestination[]>(() => {
+    const raw = config.resolved?.destinations;
+    return Array.isArray(raw) ? raw.map(normalizeDestination) : [];
+  }, [config.resolved?.destinations]);
+  const serverSignature = JSON.stringify(serverDestinations);
 
-  const serverChannels = useMemo(() => getInitialChannels(resolved), [resolved]);
-  const serverChannelsKey = serverChannels.join(',');
-  const serverDiscordChannelId = useMemo(
-    () => String(resolved.discordNotificationChannelId || ''),
-    [resolved.discordNotificationChannelId]
+  const serverTypes = useMemo<Record<string, boolean>>(
+    () => ({ ...DEFAULT_NOTIFICATION_TYPES, ...(config.resolved?.notificationTypes ?? {}) }),
+    [config.resolved?.notificationTypes]
   );
-  const serverDiscordClientId = useMemo(
-    () => String(resolved.discordClientId || ''),
-    [resolved.discordClientId]
-  );
-  const serverDiscordGuildId = useMemo(
-    () => String(resolved.discordGuildId || ''),
-    [resolved.discordGuildId]
-  );
-  const serverDiscordOwnerUserId = useMemo(
-    () => String(resolved.discordOwnerUserId || ''),
-    [resolved.discordOwnerUserId]
-  );
-  const serverDiscordPingOwner = useMemo(
-    () => resolved.discordPingOwner !== false,
-    [resolved.discordPingOwner]
-  );
+  const typesSignature = JSON.stringify(serverTypes);
 
-  const isDiscordTokenSet = Boolean(
-    config.secretsMeta?.discordToken?.isSet ?? Boolean(resolved.discordToken)
-  );
-  const isWebhookConfigured = Boolean(
-    config.secretsMeta?.notificationWebhookUrl?.isSet ?? Boolean(resolved.notificationWebhookUrl)
-  );
-  const isWebhookSecretSet = Boolean(
-    config.secretsMeta?.webhookSecret?.isSet ?? Boolean(resolved.webhookSecret)
-  );
-
-  const [enabledChannels, setEnabledChannels] = useState<ChannelId[]>(serverChannels);
-
-  const [expandedChannels, setExpandedChannels] = useState<Record<ChannelId, boolean>>(() => {
-    const initial: Record<ChannelId, boolean> = {
-      discord: false,
-      webhook: false,
-    };
-    if (serverChannels.length > 0) {
-      for (const ch of serverChannels) {
-        initial[ch] = true;
-      }
-    } else {
-      initial.discord = true;
-    }
-    return initial;
-  });
-
-  const [discordToken, setDiscordToken] = useState('');
-  const [discordChannelId, setDiscordChannelId] = useState(serverDiscordChannelId);
-  const [discordClientId, setDiscordClientId] = useState(serverDiscordClientId);
-  const [discordGuildId, setDiscordGuildId] = useState(serverDiscordGuildId);
-  const [discordOwnerUserId, setDiscordOwnerUserId] = useState(serverDiscordOwnerUserId);
-  const [discordPingOwner, setDiscordPingOwner] = useState(serverDiscordPingOwner);
-  const serverWebhookPingOwner = useMemo(
-    () => resolved.webhookPingOwner !== false,
-    [resolved.webhookPingOwner]
-  );
-  const [webhookPingOwner, setWebhookPingOwner] = useState(serverWebhookPingOwner);
-
-  const [webhookUrl, setWebhookUrl] = useState('');
-  const [webhookSecret, setWebhookSecret] = useState('');
-
+  const [draft, setDraft] = useState<NotificationDestination[]>(serverDestinations);
+  const [baseline, setBaseline] = useState<NotificationDestination[]>(serverDestinations);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<
+    Record<string, { success: boolean; message: string } | null>
+  >({});
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [types, setTypes] = useState<Record<string, boolean>>(serverTypes);
+  const [pendingKind, setPendingKind] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
-  const [testingChannel, setTestingChannel] = useState<string | null>(null);
-  const [testDiagnostics, setTestDiagnostics] = useState<{
-    channel: ChannelId;
-    success: boolean;
-    message: string;
-    timestamp: string;
-  } | null>(null);
+
+  const isDirty = JSON.stringify(draft) !== JSON.stringify(baseline);
+  const dirtyRef = useRef(isDirty);
+  dirtyRef.current = isDirty;
+
+  // A refresh triggered by an unrelated save must not overwrite edits the user has not saved yet.
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setDraft(serverDestinations);
+    setBaseline(serverDestinations);
+  }, [serverSignature]);
 
   useEffect(() => {
-    setEnabledChannels(serverChannels);
-    setDiscordChannelId(serverDiscordChannelId);
-    setDiscordClientId(serverDiscordClientId);
-    setDiscordGuildId(serverDiscordGuildId);
-    setDiscordOwnerUserId(serverDiscordOwnerUserId);
-    setDiscordPingOwner(serverDiscordPingOwner);
-    setWebhookPingOwner(serverWebhookPingOwner);
-    setWebhookUrl('');
-    setDiscordToken('');
-    setWebhookSecret('');
-  }, [
-    serverChannelsKey,
-    serverDiscordChannelId,
-    serverDiscordClientId,
-    serverDiscordGuildId,
-    serverDiscordOwnerUserId,
-    serverDiscordPingOwner,
-    serverWebhookPingOwner,
-  ]);
+    setTypes(serverTypes);
+  }, [typesSignature]);
 
-  const ensureChannelEnabled = (id: ChannelId) => {
-    setEnabledChannels((prev) => {
-      if (prev.includes(id)) return prev;
-      return [...prev, id];
-    });
-    setExpandedChannels((prev) => {
-      if (prev[id]) return prev;
-      return { ...prev, [id]: true };
-    });
+  const updateDestination = (id: string, patch: Partial<NotificationDestination>) =>
+    setDraft((prev) => prev.map((entry) => (entry.id === id ? { ...entry, ...patch } : entry)));
+
+  const updateConfigField = (id: string, field: string, value: string) =>
+    setDraft((prev) =>
+      prev.map((entry) =>
+        entry.id === id ? { ...entry, config: { ...entry.config, [field]: value } } : entry
+      )
+    );
+
+  const handleToggleKind = async (kind: string, next: boolean) => {
+    const previous = types;
+    const label = NOTIFICATION_KINDS.find((entry) => entry.kind === kind)?.label ?? kind;
+    setTypes({ ...previous, [kind]: next });
+    setPendingKind(kind);
+    try {
+      await updateConfig({ notificationTypes: { ...previous, [kind]: next } });
+      pushSuccessToast(
+        next ? 'Notification type enabled' : 'Notification type muted',
+        next ? `${label} will be delivered.` : `${label} is recorded without delivery.`
+      );
+      onSaved();
+    } catch (err: any) {
+      setTypes(previous);
+      pushErrorToast(
+        'Could not update notification types',
+        err?.message || 'Failed to save the notification type'
+      );
+    } finally {
+      setPendingKind(null);
+    }
   };
 
-  const handleToggleChannel = (id: ChannelId) => {
-    setEnabledChannels((prev) => {
-      const isCurrentlyEnabled = prev.includes(id);
-      const next = isCurrentlyEnabled ? prev.filter((c) => c !== id) : [...prev, id];
-      setExpandedChannels((exp) => ({ ...exp, [id]: !isCurrentlyEnabled }));
+  const handleAdd = (type: NotificationDestinationType) => {
+    const destination = newDestination(type);
+    setDraft((prev) => [...prev, destination]);
+    setExpanded((prev) => ({ ...prev, [destination.id]: true }));
+  };
+
+  const handleRemove = (id: string) => {
+    setDraft((prev) => prev.filter((entry) => entry.id !== id));
+    setTestResults((prev) => {
+      if (!Object.hasOwn(prev, id)) return prev;
+      const next = { ...prev };
+      delete next[id];
       return next;
     });
   };
 
-  const handleToggleExpand = (id: ChannelId) => {
-    setExpandedChannels((prev) => ({ ...prev, [id]: !prev[id] }));
-  };
-
-  const allExpanded = useMemo(
-    () => CHANNELS.every((ch) => expandedChannels[ch.id]),
-    [expandedChannels]
-  );
-
-  const handleToggleAllExpanded = () => {
-    const nextState = !allExpanded;
-    setExpandedChannels({
-      discord: nextState,
-      webhook: nextState,
-    });
-  };
-
-  const isChannelsDirty = useMemo(() => {
-    if (enabledChannels.length !== serverChannels.length) return true;
-    const sortedEnabled = [...enabledChannels].sort();
-    const sortedServer = [...serverChannels].sort();
-    return sortedEnabled.some((ch, i) => ch !== sortedServer[i]);
-  }, [enabledChannels, serverChannels]);
-
-  const isDirty = useMemo(() => {
-    if (isChannelsDirty) return true;
-    if (discordToken.trim().length > 0) return true;
-    if (discordChannelId !== serverDiscordChannelId) return true;
-    if (discordClientId !== serverDiscordClientId) return true;
-    if (discordGuildId !== serverDiscordGuildId) return true;
-    if (discordOwnerUserId !== serverDiscordOwnerUserId) return true;
-    if (discordPingOwner !== serverDiscordPingOwner) return true;
-    if (webhookPingOwner !== serverWebhookPingOwner) return true;
-    if (webhookUrl.trim().length > 0) return true;
-    if (webhookSecret.trim().length > 0) return true;
-    return false;
-  }, [
-    isChannelsDirty,
-    discordToken,
-    discordChannelId,
-    serverDiscordChannelId,
-    discordClientId,
-    serverDiscordClientId,
-    discordGuildId,
-    serverDiscordGuildId,
-    discordOwnerUserId,
-    serverDiscordOwnerUserId,
-    discordPingOwner,
-    serverDiscordPingOwner,
-    webhookPingOwner,
-    serverWebhookPingOwner,
-    webhookUrl,
-    webhookSecret,
-  ]);
-
   const handleReset = () => {
-    setEnabledChannels(serverChannels);
-    setDiscordToken('');
-    setDiscordChannelId(serverDiscordChannelId);
-    setDiscordClientId(serverDiscordClientId);
-    setDiscordGuildId(serverDiscordGuildId);
-    setDiscordOwnerUserId(serverDiscordOwnerUserId);
-    setDiscordPingOwner(serverDiscordPingOwner);
-    setWebhookPingOwner(serverWebhookPingOwner);
-    setWebhookUrl('');
-    setWebhookSecret('');
+    setDraft(baseline);
+    setTestResults({});
   };
 
-  const handleSave = async (e?: Event) => {
-    if (e) e.preventDefault();
+  const handleSaveDestinations = async (e: Event) => {
+    e.preventDefault();
+    if (!isDirty) return;
+
+    const problem = draft.map(customHeadersError).find((message) => message !== null);
+    if (problem) {
+      pushErrorToast('Could not save notification destinations', problem);
+      return;
+    }
+
     setIsSaving(true);
-
-    const overrideDeletes: string[] = [];
-    const channelsList = [...enabledChannels];
-    const payload: Record<string, unknown> = {
-      notificationChannels: channelsList,
-      notificationChannel: channelsList[0] ?? 'none',
-    };
-
-    if (discordToken.trim()) payload.discordToken = discordToken.trim();
-    // Dirty key, empty value: delete the stored override rather than persisting '' over it.
-    const applyOverride = (key: string, value: string, serverValue: string) => {
-      if (value === serverValue) return;
-      if (value.trim() === '' && config.overrides?.[key] !== undefined) overrideDeletes.push(key);
-      else payload[key] = value.trim();
-    };
-    applyOverride('discordNotificationChannelId', discordChannelId, serverDiscordChannelId);
-    applyOverride('discordClientId', discordClientId, serverDiscordClientId);
-    applyOverride('discordGuildId', discordGuildId, serverDiscordGuildId);
-    applyOverride('discordOwnerUserId', discordOwnerUserId, serverDiscordOwnerUserId);
-    if (discordPingOwner !== serverDiscordPingOwner) {
-      payload.discordPingOwner = discordPingOwner;
-    }
-    if (webhookPingOwner !== serverWebhookPingOwner) {
-      payload.webhookPingOwner = webhookPingOwner;
-    }
-
-    const trimmedWebhookUrl = webhookUrl.trim();
-    if (trimmedWebhookUrl && !MASKED_SECRET.has(trimmedWebhookUrl)) {
-      payload.notificationWebhookUrl = trimmedWebhookUrl;
-    }
-    if (webhookSecret.trim()) {
-      payload.webhookSecret = webhookSecret.trim();
-    }
-
     try {
-      for (const key of overrideDeletes) {
-        await deleteConfigOverride(key);
-      }
-      await updateConfig(payload);
-      if (channelsList.length === 0) {
-        pushSuccessToast('Silent Sentry mode enabled', 'All push destinations are turned off.');
-      } else {
-        pushSuccessToast(
-          'Notification channels updated',
-          `${channelsList.length} channel${channelsList.length === 1 ? '' : 's'} active.`
-        );
-      }
-      setDiscordToken('');
-      setWebhookUrl('');
-      setWebhookSecret('');
+      await updateConfig({ destinations: draft });
+      setBaseline(draft);
+      pushSuccessToast(
+        'Notification destinations saved',
+        `${draft.length} destination${draft.length === 1 ? '' : 's'} configured.`
+      );
       onSaved();
     } catch (err: any) {
       pushErrorToast(
-        'Could not save notification channels',
-        err?.message || 'Failed to save configuration'
+        'Could not save notification destinations',
+        err?.message || 'Failed to save notification destinations'
       );
     } finally {
       setIsSaving(false);
     }
   };
 
-  const handleSendTest = (channel: ChannelId) => {
-    setTestingChannel(channel);
-
-    const overrides: Record<string, unknown> = {};
-    if (channel === 'webhook') {
-      const trimmedWebhookUrl = webhookUrl.trim();
-      if (trimmedWebhookUrl && !MASKED_SECRET.has(trimmedWebhookUrl)) {
-        overrides.notificationWebhookUrl = trimmedWebhookUrl;
-      }
-      if (webhookSecret.trim()) {
-        overrides.webhookSecret = webhookSecret.trim();
-      }
-      if (discordOwnerUserId.trim() !== serverDiscordOwnerUserId) {
-        overrides.discordOwnerUserId = discordOwnerUserId.trim();
-      }
-      if (discordPingOwner !== serverDiscordPingOwner) {
-        overrides.discordPingOwner = discordPingOwner;
-      }
-      if (webhookPingOwner !== serverWebhookPingOwner) {
-        overrides.webhookPingOwner = webhookPingOwner;
-      }
-    } else if (channel === 'discord') {
-      if (discordToken.trim()) {
-        overrides.discordToken = discordToken.trim();
-      }
-      if (discordChannelId.trim() !== serverDiscordChannelId) {
-        overrides.discordNotificationChannelId = discordChannelId.trim();
-      }
-      if (discordOwnerUserId.trim() !== serverDiscordOwnerUserId) {
-        overrides.discordOwnerUserId = discordOwnerUserId.trim();
-      }
-      if (discordPingOwner !== serverDiscordPingOwner) {
-        overrides.discordPingOwner = discordPingOwner;
-      }
+  const handleTest = async (destination: NotificationDestination) => {
+    const problem = customHeadersError(destination);
+    if (problem) {
+      setTestResults((prev) => ({
+        ...prev,
+        [destination.id]: { success: false, message: problem },
+      }));
+      pushErrorToast('Test notification failed', problem);
+      return;
     }
 
-    testNotification(channel, overrides)
-      .then((data) => {
-        pushSuccessToast('Test notification sent', data.message);
-        setTestDiagnostics({
-          channel,
-          success: true,
-          message: data.message || 'Notification delivered successfully (HTTP 200 OK)',
-          timestamp: new Date().toLocaleTimeString(),
-        });
-      })
-      .catch((err) => {
-        pushErrorToast(
-          'Test notification failed',
-          err.message || 'Delivery failed or target unreachable'
-        );
-        setTestDiagnostics({
-          channel,
-          success: false,
-          message: err.message || 'Delivery failed or target unreachable',
-          timestamp: new Date().toLocaleTimeString(),
-        });
-      })
-      .finally(() => setTestingChannel(null));
-  };
-
-  const handleClearWebhook = async () => {
+    // An existing instance with unsaved edits is a draft: test what the user is looking at.
+    const baselineEntry = baseline.find((entry) => entry.id === destination.id);
+    const edited =
+      Boolean(baselineEntry) && JSON.stringify(destination) !== JSON.stringify(baselineEntry);
+    setTestingId(destination.id);
+    setTestResults((prev) => ({ ...prev, [destination.id]: null }));
     try {
-      await deleteConfigOverride('notificationWebhookUrl');
-      pushSuccessToast('Webhook URL cleared', 'Saved override removed.');
-      setWebhookUrl('');
-      onSaved();
+      const result =
+        baselineEntry && !edited
+          ? await testDestination({ destinationId: destination.id })
+          : await testDestination({ destination });
+      setTestResults((prev) => ({
+        ...prev,
+        [destination.id]: { success: true, message: result.message },
+      }));
+      pushSuccessToast('Test notification sent', result.message);
     } catch (err: any) {
-      pushErrorToast(
-        'Could not clear webhook URL',
-        err?.message || 'Failed to clear webhook URL override'
-      );
+      const message = err?.message || 'Delivery failed or target unreachable';
+      setTestResults((prev) => ({ ...prev, [destination.id]: { success: false, message } }));
+      pushErrorToast('Test notification failed', message);
+    } finally {
+      setTestingId(null);
     }
   };
 
-  const handleClearWebhookSecret = async () => {
-    try {
-      await deleteConfigOverride('webhookSecret');
-      pushSuccessToast('Webhook secret cleared', 'Saved override removed.');
-      setWebhookSecret('');
-      onSaved();
-    } catch (err: any) {
-      pushErrorToast(
-        'Could not clear webhook secret',
-        err?.message || 'Failed to clear HMAC secret key override'
-      );
-    }
-  };
-
-  const handleClearDiscordToken = async () => {
-    try {
-      await deleteConfigOverride('discordToken');
-      pushSuccessToast('Discord token cleared', 'Saved override removed.');
-      setDiscordToken('');
-      onSaved();
-    } catch (err: any) {
-      pushErrorToast(
-        'Could not clear Discord token',
-        err?.message || 'Failed to clear Discord Bot Token override'
-      );
-    }
-  };
+  const ownerUserId = String(config.resolved?.discordOwnerUserId ?? '');
 
   return (
     <SettingsLayout>
-      <div class="flex flex-wrap items-center justify-between gap-4">
-        <div class="flex items-center gap-3">
-          <h2 class="text-xl font-semibold text-pine-text">Notification Destinations</h2>
-          {enabledChannels.length === 0 && (
-            <span class="rounded-md bg-pine-overlay px-2 py-0.5 text-xs font-medium text-pine-subtle">
-              No destination enabled
-            </span>
-          )}
+      <section class="flex flex-col gap-3">
+        <div>
+          <h2 class="text-base font-bold text-pine-text">What to send</h2>
+          <p class="mt-0.5 text-xs text-pine-subtle">
+            A muted type is still recorded in the delivery history, just never pushed.
+          </p>
         </div>
-        <button
-          type="button"
-          onClick={handleToggleAllExpanded}
-          class="cursor-pointer text-xs font-medium text-pine-subtle transition-colors hover:text-pine-text"
-        >
-          {allExpanded ? 'Collapse all' : 'Expand all'}
-        </button>
-      </div>
 
-      <form onSubmit={handleSave} autoComplete="off" class="flex flex-col gap-4">
-        <input
-          type="text"
-          style={{ display: 'none' }}
-          tabIndex={-1}
-          aria-hidden="true"
-          autoComplete="off"
-        />
-        <input
-          type="password"
-          style={{ display: 'none' }}
-          tabIndex={-1}
-          aria-hidden="true"
-          autoComplete="off"
-        />
+        <div class="overflow-hidden rounded-xl border border-pine-highlight bg-pine-surface">
+          {NOTIFICATION_KINDS.map((entry) => {
+            const enabled = types[entry.kind] !== false;
+            return (
+              <div
+                key={entry.kind}
+                class="flex items-center justify-between gap-4 border-t border-pine-highlight p-4 first:border-t-0"
+              >
+                <div class="min-w-0">
+                  <h3 class="text-sm font-semibold text-pine-text">{entry.label}</h3>
+                  <p class="text-xs text-pine-subtle">{entry.description}</p>
+                </div>
+                <ToggleSwitch
+                  checked={enabled}
+                  disabled={pendingKind === entry.kind}
+                  onChange={(next) => void handleToggleKind(entry.kind, next)}
+                  label={`${entry.label} notifications`}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </section>
 
-        {CHANNELS.map((ch) => {
-          const isEnabled = enabledChannels.includes(ch.id);
-          const isExpanded = expandedChannels[ch.id];
-
-          const testLabel = ch.id === 'discord' ? 'Test Ping' : 'Test Webhook';
-
-          return (
-            <NotificationChannelCard
-              key={ch.id}
-              channel={ch}
-              isEnabled={isEnabled}
-              isExpanded={isExpanded}
-              onToggleExpand={() => handleToggleExpand(ch.id)}
-              onToggleChannel={() => handleToggleChannel(ch.id)}
-              testLabel={testLabel}
-              onSendTest={() => handleSendTest(ch.id)}
-              isTesting={testingChannel === ch.id}
+      <form onSubmit={handleSaveDestinations} autoComplete="off" class="flex flex-col gap-4">
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div class="min-w-0">
+            <h2 class="text-base font-bold text-pine-text">Where to send</h2>
+            <p class="mt-0.5 text-xs text-pine-subtle">
+              Every enabled destination receives each event independently.
+            </p>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => handleAdd('discord')}
+              class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-text transition-colors hover:border-pine-iris"
             >
-              {ch.id === 'discord' && (
-                <DiscordChannelForm
-                  destinationEnabled={enabledChannels.includes('discord')}
-                  token={discordToken}
-                  onTokenChange={(val) => {
-                    setDiscordToken(val);
-                    if (val.length > 0) ensureChannelEnabled('discord');
-                  }}
-                  isTokenSet={isDiscordTokenSet}
-                  onClearToken={handleClearDiscordToken}
-                  clientId={discordClientId}
-                  onClientIdChange={(val) => {
-                    setDiscordClientId(val);
-                    if (val.length > 0) ensureChannelEnabled('discord');
-                  }}
-                  channelId={discordChannelId}
-                  onChannelIdChange={(val) => {
-                    setDiscordChannelId(val);
-                    if (val.length > 0) ensureChannelEnabled('discord');
-                  }}
-                  guildId={discordGuildId}
-                  onGuildIdChange={(val) => {
-                    setDiscordGuildId(val);
-                    if (val.length > 0) ensureChannelEnabled('discord');
-                  }}
-                  ownerUserId={discordOwnerUserId}
-                  onOwnerUserIdChange={(val) => {
-                    setDiscordOwnerUserId(val);
-                    if (val.length > 0) ensureChannelEnabled('discord');
-                  }}
-                  pingOwner={discordPingOwner}
-                  onPingOwnerChange={setDiscordPingOwner}
-                  diagnostics={testDiagnostics?.channel === 'discord' ? testDiagnostics : null}
-                />
-              )}
+              Add Discord
+            </button>
+            <button
+              type="button"
+              onClick={() => handleAdd('webhook')}
+              class="cursor-pointer rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-1.5 text-xs font-medium text-pine-text transition-colors hover:border-pine-iris"
+            >
+              Add Webhook
+            </button>
+          </div>
+        </div>
 
-              {ch.id === 'webhook' && (
-                <WebhookChannelForm
-                  url={webhookUrl}
-                  onUrlChange={(val) => {
-                    setWebhookUrl(val);
-                    if (val.length > 0) ensureChannelEnabled('webhook');
-                  }}
-                  isUrlSet={isWebhookConfigured}
-                  onClearUrl={handleClearWebhook}
-                  secret={webhookSecret}
-                  onSecretChange={(val) => {
-                    setWebhookSecret(val);
-                    if (val.length > 0) ensureChannelEnabled('webhook');
-                  }}
-                  isSecretSet={isWebhookSecretSet}
-                  onClearSecret={handleClearWebhookSecret}
-                  pingOwner={webhookPingOwner}
-                  onPingOwnerChange={setWebhookPingOwner}
-                  ownerUserId={discordOwnerUserId.trim()}
-                  diagnostics={testDiagnostics?.channel === 'webhook' ? testDiagnostics : null}
-                />
-              )}
-            </NotificationChannelCard>
-          );
-        })}
+        {draft.length === 0 ? (
+          <div class="rounded-xl border border-dashed border-pine-highlight bg-pine-surface/50 p-6 text-center text-xs text-pine-subtle">
+            No destinations configured. Alerts are recorded but never delivered.
+          </div>
+        ) : (
+          draft.map((destination) => {
+            const meta = config.destinationsMeta?.[destination.id] ?? {};
+            const typeMeta = TYPE_META[destination.type];
+            return (
+              <NotificationChannelCard
+                key={destination.id}
+                destination={destination}
+                typeLabel={typeMeta.label}
+                icon={typeMeta.icon}
+                iconColor={typeMeta.iconColor}
+                isExpanded={expanded[destination.id] !== false}
+                onToggleExpand={() =>
+                  setExpanded((prev) => ({
+                    ...prev,
+                    [destination.id]: prev[destination.id] === false,
+                  }))
+                }
+                onLabelChange={(label) => updateDestination(destination.id, { label })}
+                onToggleEnabled={() =>
+                  updateDestination(destination.id, { enabled: !destination.enabled })
+                }
+                onTogglePingOwner={() =>
+                  updateDestination(destination.id, { pingOwner: !destination.pingOwner })
+                }
+                onSendTest={() => void handleTest(destination)}
+                isTesting={testingId === destination.id}
+                onRemove={() => handleRemove(destination.id)}
+                testResult={testResults[destination.id] ?? null}
+              >
+                {destination.type === 'discord' ? (
+                  <DiscordChannelForm
+                    destinationId={destination.id}
+                    token={stringField(destination, 'token')}
+                    onTokenChange={(value) => updateConfigField(destination.id, 'token', value)}
+                    isTokenSet={Boolean(meta.token?.isSet)}
+                    channelId={stringField(destination, 'channelId')}
+                    onChannelIdChange={(value) =>
+                      updateConfigField(destination.id, 'channelId', value)
+                    }
+                    clientId={stringField(destination, 'clientId')}
+                    onClientIdChange={(value) =>
+                      updateConfigField(destination.id, 'clientId', value)
+                    }
+                    guildId={stringField(destination, 'guildId')}
+                    onGuildIdChange={(value) => updateConfigField(destination.id, 'guildId', value)}
+                    ownerUserId={ownerUserId}
+                    pingOwner={destination.pingOwner}
+                  />
+                ) : (
+                  <WebhookChannelForm
+                    destinationId={destination.id}
+                    url={stringField(destination, 'url')}
+                    onUrlChange={(value) => updateConfigField(destination.id, 'url', value)}
+                    isUrlSet={Boolean(meta.url?.isSet)}
+                    secret={stringField(destination, 'secret')}
+                    onSecretChange={(value) => updateConfigField(destination.id, 'secret', value)}
+                    isSecretSet={Boolean(meta.secret?.isSet)}
+                    customHeaders={stringField(destination, 'customHeaders')}
+                    onCustomHeadersChange={(value) =>
+                      updateConfigField(destination.id, 'customHeaders', value)
+                    }
+                    isHeadersSet={Boolean(meta.customHeaders?.isSet)}
+                    ownerUserId={ownerUserId}
+                  />
+                )}
+              </NotificationChannelCard>
+            );
+          })
+        )}
 
         <NotificationActionBar isDirty={isDirty} isSaving={isSaving} onReset={handleReset} />
       </form>

@@ -1,7 +1,6 @@
 const SETTINGS_SECTIONS = [
   { id: 'general', label: 'General' },
   { id: 'coordinator', label: 'Coordinator' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'advanced', label: 'Advanced' },
 ] as const;
 

@@ -82,6 +82,8 @@ export interface DeliveryOutcome {
 
 export interface Notifier {
   readonly channelName: string;
+  /** Set on an instance adapter so composite logic can tell a Discord bot from a webhook. */
+  readonly destinationType?: 'discord' | 'webhook';
   initialize(): Promise<void>;
   notifyQuotaAlert(alert: QuotaAlert): Promise<DeliveryOutcome>;
   notifyDispatchStatus(status: DispatchStatusUpdate): Promise<void>;
@@ -97,6 +99,8 @@ export interface Notifier {
 }
 
 export interface NotifierOptions {
+  /** Overrides the adapter's default name; destination instances use `<type>:<id>`. */
+  channelName?: string;
   onDispatchRequested?: (req: DispatchRequest) => Promise<DispatchResult>;
   onContinueRequested?: (
     req: DispatchRequest & { taskId?: string; branchName?: string }

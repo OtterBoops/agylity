@@ -1453,6 +1453,333 @@ describe('Unit Tests: Decoupled Web UI (Milestone 5)', () => {
     });
   });
 
+  describe('5b. Notification destination instances', () => {
+    it('masks each destination secret and reports it under destinationsMeta', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_mask_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('destinations', [
+        {
+          id: 'discord-a',
+          type: 'discord',
+          label: 'Discord Bot',
+          enabled: true,
+          pingOwner: true,
+          config: { token: 'bot-token', channelId: '4242' },
+        },
+        {
+          id: 'hook-b',
+          type: 'webhook',
+          label: 'Hook',
+          enabled: true,
+          pingOwner: false,
+          config: { url: 'https://hooks.test/a/secret', secret: 'hmac' },
+        },
+      ]);
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const view = await ky.get(`http://127.0.0.1:${port}/api/config`, { retry: 0 }).json<any>();
+        const discord = view.resolved.destinations.find((d: any) => d.id === 'discord-a');
+        const hook = view.resolved.destinations.find((d: any) => d.id === 'hook-b');
+        assert.equal(discord.config.token, '••••••••');
+        assert.equal(discord.config.channelId, '4242');
+        assert.equal(hook.config.url, '••••••••');
+        assert.equal(hook.config.secret, '••••••••');
+        assert.equal(view.destinationsMeta['discord-a'].token.isSet, true);
+        assert.equal(view.destinationsMeta['hook-b'].secret.isSet, true);
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('preserves a stored destination secret when the masked view is saved back', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_merge_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      store.setOverride('destinations', [
+        {
+          id: 'discord-a',
+          type: 'discord',
+          label: 'Discord Bot',
+          enabled: true,
+          pingOwner: true,
+          config: { token: 'bot-token', channelId: '111' },
+        },
+      ]);
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const view = await ky.get(`http://127.0.0.1:${port}/api/config`, { retry: 0 }).json<any>();
+        const masked = view.resolved.destinations;
+        masked[0].config.channelId = '222';
+
+        await ky
+          .post(`http://127.0.0.1:${port}/api/config`, {
+            json: { destinations: masked },
+            retry: 0,
+          })
+          .json<any>();
+
+        const after = store.resolveConfig().destinations[0];
+        assert.equal(after?.config.token, 'bot-token');
+        assert.equal(after?.config.channelId, '222');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('tests a stored destination by id without touching the persisted instances', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_test_id_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+
+      let received = 0;
+      const hookServer = http.createServer((req, res) => {
+        received += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        req.resume();
+      });
+      await new Promise<void>((r) => hookServer.listen(0, '127.0.0.1', () => r()));
+      const hookPort = (hookServer.address() as { port: number }).port;
+
+      store.setOverride('destinations', [
+        {
+          id: 'hook-1',
+          type: 'webhook',
+          label: 'Hook',
+          enabled: true,
+          pingOwner: false,
+          config: { url: `http://127.0.0.1:${hookPort}/deliver` },
+        },
+      ]);
+      const before = JSON.stringify(store.getAllOverrides().destinations);
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const res = await ky
+          .post(`http://127.0.0.1:${port}/api/notify/test`, {
+            json: { destinationId: 'hook-1' },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(res.success, true);
+        assert.equal(res.channel, 'webhook:hook-1');
+        assert.equal(received, 1);
+        assert.equal(JSON.stringify(store.getAllOverrides().destinations), before);
+      } finally {
+        await closeWebServer(server);
+        await new Promise<void>((r) => hookServer.close(() => r()));
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('tests a draft destination payload without persisting it', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_draft_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+
+      let received = 0;
+      const hookServer = http.createServer((req, res) => {
+        received += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        req.resume();
+      });
+      await new Promise<void>((r) => hookServer.listen(0, '127.0.0.1', () => r()));
+      const hookPort = (hookServer.address() as { port: number }).port;
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const res = await ky
+          .post(`http://127.0.0.1:${port}/api/notify/test`, {
+            json: {
+              destination: {
+                id: 'draft-1',
+                type: 'webhook',
+                label: 'Draft',
+                enabled: true,
+                pingOwner: false,
+                config: { url: `http://127.0.0.1:${hookPort}/draft` },
+              },
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(res.success, true);
+        assert.equal(res.channel, 'webhook:draft-1');
+        assert.equal(received, 1);
+        assert.equal(store.getAllOverrides().destinations, undefined);
+      } finally {
+        await closeWebServer(server);
+        await new Promise<void>((r) => hookServer.close(() => r()));
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
+  describe('5c. Env-seeded and draft destinations', () => {
+    it('keeps env-seeded secrets when the masked list is saved from the UI', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_env_seed_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {
+        notificationChannels: ['webhook'],
+        notificationWebhookUrl: 'https://env.test/hook',
+        webhookSecret: 'env-secret',
+      } as any);
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const view = await ky.get(`http://127.0.0.1:${port}/api/config`, { retry: 0 }).json<any>();
+        const list = view.resolved.destinations;
+        assert.equal(list.length, 1);
+        assert.equal(list[0].id, 'webhook-seed');
+        assert.equal(list[0].config.url, '••••••••');
+        assert.equal(list[0].config.secret, '••••••••');
+
+        list[0].label = 'Renamed hook';
+        await ky
+          .post(`http://127.0.0.1:${port}/api/config`, {
+            json: { destinations: list },
+            retry: 0,
+          })
+          .json<any>();
+
+        const after = store.resolveConfig().destinations[0];
+        assert.equal(after?.label, 'Renamed hook');
+        assert.equal(after?.config.url, 'https://env.test/hook');
+        assert.equal(after?.config.secret, 'env-secret');
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('rejects an invalid draft destination with 400 instead of 500', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_invalid_draft_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const res = await ky.post(`http://127.0.0.1:${port}/api/notify/test`, {
+          json: {
+            destination: {
+              id: '',
+              type: 'webhook',
+              label: '',
+              enabled: true,
+              pingOwner: false,
+              config: {},
+            },
+          },
+          retry: 0,
+          throwHttpErrors: false,
+        });
+        assert.equal(res.status, 400);
+        const body = await res.json<any>();
+        assert.equal(body.success, false);
+        assert.equal(body.channel, 'draft');
+        assert.ok(String(body.message).includes('Invalid notification destination'));
+      } finally {
+        await closeWebServer(server);
+        store.close();
+        cleanup();
+      }
+    });
+
+    it('resolves a masked secret in a draft from the stored destination', async () => {
+      const { dir, cleanup } = makeTempDir('web_dest_draft_mask_');
+      const store = new ConfigStore(path.join(dir, 'test.db'), {});
+
+      let received = 0;
+      const hookServer = http.createServer((req, res) => {
+        received += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        req.resume();
+      });
+      await new Promise<void>((r) => hookServer.listen(0, '127.0.0.1', () => r()));
+      const hookPort = (hookServer.address() as { port: number }).port;
+
+      store.setOverride('destinations', [
+        {
+          id: 'hook-1',
+          type: 'webhook',
+          label: 'Hook',
+          enabled: true,
+          pingOwner: false,
+          config: { url: `http://127.0.0.1:${hookPort}/stored` },
+        },
+      ]);
+      const before = JSON.stringify(store.getAllOverrides().destinations);
+
+      const { server, port } = await startWebServer({
+        configStore: store,
+        host: '127.0.0.1',
+        port: 0,
+      });
+
+      try {
+        const res = await ky
+          .post(`http://127.0.0.1:${port}/api/notify/test`, {
+            json: {
+              destination: {
+                id: 'hook-1',
+                type: 'webhook',
+                label: 'Edited',
+                enabled: true,
+                pingOwner: false,
+                config: { url: '••••••••' },
+              },
+            },
+            retry: 0,
+          })
+          .json<any>();
+        assert.equal(res.success, true);
+        assert.equal(res.channel, 'webhook:hook-1');
+        assert.equal(received, 1);
+        assert.equal(JSON.stringify(store.getAllOverrides().destinations), before);
+      } finally {
+        await closeWebServer(server);
+        await new Promise<void>((r) => hookServer.close(() => r()));
+        store.close();
+        cleanup();
+      }
+    });
+  });
+
   describe('6. Route Guards (404 & 405)', () => {
     it('hands unknown client routes to the app and 404s unknown assets', async () => {
       const { dir, cleanup } = makeTempDir('web_test_404_');

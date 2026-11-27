@@ -1,89 +1,68 @@
 import { useState } from 'preact/hooks';
-import { ToggleSwitch } from './ToggleSwitch';
+
+const INPUT_CLASS =
+  'rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris';
+
+/** A stored secret arrives as the mask; the input stays empty and the placeholder says so. */
+const MASKED = new Set(['••••••••', '********']);
+const editable = (value: string): string => (MASKED.has(value.trim()) ? '' : value);
 
 interface WebhookChannelFormProps {
+  destinationId: string;
   url: string;
   onUrlChange: (val: string) => void;
   isUrlSet: boolean;
-  onClearUrl: () => Promise<void>;
   secret: string;
   onSecretChange: (val: string) => void;
   isSecretSet: boolean;
-  onClearSecret: () => Promise<void>;
-  pingOwner: boolean;
-  onPingOwnerChange: (val: boolean) => void;
-  /** Set on the Discord destination; a webhook ping has nowhere else to read it from. */
+  customHeaders: string;
+  onCustomHeadersChange: (val: string) => void;
+  isHeadersSet: boolean;
   ownerUserId?: string;
-  diagnostics?: { success: boolean; message: string; timestamp: string } | null;
 }
 
 export const WebhookChannelForm = ({
+  destinationId,
   url,
   onUrlChange,
   isUrlSet,
-  onClearUrl,
   secret,
   onSecretChange,
   isSecretSet,
-  onClearSecret,
-  pingOwner,
-  onPingOwnerChange,
+  customHeaders,
+  onCustomHeadersChange,
+  isHeadersSet,
   ownerUserId = '',
-  diagnostics,
 }: WebhookChannelFormProps) => {
   const [showSecret, setShowSecret] = useState(false);
 
   return (
     <div class="flex flex-col gap-5">
-      {diagnostics && (
-        <div
-          class={`flex items-start gap-2.5 rounded-lg border p-3 text-xs ${
-            diagnostics.success
-              ? 'border-pine-foam/40 bg-pine-foam/10 text-pine-foam'
-              : 'border-pine-love/40 bg-pine-love/10 text-pine-love'
-          }`}
-        >
-          <span class="font-mono text-xs font-bold tracking-wider uppercase">
-            [{diagnostics.success ? 'Success' : 'Error'}]
-          </span>
-          <span class="flex-1 wrap-break-word">{diagnostics.message}</span>
-          <span class="shrink-0 font-mono text-xs text-pine-subtle">{diagnostics.timestamp}</span>
-        </div>
-      )}
-
       <div class="flex flex-col gap-1.5">
-        <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+        <label
+          class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+          for={`${destinationId}-url`}
+        >
           <span class="flex items-center gap-1.5">
             Target Webhook URL
             <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
           </span>
-          {isUrlSet && (
-            <div class="flex items-center gap-2">
-              <span class="font-mono text-xs text-pine-foam">Configured</span>
-              <button
-                type="button"
-                onClick={onClearUrl}
-                class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love hover:underline"
-                title="Clear saved webhook URL"
-              >
-                Clear
-              </button>
-            </div>
-          )}
+          {isUrlSet && <span class="font-mono text-xs text-pine-foam">Configured</span>}
         </label>
         <input
+          id={`${destinationId}-url`}
           type="text"
-          name="agylity_webhook_target_url"
+          name={`agylity_${destinationId}_url`}
           autoComplete="off"
           data-1p-ignore="true"
           data-lpignore="true"
-          class="rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+          class={INPUT_CLASS}
           placeholder={
             isUrlSet
-              ? '•••••••••••••••••••• (Encrypted — enter new URL to update)'
+              ? '•••••••• (stored — enter a new URL to replace)'
               : 'https://discord.com/api/webhooks/... or https://example.com/api/alert'
           }
-          value={url}
+          value={editable(url)}
           onInput={(e) => onUrlChange((e.target as HTMLInputElement).value)}
         />
         <span class="text-xs text-pine-subtle">
@@ -93,39 +72,31 @@ export const WebhookChannelForm = ({
       </div>
 
       <div class="flex flex-col gap-1.5">
-        <label class="flex items-center justify-between text-xs font-medium text-pine-subtle">
+        <label
+          class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+          for={`${destinationId}-secret`}
+        >
           <span class="flex items-center gap-1.5">
             HMAC Secret Key (Optional)
             <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
           </span>
-          {isSecretSet && (
-            <div class="flex items-center gap-2">
-              <span class="font-mono text-xs text-pine-foam">Configured</span>
-              <button
-                type="button"
-                onClick={onClearSecret}
-                class="cursor-pointer text-xs text-pine-subtle transition-colors hover:text-pine-love hover:underline"
-                title="Clear saved HMAC secret key"
-              >
-                Clear
-              </button>
-            </div>
-          )}
+          {isSecretSet && <span class="font-mono text-xs text-pine-foam">Configured</span>}
         </label>
         <div class="flex gap-2">
           <input
+            id={`${destinationId}-secret`}
             type={showSecret ? 'text' : 'password'}
-            name="agylity_webhook_secret_key"
+            name={`agylity_${destinationId}_secret`}
             autoComplete="new-password"
             data-1p-ignore="true"
             data-lpignore="true"
-            class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+            class={`flex-1 ${INPUT_CLASS}`}
             placeholder={
               isSecretSet
-                ? '•••••••••••••••••••• (Encrypted — enter new secret to update)'
+                ? '•••••••• (stored — enter a new secret to replace)'
                 : 'Optional secret for x-agylity-signature header'
             }
-            value={secret}
+            value={editable(secret)}
             onInput={(e) => onSecretChange((e.target as HTMLInputElement).value)}
           />
           <button
@@ -142,31 +113,52 @@ export const WebhookChannelForm = ({
         </span>
       </div>
 
-      <div class="flex items-center justify-between gap-4 border-t border-pine-highlight/40 pt-3">
-        <div class="flex flex-col gap-0.5">
-          <span class="text-xs font-semibold text-pine-text">Ping Owner</span>
-          {ownerUserId ? (
-            <span class="text-xs text-pine-subtle">
-              Mentions <code class="font-mono text-pine-foam">&lt;@{ownerUserId}&gt;</code> on quota
-              alerts and test pings, using the id set on the Discord destination. Discord webhook
-              URLs only; other endpoints receive the payload untouched.
-            </span>
-          ) : (
-            <span class="text-xs text-pine-gold">
-              No owner id is configured, so this toggle sends no mention. Set one on the Discord
-              destination above.
-            </span>
-          )}
-        </div>
-        <ToggleSwitch
-          checked={pingOwner}
-          onChange={onPingOwnerChange}
-          label={
-            pingOwner
-              ? 'Disable owner mention for this webhook'
-              : 'Enable owner mention for this webhook'
+      <div class="flex flex-col gap-1.5">
+        <label
+          class="flex items-center justify-between text-xs font-medium text-pine-subtle"
+          for={`${destinationId}-headers`}
+        >
+          <span class="flex items-center gap-1.5">
+            Custom Headers (Optional)
+            <span class="text-xs text-pine-foam">(Encrypted at rest)</span>
+          </span>
+          {isHeadersSet && <span class="font-mono text-xs text-pine-foam">Configured</span>}
+        </label>
+        <textarea
+          id={`${destinationId}-headers`}
+          name={`agylity_${destinationId}_headers`}
+          autoComplete="off"
+          spellcheck={false}
+          rows={3}
+          data-1p-ignore="true"
+          data-lpignore="true"
+          class={`${INPUT_CLASS} resize-y font-mono text-xs`}
+          placeholder={
+            isHeadersSet
+              ? '•••••••• (stored — enter new JSON to replace)'
+              : '{"Authorization":"Bearer token"}'
           }
+          value={editable(customHeaders)}
+          onInput={(e) => onCustomHeadersChange((e.target as HTMLTextAreaElement).value)}
         />
+        <span class="text-xs text-pine-subtle">
+          A flat JSON object of string header values, sent with every delivery.
+        </span>
+      </div>
+
+      <div class="border-t border-pine-highlight/40 pt-3 text-xs text-pine-subtle">
+        {ownerUserId ? (
+          <span>
+            Owner mentions use the Discord-wide id{' '}
+            <code class="font-mono text-pine-foam">&lt;@{ownerUserId}&gt;</code>. Discord webhook
+            URLs only; other endpoints receive the payload untouched.
+          </span>
+        ) : (
+          <span class="text-pine-gold">
+            No owner id is configured, so ping owner sends no mention. Set one under Settings &gt;
+            General.
+          </span>
+        )}
       </div>
     </div>
   );

@@ -170,13 +170,15 @@ const CONNECT_FAILURES = new Set([
 ]);
 
 export class WebhookNotifier implements Notifier {
-  readonly channelName: string = 'webhook';
+  readonly channelName: string;
+  readonly destinationType = 'webhook' as const;
   public initialized = false;
   protected config: ResolvedConfig;
   protected options: NotifierOptions;
 
   constructor(config: Partial<ResolvedConfig> = {}, options: NotifierOptions = {}) {
-    this.config = { ...BUILTIN_DEFAULTS, ...config };
+    this.channelName = options.channelName?.trim() || 'webhook';
+    this.config = { ...BUILTIN_DEFAULTS, ...config } as ResolvedConfig;
     this.options = options;
   }
 

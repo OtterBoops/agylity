@@ -26,7 +26,8 @@ export { TaskPromptSchema } from '../discord/commands.js';
 export type { DiscordNotifierOptions } from '../discord/types.js';
 
 export class DiscordNotifier implements Notifier {
-  readonly channelName: string = 'discord';
+  readonly channelName: string;
+  readonly destinationType = 'discord' as const;
   public client: Client | null = null;
   public initialized = false;
   private loginRetryAt = 0;
@@ -41,7 +42,8 @@ export class DiscordNotifier implements Notifier {
   private interactionListenerBound = false;
 
   constructor(config: Partial<ResolvedConfig> = {}, options: DiscordNotifierOptions = {}) {
-    this.config = { ...BUILTIN_DEFAULTS, ...config };
+    this.channelName = options.channelName?.trim() || 'discord';
+    this.config = { ...BUILTIN_DEFAULTS, ...config } as ResolvedConfig;
     this.options = options;
     if (this.config.discordOwnerUserId?.trim()) {
       this.pinnedOwnerUserId = this.config.discordOwnerUserId.trim();

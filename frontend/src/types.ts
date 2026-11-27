@@ -16,6 +16,8 @@ export type {
   EarlyResetPool,
   LogEntry,
   LogLevel,
+  NotificationDestination,
+  NotificationDestinationType,
   ProbeSource,
   PrPolicy,
   QuotaBucket,
@@ -60,6 +62,8 @@ export interface ConfigData {
   resolved: Record<string, any>;
   overrides: Record<string, any>;
   secretsMeta?: Record<string, { isSet: boolean }>;
+  /** Destination id -> secret field -> presence, since secrets arrive masked per instance. */
+  destinationsMeta?: Record<string, Record<string, { isSet: boolean }>>;
   sources?: Record<string, 'override' | 'env' | 'default'>;
 }
 

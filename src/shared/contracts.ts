@@ -264,6 +264,22 @@ export interface RoutineTaskRecord {
 export interface DeliveryChannelResult {
   success: boolean;
   error?: string;
+  /** The notification type was switched off: the event is logged and recorded, never delivered. */
+  suppressed?: boolean;
+}
+
+export const NOTIFICATION_DESTINATION_TYPES = ['discord', 'webhook'] as const;
+
+export type NotificationDestinationType = (typeof NOTIFICATION_DESTINATION_TYPES)[number];
+
+/** One configured push destination. `config` holds the type's own secrets and identifiers. */
+export interface NotificationDestination {
+  id: string;
+  type: NotificationDestinationType;
+  label: string;
+  enabled: boolean;
+  pingOwner: boolean;
+  config: Record<string, unknown>;
 }
 
 export interface AlertEvent {

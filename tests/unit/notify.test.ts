@@ -134,8 +134,8 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
         ...BUILTIN_DEFAULTS,
         notificationChannel: 'webhook' as const,
       };
-      const notifier = await createNotifier(config);
-      assert.equal(notifier.channelName, 'webhook');
+      const notifier = await createNotifier(config as any);
+      assert.equal(notifier.channelName, 'webhook:webhook-seed');
     });
 
     it('rejects unsupported channel with typed error', async () => {
@@ -154,7 +154,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
       // Three spellings of one channel must produce one adapter, not three.
       assert.equal(composite.notifiers.length, 1);
-      assert.equal(composite.notifiers[0]?.channelName, 'webhook');
+      assert.equal(composite.notifiers[0]?.channelName, 'webhook:webhook-seed');
     });
 
     it('drops the retired console channel instead of leaving zero destinations', async () => {
@@ -170,7 +170,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
       } as any);
       assert.deepEqual(
         mixed.notifiers.map((n) => n.channelName),
-        ['webhook']
+        ['webhook:webhook-seed']
       );
     });
 

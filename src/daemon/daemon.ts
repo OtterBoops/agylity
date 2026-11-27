@@ -268,69 +268,83 @@ export class AgylityDaemon {
 
     const notifier =
       options.notifier ??
-      (await createDaemonNotifier(resolved, {
-        onQuotaRequested: async (): Promise<QuotaSnapshot[]> => {
-          return await quotaClient.fetchQuota();
+      (await createDaemonNotifier(
+        resolved,
+        {
+          onQuotaRequested: async (): Promise<QuotaSnapshot[]> => {
+            return await quotaClient.fetchQuota();
+          },
+          onOwnerDiscovered: async (ownerId: string): Promise<void> => {
+            const currentConfig = configStore.resolveConfig();
+            if (!currentConfig.discordOwnerUserId) {
+              configStore.setOverride('discordOwnerUserId', ownerId);
+            }
+          },
+          onDispatchRequested: async (req) => {
+            const startedAt = Date.now();
+            const disp = await coordinator.dispatch({
+              repositoryId: req.repositoryId,
+              repositoryName: req.repositoryName,
+              repositoryPath: req.repositoryPath,
+              cloneUrl: req.cloneUrl,
+              prompt: req.prompt,
+              requestedBy: req.requestedBy,
+              requestedByUserId: req.requestedByUserId,
+              cascade: req.cascade,
+              requiredLabels: req.requiredLabels,
+              allowOverage: req.allowOverage,
+              pushBranch: req.pushBranch,
+              verifyCommand: req.verifyCommand,
+            });
+            return {
+              success: disp.success,
+              taskId: disp.taskId,
+              branchName: disp.branchName,
+              output: disp.output,
+              error: disp.error,
+              status: disp.status,
+              scheduleMode: disp.scheduleMode,
+              code: disp.code,
+              durationMs: disp.durationMs ?? Date.now() - startedAt,
+            };
+          },
+          onContinueRequested: async (req) => {
+            const startedAt = Date.now();
+            const disp = await coordinator.dispatchContinuation({
+              taskId: req.taskId,
+              branchName: req.branchName,
+              prompt: req.prompt,
+              requestedBy: req.requestedBy,
+              requestedByUserId: req.requestedByUserId,
+              cascade: req.cascade,
+              repositoryName: req.repositoryName,
+              repositoryId: req.repositoryId,
+            });
+            return {
+              success: disp.success,
+              taskId: disp.taskId,
+              branchName: disp.branchName,
+              output: disp.output,
+              error: disp.error,
+              status: disp.status,
+              scheduleMode: disp.scheduleMode,
+              code: disp.code,
+              durationMs: disp.durationMs ?? Date.now() - startedAt,
+            };
+          },
         },
-        onOwnerDiscovered: async (ownerId: string): Promise<void> => {
-          const currentConfig = configStore.resolveConfig();
-          if (!currentConfig.discordOwnerUserId) {
-            configStore.setOverride('discordOwnerUserId', ownerId);
-          }
-        },
-        onDispatchRequested: async (req) => {
-          const startedAt = Date.now();
-          const disp = await coordinator.dispatch({
-            repositoryId: req.repositoryId,
-            repositoryName: req.repositoryName,
-            repositoryPath: req.repositoryPath,
-            cloneUrl: req.cloneUrl,
-            prompt: req.prompt,
-            requestedBy: req.requestedBy,
-            requestedByUserId: req.requestedByUserId,
-            cascade: req.cascade,
-            requiredLabels: req.requiredLabels,
-            allowOverage: req.allowOverage,
-            pushBranch: req.pushBranch,
-            verifyCommand: req.verifyCommand,
-          });
-          return {
-            success: disp.success,
-            taskId: disp.taskId,
-            branchName: disp.branchName,
-            output: disp.output,
-            error: disp.error,
-            status: disp.status,
-            scheduleMode: disp.scheduleMode,
-            code: disp.code,
-            durationMs: disp.durationMs ?? Date.now() - startedAt,
-          };
-        },
-        onContinueRequested: async (req) => {
-          const startedAt = Date.now();
-          const disp = await coordinator.dispatchContinuation({
-            taskId: req.taskId,
-            branchName: req.branchName,
-            prompt: req.prompt,
-            requestedBy: req.requestedBy,
-            requestedByUserId: req.requestedByUserId,
-            cascade: req.cascade,
-            repositoryName: req.repositoryName,
-            repositoryId: req.repositoryId,
-          });
-          return {
-            success: disp.success,
-            taskId: disp.taskId,
-            branchName: disp.branchName,
-            output: disp.output,
-            error: disp.error,
-            status: disp.status,
-            scheduleMode: disp.scheduleMode,
-            code: disp.code,
-            durationMs: disp.durationMs ?? Date.now() - startedAt,
-          };
-        },
-      }));
+        configStore.getDatabase().getMasterKey()
+      ));
+
+    // One warning per boot: a ping that can never render is a silent misconfiguration otherwise.
+    const unresolvedPing = resolved.destinations.some(
+      (destination) => destination.enabled && destination.pingOwner
+    );
+    if (unresolvedPing && !resolved.discordOwnerUserId) {
+      (options.logger ? options.logger.child('notify') : logger.child('notify')).warn(
+        'A notification destination pings the owner but DISCORD_OWNER_USER_ID is unset; mentions are skipped until it is configured.'
+      );
+    }
 
     coordinator.setNotifier(notifier);
 

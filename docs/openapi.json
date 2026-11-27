@@ -1547,13 +1547,38 @@
                         ],
                         "additionalProperties": false
                       }
+                    },
+                    "destinationsMeta": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "isSet": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "isSet"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
                     }
                   },
                   "required": [
                     "resolved",
                     "overrides",
                     "sources",
-                    "secretsMeta"
+                    "secretsMeta",
+                    "destinationsMeta"
                   ],
                   "additionalProperties": false
                 }
@@ -1729,6 +1754,30 @@
                         "additionalProperties": false
                       }
                     },
+                    "destinationsMeta": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "isSet": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "isSet"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
                     "success": {
                       "type": "boolean"
                     },
@@ -1744,6 +1793,7 @@
                     "overrides",
                     "sources",
                     "secretsMeta",
+                    "destinationsMeta",
                     "success",
                     "cleared"
                   ],
@@ -1939,6 +1989,30 @@
                         "additionalProperties": false
                       }
                     },
+                    "destinationsMeta": {
+                      "type": "object",
+                      "propertyNames": {
+                        "type": "string"
+                      },
+                      "additionalProperties": {
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {
+                          "type": "object",
+                          "properties": {
+                            "isSet": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "isSet"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
                     "success": {
                       "type": "boolean"
                     }
@@ -1948,6 +2022,7 @@
                     "overrides",
                     "sources",
                     "secretsMeta",
+                    "destinationsMeta",
                     "success"
                   ],
                   "additionalProperties": false
@@ -2062,6 +2137,49 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "destinationId": {
+                    "type": "string"
+                  },
+                  "destination": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "discord",
+                          "webhook"
+                        ]
+                      },
+                      "label": {
+                        "default": "",
+                        "type": "string"
+                      },
+                      "enabled": {
+                        "default": true,
+                        "type": "boolean"
+                      },
+                      "pingOwner": {
+                        "default": true,
+                        "type": "boolean"
+                      },
+                      "config": {
+                        "default": {},
+                        "type": "object",
+                        "propertyNames": {
+                          "type": "string"
+                        },
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "type"
+                    ]
+                  },
                   "channel": {
                     "type": "string"
                   },

@@ -2,8 +2,10 @@ import { z } from 'zod';
 import { logger } from '../logs/logger.js';
 import {
   BACKLOG_CONCURRENCY_VALUES,
+  NOTIFICATION_DESTINATION_TYPES,
   PR_POLICY_VALUES,
   type BacklogConcurrency,
+  type NotificationDestination,
   type PrPolicy,
 } from '../shared/contracts.js';
 import { LEGACY_POOL_GROUPS } from '../shared/models.js';
@@ -178,6 +180,31 @@ export type { PrPolicy };
 const NotificationChannelEnum = z.enum(['discord', 'webhook', 'none']);
 type NotificationChannelType = z.infer<typeof NotificationChannelEnum>;
 
+export const NotificationDestinationSchema = z.object({
+  id: z.string().min(1),
+  type: z.enum(NOTIFICATION_DESTINATION_TYPES),
+  label: z.string().default(''),
+  enabled: z.boolean().default(true),
+  pingOwner: z.boolean().default(true),
+  config: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const DestinationsSchema = z.array(NotificationDestinationSchema).default([]);
+
+export const DestinationsJsonSchema = z.preprocess((val) => {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed === '') return [];
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      throw new Error('NOTIFICATION_DESTINATIONS_JSON contains invalid JSON syntax');
+    }
+  }
+  return val;
+}, DestinationsSchema);
+
 const NotificationChannelsSchema = z.preprocess((val) => {
   if (Array.isArray(val)) {
     return val
@@ -232,6 +259,8 @@ const TrustedProxyRangesEnvSchema = AllowedIpRangesSchema.pipe(TrustedProxyRange
 export interface AppConfig {
   notificationChannel: NotificationChannelType;
   notificationChannels: NotificationChannelType[];
+  /** Push destination instances. Absent falls back to bootstrapping from the legacy fields below. */
+  destinations?: NotificationDestination[];
   notificationTypes: Record<NotificationKind, boolean>;
   notificationWebhookUrl?: string;
   webhookSecret?: string;
@@ -290,7 +319,7 @@ export interface AppConfig {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
 }
 
-export type ResolvedConfig = AppConfig;
+export type ResolvedConfig = AppConfig & { destinations: NotificationDestination[] };
 
 export type ConfigDocGroup =
   | 'notifications'
@@ -363,6 +392,19 @@ export const CONFIG_REGISTRY = [
   {
     group: 'notifications',
     type: 'string',
+    defaultLabel: '\u2014',
+    example: 'set',
+    key: 'destinations',
+    value: undefined,
+    overrideSchema: DestinationsSchema,
+    env: 'NOTIFICATION_DESTINATIONS_JSON',
+    envSchema: DestinationsJsonSchema,
+    description:
+      'JSON array of push destination instances (`id`, `type`, `label`, `enabled`, `pingOwner`, `config`). Secrets inside `config` are encrypted at rest and masked per instance in the API. An explicit array is authoritative even when empty; when the key is unset, one instance per `NOTIFICATION_CHANNELS` entry is bootstrapped from the legacy Discord and webhook fields below.',
+  },
+  {
+    group: 'notifications',
+    type: 'string',
     defaultLabel: 'none',
     example: 'set',
     key: 'notificationChannels',
@@ -371,7 +413,7 @@ export const CONFIG_REGISTRY = [
     env: 'NOTIFICATION_CHANNELS',
     envSchema: NotificationChannelsSchema,
     description:
-      'Active remote channels (`discord`, `webhook`, `none`). Multiple channels can run concurrently (e.g. `discord,webhook`). Every event is written to stdout and the Logs buffer by the logger regardless of this setting; a stored `console` value is dropped with a warning.',
+      'Bootstrap channels (`discord`, `webhook`, `none`) used only when no `NOTIFICATION_DESTINATIONS_JSON` instances exist: one destination instance is seeded per named type. Every event is written to stdout and the Logs buffer by the logger regardless of this setting; a stored `console` value is dropped with a warning.',
   },
   {
     group: 'notifications',

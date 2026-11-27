@@ -17,6 +17,7 @@ import type {
   AlertEventPage,
   DispatchEligibility,
   CascadeHop,
+  NotificationDestination,
 } from './types';
 
 export const getAuthToken = (): string | null => {
@@ -310,6 +311,28 @@ export const testNotification = async (
     return await api
       .post('notify/test', { json: { ...(channel ? { channel } : {}), ...(overrides ?? {}) } })
       .json<{ success: boolean; message: string; channel?: string }>();
+  } catch (err) {
+    if (isHTTPError(err)) {
+      const body = (await err.response
+        .clone()
+        .json()
+        .catch(() => null)) as { message?: unknown } | null;
+      if (body && typeof body.message === 'string' && body.message) {
+        throw new Error(body.message);
+      }
+    }
+    throw err;
+  }
+};
+
+export const testDestination = async (payload: {
+  destinationId?: string;
+  destination?: NotificationDestination;
+}): Promise<{ success: boolean; channel: string; message: string }> => {
+  try {
+    return await api
+      .post('notify/test', { json: payload })
+      .json<{ success: boolean; channel: string; message: string }>();
   } catch (err) {
     if (isHTTPError(err)) {
       const body = (await err.response

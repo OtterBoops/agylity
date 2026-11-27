@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'preact/hooks';
-import type { AlertEvent, SentryAlertState } from '../types';
+import type { AlertEvent, DeliveryChannelResult, SentryAlertState } from '../types';
 import { getAlertEvents } from '../api';
 import { formatTime, useTimeFormat } from '../utils/time';
 import { TableHeadRow, TableRow, TableShell, TH } from '../components/TableShell';
@@ -13,11 +13,31 @@ const KIND_LABEL: Record<string, string> = {
   early_reset: 'Early reset',
 };
 
-const channelSummary = (channels: AlertEvent['channels']): string => {
-  const names = Object.keys(channels);
-  if (names.length === 0) return 'no channel configured';
-  const failed = names.filter((name) => channels[name] && channels[name]!.success === false);
-  return failed.length === 0 ? names.join(', ') : `${failed.join(', ')} failed`;
+interface ChannelChipProps {
+  name: string;
+  result: DeliveryChannelResult | undefined;
+}
+
+// A muted type still logs the channel, so the muted chip must read as "nothing was sent".
+const ChannelChip = ({ name, result }: ChannelChipProps) => {
+  const suppressed = result?.suppressed === true;
+  const failed = !suppressed && result?.success === false;
+  const tone = suppressed
+    ? 'border-pine-highlight bg-pine-overlay text-pine-subtle'
+    : failed
+      ? 'border-pine-love/40 bg-pine-love/10 text-pine-love'
+      : 'border-pine-foam/40 bg-pine-foam/10 text-pine-foam';
+  const status = suppressed ? 'suppressed' : failed ? 'failed' : null;
+
+  return (
+    <span
+      class={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 font-mono text-xs whitespace-nowrap ${tone}`}
+      title={failed ? result?.error : suppressed ? 'Muted by its notification type' : undefined}
+    >
+      <span class={suppressed ? 'line-through' : undefined}>{name}</span>
+      {status && <span class="text-xs uppercase">{status}</span>}
+    </span>
+  );
 };
 
 export const AlertsView = ({ alerts }: AlertsViewProps) => {
@@ -156,8 +176,16 @@ export const AlertsView = ({ alerts }: AlertsViewProps) => {
                   <td class="px-3.5 font-mono text-xs text-pine-text">
                     {event.headroomPercent === null ? '-' : `${Math.round(event.headroomPercent)}%`}
                   </td>
-                  <td class="truncate px-3.5 text-xs text-pine-subtle">
-                    {channelSummary(event.channels)}
+                  <td class="px-3.5 text-xs text-pine-subtle">
+                    {Object.keys(event.channels).length === 0 ? (
+                      <span class="text-pine-subtle">no channel configured</span>
+                    ) : (
+                      <div class="flex flex-wrap items-center gap-1">
+                        {Object.entries(event.channels).map(([name, result]) => (
+                          <ChannelChip key={name} name={name} result={result} />
+                        ))}
+                      </div>
+                    )}
                   </td>
                 </TableRow>
               ))

@@ -10,6 +10,7 @@ import {
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
 import { LEGACY_POOL_GROUP_IDS, upgradePoolGroupId } from '../shared/models.js';
 import { ensureSentryStateSchema } from '../sentry/store.js';
+import type { NotificationDestination } from '../shared/contracts.js';
 
 // The single schema registry: `AppDatabase` and `TaskQueue` both call `applyMigrations`, so a
 // database reaches its head version through one path instead of three drifting ones.
@@ -469,6 +470,116 @@ const addSpawnSpentAttemptColumn = (db: DatabaseSync): void => {
   db.exec('ALTER TABLE swarm_tasks ADD COLUMN spawn_spent_attempt INTEGER NOT NULL DEFAULT 0');
 };
 
+const LEGACY_NOTIFICATION_KEYS = [
+  'discordToken',
+  'discordClientId',
+  'discordGuildId',
+  'discordNotificationChannelId',
+  'discordChannelId',
+  'discordPingOwner',
+  'notificationWebhookUrl',
+  'webhookSecret',
+  'webhookCustomHeaders',
+  'webhookPingOwner',
+  'notificationChannels',
+  'notificationChannel',
+] as const;
+
+// One instance per legacy channel, with the stored values carried over verbatim: a secret is already
+// `enc:v1:` at rest and stays that way, so the config store's per-field decrypt keeps working.
+const migrateLegacyNotificationSettings = (db: DatabaseSync): void => {
+  if (!tableExists(db, 'settings')) return;
+  const retire = (): void => {
+    db.prepare(
+      `DELETE FROM settings WHERE key IN (${LEGACY_NOTIFICATION_KEYS.map(() => '?').join(', ')})`
+    ).run(...LEGACY_NOTIFICATION_KEYS);
+  };
+  if (db.prepare("SELECT 1 AS hit FROM settings WHERE key = 'destinations'").get() !== undefined) {
+    retire();
+    return;
+  }
+
+  const rows = db
+    .prepare(
+      `SELECT key, value FROM settings WHERE key IN (${LEGACY_NOTIFICATION_KEYS.map(() => '?').join(', ')})`
+    )
+    .all(...LEGACY_NOTIFICATION_KEYS) as Array<{ key: string; value: string }>;
+  if (rows.length === 0) return;
+
+  const stored: Record<string, unknown> = {};
+  for (const row of rows) {
+    try {
+      stored[row.key] = JSON.parse(row.value);
+    } catch {
+      stored[row.key] = row.value;
+    }
+  }
+
+  const text = (key: string): string | undefined => {
+    const value = stored[key];
+    return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+  };
+  const flag = (key: string, fallback: boolean): boolean => {
+    const value = stored[key];
+    return typeof value === 'boolean' ? value : fallback;
+  };
+
+  const channels = Array.isArray(stored.notificationChannels)
+    ? (stored.notificationChannels as unknown[]).map((entry) => String(entry).toLowerCase())
+    : typeof stored.notificationChannel === 'string'
+      ? [stored.notificationChannel.toLowerCase()]
+      : [];
+  const discordNamed = channels.includes('discord');
+  const webhookNamed = channels.includes('webhook');
+
+  const destinations: NotificationDestination[] = [];
+
+  const discordConfig: Record<string, unknown> = {};
+  const token = text('discordToken');
+  const channelId = text('discordNotificationChannelId') ?? text('discordChannelId');
+  const clientId = text('discordClientId');
+  const guildId = text('discordGuildId');
+  if (token) discordConfig.token = token;
+  if (channelId) discordConfig.channelId = channelId;
+  if (clientId) discordConfig.clientId = clientId;
+  if (guildId) discordConfig.guildId = guildId;
+  if (discordNamed || Object.keys(discordConfig).length > 0) {
+    destinations.push({
+      id: 'discord-seed',
+      type: 'discord',
+      label: 'Discord Bot',
+      enabled: true,
+      pingOwner: flag('discordPingOwner', true),
+      config: discordConfig,
+    });
+  }
+
+  const webhookConfig: Record<string, unknown> = {};
+  const url = text('notificationWebhookUrl');
+  const secret = text('webhookSecret');
+  const headers = text('webhookCustomHeaders');
+  if (url) webhookConfig.url = url;
+  if (secret) webhookConfig.secret = secret;
+  if (headers) webhookConfig.customHeaders = headers;
+  if (webhookNamed || Object.keys(webhookConfig).length > 0) {
+    destinations.push({
+      id: 'webhook-seed',
+      type: 'webhook',
+      label: 'Webhook',
+      enabled: true,
+      pingOwner: flag('webhookPingOwner', true),
+      config: webhookConfig,
+    });
+  }
+
+  if (destinations.length > 0) {
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('destinations', ?, datetime('now'))"
+    ).run(JSON.stringify(destinations));
+  }
+  retire();
+};
+
 // Forward-only. A shipped migration is never edited; a schema change is a new version.
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -555,6 +666,13 @@ const MIGRATIONS: readonly Migration[] = [
     name: 'v9_spawn_spent_attempt',
     up: (db) => {
       addSpawnSpentAttemptColumn(db);
+    },
+  },
+  {
+    version: 10,
+    name: 'v10_notification_destinations',
+    up: (db) => {
+      migrateLegacyNotificationSettings(db);
     },
   },
 ];

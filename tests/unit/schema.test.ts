@@ -30,7 +30,7 @@ test('applies the migration set in order and keeps the pr_policy sentinel on all
     ).map((row) => row.version);
     assert.deepEqual(
       versions,
-      [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
       'every migration must be applied, in order'
     );
 
@@ -378,8 +378,8 @@ test('opening AppDatabase alone applies every migration and creates the coordina
     ).map((row) => Number(row.version));
     assert.deepEqual(
       versions,
-      [1, 2, 3, 4, 5, 6, 7, 8, 9],
-      'AppDatabase must take the database to v9 on open'
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+      'AppDatabase must take the database to v10 on open'
     );
 
     const tables = new Set(

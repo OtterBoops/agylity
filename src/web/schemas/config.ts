@@ -10,6 +10,8 @@ export const ConfigViewSchema = z.object({
   overrides: ConfigPatchSchema,
   sources: z.record(z.string(), ConfigSourceSchema),
   secretsMeta: z.record(z.string(), z.object({ isSet: z.boolean() })),
+  /** Per destination instance, keyed by its id, then by secret field. */
+  destinationsMeta: z.record(z.string(), z.record(z.string(), z.object({ isSet: z.boolean() }))),
 });
 
 /** Either one `{ key, value }` write, or an envelope of `set` and/or `clear`. */

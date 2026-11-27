@@ -337,7 +337,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
 
     try {
       const raw = db.getRawDb();
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
       const column = issueColumn(raw);
       assert.ok(column, 'swarm_tasks.issue_urls_json must exist at head');
@@ -372,7 +372,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       assert.doesNotThrow(() => applyMigrations(raw));
 
       assert.deepEqual(appliedVersions(raw), before);
-      assert.equal(Math.max(...appliedVersions(raw)), 9);
+      assert.equal(Math.max(...appliedVersions(raw)), 10);
       assert.ok(issueColumn(raw), 'the re-run must leave the column in place');
     } finally {
       db.close();
@@ -394,7 +394,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       // Rewind to the v5 shape rather than inventing a fixture: drop the v6 column and its record,
       // and rewind v7 with it so the next apply runs the whole v6..v7 tail.
       raw.exec('ALTER TABLE swarm_tasks DROP COLUMN issue_urls_json');
-      raw.prepare('DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9)').run();
+      raw.prepare('DELETE FROM schema_migrations WHERE version IN (6, 7, 8, 9, 10)').run();
       assert.equal(issueColumn(raw), undefined);
       assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5]);
 
@@ -403,7 +403,7 @@ describe('Schema migration v6: swarm_tasks issue deliverables', () => {
       const column = issueColumn(raw);
       assert.ok(column, 'the v6 migration must restore the column');
       assert.equal(column.dflt_value, "'[]'");
-      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      assert.deepEqual(appliedVersions(raw), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 
       const row = raw
         .prepare('SELECT issue_urls_json FROM swarm_tasks WHERE id = ?')

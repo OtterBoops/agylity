@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'preact/hooks';
 import { pushSuccessToast, pushErrorToast } from '../../state/toastStore';
-import { faGlobe, faNetworkWired } from '@fortawesome/free-solid-svg-icons';
+import { faGlobe, faNetworkWired, faRobot } from '@fortawesome/free-solid-svg-icons';
 import type { ConfigData } from '../../types';
 import { updateConfig, deleteConfigOverride } from '../../api';
 import { Icon } from '../../components/Icon';
@@ -22,10 +22,18 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
   const serverBaseUrl = String(config.resolved?.baseUrl || '');
   const [baseUrl, setBaseUrl] = useState(serverBaseUrl);
   const [isSaving, setIsSaving] = useState(false);
+  // Owner mentions are a Discord-wide identity, shared by every destination that pings the owner.
+  const serverOwnerUserId = String(config.resolved?.discordOwnerUserId || '');
+  const [ownerUserId, setOwnerUserId] = useState(serverOwnerUserId);
+  const [isSavingOwner, setIsSavingOwner] = useState(false);
 
   useEffect(() => {
     setBaseUrl(serverBaseUrl);
   }, [serverBaseUrl]);
+
+  useEffect(() => {
+    setOwnerUserId(serverOwnerUserId);
+  }, [serverOwnerUserId]);
 
   const handleToggleCoordinator = async () => {
     setIsTogglingCoordinator(true);
@@ -65,6 +73,33 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
       );
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const ownerDirty = ownerUserId.trim() !== serverOwnerUserId.trim();
+
+  const handleSaveOwner = async (e: Event) => {
+    e.preventDefault();
+    if (!ownerDirty) return;
+
+    setIsSavingOwner(true);
+    const value = ownerUserId.trim();
+    try {
+      if (value === '' && config.overrides?.discordOwnerUserId !== undefined) {
+        await deleteConfigOverride('discordOwnerUserId');
+        pushSuccessToast('Discord owner user ID override cleared');
+      } else {
+        await updateConfig({ discordOwnerUserId: value });
+        pushSuccessToast('Discord owner user ID saved');
+      }
+      onChanged();
+    } catch (err: any) {
+      pushErrorToast(
+        'Could not save Discord owner user ID',
+        err?.message || 'Failed to save the Discord owner user ID'
+      );
+    } finally {
+      setIsSavingOwner(false);
     }
   };
 
@@ -120,6 +155,57 @@ export const GeneralView = ({ config, onChanged, searchQuery }: GeneralViewProps
           </div>
           <span class="text-xs text-pine-subtle">
             Trailing slashes are stripped. Must be a full origin including scheme and port.
+          </span>
+        </div>
+      </form>
+
+      <form
+        onSubmit={handleSaveOwner}
+        autoComplete="off"
+        class="flex flex-col gap-5 rounded-xl border border-pine-highlight bg-pine-surface p-6"
+      >
+        <div class="flex items-start gap-3">
+          <div class="flex size-9 shrink-0 items-center justify-center rounded-lg border border-pine-highlight bg-pine-overlay/40 text-pine-iris">
+            <Icon icon={faRobot} class="size-4.5" />
+          </div>
+          <div class="min-w-0 flex-1">
+            <h2 class="text-base font-bold text-pine-text">Discord owner user ID</h2>
+            <p class="mt-0.5 text-xs text-pine-subtle">
+              The single Discord user allowed to query quotas and trigger tasks. Destinations that
+              ping the owner mention this id.
+            </p>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-1.5 border-t border-pine-highlight pt-4">
+          <label for="agylity-general-discord-owner" class="text-xs font-medium text-pine-subtle">
+            Owner user ID
+          </label>
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <input
+              id="agylity-general-discord-owner"
+              type="text"
+              name="agylity_general_discord_owner"
+              autoComplete="off"
+              inputMode="numeric"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              class="flex-1 rounded-lg border border-pine-highlight bg-pine-overlay px-3 py-2 font-mono text-sm text-pine-text placeholder-pine-subtle transition-colors outline-none focus:border-pine-iris"
+              placeholder="e.g. 123456789012345678"
+              value={ownerUserId}
+              onInput={(e) => setOwnerUserId((e.target as HTMLInputElement).value)}
+            />
+            <button
+              type="submit"
+              disabled={isSavingOwner || !ownerDirty}
+              class="cursor-pointer rounded-lg bg-pine-iris px-4 py-2 text-xs font-semibold whitespace-nowrap text-pine-base transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSavingOwner ? 'Saving...' : 'Save'}
+            </button>
+          </div>
+          <span class="text-xs text-pine-subtle">
+            Left empty, the first Discord user to interact is pinned for the session. Clear and save
+            to fall back to the environment value.
           </span>
         </div>
       </form>

@@ -126,6 +126,11 @@ export class AppDatabase {
     return this.db;
   }
 
+  /** The key this database actually encrypts with, which a custom `keyPath` or `:memory:` overrides. */
+  public getMasterKey(): Buffer {
+    return this.masterKey;
+  }
+
   public get<T = unknown>(key: string): T | undefined {
     const row = this.selectKeyStmt.get(key) as { value: string } | undefined;
     if (!row) return undefined;

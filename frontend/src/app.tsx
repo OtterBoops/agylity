@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'preact/hooks';
-import Router, { type RouterOnChangeArgs } from 'preact-router';
+import Router, { route, type RouterOnChangeArgs } from 'preact-router';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { ControlPlaneGate } from './components/ControlPlaneGate';
@@ -8,6 +8,7 @@ import { CommandPalette } from './components/CommandPalette';
 import { ToastStack } from './components/ToastStack';
 import { TasksView } from './components/TasksView';
 import { AlertsView } from './views/AlertsView';
+import { NotificationsView } from './views/NotificationsView';
 import { OverviewView } from './views/OverviewView';
 import { LogsView } from './views/LogsView';
 import { UnifiedSettingsView } from './views/settings/UnifiedSettingsView';
@@ -46,7 +47,6 @@ const SETTINGS_PATHS = [
   '/settings/general',
   '/settings/coordinator',
   '/settings/repositories',
-  '/settings/notifications',
   '/settings/advanced',
 ];
 
@@ -55,7 +55,6 @@ const SECTION_BY_PATH: Record<string, SettingsSectionId> = {
   '/settings/general': 'general',
   '/settings/coordinator': 'coordinator',
   '/settings/repositories': 'coordinator',
-  '/settings/notifications': 'notifications',
   '/settings/advanced': 'advanced',
 };
 
@@ -65,13 +64,19 @@ const TITLES: Record<string, string> = {
   '/tasks': 'Tasks',
   '/logs': 'Logs',
   '/alerts': 'Alerts',
+  '/notifications': 'Notifications',
   '/settings': 'General',
   '/settings/general': 'General',
   '/settings/coordinator': 'Coordinator',
-  '/settings/notifications': 'Notifications',
   '/settings/repositories': 'Repositories',
   '/settings/advanced': 'Advanced',
 };
+
+// Bookmarks and palette entries still point at the retired settings tab.
+const onLegacyNotifications = () =>
+  typeof window !== 'undefined' &&
+  (window.location.pathname === '/settings/notifications' ||
+    (window.location.pathname === '/settings' && window.location.hash === '#notifications'));
 
 export const App = () => {
   const [section, setSection] = useState<SettingsSectionId | null>(() => {
@@ -80,12 +85,24 @@ export const App = () => {
   });
   const [currentUrl, setCurrentUrl] = useState(() => {
     if (typeof window === 'undefined') return '/';
+    // Rewritten before the Router mounts, so the legacy URL never reaches a route table entry.
+    if (onLegacyNotifications()) {
+      window.history.replaceState(null, '', '/notifications');
+      return '/notifications';
+    }
     // Only a bare /settings needs the hash; rewriting would stomp a section the nav chose.
     if (window.location.pathname === '/settings' && !readSettingsSection()) {
       window.history.replaceState(null, '', '/settings#general');
     }
     return window.location.pathname;
   });
+
+  useEffect(() => {
+    if (!onLegacyNotifications()) return;
+    window.history.replaceState(null, '', '/notifications');
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+    route('/notifications', true);
+  }, [currentUrl]);
 
   useEffect(() => {
     const sync = () => setSection(readSettingsSection());
@@ -384,6 +401,7 @@ export const App = () => {
                 <TasksView path="/tasks" onRefresh={fetchAll} onOpenComposer={openComposer} />
                 <LogsView path="/logs" />
                 <AlertsView path="/alerts" alerts={alerts} />
+                <NotificationsView path="/notifications" config={config} onSaved={fetchAll} />
                 {SETTINGS_PATHS.map((path) => (
                   <UnifiedSettingsView
                     key={path}

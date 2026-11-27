@@ -65,7 +65,7 @@ describe('Notifications: type registry and per-type switches', () => {
     });
     assert.equal(suppressed.delivered, false);
     assert.equal(suppressed.suppressed, true);
-    assert.deepEqual(suppressed.results, {});
+    assert.deepEqual(suppressed.results, { fake: { success: false, suppressed: true } });
     assert.equal(fake.infos, 0);
 
     await composite.notifyInfo({ kind: 'burn_kick', title: 'Burn', message: 'Started.' });
@@ -106,7 +106,7 @@ describe('Notifications: type registry and per-type switches', () => {
 
     assert.equal(outcome.delivered, false);
     assert.equal(outcome.suppressed, true);
-    assert.deepEqual(outcome.results, {});
+    assert.deepEqual(outcome.results, { fake: { success: false, suppressed: true } });
     assert.equal(alertCalls, 0);
   });
 

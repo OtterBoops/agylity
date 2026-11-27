@@ -213,6 +213,7 @@ export const Sidebar = ({
     { href: '/overview', label: 'Overview', icon: faChartPie },
     ...(coordinatorEnabled ? [{ href: '/tasks', label: 'Tasks', icon: faCheckToSlot }] : []),
     { href: '/alerts', label: 'Alerts', icon: faBell },
+    { href: '/notifications', label: 'Notifications', icon: faBullhorn },
     { href: '/logs', label: 'Logs', icon: faList },
   ];
 
@@ -231,7 +232,6 @@ export const Sidebar = ({
   const settingsItems: NavItem[] = [
     { href: '/settings#general', label: 'General', icon: faGear },
     { href: '/settings#coordinator', label: 'Coordinator', icon: faNetworkWired },
-    { href: '/settings#notifications', label: 'Notifications', icon: faBullhorn },
     { href: '/settings#advanced', label: 'Advanced', icon: faSliders },
   ].map((item) => ({ ...item, active: onSettings && settingsHash === item.href.split('#')[1] }));
 

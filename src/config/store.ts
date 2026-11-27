@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
-import { FORBIDDEN_CONFIG_KEYS } from './schema.js';
+import { FORBIDDEN_CONFIG_KEYS, DestinationsSchema } from './schema.js';
 import { AppDatabase } from '../storage/db.js';
+import {
+  decryptDestinationSecrets,
+  encryptDestinationSecrets,
+  seedNotificationDestinations,
+} from './destinations.js';
 import {
   BUILTIN_DEFAULTS,
   CONFIG_KEY_ENV_NAMES,
@@ -86,6 +91,19 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
         this.envConfig.notificationChannel !== 'none' ? [this.envConfig.notificationChannel] : [];
     }
 
+    // An explicit array is authoritative even when empty: clearing every instance must not be
+    // silently re-seeded from the legacy fields.
+    const explicitDestinations =
+      overrides.destinations !== undefined ? overrides.destinations : this.envConfig.destinations;
+    if (explicitDestinations !== undefined) {
+      resolved.destinations = decryptDestinationSecrets(
+        DestinationsSchema.parse(explicitDestinations),
+        this.database.getMasterKey()
+      );
+    } else {
+      resolved.destinations = seedNotificationDestinations(resolved);
+    }
+
     return resolved as ResolvedConfig;
   }
 
@@ -156,7 +174,13 @@ export class ConfigStore extends EventEmitter implements IConfigStore {
   public setOverride<K extends keyof AppConfig>(key: K | string, value: unknown): void {
     const normKey = normalizeKey(key as string);
     const prev = this.get(normKey as string);
-    this.database.set(normKey as string, value);
+    // A destination instance carries its own secrets, so they are encrypted here rather than by the
+    // whole-value `isSecretKey` path that covers a single string knob.
+    const storedValue =
+      normKey === 'destinations' && Array.isArray(value)
+        ? encryptDestinationSecrets(DestinationsSchema.parse(value), this.database.getMasterKey())
+        : value;
+    this.database.set(normKey as string, storedValue);
     const envSpelling = envSpellingOf(normKey);
     if (envSpelling && envSpelling !== normKey) {
       this.database.delete(envSpelling);
