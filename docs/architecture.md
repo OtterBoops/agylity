@@ -141,7 +141,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 `WEB_UI_AUTH_TOKEN` is mandatory for a non-loopback `WEB_UI_HOST`: the server refuses to start without it, and only warns for a loopback bind. When configured:
 
-- **Route Lockdown**: every `/api/*` route requires Bearer authorization, except public `GET /api/health` and the four runner-token endpoints (`POST /api/tasks/poll`, `POST /api/tasks/:id/status`, `POST /api/runner/heartbeat`, `POST /api/runners/register`). The full surface is tabulated in §3.8.
+- **Route Lockdown**: every `/api/*` route requires Bearer authorization, except public `GET /api/health` and the runner-credential operations (the `runnerAuth` tier in the generated contract, §3.8).
 - **Loopback Exemption**: `WEB_UI_AUTH_EXEMPT_LOCALHOST` (default `true`) skips the token requirement only when _both_ the resolved client IP and the direct peer socket address are loopback — one forwarded header alone is never enough.
 - **Timing-Safe Verification**: both sides are hashed with SHA-256 before `crypto.timingSafeEqual`, so the comparison runs over fixed-width digests and a wrong token cannot be distinguished by its length. Runner shared secrets are stored as SHA-256 hex (`hashRunnerToken`) and compared the same way.
 - **Anti-Brute-Force Sliding Window**: In-memory rate limiter tracks failed authentication attempts per IP _per auth domain_ — control-plane Bearer and runner credentials keep separate counters, so brute-forcing one never locks out the other. 10 failures within 60s temporarily blocks that domain for the IP with HTTP 429 (`Retry-After: 60`). The map is pruned of expired records and capped at 10,000 entries.
@@ -149,50 +149,7 @@ Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
 
 ### 3.8. Control-Plane HTTP Surface
 
-`src/web/routes.ts` is the single router. Paths below are the only ones the server answers; anything else outside the static/SPA shell is a `404` plain-text response.
-
-| Route                                  | Auth   | Notes                                                             |
-| :------------------------------------- | :----- | :---------------------------------------------------------------- |
-| `GET /api/health`                      | public | Liveness; reports `authRequired` and build provenance.            |
-| `GET /api/quota`                       | Bearer | Current pools, limits and reset deadlines.                        |
-| `GET /api/summary`                     | Bearer | `geminiPercent`, `claudePercent`, cached `agy` version.           |
-| `GET /api/alerts`                      | Bearer | Active alert state.                                               |
-| `POST /api/alerts/dismiss`             | Bearer | Clears the active alert set.                                      |
-| `GET /api/alerts/events`               | Bearer | Paginated alert history (`limit` ≤ 200, `before` cursor, `pool`). |
-| `GET /api/logs`                        | Bearer | Redacted in-memory log ring, query-filterable.                    |
-| `GET /api/config`                      | Bearer | Resolved config, overrides, secret metadata.                      |
-| `POST /api/config`                     | Bearer | Upsert overrides (`{key,value}` or `{set,clear}`).                |
-| `DELETE /api/config/:key`              | Bearer | Removes one override.                                             |
-| `POST /api/notify/test`                | Bearer | Fires a test notification through active channels.                |
-| `POST /api/dispatch`                   | Bearer | Enqueues an `immediate`-tier task.                                |
-| `GET /api/models`                      | Bearer | Model catalog with pool mapping and effort options.               |
-| `GET /api/dispatch/eligibility`        | Bearer | Pre-flight safety-floor verdict for a dispatch.                   |
-| `GET /api/tasks`                       | Bearer | Task list (the heavy `output` column is omitted).                 |
-| `GET /api/tasks/:id`                   | Bearer | Single task, including `output`.                                  |
-| `POST /api/tasks/:id/cancel`           | Bearer | Cancels a queued or executing task.                               |
-| `POST /api/tasks/:id/retry`            | Bearer | Re-queues a terminal task.                                        |
-| `GET /api/backlog`                     | Bearer | Backlog items.                                                    |
-| `POST /api/backlog`                    | Bearer | Creates one backlog item.                                         |
-| `PATCH\|POST /api/backlog/bulk`        | Bearer | Pause, resume or delete up to 200 ids (`{action, ids}`).          |
-| `POST /api/backlog/sync-github`        | Bearer | Pulls labelled issues in; per-repo `failures` reasons.            |
-| `GET /api/backlog/:id`                 | Bearer | Single backlog item.                                              |
-| `PATCH /api/backlog/:id`               | Bearer | Edits fields or re-arms a failed item.                            |
-| `DELETE /api/backlog/:id`              | Bearer | Deletes the item.                                                 |
-| `POST /api/backlog/:id/dispatch`       | Bearer | Dispatches one item now; 409 while it already runs.               |
-| `GET /api/routines`                    | Bearer | Routine definitions.                                              |
-| `POST /api/routines`                   | Bearer | Creates a routine.                                                |
-| `GET /api/routines/:id`                | Bearer | Single routine.                                                   |
-| `PATCH /api/routines/:id`              | Bearer | Edits a routine (including `enabled`).                            |
-| `DELETE /api/routines/:id`             | Bearer | Deletes the routine.                                              |
-| `POST /api/routines/:id/trigger`       | Bearer | Manual trigger, subject to the one-in-flight rule.                |
-| `GET /api/runners`                     | Bearer | Registered runners, status and last-seen timestamps.              |
-| `POST /api/runners/registration-token` | Bearer | Mints a short-lived enrolment token.                              |
-| `PATCH /api/runners/:id`               | Bearer | Enables or disables a runner (`{enabled}`).                       |
-| `DELETE /api/runners/:id`              | Bearer | Revokes a runner and its token hash.                              |
-| `POST /api/tasks/poll`                 | Runner | Long-poll for a claimable task.                                   |
-| `POST /api/tasks/:id/status`           | Runner | Intermediate and final status reports.                            |
-| `POST /api/runner/heartbeat`           | Runner | Lease keep-alive while executing.                                 |
-| `POST /api/runners/register`           | Runner | Exchanges a registration token for a runner id.                   |
+`src/web/routeRegistry.ts` is the single router and the only declaration of the HTTP surface: every operation the server answers, with its path, method and auth tier. The full surface is generated from that registry into `docs/openapi.json` — regenerate with `npm run docs:api`, and `tests/unit/openapi.test.ts` fails when the checked-in document drifts — and the same document is served live at `GET /api/openapi.json`, Bearer-authenticated like every other control-plane route except `GET /api/health`. Anything outside the registry and the static/SPA shell is a `404` plain-text response.
 
 "Bearer" means the `WEB_UI_AUTH_TOKEN` control-plane check; "Runner" means the request carries a runner credential and is exempt from the web token. The HTML shell and hashed assets are served unauthenticated — the client-side `<ControlPlaneGate />` (§3.9) is what withholds the dashboard DOM, so no API data is reachable without the token.
 
@@ -233,7 +190,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
 5. **Decoupled Web Dashboard (`src/web/` & `frontend/`)**: Modern reactive dashboard built with **Vite + Preact + Tailwind CSS v4** served via native `node:http`. Zero overhead when disabled (`WEB_UI_ENABLED=false`). Mutation feedback routes through `frontend/src/state/toastStore.ts` (`pushToast`, `pushSuccessToast`, `pushErrorToast`), and an error toast also writes to `console.error`; view-level load failures stay inline in the view so an empty or degraded surface still explains itself.
 6. **Shared Wire Contracts (`src/shared/`)**: `contracts.ts` declares every payload the HTTP API emits (`SwarmTask`, `BacklogTaskRecord`, `RoutineTaskRecord`, `QuotaSnapshot`, `SentryAlertState`, `AlertEvent`, log entries, and the PR/tier/status enums) and `policies.ts` owns the PR-policy table (value, select label, hint). Both are type-only and free of runtime imports so the Vite client bundles them directly; backend modules re-export the declarations and `frontend/src/types.ts` is a pure re-export of the contract plus genuinely frontend-only shapes. Zod schemas stay beside their producers purely as validators.
-7. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI (`GET /api/logs`).
+7. **Universal Pluggable Logging Subsystem (`src/logs/`)**: Hierarchical, zero-dependency logging engine (`Logger`, `DefaultLogger`, `logger.child()`) with pluggable sinks (`console`, in-memory `LogBuffer`, memory sink for unit tests). Enforces fault-isolated sink execution, dynamic log-level filtering (`LOG_LEVEL`), secret-redacting in-memory ring buffering, and real-time streaming to the Web UI.
 
 ---
 
@@ -335,11 +292,11 @@ Coordinator (Homelab / Cloud)
 
 ### 7.2. Task Taxonomy: Three Tiers
 
-| Tier        | Source row      | Created through                                         | First dispatched by                                       |
-| :---------- | :-------------- | :------------------------------------------------------ | :-------------------------------------------------------- |
-| `immediate` | `swarm_tasks`   | Web UI, Discord, `POST /api/dispatch`                   | `coordinator.dispatch`                                    |
-| `backlog`   | `backlog_tasks` | `POST /api/backlog`, GitHub label sync                  | autonomous evaluator, or `POST /api/backlog/:id/dispatch` |
-| `routine`   | `routine_tasks` | `POST /api/routines`, legacy `standing_tasks` migration | autonomous evaluator, or `POST /api/routines/:id/trigger` |
+| Tier        | Source row      | Created through                                | First dispatched by                             |
+| :---------- | :-------------- | :--------------------------------------------- | :---------------------------------------------- |
+| `immediate` | `swarm_tasks`   | Web UI, Discord, REST dispatch                 | `coordinator.dispatch`                          |
+| `backlog`   | `backlog_tasks` | REST create, GitHub label sync                 | autonomous evaluator, or a single-item dispatch |
+| `routine`   | `routine_tasks` | REST create, legacy `standing_tasks` migration | autonomous evaluator, or a manual trigger       |
 
 Every `swarm_tasks` row carries `tier`, `origin_id`, `origin_number` and `origin_title`, which is what
 lets the dashboard link a run back to the item that produced it.
@@ -426,10 +383,9 @@ lets the dashboard link a run back to the item that produced it.
   backlog card is not rendered and the Backlog count excludes it, so one piece of work is never two
   cards; a `dispatched` row whose run is gone is drifted state and stays in the grid until the
   reconciler settles it.
-- **Routes**: `GET|POST /api/backlog`, `PATCH|POST /api/backlog/bulk`, `GET|PATCH|DELETE /api/backlog/:id`,
-  `POST /api/backlog/:id/dispatch`, `POST /api/backlog/sync-github`, `GET|POST /api/routines`,
-  `GET|PATCH|DELETE /api/routines/:id`, `POST /api/routines/:id/trigger`. A refusal by the safety floor
-  is HTTP 400 on every one of them, including the two single-item dispatch routes.
+- **Refusals**: a safety-floor refusal is HTTP 400 on every backlog and routine operation, including the
+  two single-item dispatch routes. The operations themselves are enumerated in the generated contract
+  (§3.8).
 
 ### 7.3. Runner Execution Lifecycle
 

@@ -41,6 +41,7 @@ Dashboard: `http://localhost:8484`.
 ## Documentation
 
 - **[Architecture & Security](./docs/architecture.md)** — Connect-RPC protocols, SQLite schema, 3-tier task lifecycle, and security invariants.
+- **[HTTP API Contract](./docs/openapi.json)** — OpenAPI document generated from the route registry (`npm run docs:api`) and served live at `GET /api/openapi.json` behind the same Bearer token as the rest of the control plane.
 - **[Configuration Reference](./docs/configuration.md)** — Every `.env` variable, milestone window, and SQLite override.
 - **[Deployment Playbooks](./docs/deployment.md)** — Docker Compose, runner registration, and Node 26 systemd templates.
 - **[Testing & Verification](./docs/testing.md)** — Deterministic unit and e2e suites using Node's native test runner.

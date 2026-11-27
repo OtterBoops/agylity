@@ -2152,7 +2152,8 @@ describe('Runner: push, pull request and policy guards', () => {
     // The executor passes the resolved title, not the prompt, so the label prefix is all that is
     // stripped and the issue number never reaches the branch name.
     assert.match(String(result.branchName), /^agy\/[0-9a-f]{6}-fix-the-parser$/);
-    assert.equal(String(result.branchName).includes('12'), false);
+    // The short id is random hex, so only the slug proves the issue number never reached the name.
+    assert.equal(String(result.branchName).replace(/^agy\/[0-9a-f]{6}-/, ''), 'fix-the-parser');
   });
 
   it('appends the dispatch footer once to a prompt that does not already carry one', async () => {

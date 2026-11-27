@@ -41,6 +41,8 @@ description: >-
   - `src/shared/titles.ts` owns `resolveTaskTitle(title, prompt, maxLen = 72)`, the one title a task carries everywhere: the dashboard row, the `agy/<shortId>-<slug>` branch slug, the `git commit` subject and the PR title. An explicit title wins; otherwise the prompt's first meaningful line with its Markdown markers (`#`, `*`, `-`, `>`) stripped stands in, clipped at a word boundary with `…`, and `Untitled task` is reserved for a task carrying neither. `TaskQueue.enqueue` writes it, the row mapper re-derives it for legacy blank-title rows, and the executor/coordinator pass it into `buildContinuationBranchName`. Frontend call sites must import it rather than falling back to a literal `'Task'`. Import-free and erasable, for the same Vite reason as `models.ts`.
   - `TaskStatus` has no `running` member: the queue only ever stores `queued | claimed | executing | completed | no_changes | failed | aborted`, so a `running` branch in the UI is dead code.
   - `src/shared/percent.ts` owns `toPercentFloor` (float-drift-safe percentage flooring), `src/shared/github.ts` owns `OWNER_REPO_SLUG_RE` / `parseGithubSlugFromUrl`, and `src/shared/text.ts` owns `tailWindow` (surrogate-safe tail slicing). The coordinator, the sentry store, the runner executor, the queue's output cap and the backlog controller import those, so a headroom percentage, a repository slug or a truncated tail cannot be handled two ways.
+- **Single-Source HTTP Surface:**
+  - `src/web/routeRegistry.ts` is the only declaration of the control-plane HTTP surface — path, method and auth tier per operation. Never hand-maintain a route table in docs: `docs/openapi.json` is generated from it by `npm run docs:api` (`scripts/gen-api-docs.ts`), `tests/unit/openapi.test.ts` fails when the checked-in copy drifts, and the same document is served live at `GET /api/openapi.json` behind the same Bearer token as every control-plane route except `GET /api/health`.
 - **Single-Source Version Invariant:** `frontend/vite.config.ts` (`__APP_VERSION__`) and `src/version.ts` both read the root `package.json`, so a release bumps exactly one `version` field.
 - **Single-Source Config Registry Invariant:**
   - `CONFIG_REGISTRY` in `src/config/schema.ts` is the only declaration of a config knob: env spelling, raw-env schema, typed default, secret flag, doc group and the description both generated files render. `BUILTIN_DEFAULTS`, `CONFIG_KEY_ENV_NAMES`, `ENV_TO_CONFIG_KEY`, `CANONICAL_SECRET_CONFIG_KEYS`, `SECRET_CONFIG_KEY_ENV_NAMES`, `CONFIG_FIELD_SCHEMAS`, `RawEnvSchema` and `parseRawEnv` are all derived from it. Adding a variable is one registry entry; never reintroduce a parallel list or a bespoke per-variable `if` block in the parser.
@@ -194,8 +196,8 @@ Agylity implements a pull-based runner swarm designed for zero inbound firewall 
 Coordinator (Homelab / Cloud)
   ├── SQLite Task Queue (tier: immediate | backlog | routine, scheduleMode: immediate | pre_reset)
   ├── Discord Bot (/dispatch modal & /quota commands)
-  ├── Web Control Plane (/api/dispatch & /api/runners)
-  └── Runner API (/api/tasks/poll, /api/runners/register)
+  ├── Web Control Plane (Bearer control-plane token)
+  └── Runner API (runner credential)
         ▲
         │ (Outbound HTTPS Long-Poll via ky)
         ├── Container Runner (agylity-runner) -> Unattended tasks
@@ -340,7 +342,7 @@ Agylity uses zero external database dependencies, relying exclusively on Node 26
 ### Control Plane Authentication & Edge Security
 
 - **Zero-Leak Control Plane Gate:** When `WEB_UI_AUTH_TOKEN` is configured, all API endpoints (excluding `/api/health` and the runner-token endpoints) require `Authorization: Bearer <token>`. Unauthenticated clients receive a solid `<ControlPlaneGate />` that completely unmounts and replaces the DOM, ensuring zero settings, logs, or metrics leak in the browser before authentication.
-- **Application IP Allowlisting & Anti-Spoofing:** When `ALLOWED_IP_RANGES` is configured, requests from unlisted IPs or CIDR blocks receive HTTP 403 Forbidden. When behind reverse proxies (Caddy, Cloudflare, Traefik), `TRUSTED_PROXIES` (a boolean, not a list) honours proxy headers only when the direct TCP peer is loopback, and walks `x-forwarded-for` right-to-left skipping trusted hops, so a client-supplied prefix cannot name its own address. Private ranges are deliberately NOT trusted - any host on a LAN or Docker bridge could otherwise forge the headers. There is no `/api/auth/verify` route.
+- **Application IP Allowlisting & Anti-Spoofing:** When `ALLOWED_IP_RANGES` is configured, requests from unlisted IPs or CIDR blocks receive HTTP 403 Forbidden. When behind reverse proxies (Caddy, Cloudflare, Traefik), `TRUSTED_PROXIES` (a boolean, not a list) honours proxy headers only when the direct TCP peer is loopback, and walks `x-forwarded-for` right-to-left skipping trusted hops, so a client-supplied prefix cannot name its own address. Private ranges are deliberately NOT trusted - any host on a LAN or Docker bridge could otherwise forge the headers. The generated contract is the authority on what exists: there is no `/api/auth/verify` operation.
 
 ---
 
