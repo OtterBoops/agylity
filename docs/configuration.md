@@ -157,7 +157,7 @@ https://discord.com/oauth2/authorize?client_id=<CLIENT_ID>&permissions=214760140
 
 Inside your Discord server, ensure the bot's role has permission to **View Channel**, **Send Messages**, and **Embed Links** in the channel matching `DISCORD_NOTIFICATION_CHANNEL_ID`.
 
-To enforce the **Single-Tenant Invariant**, set `DISCORD_OWNER_USER_ID` (or **Owner Discord User ID** in the Web UI under **Settings → Notifications**) to your personal Discord User ID (Right-click your profile in Discord with Developer Mode enabled → **Copy User ID**). When set, all other Discord users are blocked from invoking `/quota` or submitting interactive modals. If left blank, Agylity automatically pins the first Discord user who interacts with the bot for the active session (Trust-On-First-Use).
+To enforce the **Single-Tenant Invariant**, set `DISCORD_OWNER_USER_ID` (or **Owner Discord User ID** in the Web UI under **Settings → General**) to your personal Discord User ID (Right-click your profile in Discord with Developer Mode enabled → **Copy User ID**). When set, all other Discord users are blocked from invoking `/quota` or submitting interactive modals. If left blank, Agylity automatically pins the first Discord user who interacts with the bot for the active session (Trust-On-First-Use).
 
 ---
 
@@ -178,9 +178,9 @@ When configured, each repository record includes:
 
 ## 5. Test Notification Trigger (`POST /api/notify/test`)
 
-The web dashboard and REST API provide an endpoint to verify active notification channels without waiting for a quota milestone:
+The web dashboard (**Notifications**) and REST API provide a side-effect-free endpoint to verify a saved or unsaved notification destination without waiting for a quota milestone:
 
 - **Endpoint**: `POST /api/notify/test`
-- **Request Body**: `{}` (or optional metadata)
-- **Response**: Returns channel delivery status results from the active `CompositeNotifier` (e.g. Discord, Webhook).
+- **Request Body**: `{ "destinationId": "<id>" }` to test a saved destination, `{ "destination": { ... } }` to test an unsaved or edited draft (masked secret placeholders inherit the stored destination's secrets by `id`), or `{}` to test all active destinations.
+- **Response**: Returns delivery status for the `<type>:<id>` destination without mutating persisted configuration.
 - **Security Invariant**: Sensitive webhook URL paths, query tokens, and authorization credentials are automatically masked in the returned status message.

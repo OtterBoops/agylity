@@ -68,8 +68,8 @@ npm run build && npm start
 
 ## Releasing
 
-1. Bump `version` in `package.json` and `frontend/package.json`, commit, and push `main`.
-2. Push an annotated tag: `git tag -a vX.Y.Z -m "vX.Y.Z — Short Title" && git push origin vX.Y.Z`.
+1. Bump `version` in `package.json` (`npm version X.Y.Z --no-git-tag-version`), regenerate `docs/openapi.json` (`npm run docs:api`), commit, and push `main`.
+2. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 ## Credits & License
 
