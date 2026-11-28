@@ -11,6 +11,7 @@ data
 **/.impeccable
 .worktrees
 **/.worktrees
+.governance
 .github/skills
 .github/agents
 .github/hooks

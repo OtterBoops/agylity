@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ROUTES } from './routeRegistry.js';
+import type { RouteSpec } from './routeRegistry.js';
 import { AGYLITY_VERSION } from '../version.js';
 import {
   ForbiddenSchema,
@@ -89,10 +89,13 @@ const responseEntries = (responses: Record<number, z.ZodType>): Record<string, u
   );
 
 /** The control plane's contract, derived from the registry so a route cannot exist undocumented. */
-export const buildOpenApiDocument = (version = AGYLITY_VERSION): OpenApiDocument => {
+export const buildOpenApiDocument = (
+  routes: readonly RouteSpec[],
+  version = AGYLITY_VERSION
+): OpenApiDocument => {
   const paths: Record<string, Record<string, unknown>> = {};
 
-  for (const route of ROUTES) {
+  for (const route of routes) {
     const pathParams = pathParameters(route.path);
 
     // Registration exchanges a body token rather than carrying a runner Bearer credential.

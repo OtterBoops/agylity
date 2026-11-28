@@ -6,7 +6,8 @@ import { buildOpenApiDocument } from '../../src/web/openapi.js';
 import { ROUTES } from '../../src/web/routeRegistry.js';
 import { AGYLITY_VERSION } from '../../src/version.js';
 
-const render = (): string => `${JSON.stringify(buildOpenApiDocument(AGYLITY_VERSION), null, 2)}\n`;
+const render = (): string =>
+  `${JSON.stringify(buildOpenApiDocument(ROUTES, AGYLITY_VERSION), null, 2)}\n`;
 
 type Operation = {
   parameters?: { name: string; in: string; required: boolean }[];
@@ -17,7 +18,7 @@ type Operation = {
 
 const documentPaths = (): Record<string, Record<string, Operation>> =>
   (
-    buildOpenApiDocument(AGYLITY_VERSION) as unknown as {
+    buildOpenApiDocument(ROUTES, AGYLITY_VERSION) as unknown as {
       paths: Record<string, Record<string, Operation>>;
     }
   ).paths;
@@ -133,6 +134,6 @@ describe('Control plane: OpenAPI contract', () => {
   });
 
   it('defaults the OpenAPI document version to AGYLITY_VERSION', () => {
-    assert.equal(buildOpenApiDocument().info.version, AGYLITY_VERSION);
+    assert.equal(buildOpenApiDocument(ROUTES).info.version, AGYLITY_VERSION);
   });
 });

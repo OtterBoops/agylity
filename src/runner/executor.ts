@@ -17,9 +17,18 @@ import {
 } from '../coordinator/models.js';
 import type { PrPolicy } from '../config/schema.js';
 import { resolveTaskTitle } from '../shared/titles.js';
-import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../shared/github.js';
+import { resolveGithubRepoSlug } from '../shared/github.js';
+import { HEARTBEAT_TAIL_BYTES } from '../shared/contracts.js';
 import { AgyStreamFormatter } from './agyStream.js';
 import { tailWindow } from '../shared/text.js';
+import { stripUntrustedAttribution } from './attribution.js';
+import {
+  AGYLITY_FOOTER_MARKER,
+  AGYLITY_FOOTER_TAIL_RE,
+  agylityFooter,
+  buildPrompt,
+  buildPullRequestBody,
+} from './prompt.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
   ALLOWED_TEST_RUNNERS,
@@ -89,48 +98,8 @@ export interface TaskExecutionTelemetry {
   outputTokens?: number;
 }
 
-// Every policy states its own directive: an empty suffix would let the model choose a default that
-// no gate then enforces.
-const PR_POLICY_DIRECTIVES: Record<PrPolicy, string> = {
-  all: '\n\n[Policy: Implement the requested changes on this branch, run the relevant checks, and commit your changes with a concise, descriptive commit message (referencing #<issue> if fixing an issue). Do NOT add Co-authored-by trailers, override git author/committer identity, push, or open a pull request yourself.]',
-  docs_only:
-    '\n\n[Policy: Documentation only — modify documentation files only (do NOT modify source code or other non-documentation files) and commit your changes with a concise, descriptive commit message. Do NOT add Co-authored-by trailers, override git author/committer identity, push, or open a pull request yourself.]',
-  issues_only:
-    '\n\n[Policy: Issues Only — Do NOT modify repository files, push branches, or open pull requests. Report findings and proposed fixes as GitHub Issues only.]',
-  none: '\n\n[Policy: Read-only analysis — do NOT modify repository files, push branches, or open pull requests; report findings in your final response.]',
-};
-
-// The footer the prompt asks the agent to append, which marks an issue as this fleet's deliverable.
-const AGYLITY_FOOTER_MARKER = 'Dispatched via Agylity';
-// A prompt that already ends with that footer block must not get a second one appended to its PR.
-const AGYLITY_FOOTER_TAIL_RE = new RegExp(
-  `---\\s*\\n\\*${AGYLITY_FOOTER_MARKER}[^\\n]*\\*\\s*$`,
-  'i'
-);
-/** The Agylity footer, written once because `AGYLITY_FOOTER_TAIL_RE` recognises it in a PR body. */
-const agylityFooter = (tierLabel: string, model: string, effortNote: string): string =>
-  `*Dispatched via Agylity (${tierLabel}) with \`${model}\`${effortNote} — please review carefully.*`;
-
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
-const ROUTINE_PR_BODY_CAP = 4000;
-
-/**
- * Routine prompts are multi-branch meta-instructions rather than a description of the diff, so a
- * routine PR opens with the agent's own summary instead of dumping its instructions.
- */
-export const buildPullRequestBody = (
-  task: Pick<SwarmTask, 'tier' | 'prompt'>,
-  title: string,
-  capturedOutput: string
-): string => {
-  if (task.tier !== 'routine') return task.prompt;
-  const trimmed = capturedOutput.trim();
-  if (!trimmed) return title;
-  if (trimmed.length <= ROUTINE_PR_BODY_CAP) return trimmed;
-  return `…\n${tailWindow(trimmed, ROUTINE_PR_BODY_CAP).trimStart()}`;
-};
-
 const finiteNumber = (value: unknown): number | undefined => {
   if (value === null || value === undefined || value === '') return undefined;
   const parsed = Number(value);
@@ -185,7 +154,6 @@ export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
   return telemetry;
 };
 
-const STREAM_TAIL_BYTES = 16384;
 const STREAM_EMIT_INTERVAL_MS = 1000;
 const STREAM_EMIT_BYTES = 4096;
 const KILL_GRACE_MS = 2000;
@@ -306,7 +274,7 @@ export const buildCapacityContinuationPrompt = (ctx: CapacityContinuationContext
     ctx.diffStat || '(no diff)',
     '',
     'Tail of the interrupted output:',
-    ctx.tail.slice(-2000),
+    tailWindow(ctx.tail, 2000),
     '',
     'Original task:',
     ctx.originalPrompt,
@@ -443,75 +411,6 @@ const defaultResolveGithubIdentity = async (
   }
 };
 
-// A squash-merge credits every `Co-authored-by:` trailer and every noreply address on the branch,
-// so an agent that improvises an identity inside the container can attribute work to a stranger.
-const CO_AUTHOR_TRAILER_RE = /^[ \t]*co-authored-by[ \t]*:/i;
-// A NUL cannot appear in a commit message, so it is the one separator a message cannot forge.
-const ATTRIBUTION_FIELD = '\u0000';
-const ATTRIBUTION_FIELD_COUNT = 10;
-const ATTRIBUTION_LOG_FORMAT = '%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B';
-
-/** One commit as the attribution guard reads and replays it. */
-export interface BranchCommit {
-  sha: string;
-  tree: string;
-  parents: string[];
-  authorName: string;
-  authorEmail: string;
-  authorDate: string;
-  committerName: string;
-  committerEmail: string;
-  committerDate: string;
-  message: string;
-}
-
-/** True when the message carries a trailer GitHub would credit a third-party account from. */
-export const hasCoAuthorTrailer = (message: string): boolean =>
-  message.split(/\r?\n/).some((line) => CO_AUTHOR_TRAILER_RE.test(line));
-
-/** Drops every `Co-authored-by:` line and the blank tail it can leave behind. */
-export const stripCoAuthorTrailers = (message: string): string =>
-  `${message
-    .split(/\r?\n/)
-    .filter((line) => !CO_AUTHOR_TRAILER_RE.test(line))
-    .join('\n')
-    .replace(/\s+$/, '')}\n`;
-
-/** True for any address the identity holding the lease does not own, noreply or not. */
-export const isUnownedIdentity = (email: string, ownedEmail?: string): boolean =>
-  email.trim().toLowerCase() !== (ownedEmail ?? '').trim().toLowerCase();
-
-/** Parses `git log --reverse --format=<ATTRIBUTION_LOG_FORMAT>` output, oldest commit first. */
-export const parseBranchCommitLog = (stdout: string): BranchCommit[] => {
-  const fields = stdout.split(ATTRIBUTION_FIELD);
-  if (fields[fields.length - 1] === '') fields.pop();
-  const commits: BranchCommit[] = [];
-  for (
-    let index = 0;
-    index + ATTRIBUTION_FIELD_COUNT <= fields.length;
-    index += ATTRIBUTION_FIELD_COUNT
-  ) {
-    // Field order mirrors ATTRIBUTION_LOG_FORMAT; the message is last and keeps its own newlines.
-    const field = (offset: number): string => (fields[index + offset] ?? '').trim();
-    const sha = field(0);
-    if (!sha) continue;
-    const parents = field(2);
-    commits.push({
-      sha,
-      tree: field(1),
-      parents: parents === '' ? [] : parents.split(' '),
-      authorName: field(3),
-      authorEmail: field(4),
-      authorDate: field(5),
-      committerName: field(6),
-      committerEmail: field(7),
-      committerDate: field(8),
-      message: fields[index + 9] ?? '',
-    });
-  }
-  return commits;
-};
-
 const BRANCH_REF_FORBIDDEN = /[\s~^:?*\[\\\u0000-\u001f\u007f]/;
 
 // Git's ref rules that matter before one is handed to clone/checkout/push: no leading '-', no control
@@ -559,8 +458,9 @@ export class TaskExecutor {
     this.killProcessTreeFn = options.killProcessTreeFn ?? defaultKillProcessTree;
     this.dirExistsFn = options.dirExistsFn ?? existsSync;
     this.log = options.logger ?? logger.child('runner');
-    this.prPolicy =
-      normalizePrPolicy(options.prPolicy) ?? normalizePrPolicy(process.env.PR_POLICY) ?? 'all';
+    // Resolved config reaches the executor through options; reading the raw env here would ignore a
+    // dashboard override and let an unvalidated value through.
+    this.prPolicy = normalizePrPolicy(options.prPolicy) ?? 'all';
     this.cascade = options.cascade;
     this.mirrorCacheDir = options.mirrorCacheDir ?? path.join(os.tmpdir(), 'agylity-repo-mirrors');
     this.useMirrorCache = options.useMirrorCache !== false;
@@ -648,6 +548,8 @@ export class TaskExecutor {
         cwd: options.cwd,
         env: {
           ...process.env,
+          // No child of the runner may inherit a credential; the lease is passed explicitly.
+          GITHUB_TOKEN: '',
           ...options.env,
           // Windows only: agy's update check flashes a console window there.
           ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
@@ -700,14 +602,14 @@ export class TaskExecutor {
             ? options.streamFormatter.feed(stdoutTail)
             : stdoutTail;
           if (display) {
-            tail = redactGitSecrets(tailWindow(tail + display, STREAM_TAIL_BYTES), redactTokens);
+            tail = redactGitSecrets(tailWindow(tail + display, HEARTBEAT_TAIL_BYTES), redactTokens);
             pendingEmit += display.length;
           }
         }
         const formatterTail = options.streamFormatter?.flush() ?? '';
         if (formatterTail) {
           tail = redactGitSecrets(
-            tailWindow(tail + formatterTail, STREAM_TAIL_BYTES),
+            tailWindow(tail + formatterTail, HEARTBEAT_TAIL_BYTES),
             redactTokens
           );
           pendingEmit += formatterTail.length;
@@ -715,7 +617,10 @@ export class TaskExecutor {
         const stderrTail = stderrDecoder.end();
         if (stderrTail) {
           stderrChunks.push(stderrTail);
-          tail = redactGitSecrets(tailWindow(tail + stderrTail, STREAM_TAIL_BYTES), redactTokens);
+          tail = redactGitSecrets(
+            tailWindow(tail + stderrTail, HEARTBEAT_TAIL_BYTES),
+            redactTokens
+          );
           pendingEmit += stderrTail.length;
         }
       };
@@ -745,7 +650,7 @@ export class TaskExecutor {
           sink === stdoutChunks && options.streamFormatter
             ? options.streamFormatter.feed(text)
             : text;
-        tail = redactGitSecrets(tailWindow(tail + display, STREAM_TAIL_BYTES), redactTokens);
+        tail = redactGitSecrets(tailWindow(tail + display, HEARTBEAT_TAIL_BYTES), redactTokens);
         pendingEmit += display.length;
         const now = Date.now();
         if (
@@ -815,7 +720,7 @@ export class TaskExecutor {
           settle(null);
           return;
         }
-        const detail = (stderr.trim() || stdout.trim()).slice(-4000);
+        const detail = tailWindow(stderr.trim() || stdout.trim(), 4000);
         settle(
           commandError(
             `Command failed: ${file} (exit ${code ?? closeSignal ?? 'unknown'})${detail ? `\n${detail}` : ''}`,
@@ -1150,22 +1055,6 @@ export class TaskExecutor {
     await this.execFileFn('git', ['checkout', '-B', branchName], { cwd, timeout: 30000 });
   }
 
-  private buildPrompt(
-    task: SwarmTask,
-    prPolicy: PrPolicy,
-    tierLabel: string,
-    effort: CascadeHop['effort'] | undefined
-  ): { prompt: string; policySuffix: string; attributionSuffix: string } {
-    const policySuffix = PR_POLICY_DIRECTIVES[prPolicy];
-    const effortNote = effort ? ` (${effort} reasoning)` : '';
-    const attributionSuffix = `\n\n[Instruction: If you create or edit any GitHub PR or Issue description directly, keep it minimal: simply append a footer: "---\n${agylityFooter(tierLabel, task.model, effortNote)}". Never mention runner hostnames, internal server paths, or worker IDs.]`;
-    return {
-      prompt: `${task.prompt}${policySuffix}${attributionSuffix}`,
-      policySuffix,
-      attributionSuffix,
-    };
-  }
-
   private async resolveGitIdentityEnv(
     githubToken?: string,
     fallbackName?: string,
@@ -1287,7 +1176,6 @@ export class TaskExecutor {
           // Provide a deterministic git identity so `agy` never hits "Author identity unknown"
           // inside a container and improvises a third-party `@users.noreply.github.com` email.
           env: {
-            ...process.env,
             ...context.gitIdentityEnv,
             GITHUB_TOKEN: context.githubToken ?? '',
           },
@@ -1510,122 +1398,8 @@ export class TaskExecutor {
     } catch {}
   }
 
-  /**
-   * Removes attribution a squash-merge would honour, before the branch leaves the box.
-   *
-   * A merge reads `Co-authored-by:` trailers as real accounts and a noreply address as a real author,
-   * so an identity the agent invented inside the container could credit a stranger on the default
-   * branch. Each offending commit is replayed through `commit-tree` with only that metadata changed,
-   * so every tree (and therefore the diff under review) is identical and a clean branch keeps its
-   * own SHAs.
-   */
-  private async stripUntrustedAttribution(
-    cwd: string,
-    baseBranch: string,
-    ownedIdentity: { name: string; email: string }
-  ): Promise<void> {
-    const commits = await this.readBranchCommits(cwd, baseBranch);
-    if (commits.length === 0) return;
-
-    const { stdout: headOut } = await this.execFileFn('git', ['rev-parse', 'HEAD'], {
-      cwd,
-      timeout: 10000,
-    });
-    const originalHead = headOut.trim() || commits[commits.length - 1]!.sha;
-
-    const safeName = ownedIdentity.name || 'Agylity Runner';
-    const safeEmail = ownedIdentity.email || 'noreply@agylity.local';
-    const rewritten = new Map<string, string>();
-    let flagged = 0;
-
-    for (const commit of commits) {
-      const parents = commit.parents.map((parent) => rewritten.get(parent) ?? parent);
-      const parentsMoved = parents.some((parent, index) => parent !== commit.parents[index]);
-      const authorUnowned = isUnownedIdentity(commit.authorEmail, safeEmail);
-      const committerUnowned = isUnownedIdentity(commit.committerEmail, safeEmail);
-      const carriesTrailer = hasCoAuthorTrailer(commit.message);
-
-      if (!parentsMoved && !authorUnowned && !committerUnowned && !carriesTrailer) {
-        rewritten.set(commit.sha, commit.sha);
-        continue;
-      }
-
-      const nextSha = await this.replayCommit(cwd, {
-        ...commit,
-        parents,
-        authorName: authorUnowned ? safeName : commit.authorName,
-        authorEmail: authorUnowned ? safeEmail : commit.authorEmail,
-        committerName: committerUnowned ? safeName : commit.committerName,
-        committerEmail: committerUnowned ? safeEmail : commit.committerEmail,
-        message: carriesTrailer ? stripCoAuthorTrailers(commit.message) : commit.message,
-      });
-      rewritten.set(commit.sha, nextSha);
-      flagged += 1;
-    }
-
-    if (flagged === 0) return;
-
-    const head = rewritten.get(originalHead);
-    if (!head) {
-      throw new Error(`Rewritten commit map did not contain HEAD (${originalHead})`);
-    }
-
-    this.log.info(
-      'Rewrote attribution on %d of %d commit(s) before pushing: co-author trailers and identities the lease does not own never reach GitHub',
-      flagged,
-      commits.length
-    );
-    await this.execFileFn('git', ['reset', '--hard', head], { cwd, timeout: 15000 });
-  }
-
-  /** The commits this branch adds to `baseBranch`, oldest first in topological order so parents replay before children. */
-  private async readBranchCommits(cwd: string, baseBranch: string): Promise<BranchCommit[]> {
-    const { stdout } = await this.execFileFn(
-      'git',
-      [
-        'log',
-        '-z',
-        '--topo-order',
-        '--reverse',
-        `--format=${ATTRIBUTION_LOG_FORMAT}`,
-        `${baseBranch}..HEAD`,
-      ],
-      { cwd, timeout: 20000 }
-    );
-    return parseBranchCommitLog(stdout ?? '');
-  }
-
-  /** Rebuilds one commit from its own tree and metadata, returning the new id. */
-  private async replayCommit(cwd: string, commit: BranchCommit): Promise<string> {
-    const scratchDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agylity-commit-'));
-    try {
-      const messagePath = path.join(scratchDir, 'message');
-      await fsPromises.writeFile(messagePath, commit.message, 'utf8');
-      const args = ['commit-tree', commit.tree];
-      for (const parent of commit.parents) args.push('-p', parent);
-      args.push('-F', messagePath);
-      const { stdout } = await this.execFileFn('git', args, {
-        cwd,
-        timeout: 30000,
-        env: {
-          ...process.env,
-          GIT_AUTHOR_NAME: commit.authorName,
-          GIT_AUTHOR_EMAIL: commit.authorEmail,
-          GIT_AUTHOR_DATE: commit.authorDate,
-          GIT_COMMITTER_NAME: commit.committerName,
-          GIT_COMMITTER_EMAIL: commit.committerEmail,
-          GIT_COMMITTER_DATE: commit.committerDate,
-        },
-      });
-      const sha = (stdout ?? '').trim();
-      if (!sha) throw new Error(`git commit-tree produced no commit id for tree ${commit.tree}`);
-      return sha;
-    } finally {
-      await fsPromises.rm(scratchDir, { recursive: true, force: true });
-    }
-  }
-
   /** Returns the failure message for a rejected push, or null once the branch is upstream. */
+
   private async pushTaskBranch(
     task: SwarmTask,
     branchName: string,
@@ -1793,22 +1567,11 @@ export class TaskExecutor {
     );
   }
 
-  /** Resolves the task repository's GitHub owner/repo slug from configuration or its origin remote. */
-  private async resolveGithubRepoSlug(task: SwarmTask): Promise<string | undefined> {
-    const fromCloneUrl = parseGithubSlugFromUrl(task.cloneUrl);
-    if (fromCloneUrl) return fromCloneUrl;
-    const configuredName = task.repositoryName?.trim();
-    if (configuredName && OWNER_REPO_SLUG_RE.test(configuredName)) return configuredName;
-    try {
-      const { stdout } = await this.execFileFn(
-        'git',
-        ['-C', task.repositoryPath, 'remote', 'get-url', 'origin'],
-        { timeout: 5000 }
-      );
-      return parseGithubSlugFromUrl(stdout);
-    } catch {
-      return undefined;
-    }
+  private taskGithubRepoSlug(task: SwarmTask): Promise<string | undefined> {
+    return resolveGithubRepoSlug(
+      { cloneUrl: task.cloneUrl, name: task.repositoryName, path: task.repositoryPath },
+      this.execFileFn
+    );
   }
 
   /**
@@ -1823,7 +1586,7 @@ export class TaskExecutor {
     sinceMs: number,
     githubToken: string | undefined
   ): Promise<Array<{ url: string; title: string }>> {
-    const slug = await this.resolveGithubRepoSlug(task);
+    const slug = await this.taskGithubRepoSlug(task);
     if (!slug) {
       this.log.warn(
         'Cannot resolve a GitHub owner/repo slug for %s; no issue deliverable can be reported',
@@ -1956,7 +1719,7 @@ export class TaskExecutor {
       const tierLabel = task.tier || 'immediate';
       const effectivePrPolicy: PrPolicy =
         normalizePrPolicy(task.prPolicy) ?? this.prPolicy ?? 'all';
-      const { prompt, policySuffix, attributionSuffix } = this.buildPrompt(
+      const { prompt, policySuffix, attributionSuffix } = buildPrompt(
         task,
         effectivePrPolicy,
         tierLabel,
@@ -2090,7 +1853,10 @@ export class TaskExecutor {
       let prUrl: string | undefined;
       if (task.pushBranch) {
         // Nothing unowned reaches the remote: the guard runs before the leased token can push.
-        await this.stripUntrustedAttribution(cwd, baseBranch, ownedIdentity);
+        await stripUntrustedAttribution(cwd, baseBranch, ownedIdentity, {
+          execFile: this.execFileFn,
+          log: this.log,
+        });
         const pushError = await this.pushTaskBranch(task, finalBranchName, githubToken);
         if (pushError) {
           return {

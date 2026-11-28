@@ -8,13 +8,13 @@ import {
   type NotificationDestination,
   type PrPolicy,
 } from '../shared/contracts.js';
-import { LEGACY_POOL_GROUPS } from '../shared/models.js';
+import { DEFAULT_DISPATCH_MODEL, LEGACY_POOL_GROUPS } from '../shared/models.js';
 import {
   DEFAULT_NOTIFICATION_TYPES,
   NOTIFICATION_KIND_VALUES,
   type NotificationKind,
 } from '../shared/notificationKinds.js';
-import { isValidIpRange } from '../web/ip.js';
+import { isValidIpRange } from '../net/ip.js';
 
 const warnEnvFallback = (variable: string, reason: string): void =>
   logger.child('config').warn('%s: %s; falling back to default', variable, reason);
@@ -751,10 +751,10 @@ export const CONFIG_REGISTRY = [
   {
     group: 'coordinator',
     type: 'string',
-    defaultLabel: 'gemini-4-hydrogen',
+    defaultLabel: DEFAULT_DISPATCH_MODEL,
     example: 'comment',
     key: 'defaultDispatchModel',
-    value: 'gemini-4-hydrogen',
+    value: DEFAULT_DISPATCH_MODEL,
     overrideSchema: z.string(),
     env: 'DEFAULT_DISPATCH_MODEL',
     envSchema: z.string(),

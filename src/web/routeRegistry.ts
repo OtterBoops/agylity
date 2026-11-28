@@ -199,7 +199,7 @@ export const ROUTES: readonly RouteSpec[] = [
       if (method !== 'GET') {
         return methodNotAllowed(res);
       }
-      return sendJson(res, 200, buildOpenApiDocument(AGYLITY_VERSION));
+      return sendJson(res, 200, buildOpenApiDocument(ROUTES, AGYLITY_VERSION));
     },
   },
   {

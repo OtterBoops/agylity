@@ -205,6 +205,8 @@ export class RemoteSwarmRunner {
       await execFile(agyBin, ['--output-format', 'json', 'models'], {
         timeout: 10000,
         windowsHide: true,
+        // The probe reads the agy session, never GitHub; do not let a runner env token ride along.
+        env: { ...process.env, GITHUB_TOKEN: '' },
       });
       this.authOkUntil = now + 5 * 60 * 1000;
       this.authBlockedUntil = 0;

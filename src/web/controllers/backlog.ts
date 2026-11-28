@@ -18,9 +18,8 @@ import {
   type BacklogStatus,
 } from '../../coordinator/models.js';
 import type { BacklogTaskRecord } from '../../coordinator/queue.js';
-import type { RepositoryEntry } from '../../config/schema.js';
 import { FINISHED_BACKLOG_STATUS_VALUES } from '../../shared/contracts.js';
-import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../../shared/github.js';
+import { resolveGithubRepoSlug } from '../../shared/github.js';
 import {
   isPlainJsonObject,
   rejectUnknownPatchKeys,
@@ -313,38 +312,6 @@ const CLOSURE_PRESERVED_STATUSES: ReadonlySet<string> = new Set<string>([
   'dispatched',
   ...FINISHED_BACKLOG_STATUS_VALUES,
 ]);
-
-export const resolveGithubRepoSlug = async (
-  repo: Pick<RepositoryEntry, 'id' | 'name' | 'path' | 'cloneUrl'>,
-  execFileAsync: typeof defaultExecFileAsync = defaultExecFileAsync
-): Promise<string | undefined> => {
-  if (repo.cloneUrl) {
-    const fromCloneUrl = parseGithubSlugFromUrl(repo.cloneUrl);
-    if (fromCloneUrl) return fromCloneUrl;
-  }
-  if (OWNER_REPO_SLUG_RE.test(repo.id)) {
-    return repo.id;
-  }
-  if (OWNER_REPO_SLUG_RE.test(repo.name)) {
-    return repo.name;
-  }
-  if (repo.path) {
-    try {
-      const { stdout } = await execFileAsync(
-        'git',
-        ['-C', repo.path, 'remote', 'get-url', 'origin'],
-        { timeout: 5000 }
-      );
-      if (stdout) {
-        const fromOrigin = parseGithubSlugFromUrl(stdout);
-        if (fromOrigin) return fromOrigin;
-      }
-    } catch {
-      // Missing checkout, non-git directory, or no origin remote.
-    }
-  }
-  return undefined;
-};
 
 interface GithubIssueSyncFailure {
   repositoryId: string;

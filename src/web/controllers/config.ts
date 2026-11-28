@@ -15,7 +15,7 @@ import {
 import type { NotificationDestination } from '../../shared/contracts.js';
 import { logger } from '../../logs/logger.js';
 import { isPlainJsonObject } from './patchFields.js';
-import { isValidIpRange } from '../ip.js';
+import { isValidIpRange } from '../../net/ip.js';
 
 const isSecretSet = (value: unknown): boolean => {
   if (typeof value === 'string') return value.trim() !== '';

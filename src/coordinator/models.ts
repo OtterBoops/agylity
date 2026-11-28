@@ -21,9 +21,11 @@ import { toPercentFloor } from '../shared/percent.js';
 export {
   ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
+  DEFAULT_DISPATCH_MODEL,
   isOrchestratorModelId,
   modelSupportsEffort,
 } from '../shared/models.js';
+import { DEFAULT_DISPATCH_MODEL } from '../shared/models.js';
 export type { AgyModelCatalogEntry, ReasoningEffort };
 
 // Wire enums and payloads are declared once in ../../shared/contracts.ts; the zod schemas below
@@ -187,13 +189,13 @@ const stripEffortSuffix = (value: string): string =>
 
 export const resolveConcreteModelId = (
   requestedModel: string | undefined,
-  defaultModel = 'gemini-4-argon'
+  defaultModel = DEFAULT_DISPATCH_MODEL
 ): string => {
   const configured = (defaultModel ?? '').trim();
   const safeDefault =
     configured !== '' && configured.toLowerCase() !== 'auto'
       ? (resolveShorthandModelId(configured.toLowerCase()) ?? stripEffortSuffix(configured))
-      : 'gemini-4-argon';
+      : DEFAULT_DISPATCH_MODEL;
 
   const requested = (requestedModel ?? '').trim();
   if (requested === '' || requested.toLowerCase() === 'auto') return safeDefault;

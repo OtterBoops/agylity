@@ -15,6 +15,13 @@ import {
   resolveNotificationDestinations,
 } from '../../src/config/destinations.js';
 import { CompositeNotifier } from '../../src/notify/adapters/composite.js';
+import {
+  applyDestinationConfig,
+  createNotifier,
+  createNotifierForDestination,
+} from '../../src/notify/factory.js';
+
+const notifierFactory = { applyDestinationConfig, createNotifier, createNotifierForDestination };
 import { DEFAULT_NOTIFICATION_TYPES } from '../../src/shared/notificationKinds.js';
 import type { DeliveryOutcome, Notifier } from '../../src/notify/types.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
@@ -355,7 +362,12 @@ describe('Notification destinations: composite config updates', () => {
 
     const webhook = fake('webhook:a');
     const discord = fake('discord:b');
-    const composite = new CompositeNotifier([webhook, discord]);
+    const composite = new CompositeNotifier(
+      [webhook, discord],
+      undefined,
+      undefined,
+      notifierFactory
+    );
 
     const destinations: NotificationDestination[] = [
       legacyInstance('a', 'webhook', { url: 'https://instance-a.test', secret: 's' }),

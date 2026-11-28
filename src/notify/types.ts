@@ -1,6 +1,6 @@
 import type { QuotaAlert, QuotaSnapshot } from '../sentry/models.js';
 import type { ResolvedConfig } from '../config/schema.js';
-import type { DeliveryChannelResult } from '../shared/contracts.js';
+import type { DeliveryChannelResult, NotificationDestination } from '../shared/contracts.js';
 import type { NotificationKind } from '../shared/notificationKinds.js';
 
 export type { QuotaAlert, QuotaSnapshot };
@@ -107,4 +107,22 @@ export interface NotifierOptions {
   ) => Promise<DispatchResult>;
   onQuotaRequested?: () => Promise<QuotaSnapshot[]>;
   onOwnerDiscovered?: (ownerUserId: string) => void | Promise<void>;
+}
+
+/** What a composite needs to rebuild adapters when destinations change; the factory supplies it. */
+export interface NotifierFactory {
+  applyDestinationConfig(
+    config: ResolvedConfig,
+    destination: NotificationDestination
+  ): ResolvedConfig;
+  createNotifierForDestination(
+    destination: NotificationDestination,
+    config: ResolvedConfig,
+    options?: NotifierOptions
+  ): Promise<Notifier>;
+  createNotifier(
+    channelOrConfig: string | ResolvedConfig,
+    configOrOptions?: ResolvedConfig | NotifierOptions,
+    maybeOptions?: NotifierOptions
+  ): Promise<Notifier>;
 }

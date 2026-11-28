@@ -11,13 +11,13 @@ import { makeTempDir } from '../e2e/harness/index.js';
 import { createLogger } from '../../src/logs/logger.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import { TaskQueue, type SwarmTask } from '../../src/coordinator/queue.js';
+import { buildPullRequestBody } from '../../src/runner/prompt.js';
 import {
-  buildPullRequestBody,
   hasCoAuthorTrailer,
   isUnownedIdentity,
   parseBranchCommitLog,
   stripCoAuthorTrailers,
-} from '../../src/runner/executor.js';
+} from '../../src/runner/attribution.js';
 import { defaultExecFileAsync } from '../../src/sentry/discovery.js';
 import { parseRunnerCliArgs } from '../../src/runner-cli.js';
 import {
@@ -178,6 +178,7 @@ interface FakeChild extends EventEmitter {
 interface SpawnCall {
   file: string;
   args: readonly string[];
+  env: Record<string, string | undefined>;
   child: FakeChild;
 }
 
@@ -206,9 +207,10 @@ interface SpawnRecorder {
 
 const recordSpawn = (onSpawn?: (call: SpawnCall, index: number) => void): SpawnRecorder => {
   const calls: SpawnCall[] = [];
-  const spawnFn: SpawnFn = (file, args) => {
+  const spawnFn: SpawnFn = (file, args, options) => {
     const child = createFakeChild(9000 + calls.length);
-    const call: SpawnCall = { file, args: [...args], child };
+    const env = (options?.env ?? {}) as Record<string, string | undefined>;
+    const call: SpawnCall = { file, args: [...args], env, child };
     calls.push(call);
     onSpawn?.(call, calls.length - 1);
     return child as unknown as ChildProcess;
@@ -1717,7 +1719,10 @@ describe('Runner: verification artifacts', () => {
 });
 
 describe('Runner: verification command guard', () => {
-  const executeWithVerify = async (verifyCommand: string) => {
+  const executeWithVerify = async (
+    verifyCommand: string,
+    executeOptions: Parameters<typeof TaskExecutor.prototype.execute>[1] = {}
+  ) => {
     const { dir, cleanup } = makeTempDir('runner_verify_');
     const { task, db } = enqueueTask(dir, { verifyCommand });
     const { spawnFn, calls } = recordSpawn((call) => finishChild(call.child, 0, 'ok\n'));
@@ -1731,8 +1736,8 @@ describe('Runner: verification command guard', () => {
     });
 
     try {
-      const result = await executor.execute(task);
-      return { result, spawned: calls.map((call) => call.file) };
+      const result = await executor.execute(task, executeOptions);
+      return { result, spawned: calls.map((call) => call.file), calls };
     } finally {
       db.close();
       cleanup();
@@ -1743,6 +1748,28 @@ describe('Runner: verification command guard', () => {
     const { result, spawned } = await executeWithVerify('npm test');
     assert.equal(result.success, true);
     assert.deepEqual(spawned, ['agy', 'npm']);
+  });
+
+  it('never hands the runner environment token to the agent or the verification child', async () => {
+    // A verifyCommand is not a GitHub client; inheriting the runner's own token would leak a
+    // credential into an allowlisted test process for no reason.
+    const previous = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = 'ghp_verify_child_must_not_see_me';
+    try {
+      const { calls } = await executeWithVerify('npm test');
+      assert.equal(calls.find((call) => call.file === 'agy')?.env.GITHUB_TOKEN, '');
+      assert.equal(calls.find((call) => call.file === 'npm')?.env.GITHUB_TOKEN, '');
+    } finally {
+      if (previous === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previous;
+    }
+  });
+
+  it('still hands the leased token to the agent and to no other child', async () => {
+    const leased = 'ghp_lease_for_this_task_only';
+    const { calls } = await executeWithVerify('npm test', { githubToken: leased });
+    assert.equal(calls.find((call) => call.file === 'agy')?.env.GITHUB_TOKEN, leased);
+    assert.equal(calls.find((call) => call.file === 'npm')?.env.GITHUB_TOKEN, '');
   });
 
   it('refuses to execute anything outside the test-runner allowlist', async () => {

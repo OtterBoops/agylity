@@ -1,4 +1,4 @@
-import type { Notifier, NotifierOptions } from './types.js';
+import type { Notifier, NotifierFactory, NotifierOptions } from './types.js';
 import type { ResolvedConfig } from '../config/schema.js';
 import { BUILTIN_DEFAULTS } from '../config/schema.js';
 import { logger } from '../logs/logger.js';
@@ -155,12 +155,13 @@ export const createNotifier = async (
     const config = channelOrConfig;
     const options = configOrOptions as NotifierOptions | undefined;
     const destinations = resolvedDestinations(config).filter((destination) => destination.enabled);
-    if (destinations.length === 0) return new CompositeNotifier([], options, config);
+    if (destinations.length === 0)
+      return new CompositeNotifier([], options, config, notifierFactory);
     const notifiers = await Promise.all(
       destinations.map((destination) => instantiateDestination(destination, config, options))
     );
     if (notifiers.length === 1 && notifiers[0]) return notifiers[0];
-    return new CompositeNotifier(notifiers, options, config);
+    return new CompositeNotifier(notifiers, options, config, notifierFactory);
   }
 
   let config: ResolvedConfig;
@@ -178,7 +179,7 @@ export const createNotifier = async (
 
   const channels = normalizeChannelNames(channelOrConfig.split(','));
   if (channels.length === 0) {
-    return new CompositeNotifier([], options);
+    return new CompositeNotifier([], options, undefined, notifierFactory);
   }
 
   const instantiatedNotifiers = await instantiateChannels(channels, config, options, 'throw');
@@ -187,7 +188,7 @@ export const createNotifier = async (
     return instantiatedNotifiers[0];
   }
 
-  return new CompositeNotifier(instantiatedNotifiers, options, config);
+  return new CompositeNotifier(instantiatedNotifiers, options, config, notifierFactory);
 };
 
 export const createDaemonNotifier = async (
@@ -204,7 +205,13 @@ export const createDaemonNotifier = async (
   const notifiers = await Promise.all(
     enabled.map((destination) => instantiateDestination(destination, config, options))
   );
-  const composite = new CompositeNotifier(notifiers, options, config);
+  const composite = new CompositeNotifier(notifiers, options, config, notifierFactory);
   composite.setDestinations(destinations);
   return composite;
+};
+
+const notifierFactory: NotifierFactory = {
+  applyDestinationConfig,
+  createNotifierForDestination,
+  createNotifier,
 };

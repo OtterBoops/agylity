@@ -307,3 +307,6 @@ export interface LogEntry {
   level: LogLevel;
   message: string;
 }
+
+/** Agent output tail a heartbeat carries, in UTF-16 units (what `tailWindow` caps). */
+export const HEARTBEAT_TAIL_BYTES = 16 * 1024;

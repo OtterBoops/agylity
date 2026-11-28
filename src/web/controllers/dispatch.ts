@@ -13,7 +13,8 @@ import {
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { PR_POLICY_VALUES, type PrPolicy, type RunnersResponse } from '../../shared/contracts.js';
-import { extractClientIp } from '../ip.js';
+import { DEFAULT_DISPATCH_MODEL } from '../../shared/models.js';
+import { extractClientIp } from '../../net/ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
 import { BUILTIN_DEFAULTS } from '../../config/schema.js';
@@ -54,7 +55,7 @@ const parseCascadeRequest = (
   raw: unknown,
   options: CascadeRequestOptions = {}
 ): CascadeParseResult => {
-  const fallbackModel = options.fallbackModel?.trim() || 'gemini-4-hydrogen';
+  const fallbackModel = options.fallbackModel?.trim() || DEFAULT_DISPATCH_MODEL;
 
   if (raw === undefined || raw === null) {
     const seeded = options.fallbackEffort

@@ -132,7 +132,7 @@ Changes made in the Web UI take immediate effect over the in-memory event bus (d
 
 ### 3.6. Application-Native IP Filtering & Anti-Spoofing Defense (CWE-290)
 
-Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/web/ip.ts`):
+Zero-dependency IPv4/IPv6 and CIDR subnet parser (`src/net/ip.ts`):
 
 - **Dynamic Posture**: Inactive when `ALLOWED_IP_RANGES` is empty; strictly active when entries exist.
 - **Proxy Header Spoof Protection**: reverse proxy headers (`CF-Connecting-IP`, `X-Real-IP`, `X-Forwarded-For`) are ignored unless `TRUSTED_PROXIES` is enabled **and** the direct TCP peer socket (`req.socket.remoteAddress`) is loopback (`127.0.0.0/8`, `::1/128`). Private ranges are deliberately not trusted: any host on the LAN or a Docker bridge could forge the client IP. `X-Forwarded-For` is walked right-to-left, skipping trusted hops, so a client-supplied prefix cannot name its own address.

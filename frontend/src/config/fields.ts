@@ -1,4 +1,3 @@
-import type { FieldDef } from '../components/SettingsForm';
 import type { ModelCatalogEntry, ReasoningEffort } from '../types';
 import {
   ALL_EFFORTS,
@@ -8,6 +7,20 @@ import {
 } from '../../../src/shared/models.ts';
 import type { PrPolicy } from '../../../src/shared/contracts.ts';
 import { PR_POLICIES } from '../../../src/shared/policies.ts';
+
+export interface FieldDef {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'list' | 'select' | 'password' | 'boolean';
+  itemType?: 'number';
+  hint?: string;
+  placeholder?: string;
+  options?: Array<{ value: string; label: string }>;
+  onLabel?: string;
+  offLabel?: string;
+  colSpan?: 1 | 2;
+  autocomplete?: string;
+}
 
 export const MODEL_OPTIONS: Array<{ value: string; label: string }> = CANONICAL_AGY_MODELS.map(
   (model) => ({ value: model.id, label: model.label })

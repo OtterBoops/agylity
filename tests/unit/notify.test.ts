@@ -973,6 +973,7 @@ describe('Milestone 3 Unit Tests: Pluggable Notification & Discord Architecture'
 
         notifier = new WebhookNotifier({
           notificationWebhookUrl: webhookUrl,
+          webhookSecret: 'super-secret-key-123',
         });
         await notifier.initialize();
 

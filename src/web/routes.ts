@@ -3,7 +3,7 @@ import { resolveWebUiAuthToken } from '../config/schema.js';
 import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';
-import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from './ip.js';
+import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from '../net/ip.js';
 import { PayloadTooLargeError, sendPayloadTooLarge, sendJson } from './http.js';
 import { handleStaticAsset, handleIndexHtml } from './controllers/static.js';
 import { matchRoute, routeAuthFor } from './routeRegistry.js';

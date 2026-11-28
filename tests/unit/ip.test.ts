@@ -7,7 +7,7 @@ import {
   isValidIpRange,
   isLoopbackIp,
   extractClientIp,
-} from '../../src/web/ip.js';
+} from '../../src/net/ip.js';
 
 describe('Application-Native IP Whitelisting Engine (ip.ts)', () => {
   describe('normalizeIp', () => {

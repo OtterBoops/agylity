@@ -364,11 +364,11 @@ export class WebhookNotifier implements Notifier {
   }
 
   public getWebhookUrl(): string | undefined {
-    return this.config.notificationWebhookUrl || process.env.NOTIFICATION_WEBHOOK_URL;
+    return this.config.notificationWebhookUrl?.trim() || undefined;
   }
 
   public getWebhookSecret(): string | undefined {
-    return this.config.webhookSecret || process.env.WEBHOOK_SECRET;
+    return this.config.webhookSecret?.trim() || undefined;
   }
 
   public async postWebhook(payload: WebhookPayload): Promise<{ status: number }> {

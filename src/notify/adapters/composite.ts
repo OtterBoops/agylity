@@ -1,5 +1,6 @@
 import type {
   Notifier,
+  NotifierFactory,
   NotifierOptions,
   QuotaAlert,
   DispatchStatusUpdate,
@@ -25,6 +26,7 @@ export class CompositeNotifier implements Notifier {
   private lastConfig: Partial<ResolvedConfig> = {};
   private readonly silenced = new Set<NotificationKind>();
   private destinations: NotificationDestination[] = [];
+  private readonly factory?: NotifierFactory;
 
   get channelName(): string {
     if (this.notifiers.length === 0) return 'none';
@@ -35,10 +37,12 @@ export class CompositeNotifier implements Notifier {
   constructor(
     notifiers: Notifier[] = [],
     options?: NotifierOptions,
-    initialConfig?: Partial<ResolvedConfig>
+    initialConfig?: Partial<ResolvedConfig>,
+    factory?: NotifierFactory
   ) {
     this.notifiers = notifiers;
     this.options = options;
+    this.factory = factory;
     if (initialConfig) {
       this.lastConfig = { ...initialConfig };
     }
@@ -167,10 +171,18 @@ export class CompositeNotifier implements Notifier {
     return this.gate(notice.kind) ?? this.fanOutOutcome('Info notice', (n) => n.notifyInfo(notice));
   }
 
+  private requireFactory(): NotifierFactory {
+    if (!this.factory) {
+      throw new Error('CompositeNotifier cannot rebuild destinations without a NotifierFactory');
+    }
+    return this.factory;
+  }
+
   private async syncDestinations(next: NotificationDestination[]): Promise<void> {
     const enabled = next.filter((destination) => destination.enabled);
     const wanted = new Set(enabled.map((destination) => destinationChannelName(destination)));
-    const { createNotifierForDestination, applyDestinationConfig } = await import('../factory.js');
+    const factory = this.requireFactory();
+    const { createNotifierForDestination, applyDestinationConfig } = factory;
 
     const toKeep: Notifier[] = [];
     for (const notifier of this.notifiers) {
@@ -280,7 +292,7 @@ export class CompositeNotifier implements Notifier {
       for (const ch of targetChannelNames) {
         if (!currentNames.includes(ch)) {
           try {
-            const { createNotifier } = await import('../factory.js');
+            const { createNotifier } = this.requireFactory();
             const newNotifier = await createNotifier(
               ch,
               this.lastConfig as ResolvedConfig,
@@ -298,7 +310,7 @@ export class CompositeNotifier implements Notifier {
     }
 
     if (this.destinations.length > 0) {
-      const { applyDestinationConfig } = await import('../factory.js');
+      const { applyDestinationConfig } = this.requireFactory();
       const byName = new Map(
         this.destinations
           .filter((destination) => destination.enabled)

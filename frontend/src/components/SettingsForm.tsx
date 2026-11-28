@@ -5,6 +5,7 @@ import {
   resolveModelEffort,
   toDisplay,
 } from '../config/fields';
+import type { FieldDef } from '../config/fields';
 import type { ConfigData, ReasoningEffort } from '../types';
 import { deleteConfigOverride } from '../api';
 import { clearDraft, configStore, dirtyKeys, saveDrafts, setDraft } from '../state/configStore';
@@ -12,20 +13,6 @@ import { pushErrorToast, pushSuccessToast } from '../state/toastStore';
 import { useStore } from '../state/store';
 import { ProvenanceBadge } from './settings/ProvenanceBadge';
 import { ToggleSwitch } from './ToggleSwitch';
-
-export interface FieldDef {
-  key: string;
-  label: string;
-  type: 'text' | 'number' | 'list' | 'select' | 'password' | 'boolean';
-  itemType?: 'number';
-  hint?: string;
-  placeholder?: string;
-  options?: Array<{ value: string; label: string }>;
-  onLabel?: string;
-  offLabel?: string;
-  colSpan?: 1 | 2;
-  autocomplete?: string;
-}
 
 interface SettingsFormProps {
   title: string;

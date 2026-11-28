@@ -16,11 +16,8 @@ import { clearAuthFailures } from '../../src/web/routes.js';
 import { ROUTES } from '../../src/web/routeRegistry.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
-import {
-  handleSyncGithubBacklog,
-  listOpenIssues,
-  resolveGithubRepoSlug,
-} from '../../src/web/controllers/backlog.js';
+import { handleSyncGithubBacklog, listOpenIssues } from '../../src/web/controllers/backlog.js';
+import { resolveGithubRepoSlug } from '../../src/shared/github.js';
 import { Coordinator } from '../../src/coordinator/coordinator.js';
 import {
   formatBuildLabel,
@@ -4756,41 +4753,57 @@ describe('Web: Antigravity CLI version reporting', () => {
     };
 
     it('resolves repoSlug from cloneUrl, id, name, or local git origin remote', async () => {
+      // Unused: these cases resolve before the origin-remote fallback runs.
+      const unusedExec = async () => {
+        throw new Error('unused');
+      };
       assert.equal(
-        await resolveGithubRepoSlug({
-          id: 'agylity',
-          name: 'agylity',
-          path: '/repos/agylity',
-          cloneUrl: 'https://github.com/OtterBoops/agylity.git',
-        }),
+        await resolveGithubRepoSlug(
+          {
+            id: 'agylity',
+            name: 'agylity',
+            path: '/repos/agylity',
+            cloneUrl: 'https://github.com/OtterBoops/agylity.git',
+          },
+          unusedExec
+        ),
         'OtterBoops/agylity'
       );
 
       assert.equal(
-        await resolveGithubRepoSlug({
-          id: 'agylity',
-          name: 'agylity',
-          path: '/repos/agylity',
-          cloneUrl: 'git@github.com:OtterBoops/agylity.git',
-        }),
+        await resolveGithubRepoSlug(
+          {
+            id: 'agylity',
+            name: 'agylity',
+            path: '/repos/agylity',
+            cloneUrl: 'git@github.com:OtterBoops/agylity.git',
+          },
+          unusedExec
+        ),
         'OtterBoops/agylity'
       );
 
       assert.equal(
-        await resolveGithubRepoSlug({
-          id: 'OtterBoops/agylity',
-          name: 'agylity',
-          path: '/repos/agylity',
-        }),
+        await resolveGithubRepoSlug(
+          {
+            id: 'OtterBoops/agylity',
+            name: 'agylity',
+            path: '/repos/agylity',
+          },
+          unusedExec
+        ),
         'OtterBoops/agylity'
       );
 
       assert.equal(
-        await resolveGithubRepoSlug({
-          id: 'agylity',
-          name: 'OtterBoops/agylity',
-          path: '/repos/agylity',
-        }),
+        await resolveGithubRepoSlug(
+          {
+            id: 'agylity',
+            name: 'OtterBoops/agylity',
+            path: '/repos/agylity',
+          },
+          unusedExec
+        ),
         'OtterBoops/agylity'
       );
 

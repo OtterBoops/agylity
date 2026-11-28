@@ -14,3 +14,43 @@ export const parseGithubSlugFromUrl = (value: string | undefined): string | unde
   const match = GITHUB_URL_SLUG_RE.exec(value.trim());
   return match ? `${match[1]}/${match[2]}` : undefined;
 };
+
+type ExecFileLike = (
+  file: string,
+  args: readonly string[],
+  options?: Record<string, unknown>
+) => Promise<{ stdout: string }>;
+
+export interface RepoSlugCandidate {
+  cloneUrl?: string;
+  id?: string;
+  name?: string;
+  path?: string;
+}
+
+/**
+ * The one resolution of a repository's GitHub `owner/repo` slug: clone URL, then id, then name, then
+ * the origin remote of a local checkout. `execFile` is injected because this file stays import-free.
+ */
+export const resolveGithubRepoSlug = async (
+  candidate: RepoSlugCandidate,
+  execFile: ExecFileLike
+): Promise<string | undefined> => {
+  const fromCloneUrl = parseGithubSlugFromUrl(candidate.cloneUrl);
+  if (fromCloneUrl) return fromCloneUrl;
+  const id = candidate.id?.trim();
+  if (id && OWNER_REPO_SLUG_RE.test(id)) return id;
+  const name = candidate.name?.trim();
+  if (name && OWNER_REPO_SLUG_RE.test(name)) return name;
+  if (!candidate.path) return undefined;
+  try {
+    const { stdout } = await execFile(
+      'git',
+      ['-C', candidate.path, 'remote', 'get-url', 'origin'],
+      { timeout: 5000 }
+    );
+    return parseGithubSlugFromUrl(stdout);
+  } catch {
+    return undefined;
+  }
+};
