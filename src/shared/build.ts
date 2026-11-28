@@ -1,6 +1,3 @@
-// Zero imports and erasable syntax only: the frontend bundles this file directly, and both sides
-// must agree on how a build channel is validated and labelled.
-
 export type BuildChannel = 'release' | 'main' | 'dev';
 
 const BUILD_CHANNELS: readonly BuildChannel[] = ['release', 'main', 'dev'];

@@ -66,7 +66,6 @@ export class DiscordNotifier implements Notifier {
     return { delivered: false, results: { [this.channelName]: { success: false, error } } };
   }
 
-  /** Attaches the owner mention only when pinging is enabled and the owner is known. */
   private withOwnerMention(payload: any, ownerId: string | undefined): any {
     const mention = this.resolveOwnerMention(ownerId);
     if (!mention || !ownerId) return payload;

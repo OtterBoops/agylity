@@ -12,7 +12,6 @@ export interface PublishDeps {
   log: Logger;
 }
 
-/** Leaves the working copy on the base branch and drops the task branch. */
 export const discardBranch = async (
   cwd: string,
   baseBranch: string,
@@ -25,7 +24,6 @@ export const discardBranch = async (
   } catch {}
 };
 
-/** Returns the failure message for a rejected push, or null once the branch is upstream. */
 export const pushTaskBranch = async (
   input: {
     repositoryPath: string;
@@ -60,7 +58,6 @@ export const pushTaskBranch = async (
   }
 };
 
-/** Opens the pull request for a pushed branch, returning its URL when one was reported. */
 export const openPullRequest = async (
   input: {
     repositoryPath: string;

@@ -1,7 +1,6 @@
 import type { Logger } from '../logs/logger.js';
 import type { BacklogStatus, BacklogTaskRecord, TaskStatus } from '../shared/contracts.js';
 
-/** The queue operations settlement needs; `TaskQueue` satisfies this structurally. */
 export interface BacklogOriginStore {
   getBacklogTask(id: string): BacklogTaskRecord | undefined;
   updateBacklogTask(

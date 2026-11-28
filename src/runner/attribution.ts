@@ -12,7 +12,6 @@ const ATTRIBUTION_FIELD = '\u0000';
 const ATTRIBUTION_FIELD_COUNT = 10;
 const ATTRIBUTION_LOG_FORMAT = '%H%x00%T%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B';
 
-/** One commit as the attribution guard reads and replays it. */
 export interface BranchCommit {
   sha: string;
   tree: string;
@@ -26,11 +25,9 @@ export interface BranchCommit {
   message: string;
 }
 
-/** True when the message carries a trailer GitHub would credit a third-party account from. */
 export const hasCoAuthorTrailer = (message: string): boolean =>
   message.split(/\r?\n/).some((line) => CO_AUTHOR_TRAILER_RE.test(line));
 
-/** Drops every `Co-authored-by:` line and the blank tail it can leave behind. */
 export const stripCoAuthorTrailers = (message: string): string =>
   `${message
     .split(/\r?\n/)
@@ -42,7 +39,6 @@ export const stripCoAuthorTrailers = (message: string): string =>
 export const isUnownedIdentity = (email: string, ownedEmail?: string): boolean =>
   email.trim().toLowerCase() !== (ownedEmail ?? '').trim().toLowerCase();
 
-/** Parses `git log --reverse --format=<ATTRIBUTION_LOG_FORMAT>` output, oldest commit first. */
 export const parseBranchCommitLog = (stdout: string): BranchCommit[] => {
   const fields = stdout.split(ATTRIBUTION_FIELD);
   if (fields[fields.length - 1] === '') fields.pop();
@@ -78,15 +74,7 @@ export interface AttributionDeps {
   log: Logger;
 }
 
-/**
- * Removes attribution a squash-merge would honour, before the branch leaves the box.
- *
- * A merge reads `Co-authored-by:` trailers as real accounts and a noreply address as a real author,
- * so an identity the agent invented inside the container could credit a stranger on the default
- * branch. Each offending commit is replayed through `commit-tree` with only that metadata changed,
- * so every tree (and therefore the diff under review) is identical and a clean branch keeps its
- * own SHAs.
- */
+/** Replays only offending commits through `commit-tree` so diffs stay identical and clean branches keep their SHAs. */
 export const stripUntrustedAttribution = async (
   cwd: string,
   baseBranch: string,

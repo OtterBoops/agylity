@@ -17,7 +17,6 @@ interface EvaluationPlan {
   retiredPools: string[];
 }
 
-/** Milestones are deduplicated, positive and most-urgent-first wherever they arrive from config. */
 const normalizeMilestones = (raw: number[]): number[] =>
   Array.from(new Set(raw.filter((m) => typeof m === 'number' && !Number.isNaN(m) && m > 0))).sort(
     (a, b) => b - a

@@ -22,7 +22,6 @@ const isSecretSet = (value: unknown): boolean => {
   return Boolean(value && typeof value === 'object' && Object.keys(value).length > 0);
 };
 
-/** A writable key: a builtin field, or an env alias that normalises onto one. */
 const isWritableConfigKey = (key: string): boolean => {
   // Own-property lookup only: `ENV_TO_CONFIG_KEY['__proto__']` would answer with Object.prototype.
   const alias = Object.hasOwn(ENV_TO_CONFIG_KEY, key) ? ENV_TO_CONFIG_KEY[key] : undefined;

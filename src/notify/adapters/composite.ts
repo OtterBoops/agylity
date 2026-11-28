@@ -14,7 +14,6 @@ import { destinationChannelName } from '../../config/destinations.js';
 import { logger } from '../../logs/logger.js';
 import { notificationKindEnabled, type NotificationKind } from '../../shared/notificationKinds.js';
 
-/** Trimmed, lowercased, de-duplicated channel names; blank entries and `none` are dropped. */
 export const normalizeChannelNames = (raw: Iterable<string>): string[] =>
   Array.from(
     new Set([...raw].map((c) => c.trim().toLowerCase()).filter((c) => Boolean(c) && c !== 'none'))

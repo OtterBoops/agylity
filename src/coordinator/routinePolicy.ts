@@ -27,7 +27,6 @@ export interface RoutinePolicyDeps {
   resolveDispatchModel(model: string | undefined, configuredDefault: string): string;
 }
 
-/** The routine's own window wins; the global burn window is only a fallback. */
 export const routineLimits = (
   rt: RoutineTaskRecord,
   resolved: ResolvedConfig

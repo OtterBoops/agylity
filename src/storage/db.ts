@@ -15,7 +15,7 @@ import { logger } from '../logs/logger.js';
 
 interface SettingRecord {
   key: string;
-  value: string; // JSON encoded
+  value: string;
   updated_at: string;
 }
 

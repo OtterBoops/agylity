@@ -1,5 +1,3 @@
-// Import-free and erasable: the daemon and the notifier registry both read this list.
-
 export interface NotificationKindDescriptor {
   kind: string;
   label: string;

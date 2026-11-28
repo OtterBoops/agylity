@@ -3,7 +3,6 @@ import { LogLevelSchema, PoolGroupSchema, ProbeSourceSchema } from './common.js'
 import { NotificationDestinationSchema } from '../../config/env.js';
 
 export const NotifyTestRequestSchema = z.object({
-  /** Test one stored instance by id. */
   destinationId: z.string().optional(),
   /** Test an unsaved draft instance; never persisted. */
   destination: NotificationDestinationSchema.optional(),

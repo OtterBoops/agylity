@@ -379,7 +379,6 @@ export class Coordinator {
     return !/[\\/]/.test(id) && !id.startsWith('.') && id !== '' && !id.includes('..');
   }
 
-  /** A configured repository is addressed by either its id or its display name, case-insensitively. */
   private findConfiguredRepository(resolved: ResolvedConfig, repositoryId: string) {
     const key = repositoryId.toLowerCase();
     return resolved.repositories.find(

@@ -68,7 +68,6 @@ interface NavItem {
 
 const RELEASES_LATEST_URL = 'https://github.com/OtterBoops/agylity/releases/latest';
 
-/** Probe dot: a static core ringed by a ping, sized by the rail or footer variant that hosts it. */
 const ProbeDot = ({ color, size = 'size-2' }: { color: string; size?: string }) => (
   <span class={`relative flex ${size} shrink-0`}>
     <span

@@ -381,7 +381,6 @@ export class TaskExecutor {
     };
   }
 
-  /** Clones the task repository into place, or returns the failure that replaces the whole run. */
   private repositoryDeps(): RepositoryDeps {
     return {
       execFile: this.execFileFn,
@@ -698,12 +697,6 @@ export class TaskExecutor {
     }
   }
 
-  /**
-   * Commits whatever the agent left behind, or reports that the branch holds no work.
-   *
-   * The subject of a commit the agent wrote itself is the run's deliverable title; the runner's own
-   * fallback commit is not, because that message is derived from the dispatch, not from the work.
-   */
   private commitDeps(): CommitDeps {
     return { execFile: this.execFileFn, log: this.log };
   }

@@ -83,7 +83,6 @@ export const BacklogStatusSchema = z
 
 export const TERMINAL_TASK_STATUSES = ['completed', 'no_changes', 'failed', 'aborted'] as const;
 
-/** `TERMINAL_TASK_STATUSES` is the single source so no status list can drift. */
 export const isTerminalTaskStatus = (status: string): boolean =>
   (TERMINAL_TASK_STATUSES as readonly string[]).includes(status);
 
@@ -297,7 +296,6 @@ export const evaluateModelDispatchEligibility = (
   const pools = options.pools ?? [];
   const nowMs = options.nowMs ?? Date.now();
 
-  // Missing or unusable telemetry answers with one locked payload, so only the reason varies.
   const lockedForUnknownTelemetry = (reason: string): ModelEligibilityResult => ({
     allowed: false,
     resolvedModel,

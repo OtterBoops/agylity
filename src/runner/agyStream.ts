@@ -69,7 +69,6 @@ export class AgyStreamFormatter {
     return emitted;
   }
 
-  /** Consumes a trailing buffered line when the stream closes without a final newline. */
   flush(): string {
     if (!this.partial) return '';
     const trailing = this.partial;

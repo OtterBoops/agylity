@@ -1,6 +1,3 @@
-// Zero imports and erasable syntax only: the frontend bundles this file directly, so a zod or
-// `node:` dependency here would leak a server concern into the client build.
-//
 // One title for the dashboard row, the branch slug, the commit subject and the PR title: four
 // surfaces that must never disagree, so they all resolve it here.
 

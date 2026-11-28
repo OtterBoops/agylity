@@ -218,7 +218,6 @@ export const NotificationChannelsSchema = z.preprocess((val) => {
   return [];
 }, z.array(NotificationChannelEnum).default([]));
 
-// A custom header map is flat and string-valued, so a nested or numeric entry is a rejection, not a coercion.
 export const WebhookHeadersSchema = z.string().transform((raw, ctx) => {
   let decoded: unknown;
   try {

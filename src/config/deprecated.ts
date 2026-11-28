@@ -9,7 +9,6 @@ const DEPRECATED_ENV_VARS: Readonly<Record<string, string>> = {
   AGYLITY_RUNNER_TOKEN: 'RUNNER_TOKEN',
 };
 
-/** Logs a startup warning for any removed legacy env vars still present in `env`. */
 export const warnDeprecatedEnvVars = (
   env: NodeJS.ProcessEnv,
   log: Pick<Logger, 'warn'>

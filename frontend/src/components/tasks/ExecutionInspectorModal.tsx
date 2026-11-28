@@ -102,7 +102,7 @@ export const ExecutionInspectorContent = ({
   const polling = isActiveTaskStatus(live.status);
   const taskId = task.id;
 
-  // List projections omit output to keep /api/tasks compact; hydrate once when opening a terminal task.
+  // Hydrate once on open for terminal tasks.
   useEffect(() => {
     setOutputUnavailable(false);
     setError(null);

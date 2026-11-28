@@ -116,8 +116,6 @@ export const spawnFromExecFileFn =
     return child;
   };
 
-// Resolves the GitHub token owner's git identity so squash-merges match the repo owner cleanly
-// without triggering GitHub's automatic `Co-authored-by:` trailer.
 export const killTree = async (child: ChildProcess, deps: ExecDeps): Promise<void> => {
   const pid = child.pid;
   if (!pid) return;

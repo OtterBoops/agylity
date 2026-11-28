@@ -41,7 +41,6 @@ export const listUntracked = async (cwd: string, deps: CommitDeps): Promise<stri
   return untracked;
 };
 
-/** Commits on HEAD that `baseBranch` does not have. */
 export const countCommitsAhead = async (
   cwd: string,
   baseBranch: string,
@@ -54,7 +53,6 @@ export const countCommitsAhead = async (
   return parseInt(stdout.trim(), 10) || 0;
 };
 
-/** Stages untracked paths in batches, falling back per-file if one vanished or is ignored. */
 const stageUntrackedPaths = async (
   cwd: string,
   untrackedPaths: readonly string[],
@@ -80,7 +78,6 @@ const stageUntrackedPaths = async (
   }
 };
 
-/** Returns true when the index has staged changes (`git diff --cached --quiet` exits 1). */
 const hasStagedChanges = async (cwd: string, deps: CommitDeps): Promise<boolean> => {
   try {
     await deps.execFile('git', ['diff', '--cached', '--quiet'], { cwd, timeout: 15000 });
@@ -90,7 +87,6 @@ const hasStagedChanges = async (cwd: string, deps: CommitDeps): Promise<boolean>
   }
 };
 
-/** The newest subject among commits the agent wrote, or undefined when the branch is still clean. */
 const authoredCommitSubject = async (
   cwd: string,
   baseBranch: string,

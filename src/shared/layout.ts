@@ -1,5 +1,3 @@
-// Zero imports and erasable syntax only: the frontend bundles this file directly.
-
 // Two columns: `COLUMNS` below must agree, or a placeholder lands outside the last row.
 export const QUOTA_GRID_COLUMNS = 'grid-cols-1 md:grid-cols-2';
 

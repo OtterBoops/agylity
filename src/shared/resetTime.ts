@@ -1,6 +1,3 @@
-// Zero imports and erasable syntax only: the frontend bundles this file directly, so it must stay
-// free of node and zod dependencies. See shared/models.ts for the same constraint.
-
 // Upstream reports an idle 100% pool as resetting at the Unix epoch. No window has started, so that
 // timestamp carries no deadline and must never be formatted as a date or counted down.
 const ISO_RESET_TIME_PREFIX = /^\d{4}-\d{2}-\d{2}T/;

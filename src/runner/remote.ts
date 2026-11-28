@@ -11,9 +11,7 @@ import { TaskExecutor, type TaskExecutionResult } from './executor.js';
 import { warnLegacyGithubToken } from './git.js';
 import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 
-// The coordinator rejects a JSON body over 64 KB, so an untruncated run output would turn a
-// finished task into a 413 and a lease-expiry failure.
-// Headroom under the control plane's ceiling for the JSON envelope and headers around the report.
+// 8 KB headroom under MAX_REQUEST_BODY_BYTES for the JSON envelope so an output tail never trips 413.
 export const STATUS_BODY_MAX_BYTES = MAX_REQUEST_BODY_BYTES - 8 * 1024;
 
 const jsonStringBytes = (value: string): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
