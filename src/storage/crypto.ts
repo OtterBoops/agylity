@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, randomBytes, createHash } from 'node:crypto';
 import { existsSync, linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { CANONICAL_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEY_ENV_NAMES } from '../config/schema.js';
+import { CANONICAL_SECRET_CONFIG_KEYS, SECRET_CONFIG_KEY_ENV_NAMES } from '../config/registry.js';
 import { logger } from '../logs/logger.js';
 
 export const ENCRYPTION_PREFIX = 'enc:v1:';

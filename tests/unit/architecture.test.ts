@@ -173,3 +173,31 @@ describe('Ambient environment access', () => {
     assert.deepEqual(offenders, []);
   });
 });
+
+// `crypto.ts` needs the registry's secret-key list to decide what to encrypt at rest. Every other
+// storage -> config edge is a schema or a default reaching into a consumer and is refused.
+const STORAGE_CONFIG_EDGES = new Set(['src/storage/crypto.ts -> src/config/registry.ts']);
+
+describe('Layer direction', () => {
+  it('keeps storage below every consumer', () => {
+    const upward = ['coordinator', 'runner', 'web', 'daemon', 'notify', 'sentry', 'agy', 'cli'];
+    const offenders = runtimeEdges()
+      .filter(({ from }) => from.includes('/src/storage/'))
+      .filter(({ to }) => upward.some((layer) => to.includes(`/src/${layer}/`)))
+      .map(({ from, to }) => `${from} -> ${to}`);
+    assert.deepEqual(offenders, []);
+  });
+
+  it('confines the storage -> config edge to the secret-key policy', () => {
+    const offenders = runtimeEdges()
+      .filter(({ from }) => from.includes('/src/storage/'))
+      .filter(({ to }) => to.includes('/src/config/'))
+      .map(({ from, to }) => `${from} -> ${to}`)
+      .filter((edge) => {
+        const [from, to] = edge.split(' -> ');
+        const relative = `${from!.slice(from!.indexOf('/src/') + 1)} -> ${to!.slice(to!.indexOf('/src/') + 1)}`;
+        return !STORAGE_CONFIG_EDGES.has(relative);
+      });
+    assert.deepEqual(offenders, []);
+  });
+});

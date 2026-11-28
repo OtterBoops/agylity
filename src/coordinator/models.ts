@@ -8,11 +8,13 @@ import {
   type PoolGroup,
   type QuotaSnapshot,
 } from '../sentry/models.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/env.js';
 import {
-  ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
+  DEFAULT_MODEL_BY_POOL_GROUP,
   isOrchestratorModelId,
+  resolveConcreteModelId,
+  resolveReasoningEffortForModel,
   type AgyModelCatalogEntry,
   type ReasoningEffort,
 } from '../shared/models.js';
@@ -21,11 +23,14 @@ import { toPercentFloor } from '../shared/percent.js';
 export {
   ALL_EFFORTS,
   CANONICAL_AGY_MODELS,
+  CATALOG_BY_ID,
   DEFAULT_DISPATCH_MODEL,
+  DEFAULT_MODEL_BY_POOL_GROUP,
   isOrchestratorModelId,
   modelSupportsEffort,
+  resolveConcreteModelId,
+  resolveReasoningEffortForModel,
 } from '../shared/models.js';
-import { DEFAULT_DISPATCH_MODEL } from '../shared/models.js';
 export type { AgyModelCatalogEntry, ReasoningEffort };
 
 // Wire enums and payloads are declared once in ../../shared/contracts.ts; the zod schemas below
@@ -102,37 +107,6 @@ interface AnnotatedModelCatalogEntry extends AgyModelCatalogEntry {
   belowSafetyFloor: boolean;
 }
 
-export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
-
-const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> = Object.fromEntries(
-  CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS])
-);
-
-const defaultModelForPoolGroup = (poolGroup: PoolGroup): string => {
-  const entry = CANONICAL_AGY_MODELS.find((m) => m.poolGroup === poolGroup && m.defaultForGroup);
-  if (!entry) throw new Error(`No default model declared for pool group '${poolGroup}'`);
-  return entry.id;
-};
-
-export const DEFAULT_MODEL_BY_POOL_GROUP: Record<PoolGroup, string> = {
-  gemini: defaultModelForPoolGroup('gemini'),
-  claude: defaultModelForPoolGroup('claude'),
-};
-
-export const resolveReasoningEffortForModel = (
-  model: string | undefined,
-  requestedEffort: string | undefined
-): ReasoningEffort => {
-  const concreteModel = resolveConcreteModelId(model);
-  const supported = MODEL_SUPPORTED_EFFORTS[concreteModel] ?? ALL_EFFORTS;
-  const defaultEffort = CATALOG_BY_ID.get(concreteModel)?.defaultEffort ?? 'medium';
-
-  if (!requestedEffort) return defaultEffort;
-
-  const normalized = requestedEffort.trim().toLowerCase() as ReasoningEffort;
-  return supported.includes(normalized) ? normalized : defaultEffort;
-};
-
 export const resolvePoolGroupForModelOrNull = (modelOrPoolGroup?: string): PoolGroup | null => {
   if (!modelOrPoolGroup) return null;
   const normalized = modelOrPoolGroup.trim().toLowerCase();
@@ -147,61 +121,10 @@ export const resolvePoolGroupForModelOrNull = (modelOrPoolGroup?: string): PoolG
 export const resolvePoolGroupForModel = (modelOrPoolGroup?: string): PoolGroup =>
   resolvePoolGroupForModelOrNull(modelOrPoolGroup) ?? 'gemini';
 
-// Pool shorthands that name one canonical model, so no caller invents its own table.
-const resolveShorthandModelId = (lowercased: string): string | undefined => {
-  // A literal catalog id must not be routed through the group default, or the operator's chosen
-  // model silently retargets when that group's default changes.
-  if (CATALOG_BY_ID.has(lowercased)) return lowercased;
-
-  // A codename still names the model it used to route to, so an operator's saved choice survives the
-  // merge rather than silently retargeting the group default.
-  if (lowercased === 'gemini-argon' || lowercased === 'argon') {
-    return 'gemini-4-argon';
-  }
-  if (
-    lowercased === 'gemini' ||
-    lowercased === 'gemini-hydrogen' ||
-    lowercased === 'gemini-flash' ||
-    lowercased === 'hydrogen' ||
-    lowercased === 'flash'
-  ) {
-    return DEFAULT_MODEL_BY_POOL_GROUP.gemini;
-  }
-  if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
-    return DEFAULT_MODEL_BY_POOL_GROUP.claude;
-  }
-  if (lowercased === 'opus') {
-    return 'claude-opus-5-5';
-  }
-  if (lowercased === 'gpt-oss') {
-    return 'gpt-oss-120b';
-  }
-  return undefined;
-};
-
 const headroomPercentOf = (fraction: number | undefined): number | null =>
   typeof fraction === 'number' && Number.isFinite(fraction)
     ? toPercentFloor(Math.max(0, Math.min(1, fraction)))
     : null;
-
-const stripEffortSuffix = (value: string): string =>
-  value.trim().replace(/-(low|medium|high|xhigh)$/i, '');
-
-export const resolveConcreteModelId = (
-  requestedModel: string | undefined,
-  defaultModel = DEFAULT_DISPATCH_MODEL
-): string => {
-  const configured = (defaultModel ?? '').trim();
-  const safeDefault =
-    configured !== '' && configured.toLowerCase() !== 'auto'
-      ? (resolveShorthandModelId(configured.toLowerCase()) ?? stripEffortSuffix(configured))
-      : DEFAULT_DISPATCH_MODEL;
-
-  const requested = (requestedModel ?? '').trim();
-  if (requested === '' || requested.toLowerCase() === 'auto') return safeDefault;
-
-  return resolveShorthandModelId(requested.toLowerCase()) ?? stripEffortSuffix(requested);
-};
 
 /** Highest available = last entry for the pool group in catalog order: agy lists models oldest first. */
 export const highestAvailableModelForPoolGroup = (

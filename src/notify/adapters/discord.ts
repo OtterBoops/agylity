@@ -1,7 +1,7 @@
 import { Client, GatewayIntentBits } from 'discord.js';
 import { normalizeStep, isTerminalStep } from '../embeds/formatters.js';
-import type { ResolvedConfig } from '../../config/schema.js';
-import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { type ResolvedConfig } from '../../config/types.js';
+import { BUILTIN_DEFAULTS } from '../../config/registry.js';
 import { logger } from '../../logs/logger.js';
 import type {
   Notifier,

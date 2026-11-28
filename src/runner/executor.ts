@@ -13,7 +13,7 @@ import {
   resolveReasoningEffortForModel,
   type CascadeHop,
 } from '../coordinator/models.js';
-import type { PrPolicy } from '../config/schema.js';
+import { type PrPolicy } from '../shared/contracts.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { resolveGithubRepoSlug } from '../shared/github.js';
 import { AgyStreamFormatter } from './agyStream.js';

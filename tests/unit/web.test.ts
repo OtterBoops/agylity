@@ -6,7 +6,7 @@ import path from 'node:path';
 import ky from 'ky';
 import { makeTempDir } from '../e2e/harness/index.js';
 import { ConfigStore } from '../../src/config/store.js';
-import { CONFIG_REGISTRY } from '../../src/config/schema.js';
+import { CONFIG_REGISTRY } from '../../src/config/registry.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import { TaskQueue } from '../../src/coordinator/queue.js';
 import { SentryStateManager } from '../../src/sentry/state.js';

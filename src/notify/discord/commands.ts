@@ -1,6 +1,6 @@
 import { REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { z } from 'zod';
-import type { ResolvedConfig } from '../../config/schema.js';
+import { type ResolvedConfig } from '../../config/types.js';
 import { ALL_EFFORTS } from '../../coordinator/models.js';
 import { logger } from '../../logs/logger.js';
 

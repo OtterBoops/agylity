@@ -1,4 +1,4 @@
-import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/schema.js';
+import { CANONICAL_SECRET_CONFIG_KEYS } from '../config/registry.js';
 import { warnDeprecatedEnvVars } from '../config/deprecated.js';
 import { AGYLITY_VERSION } from '../version.js';
 import { LogBuffer, installConsoleTee } from '../logs/buffer.js';

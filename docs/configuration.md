@@ -35,7 +35,7 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
 
 ## 2. Environment Variables Reference (`.env`)
 
-The table below and `.env.example` are generated from `CONFIG_REGISTRY` in `src/config/schema.ts` by `npm run docs:config`; `tests/unit/config.test.ts` fails when either file is stale. A new variable is one registry entry — env spelling, schema, default, secret flag and description — followed by re-running the generator.
+The table below and `.env.example` are generated from `CONFIG_REGISTRY` in `src/config/registry.ts` by `npm run docs:config`; `tests/unit/config.test.ts` fails when either file is stale. A new variable is one registry entry — env spelling, schema, default, secret flag and description — followed by re-running the generator.
 
 <!-- config-reference:start -->
 
@@ -114,7 +114,7 @@ The table below and `.env.example` are generated from `CONFIG_REGISTRY` in `src/
 
 <!-- config-reference:end -->
 
-Everything in the **Swarm Runner** group is read directly by `src/runner-cli.ts`, not through `src/config/schema.ts`. None of them can be set as a SQLite UI override: put them in the runner's `.env` or container environment, because a dashboard override would have no effect on them. `ALLOW_TOKENLESS_RUNNER` is the exception — the coordinator reads it as a schema-driven key too (see above), where it gates leasing, while a runner reads the same variable from its own environment. The other coordinator-side knobs that _are_ schema-driven — `COORDINATOR_ENABLED`, `GITHUB_TOKEN`, `RUNNER_SHARED_SECRET`, `PR_POLICY` — live in the coordinator group above.
+Everything in the **Swarm Runner** group is read directly by `src/runner-cli.ts`, not through `src/config/registry.ts`. None of them can be set as a SQLite UI override: put them in the runner's `.env` or container environment, because a dashboard override would have no effect on them. `ALLOW_TOKENLESS_RUNNER` is the exception — the coordinator reads it as a schema-driven key too (see above), where it gates leasing, while a runner reads the same variable from its own environment. The other coordinator-side knobs that _are_ schema-driven — `COORDINATOR_ENABLED`, `GITHUB_TOKEN`, `RUNNER_SHARED_SECRET`, `PR_POLICY` — live in the coordinator group above.
 
 A runner's own `GITHUB_TOKEN` is vestigial: a runner that still carries the variable in its environment logs a warning at startup and ignores it, because the credential is leased from the coordinator per task. Nothing about the GitHub token belongs in the runner's `.env`, compose `environment:` or state file.
 

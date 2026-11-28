@@ -1,12 +1,13 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import { settleBacklogOrigin } from './backlogOrigin.js';
-import type { PrPolicy, ResolvedConfig } from '../config/schema.js';
+import { type PrPolicy } from '../shared/contracts.js';
+import { type ResolvedConfig } from '../config/types.js';
 import {
   DEFAULT_BACKLOG_CONCURRENCY,
   DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
   DEFAULT_QUOTA_BURN_MAX_HOURS,
-} from '../config/schema.js';
+} from '../config/env.js';
 import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import { snapshotsFromSentryState, type PoolGroup, type QuotaSnapshot } from '../sentry/models.js';
 import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';

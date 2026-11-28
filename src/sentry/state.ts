@@ -1,3 +1,4 @@
+import { ensureSentryStateSchema } from '../storage/sentrySchema.js';
 import { readFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -32,7 +33,6 @@ type PoolState = SentryPoolState;
 import {
   SentryStore,
   SAMPLE_HISTORY_LIMIT,
-  ensureSentryStateSchema,
   normalizeMilestoneKey,
   type AlertEventPage,
   type ListAlertEventsOptions,

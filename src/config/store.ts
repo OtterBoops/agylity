@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
-import { FORBIDDEN_CONFIG_KEYS, DestinationsSchema } from './schema.js';
+import { FORBIDDEN_CONFIG_KEYS } from './registry.js';
+import { DestinationsSchema } from './env.js';
 import { AppDatabase } from '../storage/db.js';
 import {
   decryptDestinationSecrets,
@@ -11,9 +12,8 @@ import {
   CONFIG_KEY_ENV_NAMES,
   ENV_TO_CONFIG_KEY,
   parseRawEnv,
-  type AppConfig,
-  type ResolvedConfig,
-} from './schema.js';
+} from './registry.js';
+import { type AppConfig, type ResolvedConfig } from './types.js';
 
 interface IConfigStore {
   get<T>(key: string): T | undefined;

@@ -17,7 +17,7 @@ import { DEFAULT_DISPATCH_MODEL } from '../../shared/models.js';
 import { extractClientIp } from '../../net/ip.js';
 import { clearAuthFailures, recordAuthFailure } from '../authFailures.js';
 import { logger } from '../../logs/logger.js';
-import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { BUILTIN_DEFAULTS } from '../../config/registry.js';
 import { Coordinator } from '../../coordinator/coordinator.js';
 import { RegistrationTokenError, type SwarmTask } from '../../coordinator/queue.js';
 import type { RunnerLeaseBlockReason } from '../../coordinator/models.js';

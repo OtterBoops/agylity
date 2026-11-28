@@ -39,7 +39,7 @@ import {
   TaskPromptSchema,
 } from '../../src/notify/adapters/discord.js';
 import { buildSlashCommandDefinitions } from '../../src/notify/discord/commands.js';
-import { BUILTIN_DEFAULTS } from '../../src/config/schema.js';
+import { BUILTIN_DEFAULTS } from '../../src/config/registry.js';
 
 const execFileAsync = promisify(execFile);
 const __filename = fileURLToPath(import.meta.url);

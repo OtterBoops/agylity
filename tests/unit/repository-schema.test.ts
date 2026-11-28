@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RepositoriesJsonSchema } from '../../src/config/schema.js';
+import { RepositoriesJsonSchema } from '../../src/config/env.js';
 
 test('derives repository id and name from a clone URL with a trailing slash', () => {
   const [plain] = RepositoriesJsonSchema.parse([{ cloneUrl: 'https://github.com/owner/repo' }]);

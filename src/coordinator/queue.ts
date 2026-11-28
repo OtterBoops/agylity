@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/env.js';
 import { isHttpUrl } from '../shared/urls.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { tailWindow } from '../shared/text.js';

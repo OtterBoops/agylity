@@ -1,9 +1,5 @@
-import {
-  CONFIG_DOC_GROUPS,
-  CONFIG_REGISTRY,
-  type ConfigDocGroup,
-  type ConfigRegistryEntry,
-} from './schema.js';
+import { CONFIG_DOC_GROUPS, CONFIG_REGISTRY, type ConfigRegistryEntry } from './registry.js';
+import { type ConfigDocGroup } from './types.js';
 
 // Both files are generated from CONFIG_REGISTRY: the reference table in `docs/configuration.md` and
 // `.env.example`. Hand-editing either is drift, and the unit test re-renders them and fails.
@@ -92,7 +88,7 @@ const GROUP_INTROS: Record<ConfigDocGroup, string> = {
   logging: 'Terminal output and the in-memory log ring buffer that streams to the dashboard.',
   storage: 'Process paths read directly from the environment, never from a SQLite override.',
   runner:
-    'Runner nodes only. Everything here is read straight from the process environment by src/runner-cli.ts, src/runner/git.ts and src/runner/executor.ts rather than through src/config/schema.ts, so none of it can be set as a dashboard override. ALLOW_TOKENLESS_RUNNER is the exception: the coordinator reads it as a schema-driven key (see the coordinator section) and a runner reads its own environment.',
+    'Runner nodes only. Everything here is read straight from the process environment by src/runner-cli.ts, src/runner/git.ts and src/runner/executor.ts rather than through src/config/registry.ts, so none of it can be set as a dashboard override. ALLOW_TOKENLESS_RUNNER is the exception: the coordinator reads it as a schema-driven key (see the coordinator section) and a runner reads its own environment.',
 };
 
 const HEADER = `# ==============================================================================
@@ -102,7 +98,7 @@ const HEADER = `# ==============================================================
 # Values defined here serve as Level 2 fallback precedence:
 # Resolved Config = SQLite UI Overrides ?? Environment Variables (.env) ?? Built-in Defaults
 #
-# Generated from CONFIG_REGISTRY in src/config/schema.ts by \`npm run docs:config\`.
+# Generated from CONFIG_REGISTRY in src/config/registry.ts by \`npm run docs:config\`.
 # ==============================================================================`;
 
 const ENTRY_RULE = '# ' + '-'.repeat(78);

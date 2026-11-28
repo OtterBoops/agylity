@@ -8,7 +8,8 @@ import {
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { logger } from '../../logs/logger.js';
-import { NotificationDestinationSchema, type ResolvedConfig } from '../../config/schema.js';
+import { NotificationDestinationSchema } from '../../config/env.js';
+import { type ResolvedConfig } from '../../config/types.js';
 import { resolvedDestinations } from '../../notify/factory.js';
 import { destinationChannelName, mergeDestinationSecrets } from '../../config/destinations.js';
 import type { NotificationDestination } from '../../shared/contracts.js';

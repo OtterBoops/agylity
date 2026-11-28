@@ -1,6 +1,6 @@
 import type { Notifier, NotifierFactory, NotifierOptions } from './types.js';
-import type { ResolvedConfig } from '../config/schema.js';
-import { BUILTIN_DEFAULTS } from '../config/schema.js';
+import { type ResolvedConfig } from '../config/types.js';
+import { BUILTIN_DEFAULTS } from '../config/registry.js';
 import { logger } from '../logs/logger.js';
 import { CompositeNotifier, normalizeChannelNames } from './adapters/composite.js';
 import {

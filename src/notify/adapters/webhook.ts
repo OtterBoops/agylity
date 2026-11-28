@@ -9,8 +9,8 @@ import type {
   DeliveryOutcome,
   InfoNotice,
 } from '../types.js';
-import type { ResolvedConfig } from '../../config/schema.js';
-import { BUILTIN_DEFAULTS } from '../../config/schema.js';
+import { type ResolvedConfig } from '../../config/types.js';
+import { BUILTIN_DEFAULTS } from '../../config/registry.js';
 import { logger } from '../../logs/logger.js';
 import { normalizeStep, isTerminalStep } from '../embeds/formatters.js';
 import { POOL_GROUP_DEFAULT_MODELS, POOL_GROUP_DISPLAY_NAMES } from '../../sentry/models.js';

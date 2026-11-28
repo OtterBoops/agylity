@@ -1,6 +1,6 @@
 import type { QuotaAlert, QuotaSnapshot } from './models.js';
 import { calculateHoursUntilReset } from './models.js';
-import { DEFAULT_MILESTONE_HOURS } from '../config/schema.js';
+import { DEFAULT_MILESTONE_HOURS } from '../config/env.js';
 import type { EarlyResetPool, SentryStateManager } from './state.js';
 import { normalizeMilestoneKey } from './store.js';
 

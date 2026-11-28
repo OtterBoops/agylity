@@ -1,4 +1,4 @@
-import type { ResolvedConfig } from '../../config/schema.js';
+import { type ResolvedConfig } from '../../config/types.js';
 import type { DispatchRequest, DispatchResult, QuotaSnapshot } from '../types.js';
 import { logger } from '../../logs/logger.js';
 import {

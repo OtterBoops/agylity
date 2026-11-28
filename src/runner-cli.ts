@@ -2,7 +2,7 @@ import os from 'node:os';
 import { logger } from './logs/logger.js';
 import { warnDeprecatedEnvVars } from './config/deprecated.js';
 import { RemoteSwarmRunner, normalizePrPolicy } from './runner/index.js';
-import type { PrPolicy } from './config/schema.js';
+import { type PrPolicy } from './shared/contracts.js';
 
 interface RunnerCliOptions {
   coordinatorUrl: string;

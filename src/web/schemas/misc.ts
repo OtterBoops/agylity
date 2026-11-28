@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { LogLevelSchema, PoolGroupSchema, ProbeSourceSchema } from './common.js';
-import { NotificationDestinationSchema } from '../../config/schema.js';
+import { NotificationDestinationSchema } from '../../config/env.js';
 
 export const NotifyTestRequestSchema = z.object({
   /** Test one stored instance by id. */

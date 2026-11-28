@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { AppDatabase } from '../../src/storage/db.js';
 import { ensureTableSchema } from '../../src/storage/schema.js';
-import { ensureSentryStateSchema } from '../../src/sentry/store.js';
+import { ensureSentryStateSchema } from '../../src/storage/sentrySchema.js';
 import { logger } from '../../src/logs/logger.js';
 import { TaskQueue } from '../../src/coordinator/queue.js';
 import { createMemorySink } from '../e2e/harness/index.js';

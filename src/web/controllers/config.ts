@@ -7,7 +7,7 @@ import {
   ENV_TO_CONFIG_KEY,
   FORBIDDEN_CONFIG_KEYS,
   validateConfigOverridePatch,
-} from '../../config/schema.js';
+} from '../../config/registry.js';
 import {
   maskNotificationDestinations,
   mergeDestinationSecrets,

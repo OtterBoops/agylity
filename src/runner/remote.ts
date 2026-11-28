@@ -6,7 +6,7 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask } from '../coordinator/queue.js';
-import type { PrPolicy } from '../config/schema.js';
+import { type PrPolicy } from '../shared/contracts.js';
 import { TaskExecutor, type TaskExecutionResult } from './executor.js';
 import { warnLegacyGithubToken } from './git.js';
 import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';

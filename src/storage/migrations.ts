@@ -1,15 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { ensureTableSchema, type ColumnSpec } from './schema.js';
 import { logger } from '../logs/logger.js';
-import {
-  CATALOG_BY_ID,
-  resolveReasoningEffortForModel,
-  type CascadeHop,
-  type ReasoningEffort,
-} from '../coordinator/models.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/schema.js';
+import { CATALOG_BY_ID, resolveReasoningEffortForModel } from '../shared/models.js';
+import type { ReasoningEffort } from '../shared/models.js';
+import type { CascadeHop } from '../shared/contracts.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../shared/defaults.js';
 import { LEGACY_POOL_GROUP_IDS, upgradePoolGroupId } from '../shared/models.js';
-import { ensureSentryStateSchema } from '../sentry/store.js';
+import { ensureSentryStateSchema } from './sentrySchema.js';
 import type { NotificationDestination } from '../shared/contracts.js';
 
 // The single schema registry: `AppDatabase` and `TaskQueue` both call `applyMigrations`, so a

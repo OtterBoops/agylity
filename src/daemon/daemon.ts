@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { ConfigStore } from '../config/store.js';
 import { AppDatabase } from '../storage/db.js';
-import { type ResolvedConfig } from '../config/schema.js';
+import { type ResolvedConfig } from '../config/types.js';
 import { ConnectRpcQuotaClient } from '../sentry/client.js';
 import { SentryStateManager, type EarlyResetPool } from '../sentry/state.js';
 import { QuotaEvaluator } from '../sentry/evaluator.js';

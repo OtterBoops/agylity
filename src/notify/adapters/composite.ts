@@ -8,7 +8,7 @@ import type {
   DeliveryChannelResult,
   InfoNotice,
 } from '../types.js';
-import type { ResolvedConfig } from '../../config/schema.js';
+import { type ResolvedConfig } from '../../config/types.js';
 import type { NotificationDestination } from '../../shared/contracts.js';
 import { destinationChannelName } from '../../config/destinations.js';
 import { logger } from '../../logs/logger.js';

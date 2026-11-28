@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
-import { parseRawEnv } from '../../src/config/schema.js';
+import { parseRawEnv } from '../../src/config/registry.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import { SentryStateManager } from '../../src/sentry/state.js';
 import { QuotaEvaluator } from '../../src/sentry/evaluator.js';

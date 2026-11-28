@@ -10,7 +10,8 @@ import {
 } from '../http.js';
 import type { WebServerOptions } from '../types.js';
 import { cascadeFromBody, resolveCoordinator } from './dispatch.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum, type PrPolicy } from '../../config/schema.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS, PrPolicyEnum } from '../../config/env.js';
+import { type PrPolicy } from '../../shared/contracts.js';
 import { PR_POLICY_VALUES } from '../../shared/contracts.js';
 import {
   isPlainJsonObject,

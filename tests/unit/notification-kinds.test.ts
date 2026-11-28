@@ -8,7 +8,7 @@ import {
   NOTIFICATION_KIND_VALUES,
   notificationKindEnabled,
 } from '../../src/shared/notificationKinds.js';
-import { NotificationTypesSchema } from '../../src/config/schema.js';
+import { NotificationTypesSchema } from '../../src/config/env.js';
 
 const recordingNotifier = (): Notifier & { infos: number } => {
   const fake = {

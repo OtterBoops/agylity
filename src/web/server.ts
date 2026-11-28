@@ -2,7 +2,7 @@ import http from 'node:http';
 import type net from 'node:net';
 import { handleRequest, type WebServerOptions } from './routes.js';
 import { logger } from '../logs/logger.js';
-import { resolveWebUiAuthToken, BUILTIN_DEFAULTS } from '../config/schema.js';
+import { resolveWebUiAuthToken, BUILTIN_DEFAULTS } from '../config/registry.js';
 
 const IN_FLIGHT_GRACE_MS = 5000;
 

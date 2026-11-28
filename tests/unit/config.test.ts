@@ -10,13 +10,11 @@ import {
   CANONICAL_SECRET_CONFIG_KEYS,
   ENV_TO_CONFIG_KEY,
   SECRET_CONFIG_KEY_ENV_NAMES,
-  booleanEnv,
-  milestoneHoursEnv,
-  RepositoriesJsonSchema,
   parseRawEnv,
   validateConfigOverridePatch,
   BUILTIN_DEFAULTS,
-} from '../../src/config/schema.js';
+} from '../../src/config/registry.js';
+import { booleanEnv, milestoneHoursEnv, RepositoriesJsonSchema } from '../../src/config/env.js';
 import { applyConfigReference, renderEnvExample } from '../../src/config/docs.js';
 import { PR_POLICIES, PR_POLICY_HINTS } from '../../src/shared/policies.js';
 import { PR_POLICY_VALUES } from '../../src/shared/contracts.js';

@@ -160,3 +160,85 @@ export const modelSupportsEffort = (
   const declared = CANONICAL_AGY_MODELS.find((entry) => entry.id === id)?.supportedEfforts;
   return declared ? declared.length > 0 : true;
 };
+
+export const CATALOG_BY_ID = new Map(CANONICAL_AGY_MODELS.map((m) => [m.id, m]));
+
+const MODEL_SUPPORTED_EFFORTS: Record<string, readonly ReasoningEffort[]> = Object.fromEntries(
+  CANONICAL_AGY_MODELS.map((m) => [m.id, m.supportedEfforts ?? ALL_EFFORTS])
+);
+
+const defaultModelForPoolGroup = (poolGroup: PoolGroup): string => {
+  const entry = CANONICAL_AGY_MODELS.find((m) => m.poolGroup === poolGroup && m.defaultForGroup);
+  if (!entry) throw new Error(`No default model declared for pool group '${poolGroup}'`);
+  return entry.id;
+};
+
+export const DEFAULT_MODEL_BY_POOL_GROUP: Record<PoolGroup, string> = {
+  gemini: defaultModelForPoolGroup('gemini'),
+  claude: defaultModelForPoolGroup('claude'),
+};
+
+export const resolveReasoningEffortForModel = (
+  model: string | undefined,
+  requestedEffort: string | undefined
+): ReasoningEffort => {
+  const concreteModel = resolveConcreteModelId(model);
+  const supported = MODEL_SUPPORTED_EFFORTS[concreteModel] ?? ALL_EFFORTS;
+  const defaultEffort = CATALOG_BY_ID.get(concreteModel)?.defaultEffort ?? 'medium';
+
+  if (!requestedEffort) return defaultEffort;
+
+  const normalized = requestedEffort.trim().toLowerCase() as ReasoningEffort;
+  return supported.includes(normalized) ? normalized : defaultEffort;
+};
+
+// Pool shorthands that name one canonical model, so no caller invents its own table.
+export const resolveShorthandModelId = (lowercased: string): string | undefined => {
+  // A literal catalog id must not be routed through the group default, or the operator's chosen
+  // model silently retargets when that group's default changes.
+  if (CATALOG_BY_ID.has(lowercased)) return lowercased;
+
+  // A codename still names the model it used to route to, so an operator's saved choice survives the
+  // merge rather than silently retargeting the group default.
+  if (lowercased === 'gemini-argon' || lowercased === 'argon') {
+    return 'gemini-4-argon';
+  }
+  if (
+    lowercased === 'gemini' ||
+    lowercased === 'gemini-hydrogen' ||
+    lowercased === 'gemini-flash' ||
+    lowercased === 'hydrogen' ||
+    lowercased === 'flash'
+  ) {
+    return DEFAULT_MODEL_BY_POOL_GROUP.gemini;
+  }
+  if (lowercased === 'claude' || lowercased === 'sonnet' || lowercased === '3p') {
+    return DEFAULT_MODEL_BY_POOL_GROUP.claude;
+  }
+  if (lowercased === 'opus') {
+    return 'claude-opus-5-5';
+  }
+  if (lowercased === 'gpt-oss') {
+    return 'gpt-oss-120b';
+  }
+  return undefined;
+};
+
+export const stripEffortSuffix = (value: string): string =>
+  value.trim().replace(/-(low|medium|high|xhigh)$/i, '');
+
+export const resolveConcreteModelId = (
+  requestedModel: string | undefined,
+  defaultModel = DEFAULT_DISPATCH_MODEL
+): string => {
+  const configured = (defaultModel ?? '').trim();
+  const safeDefault =
+    configured !== '' && configured.toLowerCase() !== 'auto'
+      ? (resolveShorthandModelId(configured.toLowerCase()) ?? stripEffortSuffix(configured))
+      : DEFAULT_DISPATCH_MODEL;
+
+  const requested = (requestedModel ?? '').trim();
+  if (requested === '' || requested.toLowerCase() === 'auto') return safeDefault;
+
+  return resolveShorthandModelId(requested.toLowerCase()) ?? stripEffortSuffix(requested);
+};

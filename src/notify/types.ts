@@ -1,5 +1,5 @@
 import type { QuotaAlert, QuotaSnapshot } from '../sentry/models.js';
-import type { ResolvedConfig } from '../config/schema.js';
+import { type ResolvedConfig } from '../config/types.js';
 import type { DeliveryChannelResult, NotificationDestination } from '../shared/contracts.js';
 import type { NotificationKind } from '../shared/notificationKinds.js';
 

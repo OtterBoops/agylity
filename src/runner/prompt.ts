@@ -1,6 +1,6 @@
 import type { CascadeHop } from '../coordinator/models.js';
 import type { SwarmTask } from '../coordinator/queue.js';
-import type { PrPolicy } from '../config/schema.js';
+import { type PrPolicy } from '../shared/contracts.js';
 import { tailWindow } from '../shared/text.js';
 
 // Every policy states its own directive: an empty suffix would let the model choose a default that

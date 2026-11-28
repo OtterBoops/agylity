@@ -1,5 +1,5 @@
 import type http from 'node:http';
-import { resolveWebUiAuthToken } from '../config/schema.js';
+import { resolveWebUiAuthToken } from '../config/registry.js';
 import crypto from 'node:crypto';
 import type { WebServerOptions } from './types.js';
 import { logger } from '../logs/logger.js';

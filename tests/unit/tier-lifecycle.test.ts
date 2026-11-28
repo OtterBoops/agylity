@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import ky from 'ky';
 import { ConfigStore } from '../../src/config/store.js';
-import type { AppConfig } from '../../src/config/schema.js';
+import { type AppConfig } from '../../src/config/types.js';
 import { AppDatabase } from '../../src/storage/db.js';
 import type { QuotaSnapshot } from '../../src/sentry/models.js';
 import {
