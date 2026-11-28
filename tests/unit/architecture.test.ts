@@ -144,7 +144,7 @@ const AMBIENT_ENV_READS: Record<string, readonly string[]> = {
     'AGY_BIN_PATH',
   ],
   'src/storage/crypto.ts': ['AGYLITY_SECRET_KEY'],
-  'src/web/routeRegistry.ts': ['BUILD_CHANNEL', 'BUILD_COMMIT'],
+  'src/web/controllers/health.ts': ['BUILD_CHANNEL', 'BUILD_COMMIT'],
 };
 
 const ENV_READ_RE = /process\.env\.([A-Z0-9_]+)/g;

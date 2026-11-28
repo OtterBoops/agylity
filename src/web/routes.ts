@@ -6,7 +6,7 @@ import { logger } from '../logs/logger.js';
 import { extractClientIp, isIpAllowed, isLoopbackIp, normalizeIp } from '../net/ip.js';
 import { PayloadTooLargeError, sendPayloadTooLarge, sendJson } from './http.js';
 import { handleStaticAsset, handleIndexHtml } from './controllers/static.js';
-import { matchRoute, routeAuthFor } from './routeRegistry.js';
+import { matchRoute, routeAuthFor } from './router.js';
 import { clearAuthFailures, isIpRateLimited, recordAuthFailure } from './authFailures.js';
 
 export type { WebServerOptions };

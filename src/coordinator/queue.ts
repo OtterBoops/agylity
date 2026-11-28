@@ -10,6 +10,7 @@ import { tailWindow } from '../shared/text.js';
 import { DEFAULT_DISPATCH_MODEL } from '../shared/models.js';
 import { readJsonColumn } from '../storage/json.js';
 import { RunnerRegistry } from './runnerRegistry.js';
+import { settleBacklogOrigin } from './backlogOrigin.js';
 import type {
   CreateRegistrationTokenInput,
   ExchangeRegistrationTokenInput,
@@ -534,23 +535,6 @@ export class TaskQueue {
     });
   }
 
-  private refundBacklogAttempt(origin: BacklogTaskRecord, error: string, now: string): void {
-    const attemptCount = Math.max(0, origin.attemptCount - 1);
-    this.rawDb
-      .prepare(
-        `UPDATE backlog_tasks
-         SET status = ?, attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
-         WHERE id = ?`
-      )
-      .run(
-        settleStatusForAttempts(attemptCount, origin.maxAttempts),
-        attemptCount,
-        error,
-        now,
-        origin.id
-      );
-  }
-
   public hasActiveTaskForOrigin(originId: string, excludeTaskId?: string): boolean {
     const row = this.rawDb
       .prepare(
@@ -1020,55 +1004,11 @@ export class TaskQueue {
     if ((result?.changes ?? 0) === 0) return false;
 
     if (!task.originId || task.claimedAt) return true;
-    const origin = this.getBacklogTask(task.originId);
-    if (!origin) return true;
-    // A sibling run is still live, so the origin stays untouched — transfer any refundable
-    // attempt credit so the surviving run can refund it if it also finishes unclaimed.
-    if (this.hasActiveTaskForOrigin(origin.id, task.id)) {
-      this.transferSpawnSpentAttempt(task.id, origin.id);
-      return true;
-    }
-
-    const spentAttempt = this.taskSpawnSpentAttempt(task.id);
-
-    // An earlier run already delivered: a later failing stacked run must not re-dispatch the item.
-    if (this.hasDeliveredRunForOrigin(origin.id)) {
-      this.rawDb
-        .prepare(
-          `UPDATE backlog_tasks
-           SET status = 'completed', last_error = NULL, swarm_task_id = NULL, updated_at = ?
-           WHERE id = ?`
-        )
-        .run(now, origin.id);
-      return true;
-    }
-    if (origin.status === 'paused') {
-      this.rawDb
-        .prepare(
-          'UPDATE backlog_tasks SET swarm_task_id = NULL, last_error = ?, updated_at = ? WHERE id = ?'
-        )
-        .run(error, now, origin.id);
-      return true;
-    }
-    if (origin.status !== 'dispatched') return true;
-    if (spentAttempt) {
-      this.refundBacklogAttempt(origin, error, now);
-    } else {
-      // A stacked spawn consumed no attempt, so the count stands.
-      this.rawDb
-        .prepare(
-          `UPDATE backlog_tasks
-           SET status = ?, attempt_count = ?, swarm_task_id = NULL, last_error = ?, updated_at = ?
-           WHERE id = ?`
-        )
-        .run(
-          settleStatusForAttempts(origin.attemptCount, origin.maxAttempts),
-          origin.attemptCount,
-          error,
-          now,
-          origin.id
-        );
-    }
+    settleBacklogOrigin(
+      this,
+      { originId: task.originId, taskId: task.id, status: 'aborted', claimed: false, error },
+      undefined
+    );
     return true;
   }
 

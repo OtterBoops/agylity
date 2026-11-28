@@ -16,7 +16,8 @@ import { clearAuthFailures } from '../../src/web/routes.js';
 import { ROUTES } from '../../src/web/routeRegistry.js';
 import type { QuotaClient, QuotaSnapshot } from '../../src/sentry/models.js';
 import { DynamicModelCatalog } from '../../src/coordinator/catalog.js';
-import { handleSyncGithubBacklog, listOpenIssues } from '../../src/web/controllers/backlog.js';
+import { handleSyncGithubBacklog } from '../../src/web/controllers/backlog.js';
+import { listOpenIssues } from '../../src/web/githubIssues.js';
 import { resolveGithubRepoSlug } from '../../src/shared/github.js';
 import { Coordinator } from '../../src/coordinator/coordinator.js';
 import {

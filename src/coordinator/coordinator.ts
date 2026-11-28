@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
+import { settleBacklogOrigin } from './backlogOrigin.js';
 import type { PrPolicy, ResolvedConfig } from '../config/schema.js';
 import {
   DEFAULT_BACKLOG_CONCURRENCY,
@@ -1574,120 +1575,7 @@ export class Coordinator {
     error?: string;
   }): void {
     try {
-      const backlogTask = this.queue.getBacklogTask(outcome.originId);
-      if (
-        !backlogTask ||
-        backlogTask.status === 'completed' ||
-        backlogTask.status === 'failed' ||
-        backlogTask.status === 'canceled'
-      ) {
-        return;
-      }
-
-      // Stacked runs settle the row once, when the last of them is done. When a cancelled run
-      // carries the refundable attempt flag, hand it to a surviving sibling so it is not lost.
-      if (outcome.taskId && this.queue.hasActiveTaskForOrigin(outcome.originId, outcome.taskId)) {
-        if (outcome.status === 'aborted') {
-          this.queue.transferSpawnSpentAttempt(outcome.taskId, outcome.originId);
-        }
-        return;
-      }
-
-      const delivered = outcome.status === 'completed' || outcome.status === 'no_changes';
-      const error = outcome.error || 'Execution failed';
-
-      if (delivered) {
-        this.queue.updateBacklogTask(outcome.originId, {
-          status: 'completed',
-          lastError: null,
-          swarmTaskId: null,
-        });
-        this.log.info(
-          'Backlog task #%d (%s) marked completed',
-          backlogTask.taskNumber,
-          backlogTask.title
-        );
-        return;
-      }
-
-      if (outcome.status !== 'failed' && outcome.status !== 'aborted') return;
-
-      if (backlogTask.status === 'paused') {
-        this.queue.updateBacklogTask(outcome.originId, { lastError: error, swarmTaskId: null });
-        this.log.warn(
-          'Backlog task #%d (%s) finished %s while paused; the item stays paused',
-          backlogTask.taskNumber,
-          backlogTask.title,
-          outcome.status
-        );
-        return;
-      }
-
-      // An earlier stacked run of this origin already delivered: close the item as completed
-      // instead of returning it to pending and re-dispatching a duplicate PR.
-      if (this.queue.hasDeliveredRunForOrigin(outcome.originId)) {
-        this.queue.updateBacklogTask(outcome.originId, {
-          status: 'completed',
-          lastError: null,
-          swarmTaskId: null,
-        });
-        this.log.info(
-          'Backlog task #%d (%s) marked completed; an earlier stacked run already delivered',
-          backlogTask.taskNumber,
-          backlogTask.title
-        );
-        return;
-      }
-
-      const spentAttempt = outcome.status === 'failed' && outcome.claimed;
-      const refundable =
-        !spentAttempt && outcome.taskId ? this.queue.taskSpawnSpentAttempt(outcome.taskId) : false;
-      const attemptCount = refundable
-        ? Math.max(0, backlogTask.attemptCount - 1)
-        : backlogTask.attemptCount;
-
-      if (spentAttempt && backlogTask.attemptCount >= backlogTask.maxAttempts) {
-        this.queue.updateBacklogTask(outcome.originId, {
-          status: 'failed',
-          attemptCount,
-          lastError: error,
-          swarmTaskId: null,
-        });
-        this.log.warn(
-          'Backlog task #%d (%s) marked failed after exhausting %d attempts',
-          backlogTask.taskNumber,
-          backlogTask.title,
-          backlogTask.maxAttempts
-        );
-        return;
-      }
-
-      const settled = this.queue.updateBacklogTask(outcome.originId, {
-        status: 'pending',
-        attemptCount,
-        lastError: error,
-        swarmTaskId: null,
-      });
-      if (settled?.status === 'failed') {
-        this.log.warn(
-          'Backlog task #%d (%s) marked failed after exhausting %d attempts: %s',
-          backlogTask.taskNumber,
-          backlogTask.title,
-          backlogTask.maxAttempts,
-          error
-        );
-        return;
-      }
-      this.log.warn(
-        refundable
-          ? 'Backlog task #%d (%s) returned to pending with the attempt handed back (%d/%d): %s'
-          : 'Backlog task #%d (%s) returned to pending for retry (attempt %d/%d): %s',
-        backlogTask.taskNumber,
-        backlogTask.title,
-        attemptCount,
-        backlogTask.maxAttempts,
-        error
-      );
+      settleBacklogOrigin(this.queue, outcome, this.log);
     } catch (backlogStatusErr) {
       this.log.error('Error updating backlog task status: %s', backlogStatusErr);
     }

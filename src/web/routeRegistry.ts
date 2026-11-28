@@ -35,8 +35,8 @@ import {
 } from './controllers/backlog.js';
 import { handleRoutineTasks, handleRoutineTaskById } from './controllers/routines.js';
 import { methodNotAllowed, sendJson } from './http.js';
+import { handleHealth } from './controllers/health.js';
 import { buildOpenApiDocument } from './openapi.js';
-import { normalizeBuildCommit, resolveBuildChannel } from '../shared/build.js';
 import { AGYLITY_VERSION } from '../version.js';
 import { ErrorResponseSchema } from './schemas/common.js';
 import {
@@ -137,30 +137,6 @@ export interface RouteSpec {
   invoke: (ctx: RouteContext) => void | Promise<void>;
 }
 
-const pathMatches = (pattern: string, pathname: string): Record<string, string> | undefined => {
-  const patternParts = pattern.split('/');
-  const nameParts = pathname.split('/');
-  if (patternParts.length !== nameParts.length) return undefined;
-
-  const params: Record<string, string> = {};
-  for (let index = 0; index < patternParts.length; index += 1) {
-    const expected = patternParts[index]!;
-    const actual = nameParts[index]!;
-    if (expected.startsWith('{') && expected.endsWith('}')) {
-      if (!actual) return undefined;
-      // A malformed escape stays raw so the handler answers 400 rather than the router throwing.
-      try {
-        params[expected.slice(1, -1)] = decodeURIComponent(actual);
-      } catch {
-        params[expected.slice(1, -1)] = actual;
-      }
-      continue;
-    }
-    if (expected !== actual) return undefined;
-  }
-  return params;
-};
-
 export const ROUTES: readonly RouteSpec[] = [
   {
     path: '/api/health',
@@ -170,22 +146,8 @@ export const ROUTES: readonly RouteSpec[] = [
     operations: {
       GET: { responses: { 200: HealthResponseSchema } },
     },
-    invoke: ({ res, options, method, authRequired }) => {
-      if (method !== 'GET') {
-        return methodNotAllowed(res);
-      }
-      // Cache-only: a healthcheck must answer while `agy update` is rewriting the binary.
-      void options.agyUpdater?.getVersion();
-      return sendJson(res, 200, {
-        status: 'ok',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString(),
-        authRequired: Boolean(authRequired),
-        agyVersion: options.agyUpdater?.getCachedVersion() ?? null,
-        buildChannel: resolveBuildChannel(process.env.BUILD_CHANNEL),
-        buildCommit: normalizeBuildCommit(process.env.BUILD_COMMIT),
-      });
-    },
+    invoke: ({ res, options, method, authRequired }) =>
+      handleHealth(res, options, method, Boolean(authRequired)),
   },
   {
     path: '/api/openapi.json',
@@ -691,21 +653,3 @@ export const ROUTES: readonly RouteSpec[] = [
       handleManageRunnerById(req, res, options, pathname, method),
   },
 ];
-
-export const matchRoute = (
-  pathname: string
-): { route: RouteSpec; params: Record<string, string> } | undefined => {
-  for (const route of ROUTES) {
-    const params = pathMatches(route.path, pathname);
-    if (params) return { route, params };
-  }
-  return undefined;
-};
-
-/** Runner-token routes keep their own brute-force bucket, so the split has one declaration. */
-export const routeAuthFor = (pathname: string): RouteAuth => {
-  const matched = matchRoute(pathname);
-  if (matched) return matched.route.auth;
-  // An unregistered path keeps the control-plane gate it had before the registry existed.
-  return pathname.startsWith('/api/') ? 'bearer' : 'public';
-};

@@ -1,10 +1,8 @@
-import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
+import { spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { StringDecoder } from 'node:string_decoder';
 import ky from 'ky';
 import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.js';
 import { logger, type Logger } from '../logs/logger.js';
@@ -18,10 +16,37 @@ import {
 import type { PrPolicy } from '../config/schema.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { resolveGithubRepoSlug } from '../shared/github.js';
-import { HEARTBEAT_TAIL_BYTES } from '../shared/contracts.js';
 import { AgyStreamFormatter } from './agyStream.js';
-import { tailWindow } from '../shared/text.js';
 import { stripUntrustedAttribution } from './attribution.js';
+import {
+  AGY_USAGE_ERROR_MAX_BYTES,
+  FLAG_REJECTION_RE,
+  buildCapacityContinuationPrompt,
+  capacityFailureSurface,
+  hasTelemetryValues,
+  isCapacityExhaustedOutput,
+  parseAgyTelemetry,
+  scanAgyStdout,
+  sumAgyTelemetry,
+  type TaskExecutionTelemetry,
+} from './cascade.js';
+export type { CapacityContinuationContext, TaskExecutionTelemetry } from './cascade.js';
+export {
+  buildCapacityContinuationPrompt,
+  isCapacityExhaustedOutput,
+  parseAgyTelemetry,
+  sumAgyTelemetry,
+} from './cascade.js';
+import {
+  combineOutput,
+  type ExecDeps,
+  type SpawnFn,
+  runStreamedCommand,
+  defaultKillProcessTree,
+  spawnFromExecFileFn,
+} from './exec.js';
+export type { SpawnFn } from './exec.js';
+export { defaultKillProcessTree, spawnFromExecFileFn } from './exec.js';
 import {
   AGYLITY_FOOTER_MARKER,
   AGYLITY_FOOTER_TAIL_RE,
@@ -65,12 +90,6 @@ export interface TaskExecuteOptions {
   gitIdentity?: { name?: string; email?: string };
 }
 
-export type SpawnFn = (
-  file: string,
-  args: readonly string[],
-  options: SpawnOptions
-) => ChildProcess;
-
 export interface TaskExecutionResult {
   success: boolean;
   noChanges?: boolean;
@@ -89,137 +108,9 @@ export interface TaskExecutionResult {
   thinkingTokens?: number;
 }
 
-export interface TaskExecutionTelemetry {
-  conversationId?: string;
-  numTurns?: number;
-  totalTokens?: number;
-  thinkingTokens?: number;
-  inputTokens?: number;
-  outputTokens?: number;
-}
-
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
-const finiteNumber = (value: unknown): number | undefined => {
-  if (value === null || value === undefined || value === '') return undefined;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-};
-
-// Tolerates non-JSON lines: `agy` interleaves human-readable output with the NDJSON telemetry.
-export const parseAgyTelemetry = (stdout?: string): TaskExecutionTelemetry => {
-  if (!stdout || !stdout.trim()) return {};
-  const telemetry: TaskExecutionTelemetry = {};
-
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) continue;
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, any>;
-      // `stream-json` wraps each payload one level down; a plain JSON line is its own payload.
-      const payload: Record<string, any> =
-        (parsed.result as Record<string, any>) ??
-        (parsed.step_update as Record<string, any>) ??
-        parsed;
-      // Only the final result carries the run's aggregate usage, so it outranks a step's numbers.
-      const aggregated = parsed.event === 'result';
-      const take = (key: keyof TaskExecutionTelemetry, value: unknown): void => {
-        const numeric = finiteNumber(value);
-        if (numeric === undefined) return;
-        if (aggregated || telemetry[key] === undefined) {
-          (telemetry as Record<string, unknown>)[key] = numeric;
-        }
-      };
-
-      if (!telemetry.conversationId && typeof payload.conversation_id === 'string') {
-        telemetry.conversationId = payload.conversation_id;
-      }
-      take('numTurns', payload.num_turns ?? payload.turns);
-
-      const usage = (payload.usage ?? payload.token_usage) as Record<string, any> | undefined;
-      if (usage && typeof usage === 'object') {
-        take('inputTokens', usage.input_tokens);
-        take('outputTokens', usage.output_tokens);
-        take('thinkingTokens', usage.thinking_tokens);
-        take('totalTokens', usage.total_tokens);
-      }
-      take('totalTokens', payload.total_tokens);
-    } catch {}
-  }
-
-  if (telemetry.totalTokens === undefined && telemetry.inputTokens !== undefined) {
-    telemetry.totalTokens = (telemetry.inputTokens || 0) + (telemetry.outputTokens || 0);
-  }
-
-  return telemetry;
-};
-
-const STREAM_EMIT_INTERVAL_MS = 1000;
-const STREAM_EMIT_BYTES = 4096;
-const KILL_GRACE_MS = 2000;
-const KILL_POLL_MS = 100;
 const VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
-
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
-const combineOutput = (stdout?: string, stderr?: string): string =>
-  [stdout?.trim(), stderr?.trim()].filter(Boolean).join('\n');
-
-const commandError = (
-  message: string,
-  detail: { stdout?: string; stderr?: string; code?: number | null; signal?: string | null } = {}
-): Error => Object.assign(new Error(message), detail);
-
-export const isCapacityExhaustedOutput = (text: string | undefined): boolean => {
-  if (!text) return false;
-  const normalized = text.toLowerCase().replace(/[_-]+/g, ' ');
-  if (/(^|[^0-9])429([^0-9]|$)/.test(normalized)) return true;
-  return (
-    normalized.includes('model capacity exhausted') ||
-    normalized.includes('resource exhausted') ||
-    normalized.includes('capacity exhausted') ||
-    normalized.includes('too many requests') ||
-    normalized.includes('overloaded')
-  );
-};
-
-const FLAG_REJECTION_RE =
-  /unknown flag|flag provided but not defined|unknown shorthand|invalid argument/i;
-const AGY_USAGE_ERROR_MAX_BYTES = 1024;
-
-const scanAgyStdout = (stdout: string): { sawStreamEvent: boolean; status: string } => {
-  let sawStreamEvent = false;
-  const status: string[] = [];
-  for (const line of stdout.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('{')) continue;
-    let parsed: Record<string, any>;
-    try {
-      parsed = JSON.parse(trimmed) as Record<string, any>;
-    } catch {
-      continue;
-    }
-    if (typeof parsed.event !== 'string') continue;
-    sawStreamEvent = true;
-    if (parsed.event !== 'result' || !parsed.result || typeof parsed.result !== 'object') continue;
-    for (const key of ['status', 'error', 'state']) {
-      const value = parsed.result[key];
-      if (typeof value === 'string') status.push(value);
-    }
-  }
-  return { sawStreamEvent, status: status.join('\n') };
-};
-
-const capacityFailureSurface = (err: any): string => {
-  const stdout = typeof err?.stdout === 'string' ? err.stdout : '';
-  const stderr = typeof err?.stderr === 'string' ? err.stderr : '';
-  const { sawStreamEvent, status } = scanAgyStdout(stdout);
-  // Stream-json stdout is the agent's own narration; only its final result status is the CLI's.
-  return [stderr, sawStreamEvent ? status : stdout].filter(Boolean).join('\n');
-};
 
 const tokenizeCommand = (value: string): string[] => {
   const tokens: string[] = [];
@@ -254,132 +145,6 @@ const tokenizeCommand = (value: string): string[] => {
   return tokens;
 };
 
-export interface CapacityContinuationContext {
-  failedModel: string;
-  statusShort: string;
-  diffStat: string;
-  tail: string;
-  originalPrompt: string;
-}
-
-export const buildCapacityContinuationPrompt = (ctx: CapacityContinuationContext): string =>
-  [
-    '[CONTINUATION CONTEXT]',
-    `A previous attempt with model ${ctx.failedModel} was interrupted by upstream capacity exhaustion after making partial progress. Do not redo completed work; finish the remaining work.`,
-    '',
-    'Current git status:',
-    ctx.statusShort || '(clean)',
-    '',
-    'Diff summary:',
-    ctx.diffStat || '(no diff)',
-    '',
-    'Tail of the interrupted output:',
-    tailWindow(ctx.tail, 2000),
-    '',
-    'Original task:',
-    ctx.originalPrompt,
-  ].join('\n');
-
-const hasTelemetryValues = (telemetry: TaskExecutionTelemetry): boolean =>
-  telemetry.numTurns !== undefined ||
-  telemetry.totalTokens !== undefined ||
-  telemetry.thinkingTokens !== undefined;
-
-export const sumAgyTelemetry = (attempts: TaskExecutionTelemetry[]): TaskExecutionTelemetry => {
-  const sumOf = (key: 'numTurns' | 'totalTokens' | 'thinkingTokens'): number | undefined => {
-    const values = attempts
-      .map((attempt) => attempt[key])
-      .filter((value): value is number => typeof value === 'number');
-    return values.length > 0 ? values.reduce((total, value) => total + value, 0) : undefined;
-  };
-  return {
-    numTurns: sumOf('numTurns'),
-    totalTokens: sumOf('totalTokens'),
-    thinkingTokens: sumOf('thinkingTokens'),
-  };
-};
-
-// The child is a group leader, so its whole process group dies with it, `sh -c` grandchildren too.
-export const defaultKillProcessTree = async (pid: number): Promise<void> => {
-  if (process.platform === 'win32') {
-    await new Promise<void>((resolve) => {
-      try {
-        const killer = nodeSpawn('taskkill', ['/PID', String(pid), '/T', '/F'], {
-          stdio: 'ignore',
-          windowsHide: true,
-        });
-        killer.once('close', () => resolve());
-        killer.once('error', () => resolve());
-      } catch {
-        resolve();
-      }
-    });
-    return;
-  }
-
-  const groupAlive = (): boolean => {
-    try {
-      process.kill(-pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-  const signalGroup = (sig: NodeJS.Signals): void => {
-    try {
-      process.kill(-pid, sig);
-    } catch {}
-  };
-
-  if (!groupAlive()) return;
-  signalGroup('SIGTERM');
-  const deadline = Date.now() + KILL_GRACE_MS;
-  while (Date.now() < deadline) {
-    await delay(KILL_POLL_MS);
-    if (!groupAlive()) return;
-  }
-  signalGroup('SIGKILL');
-};
-
-export const spawnFromExecFileFn =
-  (execFileFn: ExecFileAsyncFn): SpawnFn =>
-  (file, args, options) => {
-    const child = new EventEmitter() as unknown as ChildProcess;
-    const stdoutStream = new EventEmitter();
-    const stderrStream = new EventEmitter();
-    Object.assign(child, {
-      pid: undefined,
-      stdout: stdoutStream,
-      stderr: stderrStream,
-      kill: () => true,
-    });
-
-    const emitChunk = (stream: EventEmitter, chunk: unknown): void => {
-      if (typeof chunk === 'string' && chunk !== '') stream.emit('data', chunk);
-    };
-
-    void execFileFn(file, [...args], {
-      cwd: options.cwd,
-      env: options.env,
-      timeout: options.timeout,
-      windowsHide: options.windowsHide,
-    })
-      .then(({ stdout, stderr }) => {
-        emitChunk(stdoutStream, stdout);
-        emitChunk(stderrStream, stderr);
-        child.emit('close', 0, null);
-      })
-      .catch((err: any) => {
-        emitChunk(stdoutStream, err?.stdout);
-        emitChunk(stderrStream, err?.stderr);
-        child.emit('close', typeof err?.code === 'number' ? err.code : 1, null);
-      });
-
-    return child;
-  };
-
-// Resolves the GitHub token owner's git identity so squash-merges match the repo owner cleanly
-// without triggering GitHub's automatic `Co-authored-by:` trailer.
 const defaultResolveGithubIdentity = async (
   token: string
 ): Promise<{ name: string; email: string } | undefined> => {
@@ -468,16 +233,6 @@ export class TaskExecutor {
     this.onStatusUpdate = options.onStatusUpdate;
   }
 
-  private async killTree(child: ChildProcess): Promise<void> {
-    const pid = child.pid;
-    if (!pid) return;
-    try {
-      await this.killProcessTreeFn(pid);
-    } catch (err: any) {
-      this.log.debug('Failed to kill process tree %s: %s', pid, err?.message ?? err);
-    }
-  }
-
   // Stream-json is the only way the pane sees progress mid-run; a binary that rejects the flag
   // still gets its attempt, in text mode.
   private async runAgy(
@@ -517,222 +272,16 @@ export class TaskExecutor {
     }
   }
 
-  private async runStreamedCommand(
+  private execDeps(): ExecDeps {
+    return { spawn: this.spawnFn, log: this.log, killProcessTree: this.killProcessTreeFn };
+  }
+
+  private runStreamedCommand(
     file: string,
     args: readonly string[],
-    options: {
-      cwd: string;
-      timeoutMs: number;
-      env?: NodeJS.ProcessEnv;
-      signal?: AbortSignal | undefined;
-      onOutput?: ((tail: string) => void) | undefined;
-      redactTokens?: readonly (string | undefined)[] | undefined;
-      streamFormatter?: AgyStreamFormatter | undefined;
-    }
+    options: Parameters<typeof runStreamedCommand>[2]
   ): Promise<{ stdout: string; stderr: string }> {
-    const signal = options.signal;
-    const redactTokens = options.redactTokens ?? [];
-    if (signal?.aborted) {
-      throw commandError(`Command aborted before start: ${file}`);
-    }
-
-    const stdoutChunks: string[] = [];
-    const stderrChunks: string[] = [];
-    let tail = '';
-    let pendingEmit = 0;
-    let lastEmitMs = Date.now();
-
-    let child: ChildProcess;
-    try {
-      child = this.spawnFn(file, args, {
-        cwd: options.cwd,
-        env: {
-          ...process.env,
-          // No child of the runner may inherit a credential; the lease is passed explicitly.
-          GITHUB_TOKEN: '',
-          ...options.env,
-          // Windows only: agy's update check flashes a console window there.
-          ...(process.platform === 'win32' ? { AGY_CLI_DISABLE_AUTO_UPDATE: 'true' } : {}),
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      });
-    } catch (err: any) {
-      throw commandError(`Failed to start ${file}: ${err?.message ?? err}`);
-    }
-
-    return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-      let settled = false;
-      let timedOut = false;
-      let aborted = false;
-      let killPromise: Promise<void> | null = null;
-
-      const ensureKilled = (): Promise<void> => {
-        killPromise ??= this.killTree(child);
-        return killPromise;
-      };
-
-      const flushOutput = (): void => {
-        if (!options.onOutput || pendingEmit <= 0) return;
-        pendingEmit = 0;
-        try {
-          options.onOutput(tail);
-        } catch {
-          // A dead heartbeat must not fail the run.
-        }
-      };
-
-      const cleanup = (): void => {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        signal?.removeEventListener('abort', onAbort);
-      };
-
-      const stdoutDecoder = new StringDecoder('utf8');
-      const stderrDecoder = new StringDecoder('utf8');
-      let decodersFlushed = false;
-
-      const flushDecoders = (): void => {
-        if (decodersFlushed) return;
-        decodersFlushed = true;
-        const stdoutTail = stdoutDecoder.end();
-        if (stdoutTail) {
-          stdoutChunks.push(stdoutTail);
-          const display = options.streamFormatter
-            ? options.streamFormatter.feed(stdoutTail)
-            : stdoutTail;
-          if (display) {
-            tail = redactGitSecrets(tailWindow(tail + display, HEARTBEAT_TAIL_BYTES), redactTokens);
-            pendingEmit += display.length;
-          }
-        }
-        const formatterTail = options.streamFormatter?.flush() ?? '';
-        if (formatterTail) {
-          tail = redactGitSecrets(
-            tailWindow(tail + formatterTail, HEARTBEAT_TAIL_BYTES),
-            redactTokens
-          );
-          pendingEmit += formatterTail.length;
-        }
-        const stderrTail = stderrDecoder.end();
-        if (stderrTail) {
-          stderrChunks.push(stderrTail);
-          tail = redactGitSecrets(
-            tailWindow(tail + stderrTail, HEARTBEAT_TAIL_BYTES),
-            redactTokens
-          );
-          pendingEmit += stderrTail.length;
-        }
-      };
-
-      const settle = (error: Error | null): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        flushDecoders();
-        flushOutput();
-        const stdout = stdoutChunks.join('');
-        const stderr = stderrChunks.join('');
-        // A child that exited on its own owns no live tree, so only a forced stop needs the kill.
-        if (!error) {
-          resolve({ stdout, stderr });
-          return;
-        }
-        void ensureKilled().then(() => reject(error));
-      };
-
-      const appendChunk = (chunk: unknown, sink: string[], decoder: StringDecoder): void => {
-        const text =
-          typeof chunk === 'string' ? chunk : Buffer.isBuffer(chunk) ? decoder.write(chunk) : '';
-        if (!text) return;
-        sink.push(text);
-        const display =
-          sink === stdoutChunks && options.streamFormatter
-            ? options.streamFormatter.feed(text)
-            : text;
-        tail = redactGitSecrets(tailWindow(tail + display, HEARTBEAT_TAIL_BYTES), redactTokens);
-        pendingEmit += display.length;
-        const now = Date.now();
-        if (
-          options.onOutput &&
-          (pendingEmit >= STREAM_EMIT_BYTES || now - lastEmitMs >= STREAM_EMIT_INTERVAL_MS)
-        ) {
-          lastEmitMs = now;
-          flushOutput();
-        }
-      };
-
-      // A forced stop must reap the tree before the error reaches the caller, so both paths wait on it.
-      const killAndSettle = (error: Error): void => {
-        void ensureKilled().then(() => settle(error));
-      };
-
-      const onAbort = (): void => {
-        aborted = true;
-        flushDecoders();
-        killAndSettle(
-          commandError(`Command aborted: ${file} was killed after the abort signal fired`, {
-            stdout: stdoutChunks.join(''),
-            stderr: stderrChunks.join(''),
-            signal: 'SIGKILL',
-          })
-        );
-      };
-
-      // A non-positive budget means no timeout: setTimeout(0) would kill the child on the next tick.
-      const requestedTimeoutMs = Number(options.timeoutMs);
-      const timeoutMs =
-        Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 0;
-      const timeoutTimer =
-        timeoutMs > 0
-          ? setTimeout(() => {
-              timedOut = true;
-              flushDecoders();
-              killAndSettle(
-                commandError(`Command timed out after ${timeoutMs}ms: ${file}`, {
-                  stdout: stdoutChunks.join(''),
-                  stderr: stderrChunks.join(''),
-                  code: null,
-                  signal: 'SIGKILL',
-                })
-              );
-            }, timeoutMs)
-          : null;
-
-      child.stdout?.on('data', (chunk: Buffer | string) =>
-        appendChunk(chunk, stdoutChunks, stdoutDecoder)
-      );
-      child.stderr?.on('data', (chunk: Buffer | string) =>
-        appendChunk(chunk, stderrChunks, stderrDecoder)
-      );
-
-      child.once('error', (err: Error) => {
-        settle(commandError(`Failed to run ${file}: ${err?.message ?? err}`));
-      });
-
-      child.once('close', (code: number | null, closeSignal: NodeJS.Signals | null) => {
-        if (aborted) return;
-        if (timedOut) return;
-        flushDecoders();
-        const stdout = stdoutChunks.join('');
-        const stderr = stderrChunks.join('');
-        if (code === 0) {
-          settle(null);
-          return;
-        }
-        const detail = tailWindow(stderr.trim() || stdout.trim(), 4000);
-        settle(
-          commandError(
-            `Command failed: ${file} (exit ${code ?? closeSignal ?? 'unknown'})${detail ? `\n${detail}` : ''}`,
-            { stdout, stderr, code, signal: closeSignal }
-          )
-        );
-      });
-
-      signal?.addEventListener('abort', onAbort, { once: true });
-      // An abort that landed between the entry check and this listener would otherwise never be seen.
-      if (signal?.aborted) onAbort();
-    });
+    return runStreamedCommand(file, args, options, this.execDeps());
   }
 
   private resolveMirrorPath(rawCloneUrl: string): string | null {
