@@ -1,18 +1,27 @@
 import { EventEmitter } from 'node:events';
 import type { ConfigStore } from '../config/store.js';
 import { settleBacklogOrigin } from './backlogOrigin.js';
+import { createBurnKickTracker } from './burnKick.js';
+import {
+  computeRoutineEligibility,
+  orderRoutineCandidates,
+  routineLimits,
+  routineMayTriggerAgain,
+  type RoutinePolicyDeps,
+} from './routinePolicy.js';
 import { type PrPolicy } from '../shared/contracts.js';
 import { type ResolvedConfig } from '../config/types.js';
 import {
   DEFAULT_BACKLOG_CONCURRENCY,
   DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
-  DEFAULT_QUOTA_BURN_MAX_HOURS,
 } from '../config/env.js';
 import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import { snapshotsFromSentryState, type PoolGroup, type QuotaSnapshot } from '../sentry/models.js';
 import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';
 import { logger, type Logger } from '../logs/logger.js';
 import {
+  poolDispatchEnabled,
+  poolGroupOfPoolId,
   CANONICAL_AGY_MODELS,
   calculateEffectiveHeadroomPercent,
   evaluateModelDispatchEligibility,
@@ -29,7 +38,6 @@ import {
   isTerminalTaskStatus,
   resolveReasoningEffortForModel,
   modelSupportsEffort,
-  ROUTINE_CYCLE_REARM_STATUSES,
   type AgyModelCatalogEntry,
   type CascadeHop,
   type ModelEligibilityResult,
@@ -54,9 +62,9 @@ import {
   type TaskStatusPatch,
 } from './queue.js';
 import { buildContinuationBranchName } from '../runner/policy.js';
-import { upgradePoolGroupId } from '../shared/models.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { OWNER_REPO_SLUG_RE, parseGithubSlugFromUrl } from '../shared/github.js';
+import { GITHUB_WEB_HOSTS } from '../shared/github.js';
 import type { ModelCatalogProvider } from './catalog.js';
 import { removeIssueLabel } from './githubIssues.js';
 
@@ -70,19 +78,6 @@ const BACKLOG_DISPATCHABLE_STATUSES: ReadonlySet<string> = new Set<string>([
   'failed',
   'dispatched',
 ]);
-
-// A pool id is either the group id or `<group>:<slug>`; only the prefix names the group.
-const poolGroupOfPoolId = (poolId: string): string => {
-  const upgraded = upgradePoolGroupId(poolId);
-  const separator = upgraded.indexOf(':');
-  return separator >= 0 ? upgraded.slice(0, separator) : upgraded;
-};
-
-/** A pool dispatches unless its policy explicitly disables it. */
-const poolDispatchEnabled = (resolved: ResolvedConfig, poolGroup: PoolGroup): boolean =>
-  resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false;
-
-const BURN_KICK_CYCLES_KEY = 'burnKickAnnouncedCycles';
 
 interface DispatchTaskRequest {
   repositoryId: string;
@@ -164,6 +159,7 @@ export class Coordinator {
   private notifier?: Notifier;
   private readonly log: Logger;
   private readonly bus = new EventEmitter();
+  private readonly burnKick: ReturnType<typeof createBurnKickTracker>;
   private latestSnapshots: QuotaSnapshot[] = [];
   private lastSnapshotAt = 0;
   private lastManualDispatchAt = 0;
@@ -178,6 +174,16 @@ export class Coordinator {
     this.notifier = options.notifier;
     this.log = options.logger ?? logger.child('coordinator');
     this.bus.setMaxListeners(100);
+    this.burnKick = createBurnKickTracker({
+      runtime: {
+        get: (key) => this.queue.getRuntimeValue(key),
+        set: (key, value) => this.queue.setRuntimeValue(key, value),
+      },
+      log: this.log,
+      notifier: () => this.notifier,
+      resolveConfig: () => this.configStore.resolveConfig(),
+      getActivePools: () => this.getActivePools(),
+    });
     this.lastManualDispatchAt =
       Number(this.queue.getRuntimeValue('lastManualDispatchAt') ?? 0) || 0;
   }
@@ -218,86 +224,6 @@ export class Coordinator {
   public setLastManualDispatchAt(timestampMs: number): void {
     this.lastManualDispatchAt = timestampMs;
     this.queue.setRuntimeValue('lastManualDispatchAt', String(timestampMs));
-  }
-
-  private readBurnKickCycles(): Record<string, string> {
-    const raw = this.queue.getRuntimeValue(BURN_KICK_CYCLES_KEY);
-    if (!raw) return {};
-    try {
-      return (JSON.parse(raw) as Record<string, string>) ?? {};
-    } catch {
-      return {};
-    }
-  }
-
-  private writeBurnKickCycles(cycles: Record<string, string>): void {
-    this.queue.setRuntimeValue(BURN_KICK_CYCLES_KEY, JSON.stringify(cycles));
-  }
-
-  private hasAnnouncedBurnKick(poolGroup: string, resetTime: string): boolean {
-    return this.readBurnKickCycles()[poolGroup] === resetTime;
-  }
-
-  private recordBurnKick(poolGroup: string, resetTime: string): void {
-    const cycles = this.readBurnKickCycles();
-    cycles[poolGroup] = resetTime;
-    this.writeBurnKickCycles(cycles);
-  }
-
-  private async announceBurnKick(params: {
-    label: string;
-    pool: QuotaSnapshot;
-    models: string[];
-    headroomPercent: number | null;
-    triggerHours: number;
-  }): Promise<void> {
-    const poolGroup = params.pool.poolGroup;
-    const resetTime = params.pool.resetTime;
-    if (!resetTime || this.hasAnnouncedBurnKick(poolGroup, resetTime)) return;
-    this.recordBurnKick(poolGroup, resetTime);
-
-    this.log.info(
-      'Pre-reset window open on %s (<=%dh, %d%% headroom); quota-burn looping until %s',
-      params.pool.displayName || poolGroup,
-      params.triggerHours,
-      params.headroomPercent ?? 0,
-      resetTime
-    );
-
-    await this.notifier?.notifyInfo({
-      kind: 'burn_kick',
-      title: 'Pre-reset burn started',
-      message:
-        `${params.label} entered the pre-reset window (<=${params.triggerHours}h) with ` +
-        `${params.headroomPercent ?? 0}% headroom. Quota-burn looping is now active for this pool ` +
-        `until the reset at ${resetTime}.`,
-      poolGroup: poolGroup,
-      poolName: params.pool.displayName || params.pool.poolId,
-      models: params.models,
-      resetTime,
-      hoursUntilReset: params.pool.hoursUntilReset,
-    });
-  }
-
-  private async announceOpportunisticBurnKick(task: SwarmTask): Promise<void> {
-    if (task.scheduleMode !== 'pre_reset') return;
-    const pool = findPoolForGroup(this.getActivePools(), resolvePoolGroupForModel(task.model));
-    if (!pool) return;
-
-    const resolved = this.configStore.resolveConfig();
-    await this.announceBurnKick({
-      label: `Pre-reset task #${task.taskNumber} "${task.title}"`,
-      pool,
-      models: [task.model],
-      headroomPercent: calculateEffectiveHeadroomPercent(pool),
-      triggerHours: resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS,
-    });
-  }
-
-  private fireBurnKickAnnouncement(task: SwarmTask): void {
-    void this.announceOpportunisticBurnKick(task).catch((kickErr) =>
-      this.log.warn('Burn-kick announcement failed for %s: %s', task.id, kickErr)
-    );
   }
 
   public getActivePools(): QuotaSnapshot[] {
@@ -352,7 +278,7 @@ export class Coordinator {
   public onEarlyQuotaReset(earlyResets: EarlyResetPool[]): void {
     if (earlyResets.length === 0) return;
 
-    const cycles = this.readBurnKickCycles();
+    const cycles = this.burnKick.readCycles();
     let changed = false;
     for (const pool of earlyResets) {
       // Burn-kick cycles are keyed by pool group, so a `<group>:<slug>` id must clear its group.
@@ -363,7 +289,7 @@ export class Coordinator {
         }
       }
     }
-    if (changed) this.writeBurnKickCycles(cycles);
+    if (changed) this.burnKick.writeCycles(cycles);
 
     const routines = this.queue.listRoutineTasks();
     if (routines.length === 0) return;
@@ -486,23 +412,43 @@ export class Coordinator {
     };
   }
 
-  /** The routine's own window wins; the global burn window is only a fallback. */
-  private routineLimits(rt: RoutineTaskRecord, resolved: ResolvedConfig) {
+  private routineDeps(): RoutinePolicyDeps {
     return {
-      triggerHours:
-        rt.triggerBeforeResetHours && rt.triggerBeforeResetHours > 0
-          ? rt.triggerBeforeResetHours
-          : (resolved.quotaBurnMaxHours ?? DEFAULT_QUOTA_BURN_MAX_HOURS),
-      minHeadroom: Math.max(rt.minHeadroomPercent ?? 10, resolved.minDispatchHeadroomPercent ?? 0),
+      config: { resolveConfig: () => this.configStore.resolveConfig() },
+      queue: {
+        hasActiveTaskForOrigin: (originId) => this.queue.hasActiveTaskForOrigin(originId),
+        getLatestTaskForOrigin: (originId, poolGroup) =>
+          this.queue.getLatestTaskForOrigin(originId, poolGroup),
+        getTask: (id) => this.queue.getTask(id),
+      },
+      getActivePools: () => this.getActivePools(),
+      resolveDispatchModel: (model, configuredDefault) =>
+        this.resolveDispatchModel(model, configuredDefault),
     };
   }
 
-  /** The run a cycle stamp refers to: the latest task for that pool, else the recorded last task. */
-  private cycleRun(rt: RoutineTaskRecord, poolKey: string): SwarmTask | undefined {
-    return (
-      this.queue.getLatestTaskForOrigin(rt.id, poolKey) ??
-      (rt.lastTaskId ? this.queue.getTask(rt.lastTaskId) : undefined)
-    );
+  /** The routine's own window wins; the global burn window is only a fallback. */
+  private routineLimits(rt: RoutineTaskRecord, resolved: ResolvedConfig) {
+    return routineLimits(rt, resolved);
+  }
+
+  private routineMayTriggerAgain(
+    rt: RoutineTaskRecord,
+    poolKey: string,
+    resetTime: string
+  ): boolean {
+    return routineMayTriggerAgain(rt, poolKey, resetTime, this.routineDeps());
+  }
+
+  private orderRoutineCandidates(routines: RoutineTaskRecord[]): RoutineTaskRecord[] {
+    return orderRoutineCandidates(routines, this.routineDeps());
+  }
+
+  public computeRoutineEligibility(
+    rt: RoutineTaskRecord,
+    snapshots?: QuotaSnapshot[]
+  ): RoutineEligibilityStatus {
+    return computeRoutineEligibility(rt, snapshots, this.routineDeps());
   }
 
   public async triggerEligibleAutonomousTasks(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
@@ -537,7 +483,7 @@ export class Coordinator {
       const dispatchEnabled = (poolGroup: PoolGroup): boolean =>
         poolDispatchEnabled(resolved, poolGroup);
       const concurrencyMode = resolved.backlogConcurrency ?? DEFAULT_BACKLOG_CONCURRENCY;
-      const onlineRunners = this.queue
+      const onlineRunners = this.queue.runners
         .listRunners()
         .filter((runner) => runner.enabled && runner.status !== 'offline').length;
       const maxActiveBacklog = concurrencyMode === 'single' ? 1 : Math.max(1, onlineRunners);
@@ -646,39 +592,6 @@ export class Coordinator {
     }
 
     return spawned;
-  }
-
-  private routineMayTriggerAgain(
-    rt: RoutineTaskRecord,
-    poolKey: string,
-    resetTime: string
-  ): boolean {
-    const cycles = rt.lastTriggeredCycles ?? {};
-    const stamped = Object.keys(cycles).length > 0 ? cycles[poolKey] : rt.lastTriggeredResetTime;
-    if (!stamped || stamped !== resetTime) {
-      return true;
-    }
-
-    const previous = this.cycleRun(rt, poolGroupOfPoolId(poolKey));
-
-    // A stamped cycle whose run can no longer be found stays burned: looping blind burns quota.
-    if (!previous) return false;
-
-    return (ROUTINE_CYCLE_REARM_STATUSES as readonly string[]).includes(previous.status);
-  }
-
-  private orderRoutineCandidates(routines: RoutineTaskRecord[]): RoutineTaskRecord[] {
-    const lastRunMs = (rt: RoutineTaskRecord): number => {
-      if (!rt.lastTaskId) return 0;
-      const previous = this.queue.getTask(rt.lastTaskId);
-      const parsed = previous ? Date.parse(previous.createdAt) : 0;
-      return Number.isFinite(parsed) ? parsed : 0;
-    };
-
-    return [...routines].sort(
-      (a, b) =>
-        lastRunMs(a) - lastRunMs(b) || a.sortOrder - b.sortOrder || a.taskNumber - b.taskNumber
-    );
   }
 
   public async triggerEligibleRoutines(snapshots: QuotaSnapshot[]): Promise<SwarmTask[]> {
@@ -812,151 +725,22 @@ export class Coordinator {
         lastTaskId: task.id,
       });
 
-      void this.announceBurnKick({
-        label: `Routine #${rt.taskNumber} "${rt.title}"`,
-        pool: targetPool,
-        models: [selectedModel],
-        headroomPercent: calculateEffectiveHeadroomPercent(targetPool),
-        triggerHours,
-      }).catch((kickErr) =>
-        this.log.warn('Burn-kick announcement failed for %s: %s', targetPool.poolGroup, kickErr)
-      );
+      void this.burnKick
+        .announce({
+          label: `Routine #${rt.taskNumber} "${rt.title}"`,
+          pool: targetPool,
+          models: [selectedModel],
+          headroomPercent: calculateEffectiveHeadroomPercent(targetPool),
+          triggerHours,
+        })
+        .catch((kickErr) =>
+          this.log.warn('Burn-kick announcement failed for %s: %s', targetPool.poolGroup, kickErr)
+        );
 
       spawned.push(task);
     }
 
     return spawned;
-  }
-
-  public computeRoutineEligibility(
-    rt: RoutineTaskRecord,
-    snapshots?: QuotaSnapshot[]
-  ): RoutineEligibilityStatus {
-    const resolved = this.configStore.resolveConfig();
-
-    if (!rt.enabled) {
-      return {
-        state: 'disabled',
-        label: 'Disabled',
-        detail: 'This routine is disabled and will not dispatch.',
-      };
-    }
-
-    if (this.queue.hasActiveTaskForOrigin(rt.id)) {
-      const active = this.queue.getLatestTaskForOrigin(rt.id);
-      return {
-        state: 'running',
-        label: 'Looping',
-        detail: `Task ${active?.id ?? 'run'} is ${active?.status ?? 'in flight'} on this routine.`,
-      };
-    }
-
-    const pools = snapshots && snapshots.length > 0 ? snapshots : this.getActivePools();
-    if (pools.length === 0) {
-      return {
-        state: 'no_telemetry',
-        label: 'No Telemetry',
-        detail: 'No live quota telemetry is available, so dispatch cannot be validated.',
-      };
-    }
-
-    const { triggerHours, minHeadroom } = this.routineLimits(rt, resolved);
-
-    const targets: Array<{ model: string; poolGroup: PoolGroup }> = [];
-    for (const hop of rt.cascade) {
-      const model = this.resolveDispatchModel(hop.model, resolved.defaultDispatchModel);
-      const poolGroup = resolvePoolGroupForModelOrNull(model);
-      // An unmapped model must never authorise a dispatch through the fail-open 'gemini' default.
-      if (!poolGroup) continue;
-      targets.push({ model, poolGroup });
-    }
-    const poolGroups = Array.from(new Set(targets.map((t) => t.poolGroup)));
-
-    const enabledPoolGroups = new Set(
-      poolGroups.filter((poolGroup) => poolDispatchEnabled(resolved, poolGroup))
-    );
-    if (enabledPoolGroups.size === 0) {
-      return {
-        state: 'pool_disabled',
-        label: 'Pool Disabled',
-        detail: `Dispatching is disabled for every pool this routine targets (${poolGroups.join(', ')}).`,
-      };
-    }
-
-    let sawPool = false;
-    let cycleComplete: string | undefined;
-    let cycleFailed: string | undefined;
-    let waitingWindow: string | undefined;
-    let lowHeadroom: string | undefined;
-
-    for (const { model, poolGroup } of targets) {
-      if (!enabledPoolGroups.has(poolGroup)) continue;
-
-      const pool = findPoolForGroup(pools, poolGroup);
-      if (!pool) continue;
-      sawPool = true;
-
-      const poolLabel = pool.displayName || pool.poolId;
-      const hoursUntilReset = poolHoursUntilReset(pool, Date.now());
-
-      if (!pool.resetTime || hoursUntilReset === null || hoursUntilReset <= 0) {
-        waitingWindow ??= `${poolLabel} has no pending reset deadline; waiting for the next probe cycle.`;
-        continue;
-      }
-
-      if (!this.routineMayTriggerAgain(rt, pool.poolId || pool.poolGroup, pool.resetTime)) {
-        const previous = this.cycleRun(rt, poolGroup);
-
-        const detail =
-          `Cycle for ${poolLabel} is already burned for the reset at ${pool.resetTime}` +
-          (previous ? ` (last run ${previous.status}).` : '.');
-        // A cycle whose run failed or aborted ended in a terminal error, which reads differently.
-        if (previous && (previous.status === 'failed' || previous.status === 'aborted')) {
-          cycleFailed ??= detail;
-        } else {
-          cycleComplete ??= detail;
-        }
-        continue;
-      }
-
-      if (hoursUntilReset > triggerHours) {
-        waitingWindow ??= `Reset in ${hoursUntilReset.toFixed(1)}h on ${poolLabel}; this routine opens at <=${triggerHours}h.`;
-        continue;
-      }
-
-      const headroom = calculateEffectiveHeadroomPercent(pool);
-      if (headroom === null) {
-        lowHeadroom ??= `No usable headroom telemetry for ${poolLabel}.`;
-        continue;
-      }
-      if (headroom < minHeadroom) {
-        lowHeadroom ??= `${poolLabel} at ${headroom}% headroom, below the ${minHeadroom}% floor.`;
-        continue;
-      }
-
-      return {
-        state: 'ready',
-        label: 'Ready',
-        detail: `Dispatches on ${model} at the next probe (reset in ${hoursUntilReset.toFixed(1)}h, ${headroom}% headroom).`,
-      };
-    }
-
-    if (cycleFailed) return { state: 'cycle_failed', label: 'Cycle Failed', detail: cycleFailed };
-    if (cycleComplete) {
-      return { state: 'cycle_complete', label: 'Cycle Complete', detail: cycleComplete };
-    }
-    if (waitingWindow) {
-      return { state: 'waiting_window', label: 'Waiting Window', detail: waitingWindow };
-    }
-    if (lowHeadroom) return { state: 'low_headroom', label: 'Low Headroom', detail: lowHeadroom };
-
-    return {
-      state: 'no_telemetry',
-      label: 'No Telemetry',
-      detail: sawPool
-        ? 'No pending dispatch condition is satisfied yet.'
-        : `No quota pool matches ${poolGroups.join(', ')}.`,
-    };
   }
 
   public heartbeatTask(
@@ -1360,7 +1144,7 @@ export class Coordinator {
   public createRegistrationToken(
     input: CreateRegistrationTokenInput = {}
   ): RunnerRegistrationTokenResult {
-    const res = this.queue.createRegistrationToken(input);
+    const res = this.queue.runners.createRegistrationToken(input);
     this.log.info(
       'Created one-time runner registration token %s (expires=%s)',
       res.id,
@@ -1373,7 +1157,7 @@ export class Coordinator {
     runner: SwarmRunnerRecord;
     runnerToken: string;
   } | null {
-    const result = this.queue.exchangeRegistrationToken(input);
+    const result = this.queue.runners.exchangeRegistrationToken(input);
     if (result) {
       this.log.info(
         'Registered swarm runner "%s" (%s, labels=%s)',
@@ -1392,11 +1176,11 @@ export class Coordinator {
     isSharedSecret?: boolean;
   } {
     const resolved = this.configStore.resolveConfig();
-    const res = this.queue.authenticateRunner(providedToken, resolved.runnerSharedSecret);
+    const res = this.queue.runners.authenticateRunner(providedToken, resolved.runnerSharedSecret);
     // A registration token is spent on first authenticated use, not on exchange, so a runner that
     // crashed before persisting runner.json can still re-exchange it.
     if (res.authenticated && res.runner) {
-      this.queue.markRegistrationTokenUsed(res.runner.runnerId);
+      this.queue.runners.markRegistrationTokenUsed(res.runner.runnerId);
     }
     return {
       ...res,
@@ -1449,7 +1233,7 @@ export class Coordinator {
 
     const immediate = tryClaim();
     if (immediate) {
-      this.fireBurnKickAnnouncement(immediate);
+      this.burnKick.fire(immediate);
       return immediate;
     }
 
@@ -1482,7 +1266,7 @@ export class Coordinator {
         const claimed = tryClaim();
         if (claimed) {
           cleanup();
-          this.fireBurnKickAnnouncement(claimed);
+          this.burnKick.fire(claimed);
           resolve(claimed);
         }
       };
@@ -1518,7 +1302,7 @@ export class Coordinator {
     }
     if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return undefined;
     const host = parsed.hostname.toLowerCase();
-    if (host !== 'github.com' && host !== 'www.github.com') return undefined;
+    if (!GITHUB_WEB_HOSTS.has(host)) return undefined;
     const segments = parsed.pathname.split('/').filter(Boolean);
     if (
       segments.length !== 4 ||
@@ -1696,11 +1480,11 @@ export class Coordinator {
   }
 
   public listRunners(): SwarmRunnerRecord[] {
-    return this.queue.listRunners();
+    return this.queue.runners.listRunners();
   }
 
   public setRunnerEnabled(runnerId: string, enabled: boolean): SwarmRunnerRecord | undefined {
-    const updated = this.queue.setRunnerEnabled(runnerId, enabled);
+    const updated = this.queue.runners.setRunnerEnabled(runnerId, enabled);
     if (updated) {
       this.log.info('Swarm runner "%s" (%s) enabled=%s', updated.name, runnerId, String(enabled));
       if (enabled) {
@@ -1711,7 +1495,7 @@ export class Coordinator {
   }
 
   public revokeRunner(runnerId: string): boolean {
-    const revoked = this.queue.revokeRunner(runnerId);
+    const revoked = this.queue.runners.revokeRunner(runnerId);
     if (revoked) {
       this.log.info('Revoked swarm runner %s and returned any active claims to queue', runnerId);
       this.bus.emit('task:available');

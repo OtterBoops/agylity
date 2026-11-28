@@ -54,3 +54,6 @@ export const resolveGithubRepoSlug = async (
     return undefined;
   }
 };
+
+/** Hosts a GitHub web page (issue, PR) is served from. */
+export const GITHUB_WEB_HOSTS: ReadonlySet<string> = new Set(['github.com', 'www.github.com']);

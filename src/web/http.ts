@@ -1,6 +1,7 @@
+import { MAX_REQUEST_BODY_BYTES } from '../shared/contracts.js';
 import type http from 'node:http';
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
 
 export class PayloadTooLargeError extends Error {
   readonly statusCode = 413;

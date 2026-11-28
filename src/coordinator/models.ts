@@ -9,6 +9,8 @@ import {
   type QuotaSnapshot,
 } from '../sentry/models.js';
 import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/env.js';
+import { upgradePoolGroupId } from '../shared/models.js';
+import type { ResolvedConfig } from '../config/types.js';
 import {
   CANONICAL_AGY_MODELS,
   DEFAULT_MODEL_BY_POOL_GROUP,
@@ -566,3 +568,14 @@ export const evaluateModelPreferenceChain = (options: {
     reason: rejectionReasons.join('; ') || 'No eligible models in preference chain',
   };
 };
+
+// A pool id is either the group id or `<group>:<slug>`; only the prefix names the group.
+export const poolGroupOfPoolId = (poolId: string): string => {
+  const upgraded = upgradePoolGroupId(poolId);
+  const separator = upgraded.indexOf(':');
+  return separator >= 0 ? upgraded.slice(0, separator) : upgraded;
+};
+
+/** A pool dispatches unless its policy explicitly disables it. */
+export const poolDispatchEnabled = (resolved: ResolvedConfig, poolGroup: PoolGroup): boolean =>
+  resolved.poolGroupPolicies?.[poolGroup]?.dispatchEnabled !== false;

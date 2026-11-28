@@ -240,7 +240,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(finalTask?.branchName, 'antigravity/task-hotfix');
         assert.equal(finalTask?.status, 'completed');
 
-        const workers = queue.listRunners();
+        const workers = queue.runners.listRunners();
         assert.equal(workers.length, 1);
       } finally {
         db.close();
@@ -362,7 +362,11 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
       try {
         const queue = new TaskQueue(db);
-        queue.registerRunnerHeartbeat({ runnerId: 'runner-open', labels: [], repositories: [] });
+        queue.runners.registerRunnerHeartbeat({
+          runnerId: 'runner-open',
+          labels: [],
+          repositories: [],
+        });
 
         // The poll payload only narrows matching for an ad-hoc runner, never the stored record.
         queue.claimNext({
@@ -371,7 +375,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           repositories: ['repo-a'],
         });
 
-        const runner = queue.getRunner('runner-open');
+        const runner = queue.runners.getRunner('runner-open');
         assert.deepEqual(runner?.labels, []);
         assert.deepEqual(runner?.repositories, []);
       } finally {
@@ -2232,7 +2236,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const queue = new TaskQueue(db);
 
         // Registered with a docker-only scope.
-        queue.registerRunnerHeartbeat({
+        queue.runners.registerRunnerHeartbeat({
           runnerId: 'runner-scoped',
           name: 'scoped',
           labels: ['docker'],
@@ -2251,7 +2255,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const claimed = queue.claimNext({ runnerId: 'runner-scoped', labels: ['linux'] });
         assert.equal(claimed, null);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
-        assert.deepEqual(queue.getRunner('runner-scoped')?.labels, ['docker']);
+        assert.deepEqual(queue.runners.getRunner('runner-scoped')?.labels, ['docker']);
       } finally {
         db.close();
         cleanup();
@@ -2264,7 +2268,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
       try {
         const queue = new TaskQueue(db);
-        queue.registerRunnerHeartbeat({
+        queue.runners.registerRunnerHeartbeat({
           runnerId: 'runner-open',
           name: 'open',
           labels: [],
@@ -2355,7 +2359,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           )
           .run();
 
-        const runner = queue.listRunners()[0];
+        const runner = queue.runners.listRunners()[0];
         assert.equal(runner?.name, 'legacy-runner');
         assert.equal(runner?.runnerId, '');
         assert.notEqual(runner?.runnerId, 'undefined');
@@ -2410,7 +2414,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         assert.equal(claimed?.status, 'claimed');
 
         // Revoking the runner mid-flight returns the task to the queue.
-        assert.equal(queue.revokeRunner('runner-1'), true);
+        assert.equal(queue.runners.revokeRunner('runner-1'), true);
         assert.equal(queue.getTask(task.id)?.status, 'queued');
         assert.equal(queue.getTask(task.id)?.runnerId, undefined);
 
@@ -2717,13 +2721,13 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         assert.equal(queue.claimNext({ runnerId: 'runner-stuck' })?.id, first.id);
-        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, first.id);
+        assert.equal(queue.runners.getRunner('runner-stuck')?.activeTaskId, first.id);
 
         // Simulate a terminal report that never reached the coordinator.
         db.getRawDb()
           .prepare("UPDATE swarm_tasks SET status = 'failed' WHERE id = ?")
           .run(first.id);
-        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, first.id);
+        assert.equal(queue.runners.getRunner('runner-stuck')?.activeTaskId, first.id);
 
         const second = queue.enqueue({
           repositoryName: 'agylity',
@@ -2732,7 +2736,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         });
         const claimed = queue.claimNext({ runnerId: 'runner-stuck' });
         assert.equal(claimed?.id, second.id);
-        assert.equal(queue.getRunner('runner-stuck')?.activeTaskId, second.id);
+        assert.equal(queue.runners.getRunner('runner-stuck')?.activeTaskId, second.id);
       } finally {
         db.close();
         cleanup();
@@ -2745,31 +2749,31 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
       try {
         const queue = new TaskQueue(db);
-        const reg = queue.createRegistrationToken({ nameHint: 'crashy' });
+        const reg = queue.runners.createRegistrationToken({ nameHint: 'crashy' });
 
         // First boot exchanges the token, then dies before it can write runner.json.
-        const first = queue.exchangeRegistrationToken({
+        const first = queue.runners.exchangeRegistrationToken({
           registrationToken: reg.registrationToken,
           runnerId: 'runner-crashy',
         });
 
         // Second boot re-exchanges the same token instead of being stranded.
-        const second = queue.exchangeRegistrationToken({
+        const second = queue.runners.exchangeRegistrationToken({
           registrationToken: reg.registrationToken,
           runnerId: 'runner-crashy',
         });
         assert.notEqual(second.runnerToken, first.runnerToken);
-        assert.equal(queue.authenticateRunner(first.runnerToken).authenticated, false);
+        assert.equal(queue.runners.authenticateRunner(first.runnerToken).authenticated, false);
         assert.equal(
-          queue.authenticateRunner(second.runnerToken).runner?.runnerId,
+          queue.runners.authenticateRunner(second.runnerToken).runner?.runnerId,
           'runner-crashy'
         );
 
         // First authenticated use is what spends it.
-        queue.markRegistrationTokenUsed('runner-crashy');
+        queue.runners.markRegistrationTokenUsed('runner-crashy');
         assert.throws(
           () =>
-            queue.exchangeRegistrationToken({
+            queue.runners.exchangeRegistrationToken({
               registrationToken: reg.registrationToken,
               runnerId: 'runner-crashy',
             }),
@@ -2777,10 +2781,10 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         );
 
         // Spending is idempotent, so a later poll cannot reopen the token.
-        queue.markRegistrationTokenUsed('runner-crashy');
+        queue.runners.markRegistrationTokenUsed('runner-crashy');
         assert.throws(
           () =>
-            queue.exchangeRegistrationToken({
+            queue.runners.exchangeRegistrationToken({
               registrationToken: reg.registrationToken,
               runnerId: 'runner-crashy',
             }),
@@ -2798,16 +2802,16 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
       try {
         const queue = new TaskQueue(db);
-        const reg = queue.createRegistrationToken({ nameHint: 'paused' });
-        queue.exchangeRegistrationToken({
+        const reg = queue.runners.createRegistrationToken({ nameHint: 'paused' });
+        queue.runners.exchangeRegistrationToken({
           registrationToken: reg.registrationToken,
           runnerId: 'runner-paused',
         });
-        queue.setRunnerEnabled('runner-paused', false);
+        queue.runners.setRunnerEnabled('runner-paused', false);
 
         assert.throws(
           () =>
-            queue.exchangeRegistrationToken({
+            queue.runners.exchangeRegistrationToken({
               registrationToken: reg.registrationToken,
               runnerId: 'runner-paused',
             }),
@@ -2815,7 +2819,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         );
 
         // Registering again must not undo the pause on its own.
-        assert.equal(queue.getRunner('runner-paused')?.enabled, false);
+        assert.equal(queue.runners.getRunner('runner-paused')?.enabled, false);
       } finally {
         db.close();
         cleanup();
@@ -2882,7 +2886,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
           cascade: [{ model: 'gemini-4-argon', effort: 'high' }],
         });
         queue.claimNext({ runnerId: 'runner-dead' });
-        assert.equal(queue.getRunner('runner-dead')?.status, 'busy');
+        assert.equal(queue.runners.getRunner('runner-dead')?.status, 'busy');
 
         const nowMs = Date.now();
         const staleBeat = new Date(nowMs - 20_000).toISOString();
@@ -2895,7 +2899,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         const reaped = queue.reapStaleClaims(5_000, nowMs);
         assert.equal(reaped.length, 1);
-        assert.equal(queue.getRunner('runner-dead')?.status, 'offline');
+        assert.equal(queue.runners.getRunner('runner-dead')?.status, 'offline');
       } finally {
         db.close();
         cleanup();
@@ -2911,9 +2915,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const total = 60;
         const tokens: string[] = [];
         for (let i = 0; i < total; i++) {
-          const reg = queue.createRegistrationToken({ nameHint: `runner-${i}` });
+          const reg = queue.runners.createRegistrationToken({ nameHint: `runner-${i}` });
           tokens.push(reg.registrationToken);
-          queue.exchangeRegistrationToken({
+          queue.runners.exchangeRegistrationToken({
             registrationToken: reg.registrationToken,
             runnerId: `worker-${i}`,
           });
@@ -2922,7 +2926,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         // Retention is a rolling window: the oldest registration is gone for good...
         assert.throws(
           () =>
-            queue.exchangeRegistrationToken({
+            queue.runners.exchangeRegistrationToken({
               registrationToken: tokens[0]!,
               runnerId: 'worker-0',
             }),
@@ -2930,7 +2934,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         );
 
         // ...while the newest one a runner still holds is accepted.
-        const newest = queue.exchangeRegistrationToken({
+        const newest = queue.runners.exchangeRegistrationToken({
           registrationToken: tokens[total - 1]!,
           runnerId: `worker-${total - 1}`,
         });
@@ -3187,10 +3191,18 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        queue.registerRunnerHeartbeat({ runnerId: 'live-idle', name: 'live-idle', status: 'idle' });
-        queue.registerRunnerHeartbeat({ runnerId: 'live-busy', name: 'live-busy', status: 'busy' });
+        queue.runners.registerRunnerHeartbeat({
+          runnerId: 'live-idle',
+          name: 'live-idle',
+          status: 'idle',
+        });
+        queue.runners.registerRunnerHeartbeat({
+          runnerId: 'live-busy',
+          name: 'live-busy',
+          status: 'busy',
+        });
         for (let i = 0; i < 30; i++) {
-          queue.registerRunnerHeartbeat({
+          queue.runners.registerRunnerHeartbeat({
             runnerId: `dead-${i}`,
             name: `dead-${i}`,
             status: 'offline',
@@ -3200,9 +3212,9 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
         const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         db.getRawDb().prepare('UPDATE swarm_runners SET last_seen_at = ?').run(stale);
 
-        queue.pruneOldRunners();
+        queue.runners.pruneOldRunners();
         assert.deepEqual(
-          queue
+          queue.runners
             .listRunners()
             .map((w) => w.runnerId)
             .sort(),
@@ -3219,16 +3231,16 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
       const db = new AppDatabase(path.join(dir, 'test.db'));
       try {
         const queue = new TaskQueue(db);
-        queue.registerRunnerHeartbeat({
+        queue.runners.registerRunnerHeartbeat({
           runnerId: 'dead-now',
           name: 'dead-now',
           status: 'offline',
         });
         // The reaper marks a worker offline the moment it goes quiet; that transition must be
         // observable rather than deleted in the same cycle.
-        queue.pruneOldRunners();
-        assert.equal(queue.listRunners().length, 1);
-        assert.equal(queue.listRunners()[0]?.status, 'offline');
+        queue.runners.pruneOldRunners();
+        assert.equal(queue.runners.listRunners().length, 1);
+        assert.equal(queue.runners.listRunners()[0]?.status, 'offline');
       } finally {
         db.close();
         cleanup();
@@ -5651,7 +5663,7 @@ describe('Unit & Integration Tests: Task Coordinator, Model Routing & Pull-Runne
 
         // Register 3 online enabled runners.
         for (const id of ['runner-1', 'runner-2', 'runner-3']) {
-          coordinator.queue.registerRunnerHeartbeat({
+          coordinator.queue.runners.registerRunnerHeartbeat({
             runnerId: id,
             name: id,
             labels: [],

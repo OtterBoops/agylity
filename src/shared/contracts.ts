@@ -310,3 +310,6 @@ export interface LogEntry {
 
 /** Agent output tail a heartbeat carries, in UTF-16 units (what `tailWindow` caps). */
 export const HEARTBEAT_TAIL_BYTES = 16 * 1024;
+
+/** Body ceiling the control plane enforces; the runner clips its status report to fit inside it. */
+export const MAX_REQUEST_BODY_BYTES = 64 * 1024;

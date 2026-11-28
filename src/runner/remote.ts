@@ -6,14 +6,15 @@ import { defaultExecFileAsync, type ExecFileAsyncFn } from '../sentry/discovery.
 import { isCliAuthFailure } from '../sentry/client.js';
 import { logger, type Logger } from '../logs/logger.js';
 import type { RunnerSystemInfo, SwarmRunnerRecord, SwarmTask } from '../coordinator/queue.js';
-import { type PrPolicy } from '../shared/contracts.js';
+import { MAX_REQUEST_BODY_BYTES, type PrPolicy } from '../shared/contracts.js';
 import { TaskExecutor, type TaskExecutionResult } from './executor.js';
 import { warnLegacyGithubToken } from './git.js';
 import { AgyUpdater, type AgyUpdaterLike } from '../agy/updater.js';
 
 // The coordinator rejects a JSON body over 64 KB, so an untruncated run output would turn a
 // finished task into a 413 and a lease-expiry failure.
-export const STATUS_BODY_MAX_BYTES = 56 * 1024;
+// Headroom under the control plane's ceiling for the JSON envelope and headers around the report.
+export const STATUS_BODY_MAX_BYTES = MAX_REQUEST_BODY_BYTES - 8 * 1024;
 
 const jsonStringBytes = (value: string): number => Buffer.byteLength(JSON.stringify(value), 'utf8');
 

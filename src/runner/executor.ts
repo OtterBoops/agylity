@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, promises as fsPromises } from 'node:fs';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import ky from 'ky';
@@ -18,6 +18,21 @@ import { resolveTaskTitle } from '../shared/titles.js';
 import { resolveGithubRepoSlug } from '../shared/github.js';
 import { AgyStreamFormatter } from './agyStream.js';
 import { stripUntrustedAttribution } from './attribution.js';
+import { ensureRepository, type RepositoryDeps } from './repository.js';
+import {
+  applyPrPolicy,
+  discardBranch,
+  openPullRequest,
+  pushTaskBranch,
+  type PublishDeps,
+} from './publish.js';
+import {
+  commitWorkingTree,
+  countCommitsAhead,
+  gitStatusPorcelain,
+  listUntracked,
+  type CommitDeps,
+} from './commit.js';
 import {
   AGY_USAGE_ERROR_MAX_BYTES,
   FLAG_REJECTION_RE,
@@ -47,19 +62,12 @@ import {
 } from './exec.js';
 export type { SpawnFn } from './exec.js';
 export { defaultKillProcessTree, spawnFromExecFileFn } from './exec.js';
-import {
-  AGYLITY_FOOTER_MARKER,
-  AGYLITY_FOOTER_TAIL_RE,
-  agylityFooter,
-  buildPrompt,
-  buildPullRequestBody,
-} from './prompt.js';
+import { AGYLITY_FOOTER_MARKER, buildPrompt } from './prompt.js';
 import { buildGitAuthArgs, redactGitSecrets } from './git.js';
 import {
   ALLOWED_TEST_RUNNERS,
   INLINE_CODE_FLAGS,
   buildContinuationBranchName,
-  isDocumentationFile,
   normalizePrPolicy,
 } from './policy.js';
 
@@ -108,6 +116,8 @@ export interface TaskExecutionResult {
   thinkingTokens?: number;
 }
 
+// GitHub allows 256; a PR title carries the issue subject, which the 72-char task-title budget truncates.
+const PR_TITLE_MAX_LENGTH = 200;
 const ISSUE_DELIVERABLE_LIMIT = 50;
 const ISSUE_DELIVERABLE_MAX_URLS = 10;
 const VERIFY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -284,151 +294,6 @@ export class TaskExecutor {
     return runStreamedCommand(file, args, options, this.execDeps());
   }
 
-  private resolveMirrorPath(rawCloneUrl: string): string | null {
-    if (!this.useMirrorCache) return null;
-    const digest = createHash('sha256').update(rawCloneUrl).digest('hex');
-    return path.join(this.mirrorCacheDir, `${digest}.git`);
-  }
-
-  private async cloneRepository(
-    rawCloneUrl: string,
-    targetPath: string,
-    githubToken: string | undefined
-  ): Promise<void> {
-    const authArgs = buildGitAuthArgs(rawCloneUrl, githubToken);
-    const mirrorPath = this.resolveMirrorPath(rawCloneUrl);
-
-    if (mirrorPath) {
-      try {
-        await this.syncMirror(rawCloneUrl, mirrorPath, authArgs);
-        await this.execFileFn(
-          'git',
-          [
-            ...authArgs,
-            'clone',
-            '--reference-if-able',
-            mirrorPath,
-            '--dissociate',
-            '--',
-            rawCloneUrl,
-            targetPath,
-          ],
-          { timeout: 120000 }
-        );
-        return;
-      } catch (mirrorErr: any) {
-        this.log.debug(
-          'Mirror reference clone failed for %s; falling back to plain clone: %s',
-          rawCloneUrl,
-          mirrorErr?.message ?? mirrorErr
-        );
-        await this.removeCloneTarget(targetPath);
-      }
-    }
-
-    await this.execFileFn('git', [...authArgs, 'clone', '--', rawCloneUrl, targetPath], {
-      timeout: 120000,
-    });
-  }
-
-  private async syncMirror(
-    rawCloneUrl: string,
-    mirrorPath: string,
-    authArgs: string[]
-  ): Promise<void> {
-    if (existsSync(path.join(mirrorPath, 'HEAD'))) {
-      try {
-        // The mirror is a private remote too, so its refresh carries the same credentials as the clone.
-        await this.execFileFn('git', [...authArgs, 'fetch', '--prune'], {
-          cwd: mirrorPath,
-          timeout: 120000,
-        });
-      } catch (fetchErr: any) {
-        this.log.debug(
-          'Mirror fetch failed for %s; using the existing mirror: %s',
-          rawCloneUrl,
-          fetchErr?.message ?? fetchErr
-        );
-      }
-      return;
-    }
-
-    mkdirSync(path.dirname(mirrorPath), { recursive: true });
-    try {
-      await this.execFileFn(
-        'git',
-        [...authArgs, 'clone', '--bare', '--', rawCloneUrl, mirrorPath],
-        {
-          timeout: 180000,
-        }
-      );
-    } catch (bareErr) {
-      await this.removeCloneTarget(mirrorPath);
-      throw bareErr;
-    }
-  }
-
-  private async removeCloneTarget(targetPath: string): Promise<void> {
-    try {
-      await fsPromises.rm(targetPath, {
-        recursive: true,
-        force: true,
-        maxRetries: 3,
-        retryDelay: 150,
-      });
-    } catch (rmErr: any) {
-      this.log.debug(
-        'Failed to remove partial clone at %s: %s',
-        targetPath,
-        rmErr?.message ?? rmErr
-      );
-    }
-  }
-
-  /** Raw porcelain status, tail-trimmed only: the leading column is meaningful to the next model. */
-  private async gitStatusPorcelain(cwd: string): Promise<string> {
-    const { stdout } = await this.execFileFn('git', ['status', '--porcelain'], {
-      cwd,
-      timeout: 15000,
-    });
-    return stdout.replace(/\s+$/, '');
-  }
-
-  /** Untracked files as git spells them: `-uall` expands new directories and `-z` preserves spaces/quotes. */
-  private async listUntracked(cwd: string): Promise<string[]> {
-    const { stdout } = await this.execFileFn('git', ['status', '--porcelain', '-z', '-uall'], {
-      cwd,
-      timeout: 15000,
-    });
-    const entries = stdout.split('\u0000');
-    const untracked: string[] = [];
-    for (let i = 0; i < entries.length; i += 1) {
-      const entry = entries[i];
-      if (!entry) continue;
-      if (entry.startsWith('?? ')) {
-        untracked.push(entry.slice(3));
-        continue;
-      }
-      // Renames and copies emit a second NUL-terminated entry carrying the source path.
-      const x = entry[0];
-      const y = entry[1];
-      if (x === 'R' || x === 'C' || y === 'R' || y === 'C') {
-        i += 1;
-      }
-    }
-    return untracked;
-  }
-
-  /** Commits on HEAD that `baseBranch` does not have. */
-  private async countCommitsAhead(cwd: string, baseBranch: string): Promise<number> {
-    const { stdout } = await this.execFileFn(
-      'git',
-      ['rev-list', '--count', `${baseBranch}..HEAD`],
-      { cwd, timeout: 10000 }
-    );
-    return parseInt(stdout.trim(), 10) || 0;
-  }
-
   private async inspectPartialWork(
     cwd: string,
     baseBranch: string
@@ -512,40 +377,38 @@ export class TaskExecutor {
   }
 
   /** Clones the task repository into place, or returns the failure that replaces the whole run. */
+  private repositoryDeps(): RepositoryDeps {
+    return {
+      execFile: this.execFileFn,
+      log: this.log,
+      dirExists: this.dirExistsFn,
+      mirrorCacheDir: this.mirrorCacheDir,
+      useMirrorCache: this.useMirrorCache,
+    };
+  }
+
   private async ensureRepository(
     task: SwarmTask,
     branchName: string,
     startMs: number,
     githubToken: string | undefined
   ): Promise<TaskExecutionResult | null> {
-    if (this.dirExistsFn(task.repositoryPath)) return null;
-
-    const cloneUrl = task.cloneUrl?.trim() ?? '';
-    if (!cloneUrl) {
-      const errMsg = `Target repository directory does not exist: ${task.repositoryPath} (and no cloneUrl configured)`;
-      this.log.error(errMsg);
-      return this.failureResult(branchName, startMs, errMsg);
-    }
-
-    try {
-      await this.onStatusUpdate?.({
-        status: 'executing',
-        branchName,
-        message: `Cloning repository from ${cloneUrl} into ${task.repositoryPath}`,
-      });
-      mkdirSync(path.dirname(task.repositoryPath), { recursive: true });
-      await this.cloneRepository(cloneUrl, task.repositoryPath, githubToken);
-      return null;
-    } catch (cloneErr: any) {
-      // A half-written clone must not survive: the next run would see the directory and skip cloning.
-      await this.removeCloneTarget(task.repositoryPath);
-      const errMsg = `Failed to clone repository from ${cloneUrl}: ${redactGitSecrets(
-        cloneErr?.message || String(cloneErr),
-        [githubToken]
-      )}`;
-      this.log.error(errMsg);
-      return this.failureResult(branchName, startMs, errMsg);
-    }
+    const { error } = await ensureRepository(
+      {
+        repositoryPath: task.repositoryPath,
+        cloneUrl: task.cloneUrl,
+        githubToken,
+        onCloning: async (cloneUrl) => {
+          await this.onStatusUpdate?.({
+            status: 'executing',
+            branchName,
+            message: `Cloning repository from ${cloneUrl} into ${task.repositoryPath}`,
+          });
+        },
+      },
+      this.repositoryDeps()
+    );
+    return error ? this.failureResult(branchName, startMs, error) : null;
   }
 
   /**
@@ -836,149 +699,68 @@ export class TaskExecutor {
    * The subject of a commit the agent wrote itself is the run's deliverable title; the runner's own
    * fallback commit is not, because that message is derived from the dispatch, not from the work.
    */
-  private async commitWorkingTree(
+  private commitDeps(): CommitDeps {
+    return { execFile: this.execFileFn, log: this.log };
+  }
+
+  private gitStatusPorcelain(cwd: string): Promise<string> {
+    return gitStatusPorcelain(cwd, this.commitDeps());
+  }
+
+  private listUntracked(cwd: string): Promise<string[]> {
+    return listUntracked(cwd, this.commitDeps());
+  }
+
+  private countCommitsAhead(cwd: string, baseBranch: string): Promise<number> {
+    return countCommitsAhead(cwd, baseBranch, this.commitDeps());
+  }
+
+  private commitWorkingTree(
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
     gitIdentityEnv: Record<string, string>,
     untrackedPaths: readonly string[]
   ): Promise<{ commitsProduced: boolean; deliverableTitle?: string; commitError?: string }> {
-    const cwd = task.repositoryPath;
-    const deliverableTitle = await this.authoredCommitSubject(cwd, baseBranch);
-    let committed = false;
-    let commitError: string | undefined;
-
-    try {
-      const statusOut = await this.gitStatusPorcelain(cwd);
-      if (statusOut !== '') {
-        await this.execFileFn('git', ['add', '-u'], { cwd, timeout: 15000 });
-        await this.stageUntrackedPaths(cwd, untrackedPaths);
-        if (await this.hasStagedChanges(cwd)) {
-          await this.execFileFn(
-            'git',
-            ['commit', '-m', resolveTaskTitle(task.title, task.prompt)],
-            {
-              cwd,
-              timeout: 30000,
-              env: {
-                ...process.env,
-                ...gitIdentityEnv,
-              },
-            }
-          );
-          committed = true;
-          this.log.info('Committed the working tree on %s', branchName);
-        }
-      }
-    } catch (commitErr: any) {
-      commitError = commitErr?.stderr?.trim() || commitErr?.message || String(commitErr);
-      this.log.error('Failed to commit working tree changes on %s: %s', branchName, commitError);
-    }
-
-    if (commitError) return { commitsProduced: false, deliverableTitle, commitError };
-    if (committed) return { commitsProduced: true, deliverableTitle };
-
-    try {
-      return {
-        commitsProduced: (await this.countCommitsAhead(cwd, baseBranch)) > 0,
-        deliverableTitle,
-      };
-    } catch {
-      return { commitsProduced: false, deliverableTitle };
-    }
+    return commitWorkingTree(
+      {
+        repositoryPath: task.repositoryPath,
+        title: task.title,
+        prompt: task.prompt,
+        branchName,
+        baseBranch,
+        gitIdentityEnv,
+        untrackedPaths,
+      },
+      this.commitDeps()
+    );
   }
 
-  /** Stages untracked paths in batches, falling back per-file if one vanished or is ignored. */
-  private async stageUntrackedPaths(cwd: string, untrackedPaths: readonly string[]): Promise<void> {
-    for (let index = 0; index < untrackedPaths.length; index += 50) {
-      const batch = untrackedPaths.slice(index, index + 50);
-      try {
-        await this.execFileFn('git', ['add', '--', ...batch], { cwd, timeout: 15000 });
-      } catch {
-        for (const filePath of batch) {
-          try {
-            await this.execFileFn('git', ['add', '--', filePath], { cwd, timeout: 15000 });
-          } catch (addErr: any) {
-            this.log.warn(
-              'Skipped an untracked path that could not be staged (%s): %s',
-              filePath,
-              addErr?.message
-            );
-          }
-        }
-      }
-    }
+  private publishDeps(): PublishDeps {
+    return { execFile: this.execFileFn, log: this.log };
   }
 
-  /** Returns true when the index has staged changes (`git diff --cached --quiet` exits 1). */
-  private async hasStagedChanges(cwd: string): Promise<boolean> {
-    try {
-      await this.execFileFn('git', ['diff', '--cached', '--quiet'], { cwd, timeout: 15000 });
-      return false;
-    } catch {
-      return true;
-    }
+  private discardBranch(cwd: string, baseBranch: string, branchName: string): Promise<void> {
+    return discardBranch(cwd, baseBranch, branchName, this.publishDeps());
   }
 
-  /** The newest subject among commits the agent wrote, or undefined when the branch is still clean. */
-  private async authoredCommitSubject(
-    cwd: string,
-    baseBranch: string
-  ): Promise<string | undefined> {
-    try {
-      if ((await this.countCommitsAhead(cwd, baseBranch)) <= 0) return undefined;
-
-      const { stdout: subject } = await this.execFileFn(
-        'git',
-        ['log', '-1', '--format=%s', `${baseBranch}..HEAD`],
-        { cwd, timeout: 10000 }
-      );
-      return subject.trim() || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Leaves the working copy on the base branch and drops the task branch. */
-  private async discardBranch(cwd: string, baseBranch: string, branchName: string): Promise<void> {
-    try {
-      await this.execFileFn('git', ['checkout', baseBranch], { cwd, timeout: 15000 });
-      await this.execFileFn('git', ['branch', '-D', branchName], { cwd, timeout: 15000 });
-    } catch {}
-  }
-
-  /** Returns the failure message for a rejected push, or null once the branch is upstream. */
-
-  private async pushTaskBranch(
+  private pushTaskBranch(
     task: SwarmTask,
     branchName: string,
     githubToken: string | undefined
   ): Promise<string | null> {
-    try {
-      const gitPushArgs = [
-        ...buildGitAuthArgs(task.cloneUrl, githubToken),
-        'push',
-        '-u',
-        'origin',
+    return pushTaskBranch(
+      {
+        repositoryPath: task.repositoryPath,
+        cloneUrl: task.cloneUrl,
         branchName,
-      ];
-      await this.execFileFn('git', gitPushArgs, {
-        cwd: task.repositoryPath,
-        timeout: 60000,
-      });
-      this.log.info('Pushed %s to origin', branchName);
-      return null;
-    } catch (gitPushErr: any) {
-      const pushErrMsg = redactGitSecrets(gitPushErr?.message ?? String(gitPushErr), [githubToken]);
-      this.log.error('Git push failed on %s: %s', branchName, pushErrMsg);
-      return githubToken
-        ? `Git push to origin/${branchName} failed: ${pushErrMsg}`
-        : `Git push to origin/${branchName} failed: ${pushErrMsg} (the coordinator leased no GitHub token for this task)`;
-    }
+        githubToken,
+      },
+      this.publishDeps()
+    );
   }
 
-  /** Opens the pull request for a pushed branch, returning its URL when one was reported. */
-  private async openPullRequest(
+  private openPullRequest(
     task: SwarmTask,
     branchName: string,
     baseBranch: string,
@@ -987,60 +769,23 @@ export class TaskExecutor {
     title: string,
     capturedOutput: string
   ): Promise<string | undefined> {
-    try {
-      const tierLabel = task.tier || 'immediate';
-      // A failover hop is the model that actually wrote the branch, so the footer names that one.
-      const effortNote = modelSupportsEffort(hop.model) ? ` (${hop.effort} reasoning)` : '';
-      // First, so the footer check still sees the prompt's own tail.
-      const closes = task.originIssueNumber ? `Closes #${task.originIssueNumber}\n\n` : '';
-      const rawBody = `${closes}${buildPullRequestBody(task, title, capturedOutput)}`;
-      // Avoid stacking a second Agylity footer when the source prompt/output already ends with one.
-      const hasDispatchFooter = AGYLITY_FOOTER_TAIL_RE.test(rawBody);
-      const prBody = hasDispatchFooter
-        ? rawBody
-        : [rawBody, '', '---', agylityFooter(tierLabel, hop.model, effortNote)].join('\n');
-
-      const { stdout: prOut } = await this.execFileFn(
-        'gh',
-        [
-          'pr',
-          'create',
-          '--base',
-          baseBranch,
-          '--head',
-          branchName,
-          '--title',
-          title,
-          '--body',
-          prBody,
-        ],
-        {
-          cwd: task.repositoryPath,
-          timeout: 30000,
-          env: { ...process.env, GITHUB_TOKEN: githubToken ?? '' },
-        }
-      );
-      const match = prOut.match(/https:\/\/github\.com\/[^\s]+/);
-      if (!match) return undefined;
-      this.log.info('Created pull request for %s: %s', branchName, match[0]);
-      return match[0].trim();
-    } catch (prErr: any) {
-      this.log.warn(
-        'Auto PR creation failed for %s: %s',
+    return openPullRequest(
+      {
+        repositoryPath: task.repositoryPath,
         branchName,
-        redactGitSecrets(prErr?.message ?? String(prErr), [githubToken])
-      );
-      return undefined;
-    }
+        baseBranch,
+        hop,
+        githubToken,
+        title,
+        capturedOutput,
+        tier: task.tier || 'immediate',
+        issueNumber: task.originIssueNumber,
+        prompt: task.prompt,
+      },
+      this.publishDeps()
+    );
   }
 
-  /**
-   * Applies the PR policy to a finished branch.
-   *
-   * Returns the terminal result when the policy suppresses the branch, or null when the branch may
-   * be pushed. Every tier is policed: a human dispatch is a request for this work, not permission to
-   * bypass the configured policy.
-   */
   private async applyPrPolicy(
     task: SwarmTask,
     context: {
@@ -1053,66 +798,22 @@ export class TaskExecutor {
       githubToken?: string | undefined;
     }
   ): Promise<TaskExecutionResult | null> {
-    const { branchName, baseBranch, output, prPolicy, telemetry, startMs, githubToken } = context;
-
-    const suppress = async (detail: string): Promise<TaskExecutionResult> => {
-      await this.discardBranch(task.repositoryPath, baseBranch, branchName);
-      return this.noChangesResult(`${output}\n\n${detail}`, startMs, telemetry);
-    };
-
-    if (prPolicy === 'none' || prPolicy === 'issues_only') {
-      const policyGuardMsg =
-        prPolicy === 'issues_only'
-          ? "[Policy Guard] Autonomous PR suppressed: PR policy is 'issues_only' (no code changes or PRs allowed; report findings as GitHub Issues)."
-          : "[Policy Guard] Autonomous PR suppressed: PR policy is 'none'.";
-      this.log.info(
-        'Autonomous PR policy is "%s": suppressing branch push and PR creation for task %s on %s',
-        prPolicy,
-        task.id,
-        branchName
-      );
-      return suppress(policyGuardMsg);
-    }
-
-    if (prPolicy !== 'docs_only') return null;
-
-    let nonDocFiles: string[] = [];
-    try {
-      const { stdout: diffOut } = await this.execFileFn(
-        'git',
-        ['diff', '--name-only', '-z', `${baseBranch}..HEAD`],
-        { cwd: task.repositoryPath, timeout: 15000 }
-      );
-      nonDocFiles = diffOut
-        .split(/[\0\r\n]+/)
-        .map((file) => file.trim())
-        .filter(Boolean)
-        .filter((file) => !isDocumentationFile(file));
-    } catch (diffErr: any) {
-      this.log.warn(
-        'Failed to inspect commit diff for bot policy check on %s: %s',
-        branchName,
-        diffErr?.message ?? diffErr
-      );
-      // An uninspectable diff cannot prove the branch is docs-only, so the gate stays shut.
-      return suppress(
-        `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only' and the commit diff could not be inspected (${redactGitSecrets(
-          diffErr?.message ?? String(diffErr),
-          [githubToken]
-        )}).`
-      );
-    }
-
-    if (nonDocFiles.length === 0) return null;
-
-    this.log.info(
-      'Autonomous PR policy "docs_only" blocked PR for task %s on %s (non-doc files modified: %s)',
-      task.id,
-      branchName,
-      nonDocFiles.join(', ')
+    const suppressed = await applyPrPolicy(
+      {
+        repositoryPath: task.repositoryPath,
+        branchName: context.branchName,
+        baseBranch: context.baseBranch,
+        prPolicy: context.prPolicy,
+        githubToken: context.githubToken,
+        taskId: task.id,
+      },
+      this.publishDeps()
     );
-    return suppress(
-      `[Policy Guard] Autonomous PR suppressed: PR policy is 'docs_only', so only documentation changes ship. Code modifications must be submitted as GitHub Issues.\nNon-doc files modified: ${nonDocFiles.join(', ')}`
+    if (!suppressed) return null;
+    return this.noChangesResult(
+      `${context.output}\n\n${suppressed.detail}`,
+      context.startMs,
+      context.telemetry
     );
   }
 
@@ -1425,7 +1126,7 @@ export class TaskExecutor {
           const prTitleSource = hasExplicitTitleOverride
             ? task.title
             : (commit.deliverableTitle ?? resolvedTitle ?? task.title);
-          const prTitle = resolveTaskTitle(prTitleSource, task.prompt, 200);
+          const prTitle = resolveTaskTitle(prTitleSource, task.prompt, PR_TITLE_MAX_LENGTH);
           prUrl = await this.openPullRequest(
             task,
             finalBranchName,

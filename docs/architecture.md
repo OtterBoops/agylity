@@ -592,3 +592,40 @@ agylity/
 ├── tsconfig.json               # NodeNext, strict: true
 └── README.md                   # Clean project landing page & quickstart
 ```
+
+---
+
+## 12. Module map
+
+Where a change goes, by concern. Each of these is the single home for its question; a new file that
+answers the same question is a second source of truth.
+
+| Concern                                                  | Module                                                     |
+| :------------------------------------------------------- | :--------------------------------------------------------- |
+| A config knob (env spelling, default, secret flag, docs) | `src/config/registry.ts`                                   |
+| An env schema or preprocessor                            | `src/config/env.ts`                                        |
+| `AppConfig` / `ResolvedConfig` types                     | `src/config/types.ts`                                      |
+| A control-plane route                                    | `src/web/routeRegistry.ts`                                 |
+| Path matching for those routes                           | `src/web/router.ts`                                        |
+| A request handler                                        | `src/web/controllers/*.ts`                                 |
+| Table DDL and migrations                                 | `src/storage/migrations.ts`, `src/storage/sentrySchema.ts` |
+| Task, backlog and routine rows                           | `src/coordinator/queue.ts`                                 |
+| Runner enrolment, auth and presence                      | `src/coordinator/runnerRegistry.ts`                        |
+| When a backlog origin settles                            | `src/coordinator/backlogOrigin.ts`                         |
+| Whether a routine may fire                               | `src/coordinator/routinePolicy.ts`                         |
+| The pre-reset burn-kick announcement                     | `src/coordinator/burnKick.ts`                              |
+| Model id and effort resolution                           | `src/shared/models.ts`                                     |
+| Spawning, killing and streaming a child process          | `src/runner/exec.ts`                                       |
+| Cloning and mirror cache                                 | `src/runner/repository.ts`                                 |
+| Turning a working tree into commits                      | `src/runner/commit.ts`                                     |
+| Pushing, PR creation and the PR policy gate              | `src/runner/publish.ts`                                    |
+| Capacity classification and telemetry                    | `src/runner/cascade.ts`                                    |
+| Commit-attribution rewriting                             | `src/runner/attribution.ts`                                |
+| Prompt, policy directives and PR body                    | `src/runner/prompt.ts`                                     |
+| GitHub issue listing for backlog sync                    | `src/web/githubIssues.ts`                                  |
+| IP parsing and allow-listing                             | `src/net/ip.ts`                                            |
+
+`tests/unit/architecture.test.ts` enforces the shape these modules assume: no runtime import cycle,
+`src/shared` importing nothing outside itself, no frontend edge into the backend outside
+`src/shared`, no ambient `process.env` read outside an explicit allowlist, storage below every
+consumer, and exactly one sanctioned `storage -> config` edge.

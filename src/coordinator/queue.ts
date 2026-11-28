@@ -11,10 +11,6 @@ import { DEFAULT_DISPATCH_MODEL } from '../shared/models.js';
 import { readJsonColumn } from '../storage/json.js';
 import { RunnerRegistry } from './runnerRegistry.js';
 import { settleBacklogOrigin } from './backlogOrigin.js';
-import type {
-  CreateRegistrationTokenInput,
-  ExchangeRegistrationTokenInput,
-} from './runnerRegistry.js';
 import { HEARTBEAT_TAIL_BYTES, PR_POLICY_VALUES } from '../shared/contracts.js';
 import type {
   BacklogTaskRecord,
@@ -222,12 +218,12 @@ const parseCycleMap = (raw: unknown): Record<string, string> => {
 
 export class TaskQueue {
   private readonly rawDb: DatabaseSync;
-  private readonly registry: RunnerRegistry;
+  public readonly runners: RunnerRegistry;
 
   constructor(database: AppDatabase) {
     this.rawDb = database.getRawDb();
     applyMigrations(this.rawDb);
-    this.registry = new RunnerRegistry(this.rawDb, (fn) => this.inTransaction(fn));
+    this.runners = new RunnerRegistry(this.rawDb, (fn) => this.inTransaction(fn));
   }
 
   private inTransaction<T>(fn: () => T): T {
@@ -264,71 +260,6 @@ export class TaskQueue {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
       )
       .run(key, value, new Date().toISOString());
-  }
-
-  // Runner enrolment and presence are owned by RunnerRegistry; these forwarders keep TaskQueue the
-  // single object the control plane holds. Removing them means every caller switching to .registry.
-  public createRegistrationToken(
-    input: CreateRegistrationTokenInput = {}
-  ): RunnerRegistrationTokenResult {
-    return this.registry.createRegistrationToken(input);
-  }
-
-  public pruneRegistrationTokens(keepCount?: number): void {
-    this.registry.pruneRegistrationTokens(keepCount);
-  }
-
-  public exchangeRegistrationToken(
-    input: ExchangeRegistrationTokenInput,
-    nowMs?: number
-  ): { runner: SwarmRunnerRecord; runnerToken: string } {
-    return this.registry.exchangeRegistrationToken(input, nowMs);
-  }
-
-  public markRegistrationTokenUsed(runnerId: string, nowMs?: number): void {
-    this.registry.markRegistrationTokenUsed(runnerId, nowMs);
-  }
-
-  public authenticateRunner(
-    providedToken: string | undefined,
-    fallbackSharedSecret?: string
-  ): { authenticated: boolean; runner?: SwarmRunnerRecord; viaSharedSecret?: boolean } {
-    return this.registry.authenticateRunner(providedToken, fallbackSharedSecret);
-  }
-
-  public getRunner(runnerId: string): SwarmRunnerRecord | undefined {
-    return this.registry.getRunner(runnerId);
-  }
-
-  public setRunnerEnabled(runnerId: string, enabled: boolean): SwarmRunnerRecord | undefined {
-    return this.registry.setRunnerEnabled(runnerId, enabled);
-  }
-
-  public revokeRunner(runnerId: string): boolean {
-    return this.registry.revokeRunner(runnerId);
-  }
-
-  public pruneOldRunners(maxOfflineAgeMs?: number): void {
-    this.registry.pruneOldRunners(maxOfflineAgeMs);
-  }
-
-  public registerRunnerHeartbeat(
-    info: {
-      runnerId: string;
-      name?: string;
-      labels?: string[];
-      repositories?: string[];
-      systemInfo?: RunnerSystemInfo;
-      activeTaskId?: string | null;
-      status?: 'idle' | 'busy' | 'offline';
-    },
-    options: { touchLastSeen?: boolean } = {}
-  ): void {
-    this.registry.registerRunnerHeartbeat(info, options);
-  }
-
-  public listRunners(): SwarmRunnerRecord[] {
-    return this.registry.listRunners();
   }
 
   public enqueue(input: EnqueueTaskInput): SwarmTask {
@@ -635,7 +566,7 @@ export class TaskQueue {
 
   public claimNext(options: ClaimTaskOptions): SwarmTask | null {
     return this.inTransaction(() => {
-      const existingRunner = this.getRunner(options.runnerId);
+      const existingRunner = this.runners.getRunner(options.runnerId);
       // A non-empty registration narrows the poll payload; an empty one declares no restriction.
       const registeredLabels = existingRunner?.labels ?? [];
       const effectiveLabels =
@@ -649,7 +580,7 @@ export class TaskQueue {
       const persistedLabels = existingRunner ? registeredLabels : effectiveLabels;
       const persistedRepos = existingRunner ? registeredRepos : effectiveRepos;
       const beat = (status: 'idle' | 'busy', activeTaskId?: string): void =>
-        this.registerRunnerHeartbeat({
+        this.runners.registerRunnerHeartbeat({
           runnerId: options.runnerId,
           name: options.runnerName,
           labels: persistedLabels,
@@ -921,8 +852,8 @@ export class TaskQueue {
       this.pruneOldTasks();
     }
 
-    if (runnerId && this.getRunner(runnerId)) {
-      this.registerRunnerHeartbeat(
+    if (runnerId && this.runners.getRunner(runnerId)) {
+      this.runners.registerRunnerHeartbeat(
         {
           runnerId,
           activeTaskId: isTerminal ? null : taskId,
@@ -980,7 +911,7 @@ export class TaskQueue {
       return { task: this.getTask(taskId) ?? existing, applied: false };
     }
 
-    this.registerRunnerHeartbeat({ runnerId, activeTaskId: taskId, status: 'busy' });
+    this.runners.registerRunnerHeartbeat({ runnerId, activeTaskId: taskId, status: 'busy' });
     return { task: this.getTask(taskId) ?? existing, applied: true };
   }
 
@@ -1076,7 +1007,7 @@ export class TaskQueue {
       }
     }
 
-    this.pruneOldRunners();
+    this.runners.pruneOldRunners();
 
     return reapedTasks;
   }
