@@ -61,7 +61,9 @@ export class CompositeNotifier implements Notifier {
     return this.destinations.map((destination) => ({ ...destination }));
   }
 
-  private isDiscordNotifier(notifier: Notifier): boolean {
+  private isDiscordNotifier(
+    notifier: Notifier
+  ): notifier is Notifier & { resolveOwnerUserId(): Promise<string | undefined> } {
     return (
       notifier.destinationType === 'discord' ||
       notifier.channelName === 'discord' ||
@@ -78,20 +80,20 @@ export class CompositeNotifier implements Notifier {
           .error(
             'Notification adapter %s failed to initialize: %s',
             this.notifiers[i]?.channelName ?? 'unknown',
-            (res.reason as any)?.message ?? String(res.reason)
+            (res.reason as Error | undefined)?.message ?? String(res.reason)
           );
       }
     });
   }
 
   private async syncResolvedOwner(): Promise<void> {
-    const discordNotifier = this.notifiers.find((n) => this.isDiscordNotifier(n)) as any;
-    if (discordNotifier && typeof discordNotifier.resolveOwnerUserId === 'function') {
+    const discordNotifier = this.notifiers.find((n) => this.isDiscordNotifier(n));
+    if (discordNotifier) {
       const resolvedOwner = await discordNotifier.resolveOwnerUserId();
       if (resolvedOwner) {
         for (const n of this.notifiers) {
-          if (n !== discordNotifier && typeof (n as any).updateConfig === 'function') {
-            await (n as any).updateConfig({ discordOwnerUserId: resolvedOwner });
+          if (n !== discordNotifier && n.updateConfig) {
+            await n.updateConfig({ discordOwnerUserId: resolvedOwner });
           }
         }
       }
@@ -116,7 +118,7 @@ export class CompositeNotifier implements Notifier {
       } else {
         channelResults[channelName] = {
           success: false,
-          error: (res.reason as any)?.message ?? String(res.reason),
+          error: (res.reason as Error | undefined)?.message ?? String(res.reason),
         };
         logger.child('notify:composite').error('%s delivery error:', label, res.reason);
       }

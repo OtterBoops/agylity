@@ -36,12 +36,19 @@ const createWebServer = (options: WebServerOptions): http.Server => {
     });
   });
 
-  (server as any).__activeSockets = sockets;
-  (server as any).__inFlight = inFlight;
-  (server as any).__shutdownController = shutdownController;
+  SERVER_STATE.set(server, { sockets, inFlight, shutdownController });
 
   return server;
 };
+
+/** Per-server lifecycle state; kept off the server object so nothing has to cast to reach it. */
+interface ServerState {
+  sockets: Set<net.Socket>;
+  inFlight: Set<Promise<void>>;
+  shutdownController: AbortController;
+}
+
+const SERVER_STATE = new WeakMap<http.Server, ServerState>();
 
 const isLoopbackHost = (host: string): boolean => {
   const h = host.trim().toLowerCase();
@@ -105,14 +112,13 @@ export const startWebServer = async (
 
 export const closeWebServer = async (server: http.Server): Promise<void> => {
   // Abort long-polls first so shutdown never stalls waiting on idle runners.
-  const shutdownController = (server as any).__shutdownController as AbortController | undefined;
-  shutdownController?.abort();
+  SERVER_STATE.get(server)?.shutdownController.abort();
 
   // Stop accepting new connections before draining in-flight work.
   const closePromise = new Promise<void>((resolve, reject) => {
     server.close((err) => {
       if (err) {
-        if ((err as any).code === 'ERR_SERVER_NOT_RUNNING') {
+        if ((err as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') {
           resolve();
           return;
         }
@@ -131,7 +137,7 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
   }
 
   // Accepted work may still be writing, and the caller closes the database right after this resolves.
-  const inFlight = (server as any).__inFlight as Set<Promise<void>> | undefined;
+  const inFlight = SERVER_STATE.get(server)?.inFlight;
   if (inFlight && inFlight.size > 0) {
     const deadline = Date.now() + IN_FLIGHT_GRACE_MS;
     while (inFlight.size > 0) {
@@ -149,7 +155,7 @@ export const closeWebServer = async (server: http.Server): Promise<void> => {
     }
   }
 
-  const sockets = (server as any).__activeSockets as Set<net.Socket> | undefined;
+  const sockets = SERVER_STATE.get(server)?.sockets;
   if (sockets) {
     for (const socket of sockets) {
       socket.destroy();

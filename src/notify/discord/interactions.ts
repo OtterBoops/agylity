@@ -175,7 +175,7 @@ const handleDispatchCommand = async (
     } catch {}
   }
 
-  const onDispatch = deps.options.onDispatchRequested || (deps.options as any).onContinueRequested;
+  const onDispatch = deps.options.onDispatchRequested || deps.options.onContinueRequested;
   if (!onDispatch) {
     const errReply = { content: '[Error] Coordinator dispatch callback is not registered.' };
     if (canDefer && typeof interaction.editReply === 'function') {

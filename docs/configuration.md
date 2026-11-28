@@ -22,7 +22,7 @@ $$\text{Resolved Value} = \text{SQLite UI Overrides} \mathbin{??} \text{Environm
                                   | (if unset or empty)
                                   v
 +--------------------------------------------------------------------+
-| Level 3: Built-in Defaults (BUILTIN_DEFAULTS in schema.ts)         |
+| Level 3: Built-in Defaults (BUILTIN_DEFAULTS in registry.ts)       |
 | - Hardcoded, rock-solid baseline configuration                     |
 +--------------------------------------------------------------------+
 ```

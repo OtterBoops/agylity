@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AppDatabase } from '../storage/db.js';
 import { applyMigrations, SWARM_TASK_COLUMNS } from '../storage/migrations.js';
 import type { PoolGroup } from '../sentry/models.js';
-import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../config/env.js';
+import { DEFAULT_QUOTA_BURN_MAX_HOURS } from '../shared/defaults.js';
 import { isHttpUrl } from '../shared/urls.js';
 import { resolveTaskTitle } from '../shared/titles.js';
 import { tailWindow } from '../shared/text.js';
@@ -132,8 +132,6 @@ const ELIGIBLE_BACKLOG_SQL = `SELECT * FROM backlog_tasks
    ORDER BY priority_order ASC, task_number ASC, created_at ASC`;
 
 const TERMINAL_STATUS_SQL = TERMINAL_TASK_STATUSES.map((s) => `'${s}'`).join(', ');
-
-/** The queue cannot read config, so an unconfigured cascade falls back to this catalog-wide model. */
 
 const coerceCascade = (value: unknown, fallbackModel?: string): CascadeHop[] =>
   normalizeCascade(value, fallbackModel ?? DEFAULT_DISPATCH_MODEL);

@@ -14,7 +14,7 @@ import { type ResolvedConfig } from '../config/types.js';
 import {
   DEFAULT_BACKLOG_CONCURRENCY,
   DEFAULT_BACKLOG_MIN_HEADROOM_PERCENT,
-} from '../config/env.js';
+} from '../shared/defaults.js';
 import type { EarlyResetPool, SentryStateManager } from '../sentry/state.js';
 import { snapshotsFromSentryState, type PoolGroup, type QuotaSnapshot } from '../sentry/models.js';
 import type { DispatchStatusUpdate, Notifier } from '../notify/types.js';

@@ -13,8 +13,8 @@ export const main = async (): Promise<AgylityDaemon> => {
   console.log(rule);
 
   try {
-    if (typeof (process as any).loadEnvFile === 'function') {
-      (process as any).loadEnvFile();
+    if (typeof process.loadEnvFile === 'function') {
+      process.loadEnvFile();
     }
   } catch {}
 

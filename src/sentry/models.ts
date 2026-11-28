@@ -5,6 +5,7 @@ import type {
   QuotaBucket,
   QuotaBurnProjection,
   QuotaSnapshot,
+  ProbeSource,
 } from '../shared/contracts.js';
 
 // Quota payloads are declared once in the shared wire contracts; the schemas below validate the
@@ -176,6 +177,8 @@ export type QuotaAlert = z.infer<typeof QuotaAlertSchema>;
 export interface QuotaClient {
   fetchQuota(force?: boolean): Promise<QuotaSnapshot[]>;
   updateConfig?(config: Partial<Record<string, unknown>>): void;
+  /** How the last probe reached the language server; absent on clients that do not probe. */
+  getLastProbeSource?(): ProbeSource;
 }
 
 export const calculateHoursUntilReset = (resetTime: string, nowMs: number = Date.now()): number => {

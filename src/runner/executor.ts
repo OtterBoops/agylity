@@ -89,6 +89,11 @@ export interface TaskExecutorOptions {
   resolveGithubIdentityFn?: (token: string) => Promise<{ name: string; email: string } | undefined>;
 }
 
+/** A failed attempt carries the agent's own last words, which the caller surfaces. */
+interface AttemptError extends Error {
+  agyText?: string;
+}
+
 export interface TaskExecuteOptions {
   signal?: AbortSignal;
   onOutput?: (tail: string) => void;
@@ -273,7 +278,7 @@ export class TaskExecutor {
         stderr.length <= AGY_USAGE_ERROR_MAX_BYTES &&
         FLAG_REJECTION_RE.test(stderr);
       if (!rejectedFlag) {
-        if (err && typeof err === 'object') (err as any).agyText = formatter.text;
+        if (err && typeof err === 'object') (err as AttemptError).agyText = formatter.text;
         throw err;
       }
       this.log.warn('agy rejected --output-format stream-json; retrying this attempt in text mode');

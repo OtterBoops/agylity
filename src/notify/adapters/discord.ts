@@ -19,6 +19,14 @@ import { registerSlashCommands } from '../discord/commands.js';
 import { routeInteraction } from '../discord/interactions.js';
 import type { DiscordInteractionDeps } from '../discord/interactions.js';
 
+/** A resolved channel is only usable if it can receive a message; discord.js unions several that cannot. */
+type SendableChannel = { send(payload: unknown): Promise<unknown> };
+
+const isSendableChannel = (channel: unknown): channel is SendableChannel =>
+  typeof channel === 'object' &&
+  channel !== null &&
+  typeof (channel as SendableChannel).send === 'function';
+
 export { renderQuotaEmbed, renderDispatchEmbed } from '../discord/embeds.js';
 export { createRepoSelectMenu, createDispatchModal } from '../discord/components.js';
 export type { CreateDispatchModalOptions } from '../discord/components.js';
@@ -319,7 +327,7 @@ export class DiscordNotifier implements Notifier {
 
     try {
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased?.()) {
+      if (!channel || !isSendableChannel(channel)) {
         return this.failure('Discord channel is unavailable');
       }
 
@@ -335,7 +343,7 @@ export class DiscordNotifier implements Notifier {
         ownerId
       );
 
-      await (channel as any).send(sendPayload);
+      await channel.send(sendPayload);
       logger
         .child('notify:discord')
         .info(
@@ -385,7 +393,7 @@ export class DiscordNotifier implements Notifier {
 
     try {
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased?.()) return;
+      if (!channel || !isSendableChannel(channel)) return;
 
       const st = normalizeStep(status);
       const isTerminal = isTerminalStep(st);
@@ -396,7 +404,7 @@ export class DiscordNotifier implements Notifier {
       }
 
       const embed = renderDispatchEmbed(status, this.config.baseUrl);
-      await (channel as any).send({ embeds: [embed] });
+      await channel.send({ embeds: [embed] });
     } catch {}
   }
 
@@ -412,12 +420,12 @@ export class DiscordNotifier implements Notifier {
 
     try {
       const channel = await this.client.channels.fetch(channelId);
-      if (!channel || !channel.isTextBased?.()) {
+      if (!channel || !isSendableChannel(channel)) {
         return this.failure('Target channel is not text-based');
       }
 
       const embed = renderInfoEmbed(notice, this.config.baseUrl);
-      await (channel as any).send({ embeds: [embed] });
+      await channel.send({ embeds: [embed] });
       return { delivered: true, results: { [this.channelName]: { success: true } } };
     } catch (err: any) {
       logger.child('notify:discord').debug('Failed to deliver info notice: %s', err.message);
@@ -457,7 +465,7 @@ export class DiscordNotifier implements Notifier {
         };
       }
 
-      if (!('send' in channel) || typeof (channel as any).send !== 'function') {
+      if (!isSendableChannel(channel)) {
         return {
           success: false,
           message: `Discord channel ${channelId} cannot receive messages.`,
@@ -487,7 +495,7 @@ export class DiscordNotifier implements Notifier {
         sendPayload.components = [createRepoSelectMenu(this.config.repositories)];
       }
 
-      await (channel as any).send(sendPayload);
+      await channel.send(sendPayload);
 
       return {
         success: true,

@@ -1,4 +1,4 @@
-import ky from 'ky';
+import ky, { HTTPError } from 'ky';
 import crypto from 'node:crypto';
 import { AGYLITY_VERSION } from '../../version.js';
 import type {
@@ -419,10 +419,14 @@ export class WebhookNotifier implements Notifier {
           limit: 1,
           methods: ['post'],
           shouldRetry: ({ error }: { error: unknown }) => {
-            const status = (error as any)?.response?.status;
+            const status = error instanceof HTTPError ? error.response.status : undefined;
             if (typeof status === 'number')
               return status === 408 || status === 429 || status >= 500;
-            const code = String((error as any)?.cause?.code ?? (error as any)?.code ?? '');
+            const code = String(
+              (error as NodeJS.ErrnoException)?.cause ??
+                (error as NodeJS.ErrnoException)?.code ??
+                ''
+            );
             return CONNECT_FAILURES.has(code);
           },
         },

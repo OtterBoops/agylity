@@ -184,7 +184,7 @@ Agylity enforces a minimalist runtime footprint to eliminate supply-chain vulner
 
 ## 5. Subsystem Breakdown
 
-1. **Configuration Store (`src/config/`)**: `schema.ts` holds `CONFIG_REGISTRY`, the single declaration of every knob (env spelling, validator, built-in default, secret flag, description), from which `BUILTIN_DEFAULTS`, the env↔key maps, the secret list and the env parser are all derived; `docs.ts` renders the env reference table and `.env.example` from that same table. `store.ts` applies the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`) and emits granular change events over an in-memory event bus.
+1. **Configuration Store (`src/config/`)**: `registry.ts` holds `CONFIG_REGISTRY`, the single declaration of every knob (env spelling, validator, built-in default, secret flag, description), from which `BUILTIN_DEFAULTS`, the env↔key maps, the secret list and the env parser are all derived; `docs.ts` renders the env reference table and `.env.example` from that same table. `store.ts` applies the three-tier precedence hierarchy (`SQLite Overrides ?? .env ?? Defaults`) and emits granular change events over an in-memory event bus.
 2. **Quota Sentry (`src/sentry/`)**: Connect-RPC client with automatic port-hunting (`60643` $\to$ `60642`), model pooling aggregator, milestone evaluator (`48h`, `24h`, `12h`), and atomic alert state deduplication (`data/state.json`). Premature-reset notices are deduplicated per cycle on `(pool_id, reset_time, kind = 'early_reset')` in the alert ledger, so upstream quota that flaps after an early reset is announced once.
 3. **Pluggable Multi-Instance Notifications (`src/notify/`)**: Universal `Notifier` interface backed by `CompositeNotifier` fan-out to one adapter per enabled destination instance (`<type>:<id>` for `discord` and `webhook`, declared in `destinations[]` / `NOTIFICATION_DESTINATIONS_JSON`) with dynamic `import()` isolation so `discord.js` is never loaded when no Discord destination is enabled. Notification types are declared once in `src/shared/notificationKinds.ts` with their labels, descriptions and defaults; `notificationTypes` is toggled on the top-level `/notifications` page (or via `POST /api/config`) and enforced solely in `CompositeNotifier.gate()`, so a switched-off kind still logs at its source and records `{ success: false, suppressed: true }` per active destination in `alert_events.channels_json` instead of delivering.
 4. **Optional Swarm Coordinator**: Decoupled and optional (`coordinatorEnabled: false` by default). When disabled, zero execution resources or dispatch sockets are initialized.
@@ -595,7 +595,7 @@ agylity/
 
 ---
 
-## 12. Module map
+## 10. Module map
 
 Where a change goes, by concern. Each of these is the single home for its question; a new file that
 answers the same question is a second source of truth.

@@ -555,8 +555,8 @@ export class AgylityDaemon {
       }
 
       const probeSource =
-        typeof (this.quotaClient as any).getLastProbeSource === 'function'
-          ? (this.quotaClient as any).getLastProbeSource()
+        typeof this.quotaClient.getLastProbeSource === 'function'
+          ? this.quotaClient.getLastProbeSource()
           : 'connect_rpc';
       this.sentryState.updateProbe(probeSource);
       this.warnedAuthRequired = false;
